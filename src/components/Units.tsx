@@ -3,1334 +3,1160 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { Unit, UserRole, Payment, UtilityReading, Booking, UnitActivity, getUnitDisplayName } from '../types';
-import { Home, User, Mail, Phone, ShieldAlert, Edit3, X, HelpCircle, FileText, Printer, ClipboardList, Plus, Trash2, HardHat, Waves, Wrench, Megaphone, Key } from 'lucide-react';
-
-const getOrdinalSuffix = (day: number) => {
-  if (day > 3 && day < 21) return 'th';
-  switch (day % 10) {
-    case 1:  return "st";
-    case 2:  return "nd";
-    case 3:  return "rd";
-    default: return "th";
-  }
-};
+import React, { useMemo, useState } from 'react';
+import {
+  AppSettings,
+  Booking,
+  Charge,
+  Currency,
+  Payment,
+  SessionUser,
+  UNIT_STATUSES,
+  UNIT_STATUS_LABELS,
+  Unit,
+  UnitActivity,
+  UnitStatus,
+  UtilityReading,
+  getUnitDisplayName
+} from '../types';
+import {
+  accountBalance,
+  bookingsForUnit,
+  liveUnitState,
+  paymentsForUnit,
+  utilitiesForUnit
+} from '../lib/finance';
+import { convertIndicative, formatMoney, formatMoneyLong } from '../lib/money';
+import { formatDayLabel, formatMonthLabel, nightsBetween, today } from '../lib/dates';
+import { errorMessage } from '../lib/api';
+import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
+import {
+  Badge,
+  EmptyState,
+  ErrorNote,
+  Field,
+  InfoNote,
+  Modal,
+  PermissionNote,
+  SecondaryButton,
+  SubmitButton,
+  SuccessNote,
+  TableScroller,
+  inputClass,
+  monoInputClass
+} from './ui';
+import { ClipboardList, Edit3, Home, Mail, Phone, Plus, Printer, Trash2, User } from 'lucide-react';
 
 interface UnitsProps {
   units: Unit[];
+  charges: Charge[];
   payments: Payment[];
   utilities: UtilityReading[];
   bookings: Booking[];
-  unitActivities?: UnitActivity[];
-  activeRole: UserRole;
-  juniorHasAdvancedAccess: boolean;
-  onUpdateUnit: (unit: Unit) => Promise<void>;
-  onAddUnitActivity?: (activityData: any) => Promise<UnitActivity>;
-  onDeleteUnitActivity?: (id: string) => Promise<void>;
+  unitActivities: UnitActivity[];
+  settings: AppSettings;
+  session: SessionUser;
+  onUpdateUnit: (unit: Record<string, unknown> & { id: string }) => Promise<unknown>;
+  onAddUnitActivity: (payload: Record<string, unknown>) => Promise<unknown>;
+  onDeleteUnitActivity: (id: string) => Promise<unknown>;
 }
 
-export default function Units({ units, payments, utilities, bookings, unitActivities = [], activeRole, juniorHasAdvancedAccess, onUpdateUnit, onAddUnitActivity, onDeleteUnitActivity }: UnitsProps) {
-  const [selectedUnit, setSelectedUnit] = useState<Unit | null>(null);
-  const [isEditing, setIsEditing] = useState(false);
-  const [printActivityUnit, setPrintActivityUnit] = useState<Unit | null>(null);
-  
-  // Activity Logging Modal state
-  const [showLogActivityModal, setShowLogActivityModal] = useState(false);
-  const [actType, setActType] = useState<UnitActivity['activityType']>('Construction Work');
-  const [actResidentName, setActResidentName] = useState('');
-  const [actResidentRole, setActResidentRole] = useState<'Owner' | 'Tenant' | 'Guest' | 'Other'>('Owner');
-  const [actDate, setActDate] = useState(new Date().toISOString().split('T')[0]);
-  const [actNotes, setActNotes] = useState('');
-  const [actLoading, setActLoading] = useState(false);
-  const [actError, setActError] = useState('');
-  const [actSuccess, setActSuccess] = useState('');
-  
-  // Local form state
-  const [ownerName, setOwnerName] = useState('');
-  const [ownerEmail, setOwnerEmail] = useState('');
-  const [ownerPhone, setOwnerPhone] = useState('');
-  const [tenantName, setTenantName] = useState('');
-  const [tenantEmail, setTenantEmail] = useState('');
-  const [tenantPhone, setTenantPhone] = useState('');
-  const [status, setStatus] = useState<Unit['status']>('vacant');
-  const [monthlyRent, setMonthlyRent] = useState(0);
-  const [monthlyMaintenance, setMonthlyMaintenance] = useState(0);
-  const [currency, setCurrency] = useState<'USD' | 'JMD'>('JMD');
-  const [maintCurrency, setMaintCurrency] = useState<'USD' | 'JMD'>('JMD');
-  const [meterNumber, setMeterNumber] = useState('');
-  const [notes, setNotes] = useState('');
-  const [unitNumber, setUnitNumber] = useState('');
-  const [rentDueDay, setRentDueDay] = useState<number>(1);
-  const [maintDueDay, setMaintDueDay] = useState<number>(1);
-  
-  // Emergency Contacts Form State
-  const [ownerEmergencyName, setOwnerEmergencyName] = useState('');
-  const [ownerEmergencyPhone, setOwnerEmergencyPhone] = useState('');
-  const [ownerEmergencyEmail, setOwnerEmergencyEmail] = useState('');
-  const [tenantEmergencyName, setTenantEmergencyName] = useState('');
-  const [tenantEmergencyPhone, setTenantEmergencyPhone] = useState('');
-  const [tenantEmergencyEmail, setTenantEmergencyEmail] = useState('');
-  
-  const [errorMsg, setErrorMsg] = useState('');
-  const [successMsg, setSuccessMsg] = useState('');
-  const [loading, setLoading] = useState(false);
+const ordinal = (day: number) => {
+  if (day > 3 && day < 21) return 'th';
+  switch (day % 10) {
+    case 1:
+      return 'st';
+    case 2:
+      return 'nd';
+    case 3:
+      return 'rd';
+    default:
+      return 'th';
+  }
+};
 
-  const canEdit = activeRole === 'ADMINISTRATOR' || activeRole === 'MANAGER' || activeRole === 'FINANCE_OFFICER' || juniorHasAdvancedAccess;
+const STATUS_STYLES: Record<UnitStatus, { card: string; icon: string; badge: Parameters<typeof Badge>[0]['tone'] }> = {
+  'long-term': { card: 'bg-emerald-50/30 border-emerald-100/80 hover:border-emerald-300', icon: 'bg-emerald-50 text-emerald-600', badge: 'green' },
+  'short-term': { card: 'bg-amber-50/30 border-amber-100/80 hover:border-amber-300', icon: 'bg-amber-50 text-amber-600', badge: 'amber' },
+  vacant: { card: 'bg-sky-50/30 border-sky-100/80 hover:border-sky-300', icon: 'bg-sky-50 text-sky-600', badge: 'blue' },
+  unavailable: { card: 'bg-slate-50/50 border-slate-200 hover:border-slate-300', icon: 'bg-slate-100 text-slate-500', badge: 'slate' },
+  'owner-occupied': { card: 'bg-purple-50/30 border-purple-100/80 hover:border-purple-300', icon: 'bg-purple-50 text-purple-600', badge: 'purple' }
+};
 
-  const handleSelectUnit = (unit: Unit) => {
-    setSelectedUnit(unit);
-    setIsEditing(false);
-    setErrorMsg('');
-    setSuccessMsg('');
-    
-    // Seed edit form
-    setOwnerName(unit.ownerName);
-    setOwnerEmail(unit.ownerEmail);
-    setOwnerPhone(unit.ownerPhone);
-    setTenantName(unit.tenantName || '');
-    setTenantEmail(unit.tenantEmail || '');
-    setTenantPhone(unit.tenantPhone || '');
-    setStatus(unit.status);
-    setMonthlyRent(unit.monthlyRent);
-    setMonthlyMaintenance(unit.monthlyMaintenance);
-    setCurrency(unit.currency);
-    setMaintCurrency(unit.maintCurrency || unit.currency);
-    setMeterNumber(unit.meterNumber);
-    setNotes(unit.notes || '');
-    setUnitNumber(unit.number);
-    setRentDueDay(unit.rentDueDay || 1);
-    setMaintDueDay(unit.maintDueDay || 1);
-    setOwnerEmergencyName(unit.ownerEmergencyName || '');
-    setOwnerEmergencyPhone(unit.ownerEmergencyPhone || '');
-    setOwnerEmergencyEmail(unit.ownerEmergencyEmail || '');
-    setTenantEmergencyName(unit.tenantEmergencyName || '');
-    setTenantEmergencyPhone(unit.tenantEmergencyPhone || '');
-    setTenantEmergencyEmail(unit.tenantEmergencyEmail || '');
-  };
+export default function Units({
+  units,
+  charges,
+  payments,
+  utilities,
+  bookings,
+  unitActivities,
+  settings,
+  session,
+  onUpdateUnit,
+  onAddUnitActivity,
+  onDeleteUnitActivity
+}: UnitsProps) {
+  const [selected, setSelected] = useState<Unit | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [printUnit, setPrintUnit] = useState<Unit | null>(null);
+  const [logActivityFor, setLogActivityFor] = useState<Unit | null>(null);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
-  const handleSaveActivity = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedUnit || !onAddUnitActivity) return;
-    if (!actNotes.trim()) {
-      setActError('Please enter description notes or details.');
-      return;
-    }
+  const canEdit = !!session.permissions.editUnits;
+  const isAdmin = session.role === 'ADMINISTRATOR';
+  const todayStr = today();
 
-    setActLoading(true);
-    setActError('');
-    setActSuccess('');
+  // Keep the open detail view in step with refreshed server data.
+  const live = selected ? units.find(u => u.id === selected.id) || null : null;
 
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <h2 className="font-display text-xl font-medium text-slate-900">Villaggio Del Sol units register</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {units.length} villa{units.length === 1 ? '' : 's'} on record, with tenancy, billing and meter configuration.
+          </p>
+        </div>
+        {!canEdit && <PermissionNote>Read-only: your role cannot modify the unit register.</PermissionNote>}
+      </div>
+
+      {error && <ErrorNote>{error}</ErrorNote>}
+      {success && <SuccessNote>{success}</SuccessNote>}
+
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-100 bg-white p-4 text-xs shadow-xs">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-400">Status legend</span>
+        <div className="flex flex-wrap gap-x-5 gap-y-2">
+          {UNIT_STATUSES.map(status => (
+            <span key={status} className="flex items-center gap-2">
+              <span className={`h-3 w-3 rounded-full border ${STATUS_STYLES[status].icon.replace('bg-', 'bg-').replace('text-', 'border-')}`} />
+              <span className="font-medium text-slate-700">{UNIT_STATUS_LABELS[status]}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {units.length === 0 ? (
+        <EmptyState title="No villas in the register" icon={<Home className="h-6 w-6" />} />
+      ) : (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+          {units.map(unit => {
+            const styles = STATUS_STYLES[unit.status];
+            const state = liveUnitState(unit, bookings, todayStr, units);
+            const maintCurrency = unit.maintCurrency || unit.currency;
+            return (
+              <button
+                key={unit.id}
+                onClick={() => {
+                  setSelected(unit);
+                  setEditing(false);
+                  setError('');
+                  setSuccess('');
+                }}
+                className={`group flex min-h-[210px] cursor-pointer flex-col justify-between rounded-2xl border p-5 text-left shadow-xs transition-all hover:shadow-md ${styles.card}`}
+              >
+                <div className="flex w-full items-start justify-between gap-2">
+                  <span className={`rounded-xl p-3 transition-colors ${styles.icon}`}>
+                    <Home className="h-5 w-5" />
+                  </span>
+                  <Badge tone={styles.badge}>{UNIT_STATUS_LABELS[unit.status]}</Badge>
+                </div>
+                <div className="mt-4 flex flex-1 flex-col justify-between">
+                  <div>
+                    <h3 className="font-display text-sm font-semibold text-slate-900">{getUnitDisplayName(unit.number)}</h3>
+                    <p className="mt-1 truncate text-xs text-slate-500">Owner: {unit.ownerName}</p>
+                    <p className={`mt-0.5 truncate font-mono text-[10px] ${unit.tenantName ? 'font-semibold text-indigo-600' : 'italic text-slate-400'}`}>
+                      {unit.tenantName ? `Tenant: ${unit.tenantName}` : 'No tenant on record'}
+                    </p>
+                    <p className="mt-1 font-mono text-[10px] text-slate-400">Now: {state.label}</p>
+                  </div>
+                  <dl className="mt-2 space-y-1 border-t border-slate-200/60 pt-2 text-xs">
+                    {(unit.status === 'long-term' || unit.status === 'short-term') && (
+                      <div className="flex items-center justify-between">
+                        <dt className="font-mono text-[10px] text-slate-400">{unit.status === 'long-term' ? 'Rent' : 'Nightly'}</dt>
+                        <dd className="font-mono font-semibold text-slate-700">
+                          {formatMoney(unit.monthlyRent, unit.currency)}
+                          <span className="text-[10px] font-normal text-slate-400">{unit.status === 'long-term' ? '/mo' : '/night'}</span>
+                        </dd>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <dt className="font-mono text-[10px] text-slate-400">Maintenance</dt>
+                      <dd className="font-mono font-semibold text-teal-600">
+                        {formatMoney(unit.monthlyMaintenance, maintCurrency)}
+                        <span className="text-[10px] font-normal text-slate-400">/mo</span>
+                      </dd>
+                    </div>
+                    <div className="truncate font-mono text-[9px] text-slate-400">Meter: {unit.meterNumber || 'not set'}</div>
+                  </dl>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {live && !editing && (
+        <UnitDetail
+          unit={live}
+          charges={charges}
+          payments={payments}
+          units={units}
+          unitActivities={unitActivities}
+          settings={settings}
+          canEdit={canEdit}
+          onClose={() => setSelected(null)}
+          onEdit={() => setEditing(true)}
+          onPrint={() => setPrintUnit(live)}
+          onLogActivity={() => setLogActivityFor(live)}
+          onDeleteActivity={async id => {
+            try {
+              await onDeleteUnitActivity(id);
+              setSuccess('Activity entry removed.');
+            } catch (err) {
+              setError(errorMessage(err, 'Could not remove the activity entry.'));
+            }
+          }}
+        />
+      )}
+
+      {live && editing && (
+        <UnitEditor
+          unit={live}
+          settings={settings}
+          isAdmin={isAdmin}
+          onClose={() => setEditing(false)}
+          onSave={async payload => {
+            await onUpdateUnit({ ...payload, id: live.id });
+            setSuccess('Unit register updated. Any linked payments, readings and reservations were relabelled to match.');
+            setError('');
+            setEditing(false);
+          }}
+        />
+      )}
+
+      {logActivityFor && (
+        <LogActivityModal
+          unit={logActivityFor}
+          onClose={() => setLogActivityFor(null)}
+          onSubmit={async payload => {
+            await onAddUnitActivity(payload);
+            setSuccess(`Activity logged for ${getUnitDisplayName(logActivityFor.number)}.`);
+            setError('');
+            setLogActivityFor(null);
+          }}
+        />
+      )}
+
+      {printUnit && (
+        <UnitLedgerDocument
+          unit={printUnit}
+          units={units}
+          charges={charges}
+          payments={payments}
+          utilities={utilities}
+          bookings={bookings}
+          unitActivities={unitActivities}
+          generatedBy={session.name}
+          onClose={() => setPrintUnit(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+function UnitDetail({
+  unit,
+  charges,
+  payments,
+  units,
+  unitActivities,
+  settings,
+  canEdit,
+  onClose,
+  onEdit,
+  onPrint,
+  onLogActivity,
+  onDeleteActivity
+}: {
+  unit: Unit;
+  charges: Charge[];
+  payments: Payment[];
+  units: Unit[];
+  unitActivities: UnitActivity[];
+  settings: AppSettings;
+  canEdit: boolean;
+  onClose: () => void;
+  onEdit: () => void;
+  onPrint: () => void;
+  onLogActivity: () => void;
+  onDeleteActivity: (id: string) => Promise<void>;
+}) {
+  const maintCurrency = unit.maintCurrency || unit.currency;
+  const rentAccount = accountBalance(unit, 'Rent', charges, payments, undefined, units);
+  const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, undefined, units);
+  const activities = unitActivities.filter(a => a.unitId === unit.id);
+
+  return (
+    <Modal title={getUnitDisplayName(unit.number)} subtitle={UNIT_STATUS_LABELS[unit.status]} onClose={onClose} maxWidthClass="max-w-lg">
+      <div className="space-y-6 p-6">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="rounded-xl bg-slate-50 p-3.5">
+            <span className="block font-mono text-[10px] text-slate-400">OCCUPANCY STATUS</span>
+            <span className="mt-1 block text-xs font-semibold text-slate-700">{UNIT_STATUS_LABELS[unit.status]}</span>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3.5">
+            <span className="block font-mono text-[10px] text-slate-400">UTILITY METER</span>
+            <span className="mt-1 block font-mono text-xs font-semibold text-slate-700">{unit.meterNumber || 'Not configured'}</span>
+          </div>
+        </div>
+
+        <section className="space-y-3">
+          <h4 className="border-b border-slate-100 pb-1 font-mono text-xs uppercase tracking-wider text-slate-400">Registered owner</h4>
+          <ContactBlock name={unit.ownerName} email={unit.ownerEmail} phone={unit.ownerPhone} />
+          {unit.ownerEmergencyName && (
+            <EmergencyBlock
+              tone="rose"
+              label="Owner emergency contact"
+              name={unit.ownerEmergencyName}
+              phone={unit.ownerEmergencyPhone}
+              email={unit.ownerEmergencyEmail}
+            />
+          )}
+        </section>
+
+        {unit.status === 'long-term' && (
+          <section className="space-y-3">
+            <h4 className="border-b border-slate-100 pb-1 font-mono text-xs uppercase tracking-wider text-slate-400">Tenant</h4>
+            <ContactBlock name={unit.tenantName || 'None on record'} email={unit.tenantEmail} phone={unit.tenantPhone} />
+            {unit.tenantEmergencyName && (
+              <EmergencyBlock
+                tone="indigo"
+                label="Tenant emergency contact"
+                name={unit.tenantEmergencyName}
+                phone={unit.tenantEmergencyPhone}
+                email={unit.tenantEmergencyEmail}
+              />
+            )}
+          </section>
+        )}
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <BillingCard
+            title={unit.status === 'short-term' ? 'Nightly charge' : 'Monthly rent'}
+            amount={unit.monthlyRent}
+            currency={unit.currency}
+            fxRate={settings.fxRateJmdPerUsd}
+            dueNote={unit.status === 'long-term' ? `Due on the ${unit.rentDueDay || 1}${ordinal(unit.rentDueDay || 1)} of each month` : undefined}
+            balance={unit.status === 'long-term' ? rentAccount.balance : undefined}
+            balanceCurrency={rentAccount.currency}
+          />
+          <BillingCard
+            title="Monthly HOA maintenance"
+            amount={unit.monthlyMaintenance}
+            currency={maintCurrency}
+            fxRate={settings.fxRateJmdPerUsd}
+            dueNote={`Due on the ${unit.maintDueDay || 1}${ordinal(unit.maintDueDay || 1)} of each month`}
+            balance={unit.status !== 'unavailable' ? maintAccount.balance : undefined}
+            balanceCurrency={maintAccount.currency}
+          />
+        </div>
+
+        {unit.notes && (
+          <div className="text-xs">
+            <span className="block font-mono text-[10px] uppercase text-slate-400">Administrative notes</span>
+            <p className="mt-1 rounded-xl bg-slate-50 p-3 italic leading-relaxed text-slate-600">{unit.notes}</p>
+          </div>
+        )}
+
+        <section className="space-y-3 border-t border-slate-100 pt-3">
+          <div className="flex items-center justify-between">
+            <h4 className="flex items-center gap-1.5 font-mono text-xs font-bold uppercase tracking-wider text-slate-700">
+              <ClipboardList className="h-4 w-4 text-teal-600" />
+              Resident &amp; property activity
+            </h4>
+            <button
+              type="button"
+              onClick={onLogActivity}
+              className="flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white shadow-xs transition-all hover:bg-slate-800"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Log activity
+            </button>
+          </div>
+
+          {activities.length === 0 ? (
+            <EmptyState title={`No activity logged for ${getUnitDisplayName(unit.number)}`} hint="Record construction work, amenity bookings, notices or maintenance requests here." />
+          ) : (
+            <ul className="max-h-60 space-y-2 overflow-y-auto pr-1">
+              {activities.map(activity => (
+                <li key={activity.id} className="space-y-1.5 rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone="teal">{activity.activityType}</Badge>
+                      <span className="font-semibold text-slate-800">
+                        {activity.residentName} ({activity.residentRole})
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded border border-slate-100 bg-white px-2 py-0.5 font-mono text-[10px] font-medium text-slate-500">
+                        {formatDayLabel(activity.dateCaptured)}
+                      </span>
+                      {canEdit && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm('Remove this activity entry? The removal is recorded in the audit trail.')) {
+                              void onDeleteActivity(activity.id);
+                            }
+                          }}
+                          className="p-0.5 text-slate-300 transition-colors hover:text-red-600"
+                          title="Remove activity entry"
+                          aria-label="Remove activity entry"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="rounded-lg border border-slate-100 bg-white p-2.5 leading-relaxed text-slate-700">{activity.notes}</p>
+                  <p className="font-mono text-[9px] text-slate-400">
+                    Logged by {activity.loggedBy} on {formatDayLabel(activity.loggedAt.substring(0, 10))}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <div className="flex flex-col gap-2.5 border-t border-slate-100 pt-4">
+          <SubmitButton type="button" onClick={onPrint} className="w-full">
+            <Printer className="h-3.5 w-3.5" />
+            Print unit ledger
+          </SubmitButton>
+          <div className="flex gap-3">
+            {canEdit ? (
+              <button
+                type="button"
+                onClick={onEdit}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-slate-900 py-2.5 text-xs font-medium text-white transition-all hover:bg-slate-800"
+              >
+                <Edit3 className="h-3.5 w-3.5" />
+                Modify unit settings
+              </button>
+            ) : (
+              <div className="flex-1">
+                <PermissionNote>Editing the unit register requires additional permission.</PermissionNote>
+              </div>
+            )}
+            <SecondaryButton onClick={onClose}>Close</SecondaryButton>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ContactBlock({ name, email, phone }: { name: string; email?: string; phone?: string }) {
+  return (
+    <div className="space-y-2 text-xs">
+      <p className="flex items-center gap-2 text-slate-600">
+        <User className="h-4 w-4 text-slate-400" />
+        <span className="font-semibold text-slate-800">{name}</span>
+      </p>
+      <p className="flex items-center gap-2 text-slate-600">
+        <Mail className="h-4 w-4 text-slate-400" />
+        {email ? (
+          <a href={`mailto:${email}`} className="underline-offset-2 hover:underline">
+            {email}
+          </a>
+        ) : (
+          <span className="text-slate-400">Not recorded</span>
+        )}
+      </p>
+      <p className="flex items-center gap-2 text-slate-600">
+        <Phone className="h-4 w-4 text-slate-400" />
+        {phone ? (
+          <a href={`tel:${phone}`} className="underline-offset-2 hover:underline">
+            {phone}
+          </a>
+        ) : (
+          <span className="text-slate-400">Not recorded</span>
+        )}
+      </p>
+    </div>
+  );
+}
+
+function EmergencyBlock({
+  tone,
+  label,
+  name,
+  phone,
+  email
+}: {
+  tone: 'rose' | 'indigo';
+  label: string;
+  name: string;
+  phone?: string;
+  email?: string;
+}) {
+  const styles = tone === 'rose' ? 'bg-rose-50/50 border-rose-100/60 text-rose-700' : 'bg-indigo-50/50 border-indigo-100/60 text-indigo-700';
+  return (
+    <div className={`space-y-1 rounded-xl border p-2.5 ${styles}`}>
+      <span className="block font-mono text-[9px] font-bold uppercase tracking-wider">{label}</span>
+      <div className="text-xs font-semibold text-slate-800">{name}</div>
+      {(phone || email) && (
+        <div className="font-mono text-[10px] text-slate-500">
+          {phone}
+          {phone && email ? ' • ' : ''}
+          {email}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BillingCard({
+  title,
+  amount,
+  currency,
+  fxRate,
+  dueNote,
+  balance,
+  balanceCurrency
+}: {
+  title: string;
+  amount: number;
+  currency: Currency;
+  fxRate: number;
+  dueNote?: string;
+  balance?: number;
+  balanceCurrency: Currency;
+}) {
+  const other: Currency = currency === 'USD' ? 'JMD' : 'USD';
+  return (
+    <div className="rounded-xl border border-slate-100 bg-white p-3 shadow-xs">
+      <span className="block font-mono text-[10px] font-semibold uppercase text-slate-400">{title}</span>
+      <p className="mt-0.5 font-mono text-sm font-bold text-slate-800">{formatMoneyLong(amount, currency)}</p>
+      <span className="mt-0.5 block border-b border-slate-50 pb-1 font-mono text-[9px] text-slate-400">
+        ≈ {formatMoney(convertIndicative(amount, currency, other, fxRate), other)} {other} (indicative)
+      </span>
+      {dueNote && <p className="mt-1.5 text-[10px] font-medium text-slate-500">{dueNote}</p>}
+      {balance !== undefined && (
+        <p className={`mt-1.5 font-mono text-[10px] font-semibold ${balance > 0 ? 'text-red-600' : balance < 0 ? 'text-sky-600' : 'text-emerald-600'}`}>
+          {balance > 0
+            ? `${formatMoney(balance, balanceCurrency)} outstanding`
+            : balance < 0
+              ? `${formatMoney(Math.abs(balance), balanceCurrency)} in credit`
+              : 'Account settled'}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+function UnitEditor({
+  unit,
+  settings,
+  isAdmin,
+  onClose,
+  onSave
+}: {
+  unit: Unit;
+  settings: AppSettings;
+  isAdmin: boolean;
+  onClose: () => void;
+  onSave: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    number: unit.number,
+    status: unit.status,
+    currency: unit.currency,
+    maintCurrency: unit.maintCurrency || unit.currency,
+    ownerName: unit.ownerName,
+    ownerEmail: unit.ownerEmail,
+    ownerPhone: unit.ownerPhone,
+    ownerEmergencyName: unit.ownerEmergencyName || '',
+    ownerEmergencyPhone: unit.ownerEmergencyPhone || '',
+    ownerEmergencyEmail: unit.ownerEmergencyEmail || '',
+    tenantName: unit.tenantName,
+    tenantEmail: unit.tenantEmail,
+    tenantPhone: unit.tenantPhone,
+    tenantEmergencyName: unit.tenantEmergencyName || '',
+    tenantEmergencyPhone: unit.tenantEmergencyPhone || '',
+    tenantEmergencyEmail: unit.tenantEmergencyEmail || '',
+    monthlyRent: String(unit.monthlyRent),
+    monthlyMaintenance: String(unit.monthlyMaintenance),
+    meterNumber: unit.meterNumber,
+    notes: unit.notes || '',
+    rentDueDay: unit.rentDueDay || 1,
+    maintDueDay: unit.maintDueDay || 1
+  });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm(prev => ({ ...prev, [key]: value }));
+
+  const rentApplies = form.status === 'long-term' || form.status === 'short-term';
+  const tenantApplies = form.status === 'long-term';
+  const renaming = form.number.trim() !== unit.number;
+  const currencyChanged = form.currency !== unit.currency || form.maintCurrency !== (unit.maintCurrency || unit.currency);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError('');
     try {
-      await onAddUnitActivity({
-        unitId: selectedUnit.id,
-        unitNumber: selectedUnit.number,
-        residentName: actResidentName || selectedUnit.ownerName,
-        residentRole: actResidentRole,
-        activityType: actType,
-        dateCaptured: actDate,
-        notes: actNotes
+      await onSave({
+        ...form,
+        number: form.number.trim(),
+        monthlyRent: Number(form.monthlyRent) || 0,
+        monthlyMaintenance: Number(form.monthlyMaintenance) || 0,
+        rentDueDay: Number(form.rentDueDay),
+        maintDueDay: Number(form.maintDueDay)
       });
-      setActSuccess(`Activity logged successfully for Villa ${selectedUnit.number}!`);
-      setActNotes('');
-      setTimeout(() => {
-        setShowLogActivityModal(false);
-        setActSuccess('');
-      }, 1000);
-    } catch (err: any) {
-      setActError(err.message || 'Failed to record resident activity.');
+    } catch (err) {
+      setError(errorMessage(err, 'Could not save the unit.'));
     } finally {
-      setActLoading(false);
-    }
-  };
-
-  const handleDeleteActivity = async (id: string) => {
-    if (!onDeleteUnitActivity) return;
-    if (confirm('Are you sure you want to delete this activity entry?')) {
-      try {
-        await onDeleteUnitActivity(id);
-      } catch (err: any) {
-        alert(err.message || 'Failed to delete activity log.');
-      }
-    }
-  };
-
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedUnit) return;
-    if (!canEdit) {
-      setErrorMsg('Unauthorized: Junior Officers cannot modify base unit rates or register owners without advanced manager override.');
-      return;
-    }
-
-    setLoading(true);
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    try {
-      const isRentAvailable = status === 'long-term' || status === 'short-term' || activeRole === 'ADMINISTRATOR';
-      const isTenantAvailable = status === 'long-term' || activeRole === 'ADMINISTRATOR';
-      
-      const updated: Unit = {
-        ...selectedUnit,
-        number: unitNumber,
-        ownerName,
-        ownerEmail,
-        ownerPhone,
-        tenantName: isTenantAvailable ? tenantName : '',
-        tenantEmail: isTenantAvailable ? tenantEmail : '',
-        tenantPhone: isTenantAvailable ? tenantPhone : '',
-        status,
-        monthlyRent: isRentAvailable ? Number(monthlyRent) : 0,
-        monthlyMaintenance: Number(monthlyMaintenance),
-        currency,
-        maintCurrency,
-        meterNumber,
-        notes,
-        rentDueDay: Number(rentDueDay),
-        maintDueDay: Number(maintDueDay),
-        ownerEmergencyName,
-        ownerEmergencyPhone,
-        ownerEmergencyEmail,
-        tenantEmergencyName,
-        tenantEmergencyPhone,
-        tenantEmergencyEmail,
-      };
-
-      await onUpdateUnit(updated);
-      setSuccessMsg('Unit registration updated successfully!');
-      setSelectedUnit(updated);
-      setIsEditing(false);
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error updating unit parameters.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const getStatusBadgeClass = (s: Unit['status']) => {
-    switch (s) {
-      case 'long-term':
-        return 'bg-indigo-50 text-indigo-700 border-indigo-100';
-      case 'short-term':
-        return 'bg-teal-50 text-teal-700 border-teal-100';
-      case 'owner-occupied':
-        return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-      case 'vacant':
-        return 'bg-amber-50 text-amber-700 border-amber-100';
-      case 'unavailable':
-        return 'bg-slate-100 text-slate-700 border-slate-200';
-      default:
-        return 'bg-slate-50 text-slate-600';
-    }
-  };
-
-  const getStatusLabel = (s: Unit['status']) => {
-    switch (s) {
-      case 'long-term': return 'Long-term Lease';
-      case 'short-term': return 'Short-term / Airbnb';
-      case 'owner-occupied': return 'Owner Occupied';
-      case 'vacant': return 'Vacant';
-      case 'unavailable': return 'Unavailable';
-      default: return s;
+      setBusy(false);
     }
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h2 className="text-xl font-display font-medium text-slate-900">Villaggio Del Sol Units Register</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Physical inventory audit of all 16 gated villas, including tenancy and meter configs</p>
+    <Modal
+      title={`Edit ${getUnitDisplayName(unit.number)}`}
+      onClose={onClose}
+      maxWidthClass="max-w-2xl"
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton busy={busy} busyLabel="Saving…" form="vds-unit-form" className="flex-1">
+            Save changes
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
         </div>
-        {!canEdit && (
-          <div className="flex items-center gap-1.5 p-2 bg-amber-50 border border-amber-100 rounded-xl text-[10px] text-amber-800 font-mono">
-            <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
-            <span>Read-Only mode: Junior Account</span>
-          </div>
+      }
+    >
+      <form id="vds-unit-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        {renaming && (
+          <InfoNote tone="amber">
+            Renaming this villa from <strong>{unit.number}</strong> to <strong>{form.number.trim()}</strong> will also
+            relabel every payment, meter reading, expense, reservation and charge attached to it, so nothing is orphaned.
+          </InfoNote>
         )}
-      </div>
 
-      {/* Status Legend */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-xs flex flex-wrap gap-4 items-center justify-between text-xs">
-        <span className="font-mono text-slate-400 uppercase text-[10px] tracking-wider font-semibold">Unit Status Legend:</span>
-        <div className="flex flex-wrap gap-x-6 gap-y-2">
-          <div className="flex items-center gap-2">
-            <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 border border-emerald-600"></span>
-            <span className="font-medium text-slate-700">Long-term Lease (Green)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-3.5 h-3.5 rounded-full bg-amber-400 border border-amber-500"></span>
-            <span className="font-medium text-slate-700">Short-term / Airbnb (Yellow)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-3.5 h-3.5 rounded-full bg-sky-400 border border-sky-500"></span>
-            <span className="font-medium text-slate-700">Vacant (Blue)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-3.5 h-3.5 rounded-full bg-slate-400 border border-slate-500"></span>
-            <span className="font-medium text-slate-700">Unavailable (Grey)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-3.5 h-3.5 rounded-full bg-purple-400 border border-purple-500"></span>
-            <span className="font-medium text-slate-700">Owner Occupied (Purple)</span>
-          </div>
+        {currencyChanged && (
+          <InfoNote tone="amber">
+            Changing the billing currency does <strong>not</strong> convert the amounts below — it changes which currency
+            they are billed in. Enter the correct figure in the new currency yourself. Charges already posted keep the
+            currency they were raised in.
+          </InfoNote>
+        )}
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Field label="Villa number / name" htmlFor="ue-number" required>
+            <input id="ue-number" type="text" value={form.number} onChange={e => set('number', e.target.value)} required className={`${inputClass} font-semibold`} />
+          </Field>
+          <Field label="Villa status" htmlFor="ue-status" required>
+            <select id="ue-status" value={form.status} onChange={e => set('status', e.target.value as UnitStatus)} className={inputClass}>
+              {UNIT_STATUSES.map(status => (
+                <option key={status} value={status}>
+                  {UNIT_STATUS_LABELS[status]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Meter id" htmlFor="ue-meter" hint={isAdmin ? undefined : 'Administrators only.'}>
+            <input id="ue-meter" type="text" value={form.meterNumber} disabled={!isAdmin} onChange={e => set('meterNumber', e.target.value)} className={monoInputClass} />
+          </Field>
         </div>
-      </div>
 
-      {/* Grid of 16 Units */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        {units.map(unit => (
-          <button
-            key={unit.id}
-            onClick={() => handleSelectUnit(unit)}
-            className={`group text-left p-5 rounded-2xl border shadow-xs hover:shadow-md transition-all focus:outline-hidden focus:ring-1 focus:ring-teal-500 min-h-[200px] flex flex-col justify-between cursor-pointer ${
-              unit.status === 'long-term' ? 'bg-emerald-50/30 border-emerald-100/80 hover:border-emerald-300' :
-              unit.status === 'short-term' ? 'bg-amber-50/30 border-amber-100/80 hover:border-amber-300' :
-              unit.status === 'vacant' ? 'bg-sky-50/30 border-sky-100/80 hover:border-sky-300' :
-              unit.status === 'unavailable' ? 'bg-slate-50/50 border-slate-200 hover:border-slate-350' :
-              'bg-purple-50/30 border-purple-100/80 hover:border-purple-300'
-            }`}
-          >
-            <div className="flex justify-between items-start w-full">
-              <div className={`p-3 rounded-xl transition-colors ${
-                unit.status === 'long-term' ? 'bg-emerald-50 text-emerald-600 group-hover:bg-emerald-100 group-hover:text-emerald-700' :
-                unit.status === 'short-term' ? 'bg-amber-50 text-amber-600 group-hover:bg-amber-100 group-hover:text-amber-700' :
-                unit.status === 'vacant' ? 'bg-sky-50 text-sky-600 group-hover:bg-sky-100 group-hover:text-sky-700' :
-                unit.status === 'unavailable' ? 'bg-slate-100 text-slate-500 group-hover:bg-slate-200 group-hover:text-slate-600' :
-                'bg-purple-50 text-purple-600 group-hover:bg-purple-100 group-hover:text-purple-700'
-              }`}>
-                <Home className="w-5 h-5" />
-              </div>
-              <span className={`px-2 py-0.5 text-[10px] font-mono border rounded-full font-medium ${getStatusBadgeClass(unit.status)}`}>
-                {unit.status.toUpperCase()}
-              </span>
+        <fieldset className="space-y-3 rounded-xl bg-slate-50 p-4">
+          <legend className="font-mono text-[10px] font-semibold uppercase text-slate-400">Registered owner</legend>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <Field label="Owner name" htmlFor="ue-owner" required>
+              <input id="ue-owner" type="text" value={form.ownerName} onChange={e => set('ownerName', e.target.value)} required className={inputClass} />
+            </Field>
+            <Field label="Email" htmlFor="ue-oemail">
+              <input id="ue-oemail" type="email" value={form.ownerEmail} onChange={e => set('ownerEmail', e.target.value)} className={inputClass} />
+            </Field>
+            <Field label="Phone" htmlFor="ue-ophone">
+              <input id="ue-ophone" type="tel" value={form.ownerPhone} onChange={e => set('ownerPhone', e.target.value)} className={inputClass} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-3 border-t border-slate-200/60 pt-2 md:grid-cols-3">
+            <Field label="Emergency contact" htmlFor="ue-oename">
+              <input id="ue-oename" type="text" value={form.ownerEmergencyName} onChange={e => set('ownerEmergencyName', e.target.value)} className={inputClass} />
+            </Field>
+            <Field label="Emergency phone" htmlFor="ue-oephone">
+              <input id="ue-oephone" type="tel" value={form.ownerEmergencyPhone} onChange={e => set('ownerEmergencyPhone', e.target.value)} className={inputClass} />
+            </Field>
+            <Field label="Emergency email" htmlFor="ue-oeemail">
+              <input id="ue-oeemail" type="email" value={form.ownerEmergencyEmail} onChange={e => set('ownerEmergencyEmail', e.target.value)} className={inputClass} />
+            </Field>
+          </div>
+        </fieldset>
+
+        {tenantApplies ? (
+          <fieldset className="space-y-3 rounded-xl border border-indigo-100/60 bg-indigo-50/50 p-4">
+            <legend className="font-mono text-[10px] font-semibold uppercase text-indigo-700">Active tenant</legend>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <Field label="Tenant name" htmlFor="ue-tenant">
+                <input id="ue-tenant" type="text" value={form.tenantName} onChange={e => set('tenantName', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Email" htmlFor="ue-temail">
+                <input id="ue-temail" type="email" value={form.tenantEmail} onChange={e => set('tenantEmail', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Phone" htmlFor="ue-tphone">
+                <input id="ue-tphone" type="tel" value={form.tenantPhone} onChange={e => set('tenantPhone', e.target.value)} className={inputClass} />
+              </Field>
             </div>
-            <div className="mt-4 flex-1 flex flex-col justify-between">
-              <div>
-                <h3 className="text-sm font-display font-semibold text-slate-900">{getUnitDisplayName(unit.number)}</h3>
-                <p className="text-xs text-slate-500 mt-1 truncate">Owner: {unit.ownerName}</p>
-                {unit.tenantName ? (
-                  <p className="text-[10px] font-mono text-indigo-600 mt-0.5 truncate font-semibold">Tenant: {unit.tenantName}</p>
-                ) : (
-                  <p className="text-[10px] font-mono text-slate-400 mt-0.5 truncate italic">Tenant: None</p>
-                )}
-              </div>
-              <div className="border-t border-slate-50 mt-2 pt-2 space-y-1 text-xs">
-                {(unit.status === 'long-term' || unit.status === 'short-term') ? (
-                  <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-mono text-slate-400">
-                      {unit.status === 'long-term' ? 'Rent' : 'Nightly'}:
-                    </span>
-                    <span className="font-semibold text-slate-700 font-mono">
-                      {unit.currency === 'USD' ? '$' : 'J$'}{unit.monthlyRent.toLocaleString()}
-                      <span className="text-[10px] text-slate-400 font-normal">
-                        {unit.status === 'long-term' ? '/mo' : '/night'}
-                      </span>
-                    </span>
-                  </div>
-                ) : null}
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-mono text-slate-400">Maint:</span>
-                  <span className="font-semibold text-teal-600 font-mono">
-                    {(unit.maintCurrency || unit.currency) === 'USD' ? '$' : 'J$'}{unit.monthlyMaintenance.toLocaleString()}
-                    <span className="text-[10px] text-slate-400 font-normal">/mo</span>
-                  </span>
-                </div>
-                <div className="flex justify-between items-center text-[10px] text-slate-400">
-                  <span className="font-mono text-[9px]">Meter: {unit.meterNumber}</span>
-                </div>
-              </div>
+            <div className="grid grid-cols-1 gap-3 border-t border-indigo-200/40 pt-2 md:grid-cols-3">
+              <Field label="Emergency contact" htmlFor="ue-tename">
+                <input id="ue-tename" type="text" value={form.tenantEmergencyName} onChange={e => set('tenantEmergencyName', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Emergency phone" htmlFor="ue-tephone">
+                <input id="ue-tephone" type="tel" value={form.tenantEmergencyPhone} onChange={e => set('tenantEmergencyPhone', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Emergency email" htmlFor="ue-teemail">
+                <input id="ue-teemail" type="email" value={form.tenantEmergencyEmail} onChange={e => set('tenantEmergencyEmail', e.target.value)} className={inputClass} />
+              </Field>
             </div>
-          </button>
-        ))}
-      </div>
+          </fieldset>
+        ) : (
+          unit.tenantName && (
+            <InfoNote tone="amber">
+              This villa is not on a long-term lease, so tenant details are not billed or displayed. Saving with this
+              status will clear the stored tenant contact ({unit.tenantName}). Past payments and receipts for that
+              tenant are unaffected and remain in the ledger.
+            </InfoNote>
+          )
+        )}
 
-      {/* Unit Detail / Edit Modal */}
-      {selectedUnit && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto shadow-xl border border-slate-100 flex flex-col">
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-              <div>
-                <span className="text-[10px] font-mono uppercase bg-slate-200 px-2 py-0.5 rounded-full font-medium text-slate-600">Unit Register Detail</span>
-                <h3 className="text-lg font-display font-semibold text-slate-900 mt-1.5">{getUnitDisplayName(selectedUnit.number)}</h3>
-              </div>
-              <button
-                onClick={() => setSelectedUnit(null)}
-                className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200/50 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {errorMsg && (
-              <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-100 text-red-800 text-xs rounded-xl flex items-center gap-1.5">
-                <ShieldAlert className="w-4 h-4 text-red-600" />
-                <span>{errorMsg}</span>
-              </div>
-            )}
-
-            {successMsg && (
-              <div className="mx-6 mt-4 p-3 bg-teal-50 border border-teal-100 text-teal-800 text-xs rounded-xl">
-                {successMsg}
-              </div>
-            )}
-
-            {!isEditing ? (
-              <div className="p-6 space-y-6 flex-1">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-3.5 bg-slate-50 rounded-xl">
-                    <span className="text-[10px] font-mono text-slate-400 block">OCCUPANCY STATUS</span>
-                    <span className="text-xs font-semibold text-slate-700 mt-1 block">
-                      {getStatusLabel(selectedUnit.status)}
-                    </span>
-                  </div>
-                  <div className="p-3.5 bg-slate-50 rounded-xl">
-                    <span className="text-[10px] font-mono text-slate-400 block">UTILITY METER NUMBER</span>
-                    <span className="text-xs font-mono font-semibold text-slate-700 mt-1 block">
-                      {selectedUnit.meterNumber || 'Not Configured'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-3.5">
-                  <h4 className="text-xs font-mono text-slate-400 uppercase tracking-wider pb-1 border-b border-slate-100">Registered Owner Info</h4>
-                  <div className="space-y-2 text-xs">
-                    <div className="flex items-center gap-2 text-slate-600">
-                      <User className="w-4 h-4 text-slate-400" />
-                      <span className="font-semibold text-slate-800">{selectedUnit.ownerName}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-slate-600">
-                      <Mail className="w-4 h-4 text-slate-400" />
-                      <span>{selectedUnit.ownerEmail}</span>
-                    </div>
-                     <div className="flex items-center gap-2 text-slate-600">
-                      <Phone className="w-4 h-4 text-slate-400" />
-                      <span>{selectedUnit.ownerPhone}</span>
-                    </div>
-                    {selectedUnit.ownerEmergencyName && (
-                      <div className="mt-2.5 p-2.5 bg-rose-50/50 rounded-xl border border-rose-100/50 space-y-1">
-                        <span className="text-[9px] font-mono text-rose-700 block font-bold uppercase tracking-wider">Owner Emergency Contact</span>
-                        <div className="font-semibold text-slate-850 text-xs">{selectedUnit.ownerEmergencyName}</div>
-                        {(selectedUnit.ownerEmergencyPhone || selectedUnit.ownerEmergencyEmail) && (
-                          <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                            {selectedUnit.ownerEmergencyPhone} {selectedUnit.ownerEmergencyEmail && `• ${selectedUnit.ownerEmergencyEmail}`}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {selectedUnit.status === 'long-term' && (
-                  <div className="space-y-3.5">
-                    <h4 className="text-xs font-mono text-slate-400 uppercase tracking-wider pb-1 border-b border-slate-100">Tenant & Lease Details</h4>
-                    <div className="space-y-2 text-xs">
-                      <div className="flex items-center gap-2 text-slate-600">
-                        <User className="w-4 h-4 text-slate-400" />
-                        <span className="font-semibold text-slate-800">{selectedUnit.tenantName || 'None'}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-slate-600">
-                        <Mail className="w-4 h-4 text-slate-400" />
-                        <span>{selectedUnit.tenantEmail || 'None'}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-slate-600">
-                        <Phone className="w-4 h-4 text-slate-400" />
-                        <span>{selectedUnit.tenantPhone || 'None'}</span>
-                      </div>
-                      {selectedUnit.tenantEmergencyName && (
-                        <div className="mt-2.5 p-2.5 bg-indigo-50/50 rounded-xl border border-indigo-100/50 space-y-1">
-                          <span className="text-[9px] font-mono text-indigo-700 block font-bold uppercase tracking-wider">Tenant Emergency Contact</span>
-                          <div className="font-semibold text-slate-850 text-xs">{selectedUnit.tenantEmergencyName}</div>
-                          {(selectedUnit.tenantEmergencyPhone || selectedUnit.tenantEmergencyEmail) && (
-                            <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                              {selectedUnit.tenantEmergencyPhone} {selectedUnit.tenantEmergencyEmail && `• ${selectedUnit.tenantEmergencyEmail}`}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                  <div className="p-3 border border-slate-100 rounded-xl bg-white shadow-xs">
-                    <span className="text-[10px] font-mono text-slate-400 block font-semibold uppercase">
-                      {selectedUnit.status === 'short-term' ? 'Nightly Charge' : 'Monthly Rent Fee'}
-                    </span>
-                    <p className="text-sm font-bold text-slate-800 mt-0.5 font-mono">
-                      {selectedUnit.currency === 'USD' ? 'USD $' : 'JMD J$'}{selectedUnit.monthlyRent.toLocaleString()}
-                    </p>
-                    <span className="text-[9px] font-mono text-slate-400 mt-0.5 block pb-1 border-b border-slate-50">
-                      Converted: {selectedUnit.currency === 'USD' 
-                        ? `JMD J$${(selectedUnit.monthlyRent * 155).toLocaleString()}` 
-                        : `USD $${Math.round(selectedUnit.monthlyRent / 155).toLocaleString()}`}
-                    </span>
-                    {selectedUnit.status === 'long-term' && (
-                      <p className="text-[10px] text-slate-500 mt-1.5 font-sans font-medium">
-                        Due: {selectedUnit.rentDueDay || 1}{getOrdinalSuffix(selectedUnit.rentDueDay || 1)} of every month
-                      </p>
-                    )}
-                  </div>
-                  <div className="p-3 border border-slate-100 rounded-xl bg-white shadow-xs">
-                    <span className="text-[10px] font-mono text-slate-400 block font-semibold uppercase">Monthly HOA Maint.</span>
-                    <p className="text-sm font-bold text-slate-800 mt-0.5 font-mono">
-                      {(selectedUnit.maintCurrency || selectedUnit.currency) === 'USD' ? 'USD $' : 'JMD J$'}{selectedUnit.monthlyMaintenance.toLocaleString()}
-                    </p>
-                    <span className="text-[9px] font-mono text-slate-400 mt-0.5 block pb-1 border-b border-slate-50">
-                      Converted: {(selectedUnit.maintCurrency || selectedUnit.currency) === 'USD' 
-                        ? `JMD J$${(selectedUnit.monthlyMaintenance * 155).toLocaleString()}` 
-                        : `USD $${Math.round(selectedUnit.monthlyMaintenance / 155).toLocaleString()}`}
-                    </span>
-                    <p className="text-[10px] text-slate-500 mt-1.5 font-sans font-medium">
-                      Due: {selectedUnit.maintDueDay || 1}{getOrdinalSuffix(selectedUnit.maintDueDay || 1)} of every month
-                    </p>
-                  </div>
-                </div>
-
-                {selectedUnit.notes && (
-                  <div className="space-y-2 text-xs">
-                    <span className="text-xs font-mono text-slate-400 block">UNIT ADMINISTRATIVE NOTES</span>
-                    <p className="p-3 bg-slate-50 text-slate-600 rounded-xl italic leading-relaxed">
-                      "{selectedUnit.notes}"
-                    </p>
-                  </div>
-                )}
-
-                {/* RESIDENT & PROPERTY ACTIVITY LOG SECTION */}
-                <div className="space-y-3 pt-3 border-t border-slate-100">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <ClipboardList className="w-4 h-4 text-teal-600" />
-                      <h4 className="text-xs font-mono text-slate-700 uppercase tracking-wider font-bold">
-                        Resident & Property Activity Log
-                      </h4>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActType('Construction Work');
-                        setActResidentName(selectedUnit.tenantName || selectedUnit.ownerName || '');
-                        setActResidentRole(selectedUnit.tenantName ? 'Tenant' : 'Owner');
-                        setActDate(new Date().toISOString().split('T')[0]);
-                        setActNotes('');
-                        setActError('');
-                        setActSuccess('');
-                        setShowLogActivityModal(true);
-                      }}
-                      className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[11px] font-medium transition-all flex items-center gap-1 shadow-xs"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      Log Activity
-                    </button>
-                  </div>
-
-                  {unitActivities.filter(a => a.unitNumber === selectedUnit.number || a.unitId === selectedUnit.id).length === 0 ? (
-                    <div className="p-4 bg-slate-50/80 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-400">
-                      No logged activities for Villa {selectedUnit.number} yet. Click "Log Activity" above to record construction, pool reservations, or notes.
-                    </div>
-                  ) : (
-                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                      {unitActivities
-                        .filter(a => a.unitNumber === selectedUnit.number || a.unitId === selectedUnit.id)
-                        .map((act) => (
-                          <div key={act.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-1.5 text-xs relative group">
-                            <div className="flex items-center justify-between gap-2 flex-wrap">
-                              <div className="flex items-center gap-1.5">
-                                <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${
-                                  act.activityType === 'Construction Work' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
-                                  act.activityType === 'Pool Reservation' ? 'bg-teal-100 text-teal-800 border border-teal-200' :
-                                  act.activityType === 'Maintenance Request' ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' :
-                                  act.activityType === 'Noise / Event Notice' ? 'bg-purple-100 text-purple-800 border border-purple-200' :
-                                  act.activityType === 'Amenity Access' ? 'bg-sky-100 text-sky-800 border border-sky-200' :
-                                  'bg-slate-200 text-slate-700'
-                                }`}>
-                                  {act.activityType}
-                                </span>
-                                <span className="font-semibold text-slate-800">{act.residentName} ({act.residentRole})</span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] font-mono font-medium text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-100">{act.dateCaptured}</span>
-                                {onDeleteUnitActivity && canEdit && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteActivity(act.id)}
-                                    className="text-slate-300 hover:text-red-600 transition-colors p-0.5"
-                                    title="Remove activity log"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                            <p className="text-slate-700 leading-relaxed text-xs font-sans bg-white p-2.5 rounded-lg border border-slate-100">
-                              "{act.notes}"
-                            </p>
-                            <div className="text-[9px] font-mono text-slate-400 flex justify-between items-center pt-0.5">
-                              <span>Logged by: {act.loggedBy}</span>
-                              <span>{new Date(act.loggedAt).toLocaleDateString()} {new Date(act.loggedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                            </div>
-                          </div>
-                        ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="pt-4 border-t border-slate-100 flex flex-col gap-2.5">
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setPrintActivityUnit(selectedUnit)}
-                      className="flex-1 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1.5 shadow-xs"
-                    >
-                      <Printer className="w-3.5 h-3.5" />
-                      Print Tenant/Owner Activity Ledger
-                    </button>
-                  </div>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => {
-                        if (!canEdit) {
-                          setErrorMsg('Unauthorized: Junior Officers cannot modify base unit parameters or rates.');
-                          return;
-                        }
-                        setIsEditing(true);
-                      }}
-                      disabled={!canEdit}
-                      className="flex-1 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      Modify Unit settings
-                    </button>
-                    <button
-                      onClick={() => setSelectedUnit(null)}
-                      className="px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-xs font-medium hover:bg-slate-50 transition-all"
-                    >
-                      Close
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <form onSubmit={handleSave} className="p-6 space-y-4 flex-1">
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="text-xs font-mono text-slate-500 block mb-1">Villa Number/Name</label>
-                    <input
-                      type="text"
-                      value={unitNumber}
-                      onChange={(e) => setUnitNumber(e.target.value)}
-                      required
-                      className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-semibold text-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-mono text-slate-500 block mb-1">Villa Status Use</label>
-                    <select
-                      value={status}
-                      onChange={(e) => setStatus(e.target.value as Unit['status'])}
-                      className="w-full text-xs p-2.5 border border-slate-200 rounded-xl focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
-                    >
-                      <option value="long-term">Long-term Lease</option>
-                      <option value="short-term">Short-term rental</option>
-                      <option value="owner-occupied">Owner Occupied</option>
-                      <option value="vacant">Vacant</option>
-                      <option value="unavailable">Unavailable</option>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <fieldset className="space-y-3 rounded-xl border border-slate-100 p-4">
+            <legend className="font-mono text-[10px] font-semibold uppercase text-slate-400">
+              {form.status === 'short-term' ? 'Nightly rate' : 'Monthly rent'}
+            </legend>
+            {rentApplies ? (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Amount" htmlFor="ue-rent">
+                    <input id="ue-rent" type="number" min="0" step="0.01" value={form.monthlyRent} onChange={e => set('monthlyRent', e.target.value)} className={monoInputClass} />
+                  </Field>
+                  <Field label="Currency" htmlFor="ue-rentcur">
+                    <select id="ue-rentcur" value={form.currency} onChange={e => set('currency', e.target.value as Currency)} className={inputClass}>
+                      <option value="JMD">JMD (J$)</option>
+                      <option value="USD">USD ($)</option>
                     </select>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-mono text-slate-500 block mb-1">Base Currency</label>
-                    <select
-                      value={currency}
-                      onChange={(e) => setCurrency(e.target.value as 'USD' | 'JMD')}
-                      className="w-full text-xs p-2.5 border border-slate-200 rounded-xl focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
-                    >
-                      <option value="JMD">Jamaican Dollar (JMD)</option>
-                      <option value="USD">US Dollar (USD)</option>
-                    </select>
-                  </div>
+                  </Field>
                 </div>
-
-                <div className="space-y-3 p-4 bg-slate-50 rounded-xl">
-                  <span className="text-[10px] font-mono text-slate-400 block uppercase font-semibold">Registered Owner Details</span>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div>
-                      <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Owner Name</label>
-                      <input
-                        type="text"
-                        value={ownerName}
-                        onChange={(e) => setOwnerName(e.target.value)}
-                        required
-                        className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Email Address</label>
-                      <input
-                        type="email"
-                        value={ownerEmail}
-                        onChange={(e) => setOwnerEmail(e.target.value)}
-                        className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Phone Number</label>
-                      <input
-                        type="text"
-                        value={ownerPhone}
-                        onChange={(e) => setOwnerPhone(e.target.value)}
-                        className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-200/50 mt-1">
-                    <div>
-                      <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Emergency Contact Name</label>
-                      <input
-                        type="text"
-                        value={ownerEmergencyName}
-                        onChange={(e) => setOwnerEmergencyName(e.target.value)}
-                        className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                        placeholder="Emergency contact name"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Emergency Phone</label>
-                      <input
-                        type="text"
-                        value={ownerEmergencyPhone}
-                        onChange={(e) => setOwnerEmergencyPhone(e.target.value)}
-                        className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                        placeholder="Emergency contact number"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Emergency Email</label>
-                      <input
-                        type="email"
-                        value={ownerEmergencyEmail}
-                        onChange={(e) => setOwnerEmergencyEmail(e.target.value)}
-                        className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                        placeholder="Emergency contact email"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {(status === 'long-term' || activeRole === 'ADMINISTRATOR') && (
-                  <div className="space-y-3 p-4 bg-indigo-50/50 rounded-xl border border-indigo-100/50">
-                    <span className="text-[10px] font-mono text-indigo-700 block uppercase font-semibold">
-                      Active Tenant Details {activeRole === 'ADMINISTRATOR' && status !== 'long-term' && '(Admin Overriding Status Lock)'}
-                    </span>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      <div>
-                        <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Tenant Name</label>
-                        <input
-                          type="text"
-                          value={tenantName}
-                          onChange={(e) => setTenantName(e.target.value)}
-                          required={status === 'long-term'}
-                          className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Email Address</label>
-                        <input
-                          type="email"
-                          value={tenantEmail}
-                          onChange={(e) => setTenantEmail(e.target.value)}
-                          className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Phone Number</label>
-                        <input
-                          type="text"
-                          value={tenantPhone}
-                          onChange={(e) => setTenantPhone(e.target.value)}
-                          className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-indigo-200/40 mt-1">
-                      <div>
-                        <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Emergency Contact Name</label>
-                        <input
-                          type="text"
-                          value={tenantEmergencyName}
-                          onChange={(e) => setTenantEmergencyName(e.target.value)}
-                          className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                          placeholder="Emergency contact name"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Emergency Phone</label>
-                        <input
-                          type="text"
-                          value={tenantEmergencyPhone}
-                          onChange={(e) => setTenantEmergencyPhone(e.target.value)}
-                          className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                          placeholder="Emergency contact number"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-mono text-slate-500 block mb-0.5">Emergency Email</label>
-                        <input
-                          type="email"
-                          value={tenantEmergencyEmail}
-                          onChange={(e) => setTenantEmergencyEmail(e.target.value)}
-                          className="w-full text-xs p-2 border border-slate-200 rounded-lg"
-                          placeholder="Emergency contact email"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div>
-                    <label className="text-xs font-mono text-slate-500 block mb-1">
-                      {status === 'short-term' ? 'Nightly Charge' : 'Monthly Rent Charge'}
-                    </label>
-                    {status === 'owner-occupied' || status === 'vacant' || status === 'unavailable' ? (
-                      <div className="w-full text-xs p-2.5 border border-slate-200 rounded-xl bg-slate-100 text-slate-400 font-mono font-medium flex items-center gap-1.5 h-[38px]">
-                        <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
-                        Blocked: {status === 'owner-occupied' ? 'Owner Occupied' : status === 'vacant' ? 'Vacant' : 'Unavailable'}
-                      </div>
-                    ) : (
-                      <>
-                        <input
-                          type="number"
-                          value={monthlyRent}
-                          onChange={(e) => setMonthlyRent(Number(e.target.value))}
-                          className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono font-semibold bg-white"
-                        />
-                        <span className="text-[9px] font-mono text-slate-400 mt-1 block">
-                          Converted: {currency === 'USD' 
-                            ? `JMD J$${(monthlyRent * 155).toLocaleString()}` 
-                            : `USD $${Math.round(monthlyRent / 155).toLocaleString()}`}
-                        </span>
-                      </>
-                    )}
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="text-xs font-mono text-slate-500 block">Monthly HOA Maint.</label>
-                      
-                      {/* Currency Toggle Switch */}
-                      <div className="flex items-center gap-1 bg-slate-150 rounded-lg p-0.5 border border-slate-200">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (maintCurrency !== 'USD') {
-                              setMonthlyMaintenance(prev => Math.round(prev / 155));
-                              setMaintCurrency('USD');
-                            }
-                          }}
-                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold font-mono transition-colors ${maintCurrency === 'USD' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                        >
-                          USD
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (maintCurrency !== 'JMD') {
-                              setMonthlyMaintenance(prev => Math.round(prev * 155));
-                              setMaintCurrency('JMD');
-                            }
-                          }}
-                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold font-mono transition-colors ${maintCurrency === 'JMD' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                        >
-                          JMD
-                        </button>
-                      </div>
-                    </div>
-                    <input
-                      type="number"
-                      value={monthlyMaintenance}
-                      onChange={(e) => setMonthlyMaintenance(Number(e.target.value))}
-                      className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono font-semibold bg-white"
-                    />
-                    <span className="text-[9px] font-mono text-slate-400 mt-1 block">
-                      Converted: {maintCurrency === 'USD' 
-                        ? `JMD J$${(monthlyMaintenance * 155).toLocaleString()}` 
-                        : `USD $${Math.round(monthlyMaintenance / 155).toLocaleString()}`}
-                    </span>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-mono text-slate-500 block mb-1">
-                      Utility Meter ID {activeRole !== 'ADMINISTRATOR' && '(Locked - Admin only)'}
-                    </label>
-                    <input
-                      type="text"
-                      value={meterNumber}
-                      onChange={(e) => setMeterNumber(e.target.value)}
-                      disabled={activeRole !== 'ADMINISTRATOR'}
-                      className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono disabled:bg-slate-100 disabled:text-slate-400"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-4 bg-slate-50 rounded-xl border border-slate-100">
-                  <div>
-                    <label className="text-xs font-mono text-slate-500 block mb-1">
-                      Rent Due Day of Month
-                    </label>
-                    {status === 'owner-occupied' ? (
-                      <div className="w-full text-xs p-2.5 border border-slate-200 rounded-xl bg-slate-100 text-slate-400 font-mono font-medium flex items-center gap-1.5 h-[38px]">
-                        <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
-                        Blocked: Owner Occupied
-                      </div>
-                    ) : (status === 'short-term' || status === 'vacant' || status === 'unavailable') ? (
-                      <div className="w-full text-xs p-2.5 border border-slate-200 rounded-xl bg-slate-100 text-slate-400 font-mono font-medium flex items-center gap-1.5 h-[38px]">
-                        <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
-                        Blocked: No rent due schedule
-                      </div>
-                    ) : (
-                      <select
-                        value={rentDueDay}
-                        onChange={(e) => setRentDueDay(Number(e.target.value))}
-                        className="w-full text-xs p-2.5 border border-slate-200 rounded-xl bg-white text-slate-700 font-mono font-medium"
-                      >
-                        {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                          <option key={d} value={d}>
-                            Day {d} of Month
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-mono text-slate-500 block mb-1">
-                      HOA Maintenance Due Day of Month
-                    </label>
-                    <select
-                      value={maintDueDay}
-                      onChange={(e) => setMaintDueDay(Number(e.target.value))}
-                      className="w-full text-xs p-2.5 border border-slate-200 rounded-xl bg-white text-slate-700 font-mono font-medium"
-                    >
-                      {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                <p className="font-mono text-[9px] text-slate-400">
+                  ≈{' '}
+                  {formatMoney(
+                    convertIndicative(Number(form.monthlyRent) || 0, form.currency, form.currency === 'USD' ? 'JMD' : 'USD', settings.fxRateJmdPerUsd),
+                    form.currency === 'USD' ? 'JMD' : 'USD'
+                  )}{' '}
+                  indicative
+                </p>
+                {form.status === 'long-term' && (
+                  <Field label="Rent due day" htmlFor="ue-rentday">
+                    <select id="ue-rentday" value={form.rentDueDay} onChange={e => set('rentDueDay', Number(e.target.value))} className={monoInputClass}>
+                      {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
                         <option key={d} value={d}>
-                          Day {d} of Month
+                          Day {d}
                         </option>
                       ))}
                     </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Administrative Notes</label>
-                  <textarea
-                    rows={2}
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
-                  />
-                </div>
-
-                <div className="pt-4 border-t border-slate-100 flex gap-3">
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="flex-1 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-medium transition-all"
-                  >
-                    {loading ? 'Saving adjustments...' : 'Save Adjustments'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsEditing(false)}
-                    className="px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-xs font-medium hover:bg-slate-50 transition-all"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* PRINT INDIVIDUAL UNIT LEDGER OVERLAY */}
-      {printActivityUnit && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 print:p-0 print:absolute print:bg-white print:inset-0">
-          <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-100 flex flex-col print:shadow-none print:border-none print:max-h-none print:overflow-visible">
-            
-            {/* Modal Header (Hidden on Print) */}
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 print:hidden">
-              <div className="flex items-center gap-2">
-                <Printer className="w-5 h-5 text-teal-600" />
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-900">Printable Activity Ledger</h3>
-                  <p className="text-[11px] text-slate-500">Official ledger statement containing tenancy details, payments, utility history, and reservations.</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => window.print()}
-                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-medium rounded-xl flex items-center gap-1.5 transition-all shadow-xs"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  Print Now
-                </button>
-                <button
-                  onClick={() => setPrintActivityUnit(null)}
-                  className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200/50 transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Print Document Content */}
-            <div className="p-8 space-y-6 flex-1 text-slate-800 print:p-0 print:text-black font-sans">
-              
-              {/* Document Letterhead */}
-              <div className="flex justify-between items-start border-b-2 border-slate-900 pb-4">
-                <div>
-                  <h1 className="text-xl font-bold uppercase tracking-wider text-slate-900 print:text-black">Villaggio Del Sol</h1>
-                  <p className="text-xs text-slate-500 font-mono mt-0.5">Ocho Rios, Jamaica</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Internal Property Operations & Compliance Ledger</p>
-                </div>
-                <div className="text-right">
-                  <div className="bg-slate-900 text-white px-3 py-1 text-[10px] font-mono rounded-lg print:border print:border-black print:text-black print:bg-white font-bold">
-                    UNIT ACTIVITY LEDGER
-                  </div>
-                  <p className="text-[10px] text-slate-500 font-mono mt-2">Generated: {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</p>
-                </div>
-              </div>
-
-              {/* Villa & Tenancy Metadata */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100 print:bg-white print:border-black print:rounded-none">
-                <div>
-                  <span className="text-[9px] font-mono text-slate-400 block">VILLA NUMBER</span>
-                  <span className="text-xs font-bold text-slate-900">Unit {printActivityUnit.number}</span>
-                </div>
-                <div>
-                  <span className="text-[9px] font-mono text-slate-400 block">REGISTERED OWNER</span>
-                  <span className="text-xs font-semibold text-slate-800">{printActivityUnit.ownerName}</span>
-                </div>
-                <div>
-                  <span className="text-[9px] font-mono text-slate-400 block">OCCUPANT / LEASE STATUS</span>
-                  <span className="text-xs font-semibold text-slate-800">
-                    {printActivityUnit.status === 'long-term' ? `${printActivityUnit.tenantName || 'Tenant'} (Tenant)` : getStatusLabel(printActivityUnit.status)}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[9px] font-mono text-slate-400 block">METER REGISTER ID</span>
-                  <span className="text-xs font-mono text-slate-800 font-semibold">{printActivityUnit.meterNumber || 'N/A'}</span>
-                </div>
-              </div>
-
-              {/* SECTION 1: FINANCIAL LEDGER */}
-              <div className="space-y-2">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-1 flex items-center gap-1.5 print:text-black print:border-black">
-                  <span>I. Cash Inflow Ledger (Payments & Receipts)</span>
-                </h3>
-                {payments.filter(p => p.unitNumber === printActivityUnit.number).length === 0 ? (
-                  <p className="text-xs text-slate-400 italic">No payments logged for this villa unit.</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs border border-slate-100 print:border-black print:border">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 font-mono text-[9px] text-slate-400 uppercase print:bg-white print:border-black print:border-b">
-                          <th className="p-2">Date</th>
-                          <th className="p-2">Receipt No</th>
-                          <th className="p-2">Category</th>
-                          <th className="p-2">Payer</th>
-                          <th className="p-2">Method</th>
-                          <th className="p-2">Status</th>
-                          <th className="p-2 text-right">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-mono text-[10px] text-slate-600 print:divide-black print:text-black">
-                        {payments.filter(p => p.unitNumber === printActivityUnit.number).map(p => (
-                          <tr key={p.id} className={p.status === 'reversed' ? 'line-through text-slate-400' : ''}>
-                            <td className="p-2">{p.date}</td>
-                            <td className="p-2 font-semibold">{p.receiptNo}</td>
-                            <td className="p-2">{p.category}</td>
-                            <td className="p-2 truncate max-w-[120px]">{p.payerName}</td>
-                            <td className="p-2">{p.method}</td>
-                            <td className="p-2 uppercase font-bold text-[9px]">
-                              <span className={p.status === 'completed' ? 'text-emerald-600' : 'text-red-500'}>
-                                {p.status}
-                              </span>
-                            </td>
-                            <td className="p-2 text-right font-semibold text-slate-900 print:text-black">
-                              {p.currency === 'USD' ? '$' : 'J$'}{p.amount.toLocaleString()}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  </Field>
                 )}
-              </div>
-
-              {/* SECTION 2: UTILITIES HISTORIC RECORD */}
-              <div className="space-y-2">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-1 flex items-center gap-1.5 print:text-black print:border-black">
-                  <span>II. Utility Meter Reading & Billing Ledger</span>
-                </h3>
-                {utilities.filter(u => u.unitNumber === printActivityUnit.number).length === 0 ? (
-                  <p className="text-xs text-slate-400 italic">No utility billing logs found for this meter number.</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs border border-slate-100 print:border-black print:border">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 font-mono text-[9px] text-slate-400 uppercase print:bg-white print:border-black print:border-b">
-                          <th className="p-2">Billing Month</th>
-                          <th className="p-2">Prev Reading</th>
-                          <th className="p-2">Current Reading</th>
-                          <th className="p-2">Consumption</th>
-                          <th className="p-2">Billing Status</th>
-                          <th className="p-2 text-right">Amount Charged</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-mono text-[10px] text-slate-600 print:divide-black print:text-black">
-                        {utilities.filter(u => u.unitNumber === printActivityUnit.number).map(u => (
-                          <tr key={u.id}>
-                            <td className="p-2 font-semibold">{u.billingPeriod}</td>
-                            <td className="p-2">{u.previousReading.toLocaleString()}</td>
-                            <td className="p-2">{u.currentReading.toLocaleString()}</td>
-                            <td className="p-2 font-semibold text-teal-700 print:text-black">{u.consumption.toLocaleString()}</td>
-                            <td className="p-2 uppercase font-semibold text-[9px]">
-                              <span className={u.status === 'paid' ? 'text-emerald-600' : 'text-amber-600'}>
-                                {u.status}
-                              </span>
-                            </td>
-                            <td className="p-2 text-right font-semibold text-slate-900 print:text-black">
-                              {u.currency === 'USD' ? '$' : 'J$'}{u.amountCharged.toLocaleString()}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-
-              {/* SECTION 3: SHORT-TERM RESERVATIONS */}
-              {printActivityUnit.status === 'short-term' && (
-                <div className="space-y-2">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-1 flex items-center gap-1.5 print:text-black print:border-black">
-                    <span>III. Guest Bookings & Stay Lodgings</span>
-                  </h3>
-                  {bookings.filter(b => b.unitNumber === printActivityUnit.number).length === 0 ? (
-                    <p className="text-xs text-slate-400 italic">No short-term reservations logged on the calendar scheduler.</p>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs border border-slate-100 print:border-black print:border">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-200 font-mono text-[9px] text-slate-400 uppercase print:bg-white print:border-black print:border-b">
-                            <th className="p-2">Guest Name</th>
-                            <th className="p-2">Check-In</th>
-                            <th className="p-2">Check-Out</th>
-                            <th className="p-2">Nights</th>
-                            <th className="p-2">Booking Status</th>
-                            <th className="p-2 text-right">Stay Cost</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 font-mono text-[10px] text-slate-600 print:divide-black print:text-black">
-                          {bookings.filter(b => b.unitNumber === printActivityUnit.number).map(b => {
-                            const nights = Math.max(1, Math.ceil((new Date(b.checkOut).getTime() - new Date(b.checkIn).getTime()) / (1000 * 60 * 60 * 24)));
-                            return (
-                              <tr key={b.id}>
-                                <td className="p-2 font-semibold text-slate-900 print:text-black">{b.guestName}</td>
-                                <td className="p-2">{b.checkIn}</td>
-                                <td className="p-2">{b.checkOut}</td>
-                                <td className="p-2">{nights}</td>
-                                <td className="p-2 uppercase font-semibold text-[9px]">{b.status}</td>
-                                <td className="p-2 text-right font-semibold text-slate-900 print:text-black font-mono">
-                                  {b.currency === 'USD' ? '$' : 'J$'}{b.amount.toLocaleString()}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* SECTION 4: RESIDENT & PROPERTY ACTIVITIES LOG */}
-              <div className="space-y-2 pt-2">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-1 flex items-center gap-1.5 print:text-black print:border-black">
-                  <span>IV. Resident & Villa Activities Logged</span>
-                </h3>
-                {unitActivities.filter(a => a.unitNumber === printActivityUnit.number || a.unitId === printActivityUnit.id).length === 0 ? (
-                  <p className="text-xs text-slate-400 italic">No resident activities logged for this villa unit.</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs border border-slate-100 print:border-black print:border">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 font-mono text-[9px] text-slate-400 uppercase print:bg-white print:border-black print:border-b">
-                          <th className="p-2">Date Captured</th>
-                          <th className="p-2">Activity Type</th>
-                          <th className="p-2">Resident / Capacity</th>
-                          <th className="p-2">Description & Notes</th>
-                          <th className="p-2">Logged By</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-mono text-[10px] text-slate-600 print:divide-black print:text-black">
-                        {unitActivities.filter(a => a.unitNumber === printActivityUnit.number || a.unitId === printActivityUnit.id).map(a => (
-                          <tr key={a.id}>
-                            <td className="p-2 font-semibold whitespace-nowrap">{a.dateCaptured}</td>
-                            <td className="p-2 font-bold uppercase text-[9px]">{a.activityType}</td>
-                            <td className="p-2 whitespace-nowrap">{a.residentName} ({a.residentRole})</td>
-                            <td className="p-2 font-sans">{a.notes}</td>
-                            <td className="p-2 whitespace-nowrap">{a.loggedBy}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-
-              {/* Financial Sign-Off Footer */}
-              <div className="pt-12 grid grid-cols-2 gap-8 text-center text-xs border-t border-slate-200 mt-12 print:border-black print:mt-8">
-                <div>
-                  <div className="border-b border-slate-400 h-8 w-2/3 mx-auto print:border-black"></div>
-                  <span className="text-[10px] text-slate-400 block mt-1 font-mono uppercase">Authorized Property Auditor</span>
-                </div>
-                <div>
-                  <div className="border-b border-slate-400 h-8 w-2/3 mx-auto print:border-black"></div>
-                  <span className="text-[10px] text-slate-400 block mt-1 font-mono uppercase">Ocho Rios Trust Administrator</span>
-                </div>
-              </div>
-
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* LOG RESIDENT ACTIVITY MODAL */}
-      {showLogActivityModal && selectedUnit && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-slate-100">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <ClipboardList className="w-5 h-5 text-teal-600" />
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-900">Log Resident Activity</h3>
-                  <p className="text-[11px] text-slate-500">Villa {selectedUnit.number} — {selectedUnit.ownerName}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowLogActivityModal(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {actError && (
-              <div className="p-3 bg-red-50 border border-red-100 text-red-800 text-xs rounded-xl flex items-center gap-1.5">
-                <ShieldAlert className="w-4 h-4 text-red-600 shrink-0" />
-                <span>{actError}</span>
-              </div>
+              </>
+            ) : (
+              <p className="rounded-lg bg-slate-100 p-2.5 font-mono text-[11px] text-slate-500">
+                Not billed while the villa is {UNIT_STATUS_LABELS[form.status].toLowerCase()}.
+              </p>
             )}
+          </fieldset>
 
-            {actSuccess && (
-              <div className="p-3 bg-teal-50 border border-teal-100 text-teal-800 text-xs rounded-xl font-medium">
-                {actSuccess}
-              </div>
-            )}
-
-            <form onSubmit={handleSaveActivity} className="space-y-3.5">
-              <div>
-                <label className="text-xs font-mono text-slate-500 block mb-1">Activity Category</label>
-                <select
-                  value={actType}
-                  onChange={(e) => setActType(e.target.value as UnitActivity['activityType'])}
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-xl bg-white font-medium text-slate-800 focus:ring-1 focus:ring-teal-500"
-                >
-                  <option value="Construction Work">Construction Work / Renovation</option>
-                  <option value="Pool Reservation">Pool & Gazebo Reservation</option>
-                  <option value="Maintenance Request">Resident Maintenance Request</option>
-                  <option value="Noise / Event Notice">Noise / Event Notice</option>
-                  <option value="Amenity Access">Amenity Access / Guest Pass</option>
-                  <option value="Other Activity">Other Activity / Note</option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Resident Name</label>
-                  <input
-                    type="text"
-                    value={actResidentName}
-                    onChange={(e) => setActResidentName(e.target.value)}
-                    required
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl text-slate-800"
-                    placeholder="e.g. Yvonne Clarke"
-                  />
+          <fieldset className="space-y-3 rounded-xl border border-slate-100 p-4">
+            <legend className="font-mono text-[10px] font-semibold uppercase text-slate-400">Monthly HOA maintenance</legend>
+            {form.status !== 'unavailable' ? (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Amount" htmlFor="ue-maint">
+                    <input id="ue-maint" type="number" min="0" step="0.01" value={form.monthlyMaintenance} onChange={e => set('monthlyMaintenance', e.target.value)} className={monoInputClass} />
+                  </Field>
+                  <Field label="Currency" htmlFor="ue-maintcur">
+                    <select id="ue-maintcur" value={form.maintCurrency} onChange={e => set('maintCurrency', e.target.value as Currency)} className={inputClass}>
+                      <option value="JMD">JMD (J$)</option>
+                      <option value="USD">USD ($)</option>
+                    </select>
+                  </Field>
                 </div>
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Resident Capacity</label>
-                  <select
-                    value={actResidentRole}
-                    onChange={(e) => setActResidentRole(e.target.value as any)}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl bg-white text-slate-800"
-                  >
-                    <option value="Owner">Property Owner</option>
-                    <option value="Tenant">Long-Term Tenant</option>
-                    <option value="Guest">Short-Term Guest</option>
-                    <option value="Other">Other / Contractor</option>
+                <p className="font-mono text-[9px] text-slate-400">
+                  ≈{' '}
+                  {formatMoney(
+                    convertIndicative(
+                      Number(form.monthlyMaintenance) || 0,
+                      form.maintCurrency,
+                      form.maintCurrency === 'USD' ? 'JMD' : 'USD',
+                      settings.fxRateJmdPerUsd
+                    ),
+                    form.maintCurrency === 'USD' ? 'JMD' : 'USD'
+                  )}{' '}
+                  indicative
+                </p>
+                <Field label="Maintenance due day" htmlFor="ue-maintday">
+                  <select id="ue-maintday" value={form.maintDueDay} onChange={e => set('maintDueDay', Number(e.target.value))} className={monoInputClass}>
+                    {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
+                      <option key={d} value={d}>
+                        Day {d}
+                      </option>
+                    ))}
                   </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-mono text-slate-500 block mb-1">Date Captured / Scheduled</label>
-                <input
-                  type="date"
-                  value={actDate}
-                  onChange={(e) => setActDate(e.target.value)}
-                  required
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono text-slate-800"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-mono text-slate-500 block mb-1">Activity Notes & Operational Details</label>
-                <textarea
-                  rows={3}
-                  value={actNotes}
-                  onChange={(e) => setActNotes(e.target.value)}
-                  required
-                  placeholder="e.g., Construction work approved for balcony tiling. Work hours: 9 AM to 4 PM. Contractor: J&R Builders."
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-xl focus:ring-1 focus:ring-teal-500 text-slate-800"
-                />
-              </div>
-
-              <div className="pt-2 flex gap-3">
-                <button
-                  type="submit"
-                  disabled={actLoading}
-                  className="flex-1 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-medium transition-all shadow-xs"
-                >
-                  {actLoading ? 'Recording Activity...' : 'Save Activity Entry'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowLogActivityModal(false)}
-                  className="px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-xs font-medium hover:bg-slate-50 transition-all"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          </div>
+                </Field>
+              </>
+            ) : (
+              <p className="rounded-lg bg-slate-100 p-2.5 font-mono text-[11px] text-slate-500">
+                Villas marked Unavailable are not billed for maintenance.
+              </p>
+            )}
+          </fieldset>
         </div>
+
+        <Field label="Administrative notes" htmlFor="ue-notes">
+          <textarea id="ue-notes" rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} className={inputClass} />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+function LogActivityModal({
+  unit,
+  onClose,
+  onSubmit
+}: {
+  unit: Unit;
+  onClose: () => void;
+  onSubmit: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [activityType, setActivityType] = useState<UnitActivity['activityType']>('Construction Work');
+  const [residentName, setResidentName] = useState(unit.tenantName || unit.ownerName || '');
+  const [residentRole, setResidentRole] = useState<UnitActivity['residentRole']>(unit.tenantName ? 'Tenant' : 'Owner');
+  const [dateCaptured, setDateCaptured] = useState(today());
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit({ unitId: unit.id, activityType, residentName, residentRole, dateCaptured, notes });
+    } catch (err) {
+      setError(errorMessage(err, 'Could not record the activity.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Log resident activity"
+      subtitle={`${getUnitDisplayName(unit.number)} — ${unit.ownerName}`}
+      onClose={onClose}
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton busy={busy} busyLabel="Recording…" form="vds-activity-form" className="flex-1">
+            Save activity entry
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-activity-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <Field label="Activity category" htmlFor="la-type" required>
+          <select id="la-type" value={activityType} onChange={e => setActivityType(e.target.value as UnitActivity['activityType'])} className={inputClass}>
+            <option value="Construction Work">Construction work / renovation</option>
+            <option value="Pool Reservation">Pool &amp; gazebo reservation</option>
+            <option value="Maintenance Request">Resident maintenance request</option>
+            <option value="Noise / Event Notice">Noise / event notice</option>
+            <option value="Amenity Access">Amenity access / guest pass</option>
+            <option value="Other Activity">Other activity / note</option>
+          </select>
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Resident name" htmlFor="la-name" required>
+            <input id="la-name" type="text" value={residentName} onChange={e => setResidentName(e.target.value)} required className={inputClass} />
+          </Field>
+          <Field label="Capacity" htmlFor="la-role" required>
+            <select id="la-role" value={residentRole} onChange={e => setResidentRole(e.target.value as UnitActivity['residentRole'])} className={inputClass}>
+              <option value="Owner">Property owner</option>
+              <option value="Tenant">Long-term tenant</option>
+              <option value="Guest">Short-term guest</option>
+              <option value="Other">Other / contractor</option>
+            </select>
+          </Field>
+        </div>
+
+        <Field label="Date captured" htmlFor="la-date" required>
+          <input id="la-date" type="date" value={dateCaptured} onChange={e => setDateCaptured(e.target.value)} required className={monoInputClass} />
+        </Field>
+
+        <Field label="Details" htmlFor="la-notes" required>
+          <textarea
+            id="la-notes"
+            rows={3}
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            required
+            placeholder="e.g. Balcony tiling approved. Work hours 9am–4pm weekdays. Contractor: J&R Builders."
+            className={inputClass}
+          />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+function UnitLedgerDocument({
+  unit,
+  units,
+  charges,
+  payments,
+  utilities,
+  bookings,
+  unitActivities,
+  generatedBy,
+  onClose
+}: {
+  unit: Unit;
+  units: Unit[];
+  charges: Charge[];
+  payments: Payment[];
+  utilities: UtilityReading[];
+  bookings: Booking[];
+  unitActivities: UnitActivity[];
+  generatedBy: string;
+  onClose: () => void;
+}) {
+  const unitPayments = useMemo(
+    () => paymentsForUnit(payments, unit, units).sort((a, b) => a.date.localeCompare(b.date)),
+    [payments, unit, units]
+  );
+  const unitUtilities = useMemo(
+    () => utilitiesForUnit(utilities, unit, units).sort((a, b) => a.billingPeriod.localeCompare(b.billingPeriod)),
+    [utilities, unit, units]
+  );
+  const unitBookings = useMemo(
+    () => bookingsForUnit(bookings, unit, units).sort((a, b) => a.checkIn.localeCompare(b.checkIn)),
+    [bookings, unit, units]
+  );
+  const activities = unitActivities.filter(a => a.unitId === unit.id);
+  const rent = accountBalance(unit, 'Rent', charges, payments, undefined, units);
+  const maint = accountBalance(unit, 'Maintenance', charges, payments, undefined, units);
+
+  return (
+    <PrintPortal title={`Unit ledger — ${getUnitDisplayName(unit.number)}`} onClose={onClose} maxWidthClass="max-w-4xl">
+      <PrintLetterhead documentTitle="Unit Activity Ledger" meta={getUnitDisplayName(unit.number)} generatedBy={generatedBy} />
+
+      <section className="mb-6 grid grid-cols-2 gap-4 rounded-xl border border-slate-300 p-4 text-xs md:grid-cols-4">
+        {[
+          ['Villa', getUnitDisplayName(unit.number)],
+          ['Registered owner', unit.ownerName],
+          ['Occupancy', unit.status === 'long-term' ? `${unit.tenantName || 'Tenant'} (tenant)` : UNIT_STATUS_LABELS[unit.status]],
+          ['Meter id', unit.meterNumber || 'Not configured']
+        ].map(([label, value]) => (
+          <div key={label}>
+            <span className="block font-mono text-[9px] uppercase text-slate-500">{label}</span>
+            <span className="text-xs font-semibold text-slate-900">{value}</span>
+          </div>
+        ))}
+      </section>
+
+      <section className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {[
+          { title: 'Rent account', account: rent, show: unit.status === 'long-term' || rent.charged > 0 },
+          { title: 'HOA maintenance account', account: maint, show: unit.status !== 'unavailable' || maint.charged > 0 }
+        ]
+          .filter(row => row.show)
+          .map(row => (
+            <dl key={row.title} className="space-y-1 rounded-xl border border-slate-300 p-3 text-xs">
+              <p className="mb-1 font-mono text-[9px] font-bold uppercase text-slate-500">{row.title}</p>
+              <div className="flex justify-between gap-3">
+                <dt>Total billed</dt>
+                <dd className="font-mono font-semibold">{formatMoney(row.account.charged, row.account.currency)}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt>Total received</dt>
+                <dd className="font-mono font-semibold">{formatMoney(row.account.paid, row.account.currency)}</dd>
+              </div>
+              <div className="flex justify-between gap-3 border-t border-slate-300 pt-1 font-bold">
+                <dt>Balance ({row.account.currency})</dt>
+                <dd className="font-mono">{formatMoney(row.account.balance, row.account.currency)}</dd>
+              </div>
+            </dl>
+          ))}
+      </section>
+
+      <PrintSection title="I. Payments received">
+        {unitPayments.length === 0 ? (
+          <p className="text-xs italic text-slate-500">No payments recorded for this villa.</p>
+        ) : (
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Date</th>
+                  <th className="p-2">Receipt</th>
+                  <th className="p-2">Category</th>
+                  <th className="p-2">Payer</th>
+                  <th className="p-2">Method</th>
+                  <th className="p-2">Status</th>
+                  <th className="p-2 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {unitPayments.map(p => (
+                  <tr key={p.id} className={p.status === 'reversed' ? 'text-slate-500 line-through' : ''}>
+                    <td className="p-2">{formatDayLabel(p.date)}</td>
+                    <td className="p-2 font-semibold">{p.receiptNo}</td>
+                    <td className="p-2">{p.category}</td>
+                    <td className="p-2">{p.payerName}</td>
+                    <td className="p-2">{p.method}</td>
+                    <td className="p-2 uppercase">{p.status === 'reversed' ? 'VOID' : 'OK'}</td>
+                    <td className="p-2 text-right font-semibold">{formatMoney(p.amount, p.currency)} {p.currency}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        )}
+      </PrintSection>
+
+      <PrintSection title="II. Utility meter readings">
+        {unitUtilities.length === 0 ? (
+          <p className="text-xs italic text-slate-500">No meter readings recorded for this villa.</p>
+        ) : (
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Period</th>
+                  <th className="p-2 text-right">Previous</th>
+                  <th className="p-2 text-right">Current</th>
+                  <th className="p-2 text-right">Consumption</th>
+                  <th className="p-2">Status</th>
+                  <th className="p-2 text-right">Charged</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {unitUtilities.map(u => (
+                  <tr key={u.id}>
+                    <td className="p-2 font-semibold">{formatMonthLabel(u.billingPeriod)}</td>
+                    <td className="p-2 text-right">{u.previousReading.toLocaleString()}</td>
+                    <td className="p-2 text-right">{u.currentReading.toLocaleString()}</td>
+                    <td className="p-2 text-right font-semibold">{u.consumption.toLocaleString()}</td>
+                    <td className="p-2 uppercase">{u.status}</td>
+                    <td className="p-2 text-right font-semibold">{formatMoney(u.amountCharged, u.currency)} {u.currency}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        )}
+      </PrintSection>
+
+      {unitBookings.length > 0 && (
+        <PrintSection title="III. Guest reservations">
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Guest</th>
+                  <th className="p-2">Arrival</th>
+                  <th className="p-2">Departure</th>
+                  <th className="p-2 text-right">Nights</th>
+                  <th className="p-2">Channel</th>
+                  <th className="p-2">Status</th>
+                  <th className="p-2 text-right">Stay value</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {unitBookings.map(b => (
+                  <tr key={b.id}>
+                    <td className="p-2 font-semibold">{b.guestName}</td>
+                    <td className="p-2">{formatDayLabel(b.checkIn)}</td>
+                    <td className="p-2">{formatDayLabel(b.checkOut)}</td>
+                    <td className="p-2 text-right">{nightsBetween(b.checkIn, b.checkOut)}</td>
+                    <td className="p-2">{b.source}</td>
+                    <td className="p-2 uppercase">{b.status}</td>
+                    <td className="p-2 text-right font-semibold">{formatMoney(b.amount, b.currency)} {b.currency}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        </PrintSection>
       )}
-    </div>
+
+      {activities.length > 0 && (
+        <PrintSection title="IV. Resident &amp; property activity">
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Date</th>
+                  <th className="p-2">Activity</th>
+                  <th className="p-2">Resident</th>
+                  <th className="p-2">Details</th>
+                  <th className="p-2">Logged by</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activities.map(a => (
+                  <tr key={a.id}>
+                    <td className="whitespace-nowrap p-2 font-mono font-semibold">{formatDayLabel(a.dateCaptured)}</td>
+                    <td className="p-2 font-mono uppercase">{a.activityType}</td>
+                    <td className="whitespace-nowrap p-2">{a.residentName} ({a.residentRole})</td>
+                    <td className="p-2">{a.notes}</td>
+                    <td className="whitespace-nowrap p-2 font-mono">{a.loggedBy}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        </PrintSection>
+      )}
+
+      <PrintSignatures left="Authorised Property Officer" right="Owner / Tenant Acknowledgement" />
+    </PrintPortal>
+  );
+}
+
+function PrintSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="mb-6 space-y-2 break-inside-avoid">
+      <h3 className="border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider text-slate-900">{title}</h3>
+      {children}
+    </section>
   );
 }

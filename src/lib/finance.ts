@@ -1,0 +1,432 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The single source of truth for every balance the application shows.
+ *
+ * Before this module existed, Dashboard, FinanceHub, NotificationsTab and the
+ * sidebar badge each computed "outstanding" differently (some scoped to the
+ * current month, some to all time, some filtering by currency, some not), so the
+ * same unit could read "Settled" on one screen and "Delinquent" on another.
+ * Every screen now calls these functions.
+ *
+ * The model is a plain two-sided ledger:
+ *     balance = (open charges) - (completed payments)
+ * evaluated per unit, per category, per currency. Unpaid months therefore carry
+ * forward automatically. Nothing is ever netted across currencies.
+ */
+
+import {
+  Charge,
+  ChargeCategory,
+  Currency,
+  Payment,
+  Unit,
+  UtilityReading,
+  Expense,
+  Booking
+} from '../types';
+import { round2, sumMoney, subtractMoney } from './money';
+import { daysSince, isWithin, monthOf, addDays } from './dates';
+
+/** A record that points at a unit. */
+interface UnitLinked {
+  unitId?: string;
+  unitNumber?: string;
+}
+
+/**
+ * Does this record belong to this unit?
+ *
+ * unitId is the stable key and is authoritative. unitNumber is a display label
+ * the staff can edit — matching on it alone is what orphaned Unit 1's records
+ * when it was renamed to "A1". The label is only consulted for legacy rows that
+ * predate unitId, and only when the label is not claimed by some other unit.
+ */
+export function belongsToUnit(record: UnitLinked, unit: Unit, allUnits?: Unit[]): boolean {
+  if (record.unitId) return record.unitId === unit.id;
+  if (!record.unitNumber) return false;
+  if (allUnits && allUnits.some(u => u.id !== unit.id && u.number === record.unitNumber)) return false;
+  return record.unitNumber === unit.number;
+}
+
+export function paymentsForUnit(payments: Payment[], unit: Unit, allUnits?: Unit[]): Payment[] {
+  return payments.filter(p => belongsToUnit(p, unit, allUnits));
+}
+
+export function chargesForUnit(charges: Charge[], unit: Unit, allUnits?: Unit[]): Charge[] {
+  return charges.filter(c => belongsToUnit(c, unit, allUnits));
+}
+
+export function utilitiesForUnit(utilities: UtilityReading[], unit: Unit, allUnits?: Unit[]): UtilityReading[] {
+  return utilities.filter(u => belongsToUnit(u, unit, allUnits));
+}
+
+export function expensesForUnit(expenses: Expense[], unit: Unit, allUnits?: Unit[]): Expense[] {
+  return expenses.filter(e => belongsToUnit(e, unit, allUnits));
+}
+
+export function bookingsForUnit(bookings: Booking[], unit: Unit, allUnits?: Unit[]): Booking[] {
+  return bookings.filter(b => belongsToUnit(b, unit, allUnits));
+}
+
+/** The currency a unit is billed in for a given category. */
+export function chargeCurrency(unit: Unit, category: ChargeCategory): Currency {
+  return category === 'Maintenance' ? (unit.maintCurrency || unit.currency) : unit.currency;
+}
+
+/** The recurring amount a unit is billed for a given category. */
+export function chargeAmount(unit: Unit, category: ChargeCategory): number {
+  return round2(category === 'Maintenance' ? unit.monthlyMaintenance : unit.monthlyRent);
+}
+
+/** Who is billed: the tenant pays rent, the owner pays HOA maintenance. */
+export function chargePayer(unit: Unit, category: ChargeCategory): string {
+  if (category === 'Maintenance') return unit.ownerName || '';
+  return unit.tenantName || unit.ownerName || '';
+}
+
+/** Is this unit billable for this category at all? */
+export function isBillable(unit: Unit, category: ChargeCategory): boolean {
+  if (category === 'Rent') {
+    return unit.status === 'long-term' && chargeAmount(unit, 'Rent') > 0;
+  }
+  return unit.status !== 'unavailable' && chargeAmount(unit, 'Maintenance') > 0;
+}
+
+export interface AccountBalance {
+  unit: Unit;
+  category: ChargeCategory;
+  currency: Currency;
+  /** Open charges raised on or before `asOf`. */
+  charged: number;
+  /** Completed payments received on or before `asOf`, in the billing currency. */
+  paid: number;
+  /** charged - paid. Positive means the account owes money; negative is a credit. */
+  balance: number;
+  /** Charges the payments have not covered yet, oldest first. */
+  unpaidCharges: Charge[];
+  /** Age in days of the oldest charge still not covered. 0 when nothing is due. */
+  oldestUnpaidDays: number;
+  /**
+   * Completed payments recorded against this account in the *other* currency.
+   * These are deliberately not netted into the balance — they are surfaced so
+   * staff can correct the record rather than have the money silently vanish.
+   */
+  mismatchedCurrencyPayments: Payment[];
+}
+
+/**
+ * Running balance for one unit and one category, as at a given date (default: no limit).
+ */
+export function accountBalance(
+  unit: Unit,
+  category: ChargeCategory,
+  charges: Charge[],
+  payments: Payment[],
+  asOf?: string,
+  allUnits?: Unit[]
+): AccountBalance {
+  const currency = chargeCurrency(unit, category);
+
+  const unitCharges = chargesForUnit(charges, unit, allUnits)
+    .filter(c => c.category === category && c.status === 'open' && c.currency === currency)
+    .filter(c => !asOf || c.dueDate <= asOf)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  const unitPayments = paymentsForUnit(payments, unit, allUnits)
+    .filter(p => p.category === category && p.status === 'completed')
+    .filter(p => !asOf || p.date <= asOf);
+
+  const matching = unitPayments.filter(p => p.currency === currency);
+  const mismatched = unitPayments.filter(p => p.currency !== currency);
+
+  const charged = sumMoney(unitCharges.map(c => c.amount));
+  const paid = sumMoney(matching.map(p => p.amount));
+  const balance = subtractMoney(charged, paid);
+
+  // Apply payments to charges oldest-first to age the debt.
+  let credit = paid;
+  const unpaidCharges: Charge[] = [];
+  for (const charge of unitCharges) {
+    if (credit >= charge.amount) {
+      credit = round2(credit - charge.amount);
+    } else {
+      unpaidCharges.push(charge);
+      credit = 0;
+    }
+  }
+
+  const oldestUnpaidDays = unpaidCharges.length > 0 ? Math.max(0, daysSince(unpaidCharges[0].dueDate)) : 0;
+
+  return {
+    unit,
+    category,
+    currency,
+    charged,
+    paid,
+    balance,
+    unpaidCharges,
+    oldestUnpaidDays,
+    mismatchedCurrencyPayments: mismatched
+  };
+}
+
+export interface PeriodStatement {
+  unit: Unit;
+  category: ChargeCategory;
+  currency: Currency;
+  start: string;
+  end: string;
+  /** Balance carried in from before `start`. */
+  opening: number;
+  chargesInPeriod: Charge[];
+  paymentsInPeriod: Payment[];
+  charged: number;
+  paid: number;
+  /** opening + charged - paid */
+  closing: number;
+}
+
+/**
+ * Opening balance, activity and closing balance for a date range.
+ * This is what makes the statements reconcilable for accounting.
+ */
+export function periodStatement(
+  unit: Unit,
+  category: ChargeCategory,
+  charges: Charge[],
+  payments: Payment[],
+  start: string,
+  end: string,
+  allUnits?: Unit[]
+): PeriodStatement {
+  const currency = chargeCurrency(unit, category);
+  const opening = accountBalance(unit, category, charges, payments, addDays(start, -1), allUnits).balance;
+
+  const chargesInPeriod = chargesForUnit(charges, unit, allUnits)
+    .filter(c => c.category === category && c.status === 'open' && c.currency === currency)
+    .filter(c => isWithin(c.dueDate, start, end))
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  const paymentsInPeriod = paymentsForUnit(payments, unit, allUnits)
+    .filter(p => p.category === category && p.status === 'completed' && p.currency === currency)
+    .filter(p => isWithin(p.date, start, end))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const charged = sumMoney(chargesInPeriod.map(c => c.amount));
+  const paid = sumMoney(paymentsInPeriod.map(p => p.amount));
+
+  return {
+    unit,
+    category,
+    currency,
+    start,
+    end,
+    opening,
+    chargesInPeriod,
+    paymentsInPeriod,
+    charged,
+    paid,
+    closing: round2(opening + charged - paid)
+  };
+}
+
+/** Every account (unit x category) that currently owes money, worst first. */
+export function delinquentAccounts(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  asOf?: string
+): AccountBalance[] {
+  const accounts: AccountBalance[] = [];
+  for (const unit of units) {
+    for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
+      const account = accountBalance(unit, category, charges, payments, asOf, units);
+      if (account.balance > 0) accounts.push(account);
+    }
+  }
+  return accounts.sort((a, b) => b.oldestUnpaidDays - a.oldestUnpaidDays || b.balance - a.balance);
+}
+
+/** Every account holding a credit (paid more than billed). */
+export function creditAccounts(units: Unit[], charges: Charge[], payments: Payment[], asOf?: string): AccountBalance[] {
+  const accounts: AccountBalance[] = [];
+  for (const unit of units) {
+    for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
+      const account = accountBalance(unit, category, charges, payments, asOf, units);
+      if (account.balance < 0) accounts.push(account);
+    }
+  }
+  return accounts;
+}
+
+/** Accounts whose payments were recorded in the wrong currency — a data-integrity warning. */
+export function currencyMismatchWarnings(units: Unit[], charges: Charge[], payments: Payment[]): AccountBalance[] {
+  const out: AccountBalance[] = [];
+  for (const unit of units) {
+    for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
+      const account = accountBalance(unit, category, charges, payments, undefined, units);
+      if (account.mismatchedCurrencyPayments.length > 0) out.push(account);
+    }
+  }
+  return out;
+}
+
+export interface CurrencyTotals {
+  rent: number;
+  maintenance: number;
+  booking: number;
+  utility: number;
+  other: number;
+  total: number;
+}
+
+const EMPTY_TOTALS: CurrencyTotals = { rent: 0, maintenance: 0, booking: 0, utility: 0, other: 0, total: 0 };
+
+/**
+ * Cash actually received in one currency over a date range, split by category.
+ * `excludeUnitIds` drops owner-billed utility recoveries from operating revenue.
+ */
+export function collectedInPeriod(
+  payments: Payment[],
+  currency: Currency,
+  start: string,
+  end: string,
+  excludeUtilityUnitIds: Set<string> = new Set()
+): CurrencyTotals {
+  const rows = payments.filter(
+    p => p.status === 'completed' && p.currency === currency && isWithin(p.date, start, end)
+  );
+  const pick = (category: string) => sumMoney(rows.filter(p => p.category === category).map(p => p.amount));
+
+  const totals: CurrencyTotals = {
+    ...EMPTY_TOTALS,
+    rent: pick('Rent'),
+    maintenance: pick('Maintenance'),
+    booking: pick('Booking'),
+    utility: sumMoney(
+      rows.filter(p => p.category === 'Utility' && !excludeUtilityUnitIds.has(p.unitId)).map(p => p.amount)
+    ),
+    other: pick('Other')
+  };
+  totals.total = sumMoney([totals.rent, totals.maintenance, totals.booking, totals.utility, totals.other]);
+  return totals;
+}
+
+/** Charges raised in one currency over a date range, split by category. */
+export function chargedInPeriod(charges: Charge[], currency: Currency, start: string, end: string) {
+  const rows = charges.filter(c => c.status === 'open' && c.currency === currency && isWithin(c.dueDate, start, end));
+  const rent = sumMoney(rows.filter(c => c.category === 'Rent').map(c => c.amount));
+  const maintenance = sumMoney(rows.filter(c => c.category === 'Maintenance').map(c => c.amount));
+  return { rent, maintenance, total: sumMoney([rent, maintenance]) };
+}
+
+/** Expenses paid in one currency over a date range. */
+export function expensesInPeriod(expenses: Expense[], currency: Currency, start: string, end: string): number {
+  return sumMoney(
+    expenses
+      .filter(e => e.status === 'paid' && e.currency === currency)
+      .filter(e => isWithin(e.datePaid || e.date, start, end))
+      .map(e => e.amount)
+  );
+}
+
+/** Expenses paid in one currency over a date range, grouped by category. */
+export function expenseBreakdown(
+  expenses: Expense[],
+  currency: Currency,
+  start: string,
+  end: string
+): { category: string; amount: number; share: number }[] {
+  const rows = expenses
+    .filter(e => e.status === 'paid' && e.currency === currency)
+    .filter(e => isWithin(e.datePaid || e.date, start, end));
+  const total = sumMoney(rows.map(e => e.amount));
+  const byCategory = new Map<string, number>();
+  for (const e of rows) {
+    byCategory.set(e.category, sumMoney([byCategory.get(e.category) || 0, e.amount]));
+  }
+  return Array.from(byCategory.entries())
+    .map(([category, amount]) => ({
+      category,
+      amount,
+      share: total > 0 ? round2((amount / total) * 100) : 0
+    }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+/**
+ * Owner-billed units. Utilities for these are recovered directly from the owner
+ * and are excluded from property operating revenue.
+ */
+export function ownerBilledUnitIds(units: Unit[]): Set<string> {
+  return new Set(units.filter(u => u.status === 'owner-occupied' || u.status === 'short-term').map(u => u.id));
+}
+
+/** Collection rate for a period: what share of billed money actually came in. */
+export function collectionRate(charged: number, collected: number): number | null {
+  if (charged <= 0) return null;
+  return round2((collected / charged) * 100);
+}
+
+/** Whether the unit is occupied for occupancy-rate purposes. */
+export function isOccupied(unit: Unit): boolean {
+  return unit.status === 'long-term' || unit.status === 'short-term' || unit.status === 'owner-occupied';
+}
+
+/**
+ * A booking blocks a night if the night falls in [checkIn, checkOut).
+ * The departure day is free: the same-day turnover is a real operational case and
+ * the availability engine has always allowed it, so the calendar must agree.
+ */
+export function bookingCoversNight(booking: Booking, day: string): boolean {
+  if (booking.status === 'cancelled') return false;
+  return day >= booking.checkIn && day < booking.checkOut;
+}
+
+/** Two stays clash when their night ranges overlap. Touching ranges do not clash. */
+export function bookingsOverlap(aIn: string, aOut: string, bIn: string, bOut: string): boolean {
+  return aIn < bOut && aOut > bIn;
+}
+
+/** Live occupancy of a unit today, derived from bookings rather than stored twice. */
+export function liveUnitState(
+  unit: Unit,
+  bookings: Booking[],
+  day: string,
+  allUnits?: Unit[]
+): { label: string; booking?: Booking } {
+  const active = bookingsForUnit(bookings, unit, allUnits).find(
+    b => b.status !== 'cancelled' && bookingCoversNight(b, day)
+  );
+  if (active) {
+    if (active.source === 'Blocked' || active.source === 'Unavailable') {
+      return { label: 'Temporarily held', booking: active };
+    }
+    return { label: 'Short-term occupied', booking: active };
+  }
+  switch (unit.status) {
+    case 'long-term':
+      return { label: unit.tenantName ? 'Long-term occupied' : 'Vacant' };
+    case 'short-term':
+      return { label: 'Available for short stays' };
+    case 'owner-occupied':
+      return { label: 'Owner occupied' };
+    case 'vacant':
+      return { label: 'Vacant' };
+    default:
+      return { label: 'Unavailable' };
+  }
+}
+
+/** Group a list of charges/payments by month for chart series. */
+export function groupByMonth<T>(rows: T[], dateOf: (row: T) => string): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = monthOf(dateOf(row));
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(row);
+  }
+  return map;
+}

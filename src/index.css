@@ -11,20 +11,133 @@
   body {
     @apply font-sans bg-slate-50 text-slate-900 selection:bg-teal-100 selection:text-teal-900;
   }
+
+  /* Visible keyboard focus. The original used focus:outline-hidden with no
+     replacement ring on several controls, leaving keyboard users with no
+     indication of where they were. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-teal-600;
+  }
 }
 
-/* Custom Print styles for receipts */
+@layer utilities {
+  .animate-fade-in {
+    animation: vds-fade-in 150ms ease-out;
+  }
+}
+
+@keyframes vds-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+
+/*
+ * Printing.
+ *
+ * Printable documents are rendered into `.vds-print-root`, a portal appended to
+ * <body> outside the React root. Printing hides the application shell entirely
+ * and lets the document flow as normal static content, so long statements
+ * paginate across sheets instead of being clipped to one page.
+ */
 @media print {
-  body * {
-    visibility: hidden;
+  @page {
+    margin: 14mm;
   }
-  #printable-receipt-area, #printable-receipt-area * {
-    visibility: visible;
+
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
   }
-  #printable-receipt-area {
-    position: absolute;
-    left: 0;
-    top: 0;
+
+  /* Hide the application shell. */
+  body > #root {
+    display: none !important;
+  }
+
+  /* Nothing is printed unless a document portal is open. */
+  .vds-print-root {
+    display: block !important;
+  }
+
+  .vds-print-overlay {
+    position: static !important;
+    inset: auto !important;
+    display: block !important;
+    overflow: visible !important;
+    background: #fff !important;
+    padding: 0 !important;
+    backdrop-filter: none !important;
+  }
+
+  .vds-print-sheet {
+    max-width: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+  }
+
+  /* Screen-only chrome. */
+  .vds-print-toolbar,
+  .print\:hidden,
+  .no-print {
+    display: none !important;
+  }
+
+  .vds-print-document {
+    padding: 0 !important;
+    color: #000 !important;
+  }
+
+  /* Print colour and rules legibly on a monochrome printer. */
+  .vds-print-document table {
+    border-collapse: collapse !important;
     width: 100%;
+  }
+
+  .vds-print-document th,
+  .vds-print-document td {
+    border: 1px solid #94a3b8 !important;
+    color: #000 !important;
+  }
+
+  .vds-print-document thead {
+    display: table-header-group; /* repeat headings on each page */
+  }
+
+  .vds-print-document tr,
+  .vds-print-document .break-inside-avoid {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .vds-print-document h1,
+  .vds-print-document h2,
+  .vds-print-document h3,
+  .vds-print-document h4 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  .vds-print-document .page-break-before {
+    break-before: page;
+    page-break-before: always;
+  }
+
+  /* Keep an audit-visible marker such as VOID or REPRINT from being dropped. */
+  .print-emphasis {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
+/* On screen the portal is a normal modal overlay. */
+@media screen {
+  .vds-print-root {
+    display: contents;
   }
 }

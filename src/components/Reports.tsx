@@ -3,810 +3,930 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { Unit, Payment, Expense, UtilityReading, UserRole } from '../types';
-import { Calendar, Download, Printer, BarChart3, TrendingUp, Sparkles, DollarSign, ArrowUpRight, ArrowDownRight, Info, AlertCircle, X } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import {
+  AppSettings,
+  Booking,
+  Charge,
+  Currency,
+  Expense,
+  Payment,
+  SessionUser,
+  Unit,
+  UtilityReading,
+  getUnitDisplayName
+} from '../types';
+import {
+  accountBalance,
+  chargedInPeriod,
+  collectedInPeriod,
+  collectionRate,
+  expenseBreakdown,
+  expensesInPeriod,
+  isOccupied,
+  ownerBilledUnitIds
+} from '../lib/finance';
+import { formatMoney, formatMoneyPlain, round2, sumMoney } from '../lib/money';
+import {
+  addDays,
+  addMonths,
+  currentMonth,
+  formatDayLabel,
+  formatMonthLabel,
+  isWithin,
+  monthEnd,
+  monthStart,
+  monthsBetween,
+  nightsBetween,
+  today
+} from '../lib/dates';
+import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
+import { Badge, EmptyState, ErrorNote, Field, InfoNote, SecondaryButton, SubmitButton, TableScroller, inputClass, monoInputClass } from './ui';
+import { BarChart3, Download, Printer, TrendingDown, TrendingUp } from 'lucide-react';
 
 interface ReportsProps {
   units: Unit[];
+  charges: Charge[];
   payments: Payment[];
   expenses: Expense[];
   utilities: UtilityReading[];
-  activeRole: UserRole;
+  bookings: Booking[];
+  settings: AppSettings;
+  session: SessionUser;
 }
 
-export default function Reports({ units, payments, expenses, utilities, activeRole }: ReportsProps) {
-  const [selectedMonthsCount, setSelectedMonthsCount] = useState<1 | 3 | 6 | 12>(3);
-  const [showPrintReport, setShowPrintReport] = useState(false);
+type Preset = 'thisMonth' | 'lastMonth' | 'last3' | 'last6' | 'last12' | 'ytd' | 'custom';
 
-  // Future Horizons Forecasting (Monthly recurrent expectations)
-  const expectedRentUSD = units.filter(u => u.status === 'long-term' && u.currency === 'USD').reduce((sum, u) => sum + u.monthlyRent, 0);
-  const expectedRentJMD = units.filter(u => u.status === 'long-term' && u.currency === 'JMD').reduce((sum, u) => sum + u.monthlyRent, 0);
-  const expectedMaintUSD = units.filter(u => u.status !== 'unavailable' && (u.maintCurrency ? u.maintCurrency === 'USD' : u.currency === 'USD')).reduce((sum, u) => sum + u.monthlyMaintenance, 0);
-  const expectedMaintJMD = units.filter(u => u.status !== 'unavailable' && (u.maintCurrency ? u.maintCurrency === 'JMD' : u.currency === 'JMD')).reduce((sum, u) => sum + u.monthlyMaintenance, 0);
+const PRESETS: { key: Preset; label: string }[] = [
+  { key: 'thisMonth', label: 'This month' },
+  { key: 'lastMonth', label: 'Last month' },
+  { key: 'last3', label: 'Last 3 months' },
+  { key: 'last6', label: 'Last 6 months' },
+  { key: 'last12', label: 'Last 12 months' },
+  { key: 'ytd', label: 'Year to date' },
+  { key: 'custom', label: 'Custom range' }
+];
 
-  // Helper to identify owner units (owner-occupied and short-term)
-  const isOwnerUnit = (unitNum: string) => {
-    const u = units.find(unit => unit.number === unitNum);
-    return u ? (u.status === 'owner-occupied' || u.status === 'short-term') : false;
-  };
-
-  // Generate list of months to include in the report ending in the current month
-  const getMonthsRange = (count: number) => {
-    const months: string[] = [];
-    const date = new Date();
-    for (let i = count - 1; i >= 0; i--) {
-      const d = new Date(date.getFullYear(), date.getMonth() - i, 1);
-      months.push(d.toISOString().substring(0, 7)); // "YYYY-MM"
+function rangeForPreset(preset: Preset, custom: { from: string; to: string }): { from: string; to: string } {
+  const now = currentMonth();
+  switch (preset) {
+    case 'thisMonth':
+      return { from: monthStart(now), to: monthEnd(now) };
+    case 'lastMonth': {
+      const m = addMonths(now, -1);
+      return { from: monthStart(m), to: monthEnd(m) };
     }
-    return months;
-  };
+    case 'last3':
+      return { from: monthStart(addMonths(now, -2)), to: monthEnd(now) };
+    case 'last6':
+      return { from: monthStart(addMonths(now, -5)), to: monthEnd(now) };
+    case 'last12':
+      return { from: monthStart(addMonths(now, -11)), to: monthEnd(now) };
+    case 'ytd':
+      return { from: `${now.substring(0, 4)}-01-01`, to: today() };
+    default:
+      return custom;
+  }
+}
 
-  const activeMonths = getMonthsRange(selectedMonthsCount);
+export default function Reports({ units, charges, payments, expenses, utilities, bookings, settings, session }: ReportsProps) {
+  const [preset, setPreset] = useState<Preset>('last3');
+  const [custom, setCustom] = useState({ from: monthStart(addMonths(currentMonth(), -2)), to: today() });
+  const [printing, setPrinting] = useState(false);
+  const [error, setError] = useState('');
 
-  // Calculate stats for each month in range
-  const monthlyStats = activeMonths.map(month => {
-    const mPayments = payments.filter(p => p.date.substring(0, 7) === month && p.status === 'completed');
-    const mExpenses = expenses.filter(e => e.date.substring(0, 7) === month && e.status === 'paid');
+  const { from, to } = rangeForPreset(preset, custom);
+  const invalidRange = to < from;
 
-    // JMD
-    const jmdRent = mPayments.filter(p => p.currency === 'JMD' && p.category === 'Rent').reduce((s, p) => s + p.amount, 0);
-    const jmdMaint = mPayments.filter(p => p.currency === 'JMD' && p.category === 'Maintenance').reduce((s, p) => s + p.amount, 0);
-    const jmdBooking = mPayments.filter(p => p.currency === 'JMD' && p.category === 'Booking').reduce((s, p) => s + p.amount, 0);
-    // Owners Utility bills are excluded from overall operational reports/expenses
-    const jmdUtility = mPayments.filter(p => p.category === 'Utility' && !isOwnerUnit(p.unitNumber)).reduce((s, p) => s + p.amount, 0);
-    const jmdIncome = jmdRent + jmdMaint + jmdBooking + jmdUtility;
-    const jmdExpense = mExpenses.filter(e => e.currency === 'JMD').reduce((s, e) => s + e.amount, 0);
+  const ownerBilled = useMemo(() => ownerBilledUnitIds(units), [units]);
+  const months = useMemo(() => (invalidRange ? [] : monthsBetween(from, to)), [from, to, invalidRange]);
 
-    // USD
-    const usdRent = mPayments.filter(p => p.currency === 'USD' && p.category === 'Rent').reduce((s, p) => s + p.amount, 0);
-    const usdMaint = mPayments.filter(p => p.currency === 'USD' && p.category === 'Maintenance').reduce((s, p) => s + p.amount, 0);
-    const usdBooking = mPayments.filter(p => p.currency === 'USD' && p.category === 'Booking').reduce((s, p) => s + p.amount, 0);
-    // Owners Utility bills are excluded from overall operational reports/expenses
-    const usdUtility = mPayments.filter(p => p.category === 'Utility' && !isOwnerUnit(p.unitNumber)).reduce((s, p) => s + p.amount, 0);
-    const usdIncome = usdRent + usdMaint + usdBooking + usdUtility;
-    const usdExpense = mExpenses.filter(e => e.currency === 'USD').reduce((s, e) => s + e.amount, 0);
+  /* ---------------- per-currency period summary ---------------- */
 
-    return {
-      month,
-      jmdIncome,
-      jmdExpense,
-      jmdNet: jmdIncome - jmdExpense,
-      jmdRent,
-      jmdMaint,
-      jmdBooking,
-      jmdUtility,
-      usdIncome,
-      usdExpense,
-      usdNet: usdIncome - usdExpense,
-      usdRent,
-      usdMaint,
-      usdBooking,
-      usdUtility
-    };
-  });
+  const summary = useMemo(() => {
+    if (invalidRange) return [];
+    return (['JMD', 'USD'] as Currency[]).map(currency => {
+      const collected = collectedInPeriod(payments, currency, from, to, ownerBilled);
+      const billed = chargedInPeriod(charges, currency, from, to);
+      const spent = expensesInPeriod(expenses, currency, from, to);
 
-  // Aggregated range totals
-  const totalJMDIncome = monthlyStats.reduce((sum, s) => sum + s.jmdIncome, 0);
-  const totalJMDExpense = monthlyStats.reduce((sum, s) => sum + s.jmdExpense, 0);
-  const totalUSDIncome = monthlyStats.reduce((sum, s) => sum + s.usdIncome, 0);
-  const totalUSDExpense = monthlyStats.reduce((sum, s) => sum + s.usdExpense, 0);
+      // Opening / closing receivable position across every account in this currency.
+      const openingReceivable = sumMoney(
+        units.flatMap(u =>
+          (['Rent', 'Maintenance'] as const)
+            .map(cat => accountBalance(u, cat, charges, payments, addDays(from, -1), units))
+            .filter(a => a.currency === currency)
+            .map(a => a.balance)
+        )
+      );
+      const closingReceivable = sumMoney(
+        units.flatMap(u =>
+          (['Rent', 'Maintenance'] as const)
+            .map(cat => accountBalance(u, cat, charges, payments, to, units))
+            .filter(a => a.currency === currency)
+            .map(a => a.balance)
+        )
+      );
 
-  // Generate Smart Analytical Insights
-  const generateInsights = () => {
-    const insights: string[] = [];
-
-    // Trend assessment (USD)
-    if (monthlyStats.length > 1) {
-      const first = monthlyStats[0];
-      const last = monthlyStats[monthlyStats.length - 1];
-      const usdTrend = last.usdIncome - first.usdIncome;
-      if (usdTrend > 0) {
-        insights.push(`USD monthly cash inflows grew from $${first.usdIncome.toLocaleString()} to $${last.usdIncome.toLocaleString()} over this period, driven by short-term booking velocity.`);
-      } else if (usdTrend < 0) {
-        insights.push(`USD monthly cash inflows decreased by $${Math.abs(usdTrend).toLocaleString()} over this period. Operational focus should shift to short-term rental occupancy.`);
-      }
-
-      const jmdTrend = last.jmdIncome - first.jmdIncome;
-      if (jmdTrend > 0) {
-        insights.push(`JMD operational liquidity grew by J$${jmdTrend.toLocaleString()} compared to the start of the period due to stable tenant lease collectibility.`);
-      }
-    }
-
-    // Average Rent Collectibility
-    const longTermUnitsCount = units.filter(u => u.status === 'long-term').length;
-    if (longTermUnitsCount > 0) {
-      insights.push(`Gated association is tracking rent invoices across ${longTermUnitsCount} long-term lease villas with zero owner utility cross-contamination.`);
-    }
-
-    // Top cost category highlights
-    const mExpensesAll = expenses.filter(e => activeMonths.includes(e.date.substring(0, 7)) && e.status === 'paid');
-    const categoryTotals: Record<string, number> = {};
-    mExpensesAll.forEach(e => {
-      const amt = e.currency === 'USD' ? e.amount * 150 : e.amount; // normalize to JMD for ranking
-      categoryTotals[e.category] = (categoryTotals[e.category] || 0) + amt;
+      return {
+        currency,
+        collected,
+        billed,
+        spent,
+        net: sumMoney([collected.total, -spent]),
+        rate: collectionRate(billed.total, sumMoney([collected.rent, collected.maintenance])),
+        openingReceivable,
+        closingReceivable,
+        breakdown: expenseBreakdown(expenses, currency, from, to)
+      };
     });
+  }, [payments, charges, expenses, units, from, to, ownerBilled, invalidRange]);
 
-    const sortedCats = Object.entries(categoryTotals).sort((a, b) => b[1] - a[1]);
-    if (sortedCats.length > 0) {
-      insights.push(`Highest operational disbursement category is "${sortedCats[0][0]}" representing significant outlays.`);
+  /* ---------------- monthly series for charts ---------------- */
+
+  const series = useMemo(() => {
+    if (invalidRange) return [];
+    return months.map(month => {
+      const mFrom = monthStart(month) < from ? from : monthStart(month);
+      const mTo = monthEnd(month) > to ? to : monthEnd(month);
+      const row: Record<string, number | string> = { month };
+      for (const currency of ['JMD', 'USD'] as Currency[]) {
+        const collected = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
+        const billed = chargedInPeriod(charges, currency, mFrom, mTo);
+        row[`${currency}_in`] = collected.total;
+        row[`${currency}_out`] = expensesInPeriod(expenses, currency, mFrom, mTo);
+        row[`${currency}_billed`] = billed.total;
+      }
+      return row;
+    });
+  }, [months, payments, charges, expenses, from, to, ownerBilled, invalidRange]);
+
+  /* ---------------- factual observations ---------------- */
+
+  /**
+   * These are arithmetic statements about the data in the selected range.
+   * The previous version asserted causes it had no way to know ("driven by
+   * short-term booking velocity"), which is not something a report should say.
+   */
+  const observations = useMemo(() => {
+    if (invalidRange) return [];
+    const out: string[] = [];
+
+    for (const entry of summary) {
+      if (entry.billed.total === 0 && entry.collected.total === 0 && entry.spent === 0) continue;
+      const c = entry.currency;
+
+      if (entry.billed.total > 0) {
+        out.push(
+          `${c}: ${formatMoney(entry.billed.total, c)} was billed in rent and maintenance; ` +
+            `${formatMoney(sumMoney([entry.collected.rent, entry.collected.maintenance]), c)} was received against it ` +
+            `(${entry.rate ?? 0}% of the amount billed in this period).`
+        );
+      }
+
+      const movement = round2(entry.closingReceivable - entry.openingReceivable);
+      if (entry.openingReceivable !== 0 || entry.closingReceivable !== 0) {
+        out.push(
+          `${c}: receivables ${movement > 0 ? 'rose' : movement < 0 ? 'fell' : 'were unchanged'} from ` +
+            `${formatMoney(entry.openingReceivable, c)} at the start of the period to ${formatMoney(entry.closingReceivable, c)} at the end` +
+            (movement === 0 ? '.' : `, ${movement > 0 ? 'an increase' : 'a decrease'} of ${formatMoney(Math.abs(movement), c)}.`)
+        );
+      }
+
+      if (entry.breakdown.length > 0) {
+        const top = entry.breakdown[0];
+        out.push(`${c}: the largest expense category was ${top.category} at ${formatMoney(top.amount, c)} (${top.share}% of ${c} outflows).`);
+      }
+
+      if (entry.collected.total > 0 || entry.spent > 0) {
+        out.push(
+          `${c}: ${formatMoney(entry.collected.total, c)} received against ${formatMoney(entry.spent, c)} paid out — ` +
+            `a net cash movement of ${formatMoney(entry.net, c)}.`
+        );
+      }
     }
 
-    // General compliance check
-    insights.push(`Rule Compliance: Owners' utility readings for water and electricity are billed directly to them and excluded from property overall operating statements.`);
+    // Arrears ageing, stated as counts.
+    const aged = units
+      .flatMap(u => (['Rent', 'Maintenance'] as const).map(cat => accountBalance(u, cat, charges, payments, to, units)))
+      .filter(a => a.balance > 0);
+    if (aged.length > 0) {
+      const over60 = aged.filter(a => a.oldestUnpaidDays > 60).length;
+      const over30 = aged.filter(a => a.oldestUnpaidDays > 30).length;
+      out.push(
+        `${aged.length} account(s) carried a balance at ${formatDayLabel(to)}: ${over30} more than 30 days old, of which ${over60} exceed 60 days.`
+      );
+    }
 
-    return insights;
-  };
+    // Short-term occupancy, computed from nights actually sold.
+    const nightsSold = bookings
+      .filter(b => b.status !== 'cancelled' && b.source !== 'Blocked' && b.source !== 'Unavailable')
+      .reduce((total, b) => {
+        const overlapStart = b.checkIn > from ? b.checkIn : from;
+        const overlapEnd = b.checkOut < addDays(to, 1) ? b.checkOut : addDays(to, 1);
+        return total + Math.max(0, nightsBetween(overlapStart, overlapEnd));
+      }, 0);
+    const shortLetUnits = units.filter(u => u.status === 'short-term').length;
+    const daysInRange = nightsBetween(from, addDays(to, 1));
+    if (shortLetUnits > 0 && daysInRange > 0) {
+      const available = shortLetUnits * daysInRange;
+      out.push(
+        `${nightsSold} guest night(s) were sold across ${shortLetUnits} short-let villa(s) over ${daysInRange} day(s) — ` +
+          `${round2((nightsSold / available) * 100)}% of available nights.`
+      );
+    }
 
-  const insightsList = generateInsights();
+    const unpaidUtilities = utilities.filter(u => u.status === 'unpaid').length;
+    if (unpaidUtilities > 0) out.push(`${unpaidUtilities} utility bill(s) remain unsettled at the report date.`);
 
-  // Export Consolidated Range Report to CSV
-  const handleExportConsolidatedCSV = () => {
-    const rows = [
+    const occupied = units.filter(isOccupied).length;
+    if (units.length > 0) {
+      out.push(`${occupied} of ${units.length} villas are occupied (long-term, short-let or owner-occupied) at the report date.`);
+    }
+
+    return out;
+  }, [summary, units, charges, payments, bookings, utilities, from, to, invalidRange]);
+
+  /* ---------------- CSV ---------------- */
+
+  const downloadCsv = () => {
+    const rows: string[][] = [
       ['Villaggio Del Sol Property Management', 'Ocho Rios, Jamaica'],
-      ['Consolidated Operating Statement', `${selectedMonthsCount}-Month Performance Summary`],
-      ['Range Covered', `${activeMonths[0]} to ${activeMonths[activeMonths.length - 1]}`],
-      [''],
-      ['MONTH', 'JMD INFLOW', 'JMD OUTFLOW', 'JMD NET POSITION', 'USD INFLOW', 'USD OUTFLOW', 'USD NET POSITION'],
-      ...monthlyStats.map(s => [
-        s.month,
-        s.jmdIncome.toString(),
-        s.jmdExpense.toString(),
-        s.jmdNet.toString(),
-        s.usdIncome.toString(),
-        s.usdExpense.toString(),
-        s.usdNet.toString()
-      ]),
-      [''],
-      ['AGGREGATE RANGE TOTALS'],
-      ['Total JMD Inflow', totalJMDIncome.toString()],
-      ['Total JMD Expense', totalJMDExpense.toString()],
-      ['Consolidated JMD Net Balance', (totalJMDIncome - totalJMDExpense).toString()],
-      ['Total USD Inflow', totalUSDIncome.toString()],
-      ['Total USD Expense', totalUSDExpense.toString()],
-      ['Consolidated USD Net Balance', (totalUSDIncome - totalUSDExpense).toString()],
-      [''],
-      ['Exported on', new Date().toISOString()]
+      ['Consolidated operating statement'],
+      ['Period', `${from} to ${to}`],
+      ['Generated', new Date().toISOString()],
+      ['Generated by', session.name],
+      [],
+      ['MONTH', 'CURRENCY', 'BILLED', 'RECEIVED', 'PAID OUT', 'NET']
     ];
 
-    const csvContent = "data:text/csv;charset=utf-8," 
-      + rows.map(e => e.map(val => `"${val.replace(/"/g, '""')}"`).join(",")).join("\n");
-    
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `VDS_${selectedMonthsCount}Mo_Consolidated_Report.csv`);
+    for (const row of series) {
+      for (const currency of ['JMD', 'USD'] as Currency[]) {
+        rows.push([
+          String(row.month),
+          currency,
+          formatMoneyPlain(Number(row[`${currency}_billed`])),
+          formatMoneyPlain(Number(row[`${currency}_in`])),
+          formatMoneyPlain(Number(row[`${currency}_out`])),
+          formatMoneyPlain(Number(row[`${currency}_in`]) - Number(row[`${currency}_out`]))
+        ]);
+      }
+    }
+
+    rows.push([], ['PERIOD TOTALS BY CURRENCY']);
+    rows.push(['CURRENCY', 'OPENING RECEIVABLE', 'BILLED', 'RECEIVED', 'CLOSING RECEIVABLE', 'PAID OUT', 'NET CASH']);
+    for (const entry of summary) {
+      rows.push([
+        entry.currency,
+        formatMoneyPlain(entry.openingReceivable),
+        formatMoneyPlain(entry.billed.total),
+        formatMoneyPlain(entry.collected.total),
+        formatMoneyPlain(entry.closingReceivable),
+        formatMoneyPlain(entry.spent),
+        formatMoneyPlain(entry.net)
+      ]);
+    }
+
+    rows.push([], ['ACCOUNT BALANCES AT ' + to]);
+    rows.push(['VILLA', 'ACCOUNT', 'CURRENCY', 'BILLED TO DATE', 'RECEIVED TO DATE', 'BALANCE', 'OLDEST UNPAID (DAYS)']);
+    for (const unit of units) {
+      for (const category of ['Rent', 'Maintenance'] as const) {
+        const account = accountBalance(unit, category, charges, payments, to, units);
+        if (account.charged === 0 && account.paid === 0) continue;
+        rows.push([
+          unit.number,
+          category,
+          account.currency,
+          formatMoneyPlain(account.charged),
+          formatMoneyPlain(account.paid),
+          formatMoneyPlain(account.balance),
+          String(account.oldestUnpaidDays)
+        ]);
+      }
+    }
+
+    const csv = rows.map(r => r.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    // A Blob is used rather than a data: URI — encodeURI leaves "#" unescaped,
+    // which silently truncated exports containing that character.
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `VDS_statement_${from}_to_${to}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
-  // Custom SVG Bar Chart Calculation Helper
-  const renderInflowOutflowChart = (currency: 'USD' | 'JMD') => {
-    const width = 600;
-    const height = 180;
-    const padding = 30;
-    const chartWidth = width - padding * 2;
-    const chartHeight = height - padding * 2;
+  return (
+    <div className="space-y-6">
+      {error && <ErrorNote>{error}</ErrorNote>}
 
-    const values = monthlyStats.map(s => currency === 'USD' ? [s.usdIncome, s.usdExpense] : [s.jmdIncome, s.jmdExpense]).flat();
-    const maxVal = Math.max(...values, 100);
+      <section className="space-y-4 rounded-2xl border border-slate-100 bg-white p-5 shadow-xs">
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+          <div>
+            <h2 className="font-display text-lg font-medium text-slate-900">Operating statement</h2>
+            <p className="text-xs text-slate-500">
+              Reconcilable figures for any date range, reported separately per currency.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <SecondaryButton onClick={downloadCsv} disabled={invalidRange} className="flex items-center gap-1.5">
+              <Download className="h-4 w-4" /> Export CSV
+            </SecondaryButton>
+            <SubmitButton
+              type="button"
+              onClick={() => {
+                if (invalidRange) {
+                  setError('The end date must fall on or after the start date.');
+                  return;
+                }
+                setError('');
+                setPrinting(true);
+              }}
+            >
+              <Printer className="h-4 w-4" /> Print statement
+            </SubmitButton>
+          </div>
+        </div>
 
-    const barWidth = Math.min(40, chartWidth / (monthlyStats.length * 2.5));
-    const step = chartWidth / monthlyStats.length;
+        <div className="flex flex-wrap gap-2">
+          {PRESETS.map(p => (
+            <button
+              key={p.key}
+              onClick={() => setPreset(p.key)}
+              aria-pressed={preset === p.key}
+              className={`rounded-lg px-3 py-1.5 font-mono text-xs font-semibold transition-colors ${
+                preset === p.key ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
 
+        <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-3">
+          <Field label="From" htmlFor="rp-from">
+            <input
+              id="rp-from"
+              type="date"
+              value={from}
+              onChange={e => {
+                setPreset('custom');
+                setCustom(c => ({ ...c, from: e.target.value }));
+              }}
+              className={monoInputClass}
+            />
+          </Field>
+          <Field label="To" htmlFor="rp-to">
+            <input
+              id="rp-to"
+              type="date"
+              value={to}
+              onChange={e => {
+                setPreset('custom');
+                setCustom(c => ({ ...c, to: e.target.value }));
+              }}
+              className={monoInputClass}
+            />
+          </Field>
+          <p className="pb-2 font-mono text-[11px] text-slate-500">
+            {invalidRange ? 'Invalid range' : `${formatDayLabel(from)} → ${formatDayLabel(to)} (${months.length} month${months.length === 1 ? '' : 's'})`}
+          </p>
+        </div>
+
+        {invalidRange && <ErrorNote>The end date must fall on or after the start date.</ErrorNote>}
+      </section>
+
+      {!invalidRange && (
+        <>
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            {summary.map(entry => (
+              <section key={entry.currency} className="space-y-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h3 className="font-display text-sm font-semibold text-slate-900">
+                    {entry.currency === 'USD' ? 'United States Dollar' : 'Jamaican Dollar'} statement
+                  </h3>
+                  <Badge tone="teal">{entry.currency}</Badge>
+                </div>
+
+                <dl className="space-y-2 text-xs">
+                  <StatementRow label="Receivable at start of period" value={formatMoney(entry.openingReceivable, entry.currency)} />
+                  <StatementRow label="Billed during period" value={formatMoney(entry.billed.total, entry.currency)} detail={`Rent ${formatMoney(entry.billed.rent, entry.currency)} · Maintenance ${formatMoney(entry.billed.maintenance, entry.currency)}`} />
+                  <StatementRow label="Received during period" value={formatMoney(entry.collected.total, entry.currency)} detail={`Rent ${formatMoney(entry.collected.rent, entry.currency)} · Maintenance ${formatMoney(entry.collected.maintenance, entry.currency)} · Bookings ${formatMoney(entry.collected.booking, entry.currency)} · Utilities ${formatMoney(entry.collected.utility, entry.currency)} · Other ${formatMoney(entry.collected.other, entry.currency)}`} />
+                  <StatementRow label="Receivable at end of period" value={formatMoney(entry.closingReceivable, entry.currency)} strong />
+                  <StatementRow label="Expenses paid" value={formatMoney(entry.spent, entry.currency)} />
+                  <StatementRow label="Net cash movement" value={formatMoney(entry.net, entry.currency)} strong tone={entry.net < 0 ? 'negative' : 'positive'} />
+                  <StatementRow label="Collection rate" value={entry.rate === null ? 'n/a — nothing billed' : `${entry.rate}%`} />
+                </dl>
+
+                {entry.breakdown.length > 0 && (
+                  <div className="space-y-2 border-t border-slate-100 pt-3">
+                    <h4 className="font-mono text-[10px] uppercase tracking-wider text-slate-400">Expenses by category</h4>
+                    <ul className="space-y-1.5">
+                      {entry.breakdown.map(row => (
+                        <li key={row.category} className="space-y-1">
+                          <div className="flex justify-between gap-2 text-[11px]">
+                            <span className="text-slate-600">{row.category}</span>
+                            <span className="font-mono font-medium">
+                              {formatMoney(row.amount, entry.currency)} <span className="text-slate-400">({row.share}%)</span>
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                            <div className="h-full rounded-full bg-teal-500" style={{ width: `${Math.max(2, row.share)}%` }} />
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+            ))}
+          </div>
+
+          <section className="space-y-6 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-teal-600" />
+              <h3 className="font-display text-sm font-semibold text-slate-900">Monthly cash movement</h3>
+            </div>
+            {series.length === 0 ? (
+              <EmptyState title="No months in the selected range" />
+            ) : (
+              (['JMD', 'USD'] as Currency[]).map(currency => (
+                <CashChart key={currency} currency={currency} series={series} />
+              ))
+            )}
+          </section>
+
+          <section className="space-y-3 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
+            <h3 className="font-display text-sm font-semibold text-slate-900">Observations</h3>
+            <p className="text-[11px] text-slate-500">
+              Arithmetic statements about the data in this range. No causes are inferred.
+            </p>
+            {observations.length === 0 ? (
+              <EmptyState title="No activity recorded in this range" />
+            ) : (
+              <ul className="space-y-2">
+                {observations.map((text, i) => (
+                  <li key={i} className="flex items-start gap-2 rounded-xl bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+                    <span className="mt-0.5 text-slate-400">{i + 1}.</span>
+                    <span>{text}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <AccountBalancesTable units={units} charges={charges} payments={payments} asOf={to} />
+        </>
+      )}
+
+      {printing && (
+        <StatementDocument
+          units={units}
+          charges={charges}
+          payments={payments}
+          expenses={expenses}
+          summary={summary}
+          series={series}
+          observations={observations}
+          from={from}
+          to={to}
+          settings={settings}
+          generatedBy={session.name}
+          onClose={() => setPrinting(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+function StatementRow({
+  label,
+  value,
+  detail,
+  strong,
+  tone
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  strong?: boolean;
+  tone?: 'positive' | 'negative';
+}) {
+  return (
+    <div className={`flex flex-col gap-0.5 border-b border-slate-50 pb-2 ${strong ? 'font-semibold' : ''}`}>
+      <div className="flex items-baseline justify-between gap-3">
+        <dt className="text-slate-600">{label}</dt>
+        <dd className={`font-mono ${tone === 'negative' ? 'text-red-600' : tone === 'positive' ? 'text-emerald-700' : 'text-slate-900'}`}>{value}</dd>
+      </div>
+      {detail && <p className="font-mono text-[10px] leading-relaxed text-slate-400">{detail}</p>}
+    </div>
+  );
+}
+
+function CashChart({ currency, series }: { currency: Currency; series: Record<string, number | string>[] }) {
+  const values = series.flatMap(row => [Number(row[`${currency}_in`]), Number(row[`${currency}_out`]), Number(row[`${currency}_billed`])]);
+  const max = Math.max(...values, 1);
+  if (max <= 1) {
     return (
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto bg-slate-50/50 rounded-xl border border-slate-100 p-2">
-        {/* Y Axis Gridlines */}
-        {[0, 0.25, 0.5, 0.75, 1].map((p, i) => {
-          const y = padding + chartHeight * (1 - p);
+      <div className="space-y-2">
+        <h4 className="font-mono text-[10px] uppercase tracking-wider text-slate-400">{currency}</h4>
+        <EmptyState title={`No ${currency} activity in this range`} />
+      </div>
+    );
+  }
+
+  const width = 720;
+  const height = 200;
+  const padding = { top: 12, right: 12, bottom: 28, left: 62 };
+  const chartW = width - padding.left - padding.right;
+  const chartH = height - padding.top - padding.bottom;
+  const step = chartW / series.length;
+  const barW = Math.min(22, step / 3.4);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="font-mono text-[10px] uppercase tracking-wider text-slate-400">{currency}</h4>
+        <div className="flex gap-4 text-[10px] text-slate-500">
+          {[
+            ['bg-slate-300', 'Billed'],
+            ['bg-teal-500', 'Received'],
+            ['bg-rose-400', 'Paid out']
+          ].map(([cls, label]) => (
+            <span key={label} className="flex items-center gap-1.5">
+              <span className={`h-2.5 w-2.5 rounded-sm ${cls}`} />
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${currency} monthly billed, received and paid out`} className="w-full rounded-xl border border-slate-100 bg-slate-50/50">
+        {[0, 0.25, 0.5, 0.75, 1].map(p => {
+          const y = padding.top + chartH * (1 - p);
           return (
-            <g key={i} className="opacity-20">
-              <line x1={padding} y1={y} x2={width - padding} y2={y} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3,3" />
-              <text x={padding - 5} y={y + 3} textAnchor="end" className="fill-slate-400 font-mono text-[8px]">
-                {currency === 'USD' ? '$' : 'J$'}{Math.round(maxVal * p).toLocaleString()}
+            <g key={p}>
+              <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="#cbd5e1" strokeWidth="1" strokeDasharray="3,3" opacity="0.5" />
+              <text x={padding.left - 6} y={y + 3} textAnchor="end" className="fill-slate-400" fontSize="8" fontFamily="monospace">
+                {formatMoney(round2(max * p), currency)}
               </text>
             </g>
           );
         })}
+        <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="#94a3b8" strokeWidth="1" />
 
-        {/* X Axis Line */}
-        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#cbd5e1" strokeWidth="1" />
-
-        {/* Render Bars */}
-        {monthlyStats.map((s, index) => {
-          const x = padding + index * step + (step - barWidth * 2) / 2;
-          const incomeVal = currency === 'USD' ? s.usdIncome : s.jmdIncome;
-          const expenseVal = currency === 'USD' ? s.usdExpense : s.jmdExpense;
-
-          const incomeHeight = (incomeVal / maxVal) * chartHeight;
-          const expenseHeight = (expenseVal / maxVal) * chartHeight;
-
-          const incomeY = height - padding - incomeHeight;
-          const expenseY = height - padding - expenseHeight;
-
+        {series.map((row, index) => {
+          const groupX = padding.left + index * step + (step - barW * 3 - 6) / 2;
+          const bars = [
+            { value: Number(row[`${currency}_billed`]), fill: '#cbd5e1' },
+            { value: Number(row[`${currency}_in`]), fill: '#14b8a6' },
+            { value: Number(row[`${currency}_out`]), fill: '#fb7185' }
+          ];
           return (
-            <g key={s.month}>
-              {/* Income Bar (Teal) */}
-              <rect
-                x={x}
-                y={incomeY}
-                width={barWidth}
-                height={incomeHeight}
-                className="fill-teal-500 hover:fill-teal-600 transition-colors cursor-pointer"
-                rx="2"
-              />
-              {/* Expense Bar (Rose) */}
-              <rect
-                x={x + barWidth + 4}
-                y={expenseY}
-                width={barWidth}
-                height={expenseHeight}
-                className="fill-rose-400 hover:fill-rose-500 transition-colors cursor-pointer"
-                rx="2"
-              />
-              {/* Label */}
-              <text x={x + barWidth} y={height - padding + 12} textAnchor="middle" className="fill-slate-500 font-mono text-[8px] font-semibold">
-                {s.month.substring(5)}
+            <g key={String(row.month)}>
+              {bars.map((bar, i) => {
+                const h = (bar.value / max) * chartH;
+                return (
+                  <rect key={i} x={groupX + i * (barW + 3)} y={height - padding.bottom - h} width={barW} height={Math.max(0, h)} fill={bar.fill} rx="2">
+                    <title>{`${formatMonthLabel(String(row.month))}: ${formatMoney(bar.value, currency)}`}</title>
+                  </rect>
+                );
+              })}
+              <text x={groupX + (barW * 3) / 2} y={height - padding.bottom + 14} textAnchor="middle" className="fill-slate-500" fontSize="8" fontFamily="monospace">
+                {String(row.month).substring(2)}
               </text>
             </g>
           );
         })}
       </svg>
+    </div>
+  );
+}
+
+function AccountBalancesTable({ units, charges, payments, asOf }: { units: Unit[]; charges: Charge[]; payments: Payment[]; asOf: string }) {
+  const rows = useMemo(
+    () =>
+      units
+        .flatMap(unit =>
+          (['Rent', 'Maintenance'] as const).map(category => accountBalance(unit, category, charges, payments, asOf, units))
+        )
+        .filter(a => a.charged !== 0 || a.paid !== 0)
+        .sort((a, b) => b.balance - a.balance),
+    [units, charges, payments, asOf]
+  );
+
+  if (rows.length === 0) {
+    return (
+      <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
+        <EmptyState title="No account activity to reconcile" hint="Post a billing month from the ledger to start the receivables position." />
+      </section>
     );
-  };
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Configuration row */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div className="space-y-1">
-          <h2 className="text-lg font-display font-medium text-slate-900">Operational Inflows & Disbursements</h2>
-          <p className="text-xs text-slate-500">Fully aggregated ledger audits across multi-month horizons.</p>
-        </div>
-        <div className="flex items-center gap-2.5">
-          <div className="inline-flex rounded-lg p-0.5 bg-slate-100">
-            {([1, 3, 6, 12] as const).map(n => (
-              <button
-                key={n}
-                onClick={() => setSelectedMonthsCount(n)}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold font-mono transition-colors ${selectedMonthsCount === n ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-950'}`}
-              >
-                {n} Mo{n > 1 && 's'}
-              </button>
+    <section className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
+      <div className="border-b border-slate-100 bg-slate-50 p-4">
+        <h3 className="font-display text-sm font-semibold text-slate-900">Account balances at {formatDayLabel(asOf)}</h3>
+        <p className="mt-0.5 text-[11px] text-slate-500">Billed to date minus received to date, per account.</p>
+      </div>
+      <TableScroller>
+        <table className="w-full min-w-[760px] border-collapse text-left text-xs">
+          <thead>
+            <tr className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] uppercase text-slate-500">
+              <th scope="col" className="p-3">Villa</th>
+              <th scope="col" className="p-3">Account</th>
+              <th scope="col" className="p-3">Currency</th>
+              <th scope="col" className="p-3 text-right">Billed</th>
+              <th scope="col" className="p-3 text-right">Received</th>
+              <th scope="col" className="p-3 text-right">Balance</th>
+              <th scope="col" className="p-3 text-right">Oldest unpaid</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-50">
+            {rows.map(a => (
+              <tr key={`${a.unit.id}-${a.category}`} className="hover:bg-slate-50/50">
+                <td className="p-3 font-mono font-semibold">{getUnitDisplayName(a.unit.number)}</td>
+                <td className="p-3">{a.category}</td>
+                <td className="p-3 font-mono text-slate-500">{a.currency}</td>
+                <td className="p-3 text-right font-mono">{formatMoney(a.charged, a.currency)}</td>
+                <td className="p-3 text-right font-mono text-emerald-600">{formatMoney(a.paid, a.currency)}</td>
+                <td className={`p-3 text-right font-mono font-semibold ${a.balance > 0 ? 'text-red-600' : a.balance < 0 ? 'text-sky-600' : 'text-slate-500'}`}>
+                  {formatMoney(a.balance, a.currency)}
+                </td>
+                <td className="p-3 text-right font-mono text-slate-500">{a.oldestUnpaidDays > 0 ? `${a.oldestUnpaidDays} days` : '—'}</td>
+              </tr>
             ))}
-          </div>
-          <button
-            onClick={() => setShowPrintReport(true)}
-            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-all shadow-xs"
-          >
-            <Printer className="w-3.5 h-3.5" />
-            Print statement
-          </button>
-          <button
-            onClick={handleExportConsolidatedCSV}
-            className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-all shadow-xs"
-          >
-            <Download className="w-3.5 h-3.5" />
-            Consolidated CSV
-          </button>
-        </div>
-      </div>
+          </tbody>
+        </table>
+      </TableScroller>
+    </section>
+  );
+}
 
-      {/* Aggregate Range Summary Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-mono text-slate-500 uppercase">JMD Aggregate Inflow</p>
-            <h3 className="text-xl font-mono font-bold mt-1 text-slate-800">J${totalJMDIncome.toLocaleString()}</h3>
-            <p className="text-[10px] text-slate-400 mt-0.5">Sum over {selectedMonthsCount} months</p>
-          </div>
-          <div className="p-3 bg-teal-50 text-teal-600 rounded-xl">
-            <ArrowUpRight className="w-5 h-5" />
-          </div>
-        </div>
+/* ------------------------------------------------------------------ */
 
-        <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-mono text-slate-500 uppercase">JMD Aggregate Outflow</p>
-            <h3 className="text-xl font-mono font-bold mt-1 text-slate-800">J${totalJMDExpense.toLocaleString()}</h3>
-            <p className="text-[10px] text-slate-400 mt-0.5">Community outlays</p>
-          </div>
-          <div className="p-3 bg-rose-50 text-rose-500 rounded-xl">
-            <ArrowDownRight className="w-5 h-5" />
-          </div>
-        </div>
+type Summary = ReturnType<typeof buildSummaryType>;
+function buildSummaryType() {
+  return [] as {
+    currency: Currency;
+    collected: ReturnType<typeof collectedInPeriod>;
+    billed: ReturnType<typeof chargedInPeriod>;
+    spent: number;
+    net: number;
+    rate: number | null;
+    openingReceivable: number;
+    closingReceivable: number;
+    breakdown: ReturnType<typeof expenseBreakdown>;
+  }[];
+}
 
-        <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-mono text-slate-500 uppercase">USD Aggregate Inflow</p>
-            <h3 className="text-xl font-mono font-bold mt-1 text-slate-800">${totalUSDIncome.toLocaleString()}</h3>
-            <p className="text-[10px] text-slate-400 mt-0.5">Revenues received</p>
-          </div>
-          <div className="p-3 bg-teal-50 text-teal-600 rounded-xl">
-            <ArrowUpRight className="w-5 h-5" />
-          </div>
-        </div>
+function StatementDocument({
+  units,
+  charges,
+  payments,
+  expenses,
+  summary,
+  series,
+  observations,
+  from,
+  to,
+  settings,
+  generatedBy,
+  onClose
+}: {
+  units: Unit[];
+  charges: Charge[];
+  payments: Payment[];
+  expenses: Expense[];
+  summary: Summary;
+  series: Record<string, number | string>[];
+  observations: string[];
+  from: string;
+  to: string;
+  settings: AppSettings;
+  generatedBy: string;
+  onClose: () => void;
+}) {
+  const receipts = payments
+    .filter(p => isWithin(p.date, from, to))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.receiptNo.localeCompare(b.receiptNo));
+  const outgoings = expenses
+    .filter(e => isWithin(e.datePaid || e.date, from, to))
+    .sort((a, b) => (a.datePaid || a.date).localeCompare(b.datePaid || b.date));
 
-        <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-100 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-mono text-slate-500 uppercase">USD Aggregate Outflow</p>
-            <h3 className="text-xl font-mono font-bold mt-1 text-slate-800">${totalUSDExpense.toLocaleString()}</h3>
-            <p className="text-[10px] text-slate-400 mt-0.5">Operational disbursements</p>
-          </div>
-          <div className="p-3 bg-rose-50 text-rose-500 rounded-xl">
-            <ArrowDownRight className="w-5 h-5" />
-          </div>
-        </div>
-      </div>
+  return (
+    <PrintPortal
+      title="Operating statement"
+      subtitle={`${formatDayLabel(from)} to ${formatDayLabel(to)}`}
+      onClose={onClose}
+      maxWidthClass="max-w-5xl"
+    >
+      <PrintLetterhead
+        documentTitle="Operating Statement"
+        meta={`Period ${formatDayLabel(from)} — ${formatDayLabel(to)}`}
+        generatedBy={generatedBy}
+      />
 
-      {/* Visual Analytics & Insights */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* JMD Visual Trends */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-3 lg:col-span-1">
-          <div className="flex justify-between items-center">
-            <h4 className="text-xs font-mono uppercase tracking-wider text-slate-400">JMD Cash Flow (Inflow vs Outflow)</h4>
-            <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded-full font-mono font-medium text-slate-600">J$ Statement</span>
-          </div>
-          {renderInflowOutflowChart('JMD')}
-          <div className="flex gap-4 justify-center text-[10px] font-semibold text-slate-500 font-mono">
-            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-teal-500 rounded"></span> Inflows</span>
-            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-rose-400 rounded"></span> Outflows</span>
-          </div>
-        </div>
-
-        {/* USD Visual Trends */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-3 lg:col-span-1">
-          <div className="flex justify-between items-center">
-            <h4 className="text-xs font-mono uppercase tracking-wider text-slate-400">USD Cash Flow (Inflow vs Outflow)</h4>
-            <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded-full font-mono font-medium text-slate-600">$ Statement</span>
-          </div>
-          {renderInflowOutflowChart('USD')}
-          <div className="flex gap-4 justify-center text-[10px] font-semibold text-slate-500 font-mono">
-            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-teal-500 rounded"></span> Inflows</span>
-            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-rose-400 rounded"></span> Outflows</span>
-          </div>
-        </div>
-
-        {/* Smart Insights Panel */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs space-y-4 lg:col-span-1">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-teal-600" />
-            <h4 className="text-sm font-semibold text-slate-900">Horizon Analytical Insights</h4>
-          </div>
-
-          <div className="space-y-3 max-h-[190px] overflow-y-auto pr-1">
-            {insightsList.map((ins, i) => (
-              <div key={i} className="p-3 bg-teal-50/20 border border-teal-50/50 rounded-xl flex gap-2">
-                <Info className="w-3.5 h-3.5 text-teal-600 shrink-0 mt-0.5" />
-                <p className="text-[11px] text-teal-900 leading-normal font-sans">{ins}</p>
+      <section className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {summary.map(entry => (
+          <dl key={entry.currency} className="space-y-1 rounded-xl border border-slate-400 p-4 text-xs">
+            <p className="mb-2 border-b border-slate-300 pb-1 font-mono text-[10px] font-bold uppercase">{entry.currency} summary</p>
+            {[
+              ['Receivable brought forward', formatMoney(entry.openingReceivable, entry.currency)],
+              ['Billed in period', formatMoney(entry.billed.total, entry.currency)],
+              ['Received in period', formatMoney(entry.collected.total, entry.currency)],
+              ['Receivable carried forward', formatMoney(entry.closingReceivable, entry.currency)],
+              ['Expenses paid', formatMoney(entry.spent, entry.currency)],
+              ['Net cash movement', formatMoney(entry.net, entry.currency)],
+              ['Collection rate', entry.rate === null ? 'n/a' : `${entry.rate}%`]
+            ].map(([label, value], i, arr) => (
+              <div key={label} className={`flex justify-between gap-3 ${i >= arr.length - 2 ? 'border-t border-slate-300 pt-1 font-bold' : ''}`}>
+                <dt>{label}</dt>
+                <dd className="font-mono">{value}</dd>
               </div>
             ))}
-          </div>
-        </div>
-      </div>
+          </dl>
+        ))}
+      </section>
 
-      {/* HORIZONS / FORECAST ELEMENT */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-4">
-        <div>
-          <h3 className="text-base font-display font-medium text-slate-900">Upcoming Revenue Horizon Forecast</h3>
-          <p className="text-xs text-slate-500 mt-0.5">Contractual expectation projection model based on active long-term leases and owner HOA maintenance schedules.</p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* USD Horizon */}
-          <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 space-y-3 font-mono">
-            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Expected Monthly Inflow (USD)</span>
-            <div className="space-y-1.5 text-xs text-slate-600">
-              <div className="flex justify-between">
-                <span>Tenants Expected Rent:</span>
-                <span className="font-semibold text-slate-800">${expectedRentUSD.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Owners Maintenance Fees:</span>
-                <span className="font-semibold text-slate-800">${expectedMaintUSD.toLocaleString()}</span>
-              </div>
-              <div className="border-t border-slate-200 pt-1.5 flex justify-between font-semibold text-teal-700 text-sm font-sans">
-                <span>Total Expected/Mo (USD):</span>
-                <span>${(expectedRentUSD + expectedMaintUSD).toLocaleString()}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* JMD Horizon */}
-          <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 space-y-3 font-mono">
-            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Expected Monthly Inflow (JMD)</span>
-            <div className="space-y-1.5 text-xs text-slate-600">
-              <div className="flex justify-between">
-                <span>Tenants Expected Rent:</span>
-                <span className="font-semibold text-slate-800">J${expectedRentJMD.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Owners Maintenance Fees:</span>
-                <span className="font-semibold text-slate-800">J${expectedMaintJMD.toLocaleString()}</span>
-              </div>
-              <div className="border-t border-slate-200 pt-1.5 flex justify-between font-semibold text-teal-700 text-sm font-sans">
-                <span>Total Expected/Mo (JMD):</span>
-                <span>J${(expectedRentJMD + expectedMaintJMD).toLocaleString()}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* UNIT-BY-UNIT FINANCIAL BREAKDOWN */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-4">
-        <div>
-          <h3 className="text-base font-display font-medium text-slate-900">Unit-by-Unit Financial Ledger Breakdown</h3>
-          <p className="text-xs text-slate-500 mt-0.5">Comprehensive real-time tracking of collected payments, outstanding balances, and monthly contractual forecasts by Villa.</p>
-        </div>
-
-        <div className="overflow-x-auto rounded-xl border border-slate-100 bg-white">
-          <table className="w-full text-left text-xs border-collapse">
+      <section className="mb-6 break-inside-avoid">
+        <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Monthly movement</h3>
+        <TableScroller>
+          <table className="w-full text-left text-[10px]">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 font-mono text-[10px] uppercase">
-                <th className="p-3">Villa</th>
-                <th className="p-3">Status</th>
-                <th className="p-3">Billing Currency</th>
-                <th className="p-3 text-right">Collected (USD)</th>
-                <th className="p-3 text-right">Collected (JMD)</th>
-                <th className="p-3 text-right">Outstanding (USD)</th>
-                <th className="p-3 text-right">Outstanding (JMD)</th>
-                <th className="p-3 text-right">Forecast (USD/Mo)</th>
-                <th className="p-3 text-right">Forecast (JMD/Mo)</th>
+              <tr className="font-mono text-[9px] uppercase text-slate-600">
+                <th className="p-2">Month</th>
+                <th className="p-2">Currency</th>
+                <th className="p-2 text-right">Billed</th>
+                <th className="p-2 text-right">Received</th>
+                <th className="p-2 text-right">Paid out</th>
+                <th className="p-2 text-right">Net</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50 text-slate-700">
-              {units.map((u) => {
-                const uPayments = payments.filter(p => p.unitNumber === u.number && p.status === 'completed');
-                const collectedUSD = uPayments.filter(p => p.currency === 'USD').reduce((s, p) => s + p.amount, 0);
-                const collectedJMD = uPayments.filter(p => p.currency === 'JMD').reduce((s, p) => s + p.amount, 0);
+            <tbody className="font-mono">
+              {series.flatMap(row =>
+                (['JMD', 'USD'] as Currency[])
+                  .filter(c => Number(row[`${c}_in`]) !== 0 || Number(row[`${c}_out`]) !== 0 || Number(row[`${c}_billed`]) !== 0)
+                  .map(c => (
+                    <tr key={`${row.month}-${c}`}>
+                      <td className="p-2 font-semibold">{formatMonthLabel(String(row.month))}</td>
+                      <td className="p-2">{c}</td>
+                      <td className="p-2 text-right">{formatMoney(Number(row[`${c}_billed`]), c)}</td>
+                      <td className="p-2 text-right">{formatMoney(Number(row[`${c}_in`]), c)}</td>
+                      <td className="p-2 text-right">{formatMoney(Number(row[`${c}_out`]), c)}</td>
+                      <td className="p-2 text-right font-semibold">{formatMoney(round2(Number(row[`${c}_in`]) - Number(row[`${c}_out`])), c)}</td>
+                    </tr>
+                  ))
+              )}
+            </tbody>
+          </table>
+        </TableScroller>
+      </section>
 
-                let rentPaidUSD = uPayments.filter(p => p.category === 'Rent' && p.currency === 'USD').reduce((s, p) => s + p.amount, 0);
-                let rentPaidJMD = uPayments.filter(p => p.category === 'Rent' && p.currency === 'JMD').reduce((s, p) => s + p.amount, 0);
-                
-                let outstandingRent = 0;
-                let outstandingRentUSD = 0;
-                let outstandingRentJMD = 0;
-                if (u.status === 'long-term') {
-                  const paid = u.currency === 'USD' ? rentPaidUSD : rentPaidJMD;
-                  outstandingRent = Math.max(0, u.monthlyRent - paid);
-                  if (u.currency === 'USD') {
-                    outstandingRentUSD = outstandingRent;
-                  } else {
-                    outstandingRentJMD = outstandingRent;
-                  }
-                }
+      <section className="mb-6 break-inside-avoid">
+        <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
+          Account balances at {formatDayLabel(to)}
+        </h3>
+        <TableScroller>
+          <table className="w-full text-left text-[10px]">
+            <thead>
+              <tr className="font-mono text-[9px] uppercase text-slate-600">
+                <th className="p-2">Villa</th>
+                <th className="p-2">Account</th>
+                <th className="p-2">Payer</th>
+                <th className="p-2">Cur</th>
+                <th className="p-2 text-right">Billed</th>
+                <th className="p-2 text-right">Received</th>
+                <th className="p-2 text-right">Balance</th>
+                <th className="p-2 text-right">Age</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {units
+                .flatMap(unit => (['Rent', 'Maintenance'] as const).map(cat => accountBalance(unit, cat, charges, payments, to, units)))
+                .filter(a => a.charged !== 0 || a.paid !== 0)
+                .sort((a, b) => b.balance - a.balance)
+                .map(a => (
+                  <tr key={`${a.unit.id}-${a.category}`}>
+                    <td className="p-2 font-bold">{getUnitDisplayName(a.unit.number)}</td>
+                    <td className="p-2">{a.category}</td>
+                    <td className="p-2 font-sans">{a.category === 'Maintenance' ? a.unit.ownerName : a.unit.tenantName || a.unit.ownerName}</td>
+                    <td className="p-2">{a.currency}</td>
+                    <td className="p-2 text-right">{formatMoney(a.charged, a.currency)}</td>
+                    <td className="p-2 text-right">{formatMoney(a.paid, a.currency)}</td>
+                    <td className="p-2 text-right font-bold">{formatMoney(a.balance, a.currency)}</td>
+                    <td className="p-2 text-right">{a.oldestUnpaidDays > 0 ? `${a.oldestUnpaidDays}d` : '—'}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </TableScroller>
+      </section>
 
-                let maintPaidUSD = uPayments.filter(p => p.category === 'Maintenance' && p.currency === 'USD').reduce((s, p) => s + p.amount, 0);
-                let maintPaidJMD = uPayments.filter(p => p.category === 'Maintenance' && p.currency === 'JMD').reduce((s, p) => s + p.amount, 0);
-                
-                let outstandingMaint = 0;
-                let outstandingMaintUSD = 0;
-                let outstandingMaintJMD = 0;
-                if (u.status !== 'unavailable') {
-                  const targetMaintCurrency = u.maintCurrency || u.currency;
-                  const paid = targetMaintCurrency === 'USD' ? maintPaidUSD : maintPaidJMD;
-                  outstandingMaint = Math.max(0, u.monthlyMaintenance - paid);
-                  if (targetMaintCurrency === 'USD') {
-                    outstandingMaintUSD = outstandingMaint;
-                  } else {
-                    outstandingMaintJMD = outstandingMaint;
-                  }
-                }
-
-                const outstandingUSD = outstandingRentUSD + outstandingMaintUSD;
-                const outstandingJMD = outstandingRentJMD + outstandingMaintJMD;
-
-                const forecastRentUSD = (u.status === 'long-term' && u.currency === 'USD') ? u.monthlyRent : 0;
-                const forecastRentJMD = (u.status === 'long-term' && u.currency === 'JMD') ? u.monthlyRent : 0;
-                const forecastMaintUSD = (u.status !== 'unavailable' && (u.maintCurrency ? u.maintCurrency === 'USD' : u.currency === 'USD')) ? u.monthlyMaintenance : 0;
-                const forecastMaintJMD = (u.status !== 'unavailable' && (u.maintCurrency ? u.maintCurrency === 'JMD' : u.currency === 'JMD')) ? u.monthlyMaintenance : 0;
-
-                const forecastUSD = forecastRentUSD + forecastMaintUSD;
-                const forecastJMD = forecastRentJMD + forecastMaintJMD;
-
-                return (
-                  <tr key={u.id} className="hover:bg-slate-50/50 animate-fade-in">
-                    <td className="p-3 font-semibold text-slate-900">Villa {u.number}</td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold tracking-wide uppercase ${
-                        u.status === 'long-term' ? 'bg-teal-50 text-teal-700 border border-teal-100' :
-                        u.status === 'short-term' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100' :
-                        u.status === 'owner-occupied' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
-                        u.status === 'vacant' ? 'bg-amber-50 text-amber-700 border border-amber-100' :
-                        'bg-slate-100 text-slate-600'
-                      }`}>
-                        {u.status.replace('-', ' ')}
-                      </span>
-                    </td>
-                    <td className="p-3 font-mono font-medium text-slate-400">{u.currency}</td>
-                    <td className={`p-3 font-mono text-right ${collectedUSD > 0 ? 'text-teal-600 font-semibold' : 'text-slate-400'}`}>
-                      {collectedUSD > 0 ? `$${collectedUSD.toLocaleString()}` : '-'}
-                    </td>
-                    <td className={`p-3 font-mono text-right ${collectedJMD > 0 ? 'text-teal-600 font-semibold' : 'text-slate-400'}`}>
-                      {collectedJMD > 0 ? `J$${collectedJMD.toLocaleString()}` : '-'}
-                    </td>
-                    <td className={`p-3 font-mono text-right ${outstandingUSD > 0 ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>
-                      {outstandingUSD > 0 ? `$${outstandingUSD.toLocaleString()}` : 'Paid'}
-                    </td>
-                    <td className={`p-3 font-mono text-right ${outstandingJMD > 0 ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>
-                      {outstandingJMD > 0 ? `J$${outstandingJMD.toLocaleString()}` : 'Paid'}
-                    </td>
-                    <td className={`p-3 font-mono text-right font-medium text-slate-800`}>
-                      {forecastUSD > 0 ? `$${forecastUSD.toLocaleString()}` : '-'}
-                    </td>
-                    <td className={`p-3 font-mono text-right font-medium text-slate-800`}>
-                      {forecastJMD > 0 ? `J$${forecastJMD.toLocaleString()}` : '-'}
+      <section className="mb-6 break-inside-avoid page-break-before">
+        <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
+          Receipts issued ({receipts.length})
+        </h3>
+        {receipts.length === 0 ? (
+          <p className="text-xs italic text-slate-500">No receipts issued in this period.</p>
+        ) : (
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Date</th>
+                  <th className="p-2">Receipt</th>
+                  <th className="p-2">Villa</th>
+                  <th className="p-2">Payer</th>
+                  <th className="p-2">Category</th>
+                  <th className="p-2">Method</th>
+                  <th className="p-2">Status</th>
+                  <th className="p-2 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {receipts.map(p => (
+                  <tr key={p.id} className={p.status === 'reversed' ? 'text-slate-500 line-through' : ''}>
+                    <td className="p-2">{formatDayLabel(p.date)}</td>
+                    <td className="p-2 font-semibold">{p.receiptNo}</td>
+                    <td className="p-2">{p.unitNumber}</td>
+                    <td className="p-2 font-sans">{p.payerName}</td>
+                    <td className="p-2">{p.category}</td>
+                    <td className="p-2">{p.method}</td>
+                    <td className="p-2 uppercase">{p.status === 'reversed' ? 'VOID' : 'OK'}</td>
+                    <td className="p-2 text-right font-semibold">
+                      {formatMoney(p.amount, p.currency)} {p.currency}
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        )}
+      </section>
 
-      {/* Itemized Periodic Ledger List */}
-      <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden">
-        <div className="p-4 bg-slate-50 border-b border-slate-100">
-          <h3 className="text-xs font-mono uppercase tracking-wider text-slate-500">Itemized Multi-Month Ledger</h3>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-white border-b border-slate-100 font-mono text-[10px] uppercase text-slate-400">
-                <th className="p-3">Month</th>
-                <th className="p-3 text-right">JMD Inflow</th>
-                <th className="p-3 text-right">JMD Outlay</th>
-                <th className="p-3 text-right">Net JMD Position</th>
-                <th className="p-3 text-right">USD Inflow</th>
-                <th className="p-3 text-right">USD Outlay</th>
-                <th className="p-3 text-right">Net USD Position</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50 font-mono">
-              {monthlyStats.map(s => (
-                <tr key={s.month} className="hover:bg-slate-50/50">
-                  <td className="p-3 font-semibold text-slate-900">{s.month}</td>
-                  <td className="p-3 text-right text-emerald-600">J${s.jmdIncome.toLocaleString()}</td>
-                  <td className="p-3 text-right text-rose-500">J${s.jmdExpense.toLocaleString()}</td>
-                  <td className={`p-3 text-right font-bold ${s.jmdNet >= 0 ? 'text-teal-700' : 'text-rose-700'}`}>
-                    J${s.jmdNet.toLocaleString()}
-                  </td>
-                  <td className="p-3 text-right text-emerald-600">${s.usdIncome.toLocaleString()}</td>
-                  <td className="p-3 text-right text-rose-500">${s.usdExpense.toLocaleString()}</td>
-                  <td className={`p-3 text-right font-bold ${s.usdNet >= 0 ? 'text-teal-700' : 'text-rose-700'}`}>
-                    ${s.usdNet.toLocaleString()}
-                  </td>
+      <section className="mb-6 break-inside-avoid">
+        <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
+          Expenses ({outgoings.length})
+        </h3>
+        {outgoings.length === 0 ? (
+          <p className="text-xs italic text-slate-500">No expenses recorded in this period.</p>
+        ) : (
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Date</th>
+                  <th className="p-2">Vendor</th>
+                  <th className="p-2">Category</th>
+                  <th className="p-2">Allocation</th>
+                  <th className="p-2">Reference</th>
+                  <th className="p-2">Status</th>
+                  <th className="p-2 text-right">Amount</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+              </thead>
+              <tbody className="font-mono">
+                {outgoings.map(e => (
+                  <tr key={e.id}>
+                    <td className="p-2">{formatDayLabel(e.datePaid || e.date)}</td>
+                    <td className="p-2 font-sans font-semibold">{e.vendor}</td>
+                    <td className="p-2">{e.category}</td>
+                    <td className="p-2">{e.unitNumber === 'General' ? 'Property-wide' : e.unitNumber}</td>
+                    <td className="p-2">{e.reference || '—'}</td>
+                    <td className="p-2 uppercase">{e.status}</td>
+                    <td className="p-2 text-right font-semibold">
+                      {formatMoney(e.amount, e.currency)} {e.currency}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        )}
+      </section>
 
-      {/* FULL PRINTABLE MULTI-MONTH STATEMENT OVERFLOW MODAL */}
-      {showPrintReport && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 print:p-0 print:absolute print:bg-white print:inset-0">
-          <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[95vh] overflow-y-auto shadow-2xl border border-slate-100 flex flex-col print:shadow-none print:border-none print:max-h-none print:overflow-visible">
-            
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 print:hidden">
-              <div className="flex items-center gap-2">
-                <Printer className="w-5 h-5 text-teal-600" />
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-900">Consolidated Horizon Operating Statement</h3>
-                  <p className="text-[11px] text-slate-500">Aggregated statement of cash flows for the last {selectedMonthsCount} months.</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => window.print()}
-                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-all shadow-xs"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  Print Statement
-                </button>
-                <button
-                  onClick={() => setShowPrintReport(false)}
-                  className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200/50 transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="p-8 space-y-8 flex-1 text-slate-800 print:p-0 print:text-black font-sans">
-              
-              {/* Letterhead */}
-              <div className="flex justify-between items-start border-b-2 border-slate-900 pb-4">
-                <div>
-                  <h1 className="text-xl font-bold uppercase tracking-wider text-slate-900 print:text-black">Villaggio Del Sol</h1>
-                  <p className="text-xs text-slate-500 font-mono mt-0.5">Ocho Rios, Jamaica</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Community Association Multi-Month Operational Audit</p>
-                </div>
-                <div className="text-right">
-                  <div className="bg-slate-900 text-white px-3 py-1 text-[10px] font-mono rounded-lg print:border print:border-black print:text-black print:bg-white font-bold">
-                    CONSOLIDATED STATISTICAL STATEMENT
-                  </div>
-                  <p className="text-xs font-bold text-slate-900 mt-1 uppercase">PERIOD: Last {selectedMonthsCount} Months</p>
-                  <p className="text-[10px] text-slate-500 font-mono">Range: {activeMonths[0]} to {activeMonths[activeMonths.length - 1]}</p>
-                </div>
-              </div>
-
-              {/* Consolidated Summaries */}
-              <div className="grid grid-cols-2 gap-6 bg-slate-50 p-4 rounded-xl border border-slate-100 print:bg-white print:border-black print:rounded-none">
-                <div className="space-y-1.5">
-                  <h4 className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-wider">Jamaican Dollar Statement (JMD)</h4>
-                  <div className="text-xs space-y-1">
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Gross JMD Inflows:</span>
-                      <span className="font-mono font-semibold">J${totalJMDIncome.toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Gross JMD Outflows:</span>
-                      <span className="font-mono font-semibold">J${totalJMDExpense.toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between border-t border-slate-200 pt-1 text-teal-700 font-bold print:text-black font-semibold">
-                      <span>Net JMD Position:</span>
-                      <span className="font-mono">J${(totalJMDIncome - totalJMDExpense).toLocaleString()}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <h4 className="text-[9px] font-mono font-bold text-slate-400 uppercase tracking-wider">US Dollar Statement (USD)</h4>
-                  <div className="text-xs space-y-1">
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Gross USD Inflows:</span>
-                      <span className="font-mono font-semibold">${totalUSDIncome.toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Gross USD Outflows:</span>
-                      <span className="font-mono font-semibold">${totalUSDExpense.toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between border-t border-slate-200 pt-1 text-teal-700 font-bold print:text-black font-semibold">
-                      <span>Net USD Position:</span>
-                      <span className="font-mono">${(totalUSDIncome - totalUSDExpense).toLocaleString()}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Monthly Breakdown Lists */}
-              <div className="space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-1 print:text-black print:border-black">
-                  Monthly Performance Ledger Details
-                </h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border border-slate-100 print:border-black print:border">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 font-mono text-[9px] text-slate-400 uppercase print:bg-white print:border-black print:border-b">
-                        <th className="p-2">Billing Month</th>
-                        <th className="p-2 text-right">JMD Inflow</th>
-                        <th className="p-2 text-right">JMD Outflow</th>
-                        <th className="p-2 text-right">Net JMD</th>
-                        <th className="p-2 text-right">USD Inflow</th>
-                        <th className="p-2 text-right">USD Outflow</th>
-                        <th className="p-2 text-right">Net USD</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-mono text-xs">
-                      {monthlyStats.map(s => (
-                        <tr key={s.month}>
-                          <td className="p-2 font-bold">{s.month}</td>
-                          <td className="p-2 text-right">J${s.jmdIncome.toLocaleString()}</td>
-                          <td className="p-2 text-right">J${s.jmdExpense.toLocaleString()}</td>
-                          <td className="p-2 text-right font-semibold">J${s.jmdNet.toLocaleString()}</td>
-                          <td className="p-2 text-right">${s.usdIncome.toLocaleString()}</td>
-                          <td className="p-2 text-right">${s.usdExpense.toLocaleString()}</td>
-                          <td className="p-2 text-right font-semibold">${s.usdNet.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Itemized Lists */}
-              {activeMonths.map(month => {
-                const monthPayments = payments.filter(p => p.date.substring(0, 7) === month && p.status === 'completed');
-                const monthExpenses = expenses.filter(e => e.date.substring(0, 7) === month && e.status === 'paid');
-
-                if (monthPayments.length === 0 && monthExpenses.length === 0) return null;
-
-                return (
-                  <div key={month} className="space-y-4 pt-4 border-t border-slate-200 print:border-black break-inside-avoid">
-                    <h4 className="text-xs font-bold font-mono text-slate-900 print:text-black uppercase">
-                      Detailed Audit for Month: {month}
-                    </h4>
-
-                    {/* Payments */}
-                    {monthPayments.length > 0 && (
-                      <div className="space-y-1.5">
-                        <span className="text-[9px] font-mono font-semibold text-slate-400 block uppercase">Collected Inflows</span>
-                        <table className="w-full text-left text-[10px] border border-slate-100 print:border-black">
-                          <thead>
-                            <tr className="bg-slate-50 border-b border-slate-150 font-mono text-[8px] uppercase text-slate-400 print:bg-white print:border-black">
-                              <th className="p-1.5">Date</th>
-                              <th className="p-1.5">Villa</th>
-                              <th className="p-1.5">Payer Name</th>
-                              <th className="p-1.5">Category</th>
-                              <th className="p-1.5">Method</th>
-                              <th className="p-1.5 text-right">Amount</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 font-mono print:divide-black">
-                            {monthPayments.map(p => (
-                              <tr key={p.id}>
-                                <td className="p-1.5">{p.date}</td>
-                                <td className="p-1.5 font-bold">Villa {p.unitNumber}</td>
-                                <td className="p-1.5">{p.payerName}</td>
-                                <td className="p-1.5">{p.category}</td>
-                                <td className="p-1.5">{p.method}</td>
-                                <td className="p-1.5 text-right font-semibold">
-                                  {p.currency === 'USD' ? '$' : 'J$'}{p.amount.toLocaleString()}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-
-                    {/* Expenses */}
-                    {monthExpenses.length > 0 && (
-                      <div className="space-y-1.5">
-                        <span className="text-[9px] font-mono font-semibold text-slate-400 block uppercase">Disbursement Outlays</span>
-                        <table className="w-full text-left text-[10px] border border-slate-100 print:border-black">
-                          <thead>
-                            <tr className="bg-slate-50 border-b border-slate-150 font-mono text-[8px] uppercase text-slate-400 print:bg-white print:border-black">
-                              <th className="p-1.5">Date</th>
-                              <th className="p-1.5">Villa Reference</th>
-                              <th className="p-1.5">Vendor</th>
-                              <th className="p-1.5">Description</th>
-                              <th className="p-1.5 text-right">Amount</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 font-mono print:divide-black">
-                            {monthExpenses.map(e => (
-                              <tr key={e.id}>
-                                <td className="p-1.5">{e.date}</td>
-                                <td className="p-1.5">Villa {e.unitNumber || 'Common'}</td>
-                                <td className="p-1.5">{e.vendor}</td>
-                                <td className="p-1.5 truncate max-w-[200px]">{e.description}</td>
-                                <td className="p-1.5 text-right font-semibold">
-                                  {e.currency === 'USD' ? '$' : 'J$'}{e.amount.toLocaleString()}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* Sign-Off */}
-              <div className="pt-12 grid grid-cols-2 gap-8 text-center text-xs border-t border-slate-200 mt-12 print:border-black print:mt-8">
-                <div>
-                  <div className="border-b border-slate-400 h-8 w-2/3 mx-auto print:border-black"></div>
-                  <span className="text-[10px] text-slate-400 block mt-1 font-mono uppercase">Ocho Rios Financial Comptroller</span>
-                </div>
-                <div>
-                  <div className="border-b border-slate-400 h-8 w-2/3 mx-auto print:border-black"></div>
-                  <span className="text-[10px] text-slate-400 block mt-1 font-mono uppercase">Association Board Trustee Approval</span>
-                </div>
-              </div>
-
-            </div>
-          </div>
-        </div>
+      {observations.length > 0 && (
+        <section className="mb-6 break-inside-avoid">
+          <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Observations</h3>
+          <ol className="list-decimal space-y-1 pl-5 text-[11px] leading-relaxed">
+            {observations.map((text, i) => (
+              <li key={i}>{text}</li>
+            ))}
+          </ol>
+        </section>
       )}
 
-    </div>
+      <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
+        USD and JMD are reported separately and are never combined. Utility recoveries billed directly to owners of
+        owner-occupied and short-let villas are excluded from operating revenue. Indicative rate on file: 1 USD ={' '}
+        {settings.fxRateJmdPerUsd} JMD, used for display only.
+      </p>
+
+      <PrintSignatures left="Prepared by" right="Reviewed / Approved by" />
+    </PrintPortal>
   );
 }

@@ -3,1261 +3,939 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { Unit, Booking, UserRole, getUnitDisplayName } from '../types';
-import { 
-  Calendar, 
-  Search, 
-  Plus, 
-  ShieldCheck, 
-  X, 
-  AlertCircle, 
-  CalendarDays, 
-  ChevronLeft, 
-  ChevronRight, 
-  Edit2, 
-  User, 
-  Phone, 
-  Mail, 
-  DollarSign, 
-  FileText,
-  Printer
-} from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { AppSettings, Booking, Currency, SessionUser, Unit, getUnitDisplayName } from '../types';
+import { bookingCoversNight, bookingsForUnit, bookingsOverlap } from '../lib/finance';
+import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
+import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, parseDay, today } from '../lib/dates';
+import { errorMessage } from '../lib/api';
+import PrintPortal, { PrintLetterhead } from './PrintPortal';
+import {
+  Badge,
+  EmptyState,
+  ErrorNote,
+  Field,
+  InfoNote,
+  Modal,
+  PermissionNote,
+  SecondaryButton,
+  SubmitButton,
+  SuccessNote,
+  TableScroller,
+  inputClass,
+  monoInputClass
+} from './ui';
+import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Plus, Printer, RefreshCw, Search, ShieldCheck } from 'lucide-react';
 
 interface BookingsProps {
   units: Unit[];
   bookings: Booking[];
-  activeRole: UserRole;
-  juniorHasAdvancedAccess: boolean;
-  juniorPermissions?: {
-    editBookings: boolean;
-    cancelBookings: boolean;
-    addBookings: boolean;
-    editUnits: boolean;
-    reversePayments: boolean;
-    enterUtilities: boolean;
-    recordExpenses: boolean;
-  };
-  onAddBooking: (booking: any) => Promise<Booking>;
-  onUpdateBookingStatus: (bookingId: string, status: Booking['status']) => Promise<void>;
-  onUpdateBooking: (bookingId: string, updatedFields: any) => Promise<void>;
+  settings: AppSettings;
+  session: SessionUser;
+  onAddBooking: (payload: Record<string, unknown>) => Promise<Booking>;
+  onUpdateBooking: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
+  onSyncCalendars: (feedId?: string) => Promise<{ results: unknown[] }>;
 }
 
-export default function Bookings({
+interface SyncOutcome {
+  unitNumber: string;
+  source: string;
+  ok: boolean;
+  imported: number;
+  updated: number;
+  unchanged: number;
+  conflicts: string[];
+  error?: string;
+}
+
+export default function Bookings({ units, bookings, settings, session, onAddBooking, onUpdateBooking, onSyncCalendars }: BookingsProps) {
+  const [view, setView] = useState<'calendar' | 'list'>('calendar');
+  const [month, setMonth] = useState(currentMonth());
+  const [adding, setAdding] = useState<{ unitId?: string; checkIn?: string } | null>(null);
+  const [editing, setEditing] = useState<Booking | null>(null);
+  const [printing, setPrinting] = useState<{ from: string; to: string } | null>(null);
+  const [showPrintOptions, setShowPrintOptions] = useState(false);
+  const [printFrom, setPrintFrom] = useState(monthStart(currentMonth()));
+  const [printTo, setPrintTo] = useState(monthEnd(currentMonth()));
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [syncing, setSyncing] = useState(false);
+
+  const perms = session.permissions;
+  const canAdd = !!perms.addBookings;
+  const canEdit = !!perms.editBookings;
+
+  const sortedUnits = useMemo(
+    () => [...units].sort((a, b) => (parseInt(a.number, 10) || 0) - (parseInt(b.number, 10) || 0) || a.number.localeCompare(b.number)),
+    [units]
+  );
+
+  /* ---------------- calendar ---------------- */
+
+  const [yearStr, monthStr] = month.split('-');
+  const year = Number(yearStr);
+  const monthIndex = Number(monthStr) - 1;
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+  const dayKey = (day: number) => `${month}-${String(day).padStart(2, '0')}`;
+
+  /**
+   * A stay occupies the nights from arrival up to (not including) departure.
+   * The original calendar used an inclusive end date, so it painted the checkout
+   * day as occupied while the availability engine happily accepted a booking
+   * starting that day — the two views of the same data disagreed.
+   */
+  const bookingOn = (unit: Unit, day: number): Booking | undefined =>
+    bookingsForUnit(bookings, unit, units).find(b => bookingCoversNight(b, dayKey(day)));
+
+  const isWeekend = (day: number) => {
+    const d = new Date(year, monthIndex, day);
+    return d.getDay() === 0 || d.getDay() === 6;
+  };
+  const dayLetter = (day: number) => ['S', 'M', 'T', 'W', 'T', 'F', 'S'][new Date(year, monthIndex, day).getDay()];
+
+  /* ---------------- availability search ---------------- */
+
+  const [searchUnitId, setSearchUnitId] = useState('');
+  const [searchIn, setSearchIn] = useState('');
+  const [searchOut, setSearchOut] = useState('');
+  const [searchResult, setSearchResult] = useState<{ available: boolean; message: string } | null>(null);
+
+  const runSearch = (event: React.FormEvent) => {
+    event.preventDefault();
+    setSearchResult(null);
+    const unit = units.find(u => u.id === searchUnitId);
+    if (!unit || !searchIn || !searchOut) return;
+    if (searchOut <= searchIn) {
+      setSearchResult({ available: false, message: 'The departure date must be after the arrival date.' });
+      return;
+    }
+    if (unit.status === 'unavailable') {
+      setSearchResult({ available: false, message: `${getUnitDisplayName(unit.number)} is marked Unavailable and cannot be booked.` });
+      return;
+    }
+    if (unit.status === 'long-term') {
+      setSearchResult({
+        available: false,
+        message: `${getUnitDisplayName(unit.number)} is under a long-term lease${unit.tenantName ? ` to ${unit.tenantName}` : ''} and is not available for short stays.`
+      });
+      return;
+    }
+    const clash = bookingsForUnit(bookings, unit, units).find(
+      b => b.status !== 'cancelled' && bookingsOverlap(searchIn, searchOut, b.checkIn, b.checkOut)
+    );
+    setSearchResult(
+      clash
+        ? {
+            available: false,
+            message: `Occupied by ${clash.guestName} from ${formatDayLabel(clash.checkIn)} to ${formatDayLabel(clash.checkOut)}.`
+          }
+        : {
+            available: true,
+            message: `${nightsBetween(searchIn, searchOut)} night(s) available. Same-day changeovers are permitted, so a stay ending on an arrival date does not clash.`
+          }
+    );
+  };
+
+  /* ---------------- sync ---------------- */
+
+  const activeFeeds = settings.icalFeeds.filter(f => f.active);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setError('');
+    setSuccess('');
+    try {
+      const response = await onSyncCalendars();
+      const results = (response?.results || []) as SyncOutcome[];
+      const failed = results.filter(r => !r.ok);
+      const imported = results.reduce((n, r) => n + (r.imported || 0), 0);
+      const updated = results.reduce((n, r) => n + (r.updated || 0), 0);
+      const conflicts = results.flatMap(r => r.conflicts || []);
+
+      const parts = [`${imported} reservation(s) imported`, `${updated} updated`];
+      if (conflicts.length) parts.push(`${conflicts.length} skipped because they clash with existing reservations`);
+      if (failed.length) parts.push(`${failed.length} feed(s) could not be reached`);
+      setSuccess(`Calendar sync finished: ${parts.join(', ')}.`);
+      if (failed.length) {
+        setError(failed.map(f => `${f.unitNumber} (${f.source}): ${f.error}`).join(' — '));
+      }
+    } catch (err) {
+      setError(errorMessage(err, 'Calendar sync failed.'));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  /* ---------------- list ---------------- */
+
+  const [listFilter, setListFilter] = useState<'all' | Booking['status']>('all');
+  const listRows = useMemo(
+    () =>
+      bookings
+        .filter(b => listFilter === 'all' || b.status === listFilter)
+        .sort((a, b) => b.checkIn.localeCompare(a.checkIn)),
+    [bookings, listFilter]
+  );
+
+  return (
+    <div className="space-y-6">
+      {error && <ErrorNote>{error}</ErrorNote>}
+      {success && <SuccessNote>{success}</SuccessNote>}
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <section className="space-y-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
+          <div className="flex items-center justify-between border-b border-slate-50 pb-2">
+            <h3 className="font-display text-sm font-semibold text-slate-900">Availability checker</h3>
+            <Search className="h-4 w-4 text-slate-400" />
+          </div>
+
+          <form onSubmit={runSearch} className="space-y-3.5">
+            <Field label="Villa" htmlFor="av-unit" required>
+              <select id="av-unit" value={searchUnitId} onChange={e => setSearchUnitId(e.target.value)} required className={inputClass}>
+                <option value="">Select villa</option>
+                {sortedUnits.map(u => (
+                  <option key={u.id} value={u.id}>
+                    {getUnitDisplayName(u.number)} — {u.status}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Arrival" htmlFor="av-in" required>
+              <input id="av-in" type="date" value={searchIn} onChange={e => setSearchIn(e.target.value)} required className={monoInputClass} />
+            </Field>
+            <Field label="Departure" htmlFor="av-out" required>
+              <input id="av-out" type="date" value={searchOut} onChange={e => setSearchOut(e.target.value)} required className={monoInputClass} />
+            </Field>
+            <button type="submit" className="w-full rounded-xl bg-slate-900 py-2 text-xs font-medium text-white transition-all hover:bg-slate-800">
+              Check availability
+            </button>
+          </form>
+
+          {searchResult && (
+            <div
+              className={`space-y-1.5 rounded-xl border p-4 text-xs ${
+                searchResult.available ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-red-100 bg-red-50 text-red-800'
+              }`}
+            >
+              <p className="flex items-center gap-1.5 font-semibold">
+                {searchResult.available ? <ShieldCheck className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+                {searchResult.available ? 'Available' : 'Not available'}
+              </p>
+              <p className="font-mono text-[11px] leading-normal">{searchResult.message}</p>
+            </div>
+          )}
+        </section>
+
+        <section className="flex flex-col justify-between rounded-2xl border border-slate-100 bg-white p-6 shadow-xs lg:col-span-2">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-slate-50 pb-2">
+              <h3 className="font-display text-sm font-semibold text-slate-900">Reservations</h3>
+              <div className="flex gap-1.5 rounded-lg bg-slate-100 p-1">
+                {(['calendar', 'list'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setView(mode)}
+                    aria-pressed={view === mode}
+                    className={`rounded-md px-3 py-1 text-xs font-semibold transition-all ${
+                      view === mode ? 'bg-white text-teal-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {mode === 'calendar' ? 'Visual scheduler' : 'Detailed list'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-3 text-[11px] leading-relaxed text-slate-600">
+              {activeFeeds.length === 0 ? (
+                <>
+                  <strong>No booking-platform calendars are connected.</strong> Reservations shown here were entered by
+                  staff. To import Airbnb or Booking.com stays automatically, add each villa&apos;s .ics export link in
+                  System Settings.
+                </>
+              ) : (
+                <>
+                  <strong>
+                    {activeFeeds.length} calendar feed{activeFeeds.length === 1 ? '' : 's'} connected.
+                  </strong>{' '}
+                  Platform feeds publish dates only — never guest contact details or pricing — so imported stays need a
+                  stay value entered manually.
+                  {activeFeeds[0].lastSyncAt && (
+                    <> Last synchronised {formatDayLabel(activeFeeds[0].lastSyncAt.substring(0, 10))}.</>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col items-start justify-between gap-3 pt-4 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-1.5">
+              <button type="button" onClick={() => setMonth(addMonths(month, -1))} className="rounded-lg p-1 text-slate-600 hover:bg-slate-200" aria-label="Previous month">
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="w-32 text-center font-mono text-xs font-bold text-slate-700">{formatMonthLabel(month)}</span>
+              <button type="button" onClick={() => setMonth(addMonths(month, 1))} className="rounded-lg p-1 text-slate-600 hover:bg-slate-200" aria-label="Next month">
+                <ChevronRight className="h-4 w-4" />
+              </button>
+              {month !== currentMonth() && (
+                <button type="button" onClick={() => setMonth(currentMonth())} className="ml-1 text-[10px] font-medium text-teal-700 underline">
+                  Today
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {activeFeeds.length > 0 && canAdd && (
+                <SecondaryButton onClick={() => void handleSync()} disabled={syncing} className="flex items-center gap-1.5">
+                  <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+                  {syncing ? 'Syncing…' : 'Sync calendars'}
+                </SecondaryButton>
+              )}
+              <SecondaryButton onClick={() => setShowPrintOptions(v => !v)} className="flex items-center gap-1.5">
+                <Printer className="h-4 w-4" /> Print report
+              </SecondaryButton>
+              {canAdd ? (
+                <SubmitButton type="button" onClick={() => setAdding({})}>
+                  <Plus className="h-4 w-4" /> New reservation
+                </SubmitButton>
+              ) : (
+                <PermissionNote>Creating reservations requires additional permission.</PermissionNote>
+              )}
+            </div>
+          </div>
+
+          {showPrintOptions && (
+            <div className="mt-4 space-y-3 rounded-xl border border-amber-100 bg-amber-50/40 p-4">
+              <h4 className="text-xs font-bold uppercase tracking-wide text-amber-900">Print reservations for a date range</h4>
+              <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-3">
+                <Field label="From" htmlFor="pr-from">
+                  <input id="pr-from" type="date" value={printFrom} onChange={e => setPrintFrom(e.target.value)} className={monoInputClass} />
+                </Field>
+                <Field label="To" htmlFor="pr-to">
+                  <input id="pr-to" type="date" value={printTo} onChange={e => setPrintTo(e.target.value)} className={monoInputClass} />
+                </Field>
+                <SubmitButton
+                  type="button"
+                  onClick={() => {
+                    if (printTo < printFrom) {
+                      setError('The end of the print range must fall on or after the start.');
+                      return;
+                    }
+                    setPrinting({ from: printFrom, to: printTo });
+                    setShowPrintOptions(false);
+                  }}
+                >
+                  <Printer className="h-3.5 w-3.5" /> Open print preview
+                </SubmitButton>
+              </div>
+              <p className="text-[11px] text-amber-800">
+                Any stay that overlaps the range is included, whether or not it starts inside it.
+              </p>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {view === 'calendar' ? (
+        <section className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
+          <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 p-4">
+            <h3 className="flex items-center gap-1.5 font-display text-sm font-semibold text-slate-900">
+              <CalendarDays className="h-4 w-4 text-teal-600" />
+              {formatMonthLabel(month)} occupancy
+            </h3>
+            <p className="hidden font-mono text-[10px] text-slate-400 sm:block">
+              A stay occupies nights from arrival to the night before departure.
+            </p>
+          </div>
+          <TableScroller>
+            <table className="w-full border-collapse text-left text-[10px]">
+              <thead>
+                <tr>
+                  <th scope="col" className="sticky left-0 z-10 min-w-[130px] border-b border-r border-slate-100 bg-white p-2 font-mono text-[9px] uppercase text-slate-400">
+                    Villa
+                  </th>
+                  {days.map(day => (
+                    <th
+                      key={day}
+                      scope="col"
+                      className={`border-b border-slate-100 p-1 text-center font-mono text-[9px] ${
+                        dayKey(day) === today() ? 'bg-teal-50 font-bold text-teal-700' : isWeekend(day) ? 'bg-slate-50 text-slate-500' : 'text-slate-400'
+                      }`}
+                    >
+                      <span className="block">{dayLetter(day)}</span>
+                      <span className="block font-semibold">{day}</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedUnits.map(unit => (
+                  <tr key={unit.id}>
+                    <th scope="row" className="sticky left-0 z-10 border-b border-r border-slate-100 bg-white p-2 text-left font-mono text-[10px] font-semibold text-slate-700">
+                      {getUnitDisplayName(unit.number)}
+                      <span className="block font-sans text-[9px] font-normal text-slate-400">{unit.status}</span>
+                    </th>
+                    {days.map(day => {
+                      const booking = bookingOn(unit, day);
+                      const blocked = unit.status === 'unavailable' || unit.status === 'long-term';
+                      return (
+                        <td key={day} className="border-b border-slate-50 p-0">
+                          <button
+                            type="button"
+                            title={
+                              booking
+                                ? `${booking.guestName} — ${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)} (${booking.source})`
+                                : blocked
+                                  ? `${getUnitDisplayName(unit.number)} is ${unit.status} and not available for short stays`
+                                  : `Create a reservation for ${getUnitDisplayName(unit.number)} arriving ${formatDayLabel(dayKey(day))}`
+                            }
+                            onClick={() => {
+                              if (booking) {
+                                if (canEdit) setEditing(booking);
+                                else setError('Your role is not permitted to modify reservations.');
+                                return;
+                              }
+                              if (blocked) {
+                                setError(`${getUnitDisplayName(unit.number)} is ${unit.status} and cannot take short stays.`);
+                                return;
+                              }
+                              if (!canAdd) {
+                                setError('Your role is not permitted to create reservations.');
+                                return;
+                              }
+                              setAdding({ unitId: unit.id, checkIn: dayKey(day) });
+                            }}
+                            className={`h-8 w-full transition-colors ${
+                              booking
+                                ? booking.source === 'Airbnb'
+                                  ? 'bg-rose-400 hover:bg-rose-500'
+                                  : booking.source === 'Booking.com'
+                                    ? 'bg-blue-400 hover:bg-blue-500'
+                                    : booking.source === 'Blocked' || booking.source === 'Unavailable'
+                                      ? 'bg-slate-400 hover:bg-slate-500'
+                                      : 'bg-emerald-400 hover:bg-emerald-500'
+                                : blocked
+                                  ? 'bg-slate-100'
+                                  : isWeekend(day)
+                                    ? 'bg-slate-50 hover:bg-teal-100'
+                                    : 'hover:bg-teal-100'
+                            }`}
+                          >
+                            <span className="sr-only">
+                              {getUnitDisplayName(unit.number)} on {dayKey(day)}: {booking ? booking.guestName : 'free'}
+                            </span>
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+          <div className="flex flex-wrap gap-4 border-t border-slate-100 bg-slate-50 p-3 text-[10px]">
+            {[
+              ['bg-emerald-400', 'Direct'],
+              ['bg-rose-400', 'Airbnb'],
+              ['bg-blue-400', 'Booking.com'],
+              ['bg-slate-400', 'Held / blocked'],
+              ['bg-slate-100', 'Not available for short stays']
+            ].map(([cls, label]) => (
+              <span key={label} className="flex items-center gap-1.5 text-slate-600">
+                <span className={`h-3 w-3 rounded ${cls}`} />
+                {label}
+              </span>
+            ))}
+          </div>
+        </section>
+      ) : (
+        <section className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 p-4">
+            <span className="font-mono text-xs text-slate-500">{listRows.length} reservation(s)</span>
+            <select value={listFilter} onChange={e => setListFilter(e.target.value as typeof listFilter)} className="rounded-lg border border-slate-200 p-1.5 text-xs">
+              <option value="all">All statuses</option>
+              <option value="confirmed">Confirmed</option>
+              <option value="checked-in">Checked in</option>
+              <option value="checked-out">Checked out</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+          {listRows.length === 0 ? (
+            <div className="p-6">
+              <EmptyState title="No reservations match this filter" />
+            </div>
+          ) : (
+            <TableScroller>
+              <table className="w-full min-w-[900px] border-collapse text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] uppercase text-slate-500">
+                    <th scope="col" className="p-3">Villa</th>
+                    <th scope="col" className="p-3">Guest</th>
+                    <th scope="col" className="p-3">Dates</th>
+                    <th scope="col" className="p-3 text-right">Nights</th>
+                    <th scope="col" className="p-3">Channel</th>
+                    <th scope="col" className="p-3 text-right">Stay value</th>
+                    <th scope="col" className="p-3 text-right">Deposit</th>
+                    <th scope="col" className="p-3 text-right">Balance</th>
+                    <th scope="col" className="p-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {listRows.map(b => (
+                    <tr
+                      key={b.id}
+                      onClick={() => (canEdit ? setEditing(b) : undefined)}
+                      className={`${canEdit ? 'cursor-pointer' : ''} transition-colors hover:bg-slate-50/60 ${b.status === 'cancelled' ? 'text-slate-400' : ''}`}
+                    >
+                      <td className="p-3 font-mono font-semibold">{getUnitDisplayName(b.unitNumber)}</td>
+                      <td className="p-3">
+                        <p className="font-medium text-slate-900">{b.guestName}</p>
+                        {(b.guestEmail || b.guestPhone) && (
+                          <p className="text-[10px] text-slate-400">{[b.guestEmail, b.guestPhone].filter(Boolean).join(' • ')}</p>
+                        )}
+                        {b.externalUid && <Badge tone="slate">Imported</Badge>}
+                      </td>
+                      <td className="p-3 font-mono text-[11px] text-slate-600">
+                        {formatDayLabel(b.checkIn)} → {formatDayLabel(b.checkOut)}
+                      </td>
+                      <td className="p-3 text-right font-mono">{nightsBetween(b.checkIn, b.checkOut)}</td>
+                      <td className="p-3">
+                        <Badge tone={b.source === 'Airbnb' ? 'red' : b.source === 'Booking.com' ? 'blue' : b.source === 'Direct' ? 'green' : 'slate'}>{b.source}</Badge>
+                      </td>
+                      <td className="p-3 text-right font-mono">{formatMoney(b.amount, b.currency)}</td>
+                      <td className="p-3 text-right font-mono text-emerald-600">{formatMoney(b.depositPaid, b.currency)}</td>
+                      <td className="p-3 text-right font-mono font-semibold text-amber-600">{formatMoney(b.balanceDue, b.currency)}</td>
+                      <td className="p-3">
+                        <Badge tone={b.status === 'checked-in' ? 'green' : b.status === 'confirmed' ? 'blue' : b.status === 'cancelled' ? 'red' : 'slate'}>{b.status}</Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroller>
+          )}
+        </section>
+      )}
+
+      {adding && (
+        <BookingForm
+          mode="create"
+          units={sortedUnits}
+          bookings={bookings}
+          initialUnitId={adding.unitId}
+          initialCheckIn={adding.checkIn}
+          onClose={() => setAdding(null)}
+          onSubmit={async payload => {
+            const booking = await onAddBooking(payload);
+            setSuccess(`Reservation saved for ${booking.guestName} (${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)}).`);
+            setError('');
+            setAdding(null);
+          }}
+        />
+      )}
+
+      {editing && (
+        <BookingForm
+          mode="edit"
+          units={sortedUnits}
+          bookings={bookings}
+          booking={editing}
+          canCancel={!!perms.cancelBookings}
+          onClose={() => setEditing(null)}
+          onSubmit={async payload => {
+            await onUpdateBooking(editing.id, payload);
+            setSuccess('Reservation updated.');
+            setError('');
+            setEditing(null);
+          }}
+        />
+      )}
+
+      {printing && (
+        <ReservationsReport
+          bookings={bookings}
+          from={printing.from}
+          to={printing.to}
+          generatedBy={session.name}
+          onClose={() => setPrinting(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+function BookingForm({
+  mode,
   units,
   bookings,
-  activeRole,
-  juniorHasAdvancedAccess,
-  juniorPermissions,
-  onAddBooking,
-  onUpdateBookingStatus,
-  onUpdateBooking
-}: BookingsProps) {
-  // Navigation & View states
-  const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
-  const [calendarMonth, setCalendarMonth] = useState('2026-07'); // Default to peak season July 2026
+  booking,
+  initialUnitId,
+  initialCheckIn,
+  canCancel = true,
+  onClose,
+  onSubmit
+}: {
+  mode: 'create' | 'edit';
+  units: Unit[];
+  bookings: Booking[];
+  booking?: Booking;
+  initialUnitId?: string;
+  initialCheckIn?: string;
+  canCancel?: boolean;
+  onClose: () => void;
+  onSubmit: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const bookableUnits = units.filter(u => u.status !== 'unavailable' && u.status !== 'long-term');
+  const [unitId, setUnitId] = useState(booking?.unitId || initialUnitId || bookableUnits[0]?.id || '');
+  const [guestName, setGuestName] = useState(booking?.guestName || '');
+  const [guestEmail, setGuestEmail] = useState(booking?.guestEmail || '');
+  const [guestPhone, setGuestPhone] = useState(booking?.guestPhone || '');
+  const [checkIn, setCheckIn] = useState(booking?.checkIn || initialCheckIn || '');
+  const [checkOut, setCheckOut] = useState(booking?.checkOut || '');
+  const [source, setSource] = useState<Booking['source']>(booking?.source || 'Direct');
+  const [status, setStatus] = useState<Booking['status']>(booking?.status || 'confirmed');
+  const [currency, setCurrency] = useState<Currency>(booking?.currency || 'USD');
+  const [nightlyRate, setNightlyRate] = useState(booking?.nightlyRate ? String(booking.nightlyRate) : '');
+  const [amount, setAmount] = useState(booking ? String(booking.amount) : '');
+  const [deposit, setDeposit] = useState(booking ? String(booking.depositPaid) : '');
+  const [notes, setNotes] = useState(booking?.notes || '');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  // Modal control states
-  const [isAdding, setIsAdding] = useState(false);
-  const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
+  const unit = units.find(u => u.id === unitId);
+  const nights = checkIn && checkOut ? nightsBetween(checkIn, checkOut) : 0;
 
-  // Availability search states
-  const [searchCheckIn, setSearchCheckIn] = useState('');
-  const [searchCheckOut, setSearchCheckOut] = useState('');
-  const [searchUnitId, setSearchUnitId] = useState('');
-  const [searchResult, setSearchResult] = useState<'idle' | 'available' | 'occupied'>('idle');
-  const [conflictingBooking, setConflictingBooking] = useState<Booking | null>(null);
-
-  // Add Booking Form states
-  const [guestName, setGuestName] = useState('');
-  const [guestEmail, setGuestEmail] = useState('');
-  const [guestPhone, setGuestPhone] = useState('');
-  const [checkIn, setCheckIn] = useState('');
-  const [checkOut, setCheckOut] = useState('');
-  const [unitId, setUnitId] = useState('');
-  const [source, setSource] = useState<Booking['source']>('Direct');
-  const [nightlyRate, setNightlyRate] = useState('');
-  const [amount, setAmount] = useState('');
-  const [deposit, setDeposit] = useState('');
-  const [notes, setNotes] = useState('');
-
-  // Edit Booking Form states
-  const [editGuestName, setEditGuestName] = useState('');
-  const [editGuestEmail, setEditGuestEmail] = useState('');
-  const [editGuestPhone, setEditGuestPhone] = useState('');
-  const [editCheckIn, setEditCheckIn] = useState('');
-  const [editCheckOut, setEditCheckOut] = useState('');
-  const [editUnitId, setEditUnitId] = useState('');
-  const [editSource, setEditSource] = useState<Booking['source']>('Direct');
-  const [editNightlyRate, setEditNightlyRate] = useState('');
-  const [editAmount, setEditAmount] = useState('');
-  const [editDeposit, setEditDeposit] = useState('');
-  const [editStatus, setEditStatus] = useState<Booking['status']>('confirmed');
-  const [editNotes, setEditNotes] = useState('');
-
-  // Print Range states
-  const [printStart, setPrintStart] = useState('');
-  const [printEnd, setPrintEnd] = useState('');
-  const [showPrintOptions, setShowPrintOptions] = useState(false);
-
-  // Stay amount real-time calculations
+  // Default the currency to the villa's own when creating.
   React.useEffect(() => {
-    if (checkIn && checkOut && nightlyRate) {
-      const inDate = new Date(checkIn);
-      const outDate = new Date(checkOut);
-      const diffTime = outDate.getTime() - inDate.getTime();
-      const nights = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      if (nights > 0) {
-        const rate = Number(nightlyRate) || 0;
-        setAmount(String(rate * nights));
-      }
-    }
-  }, [checkIn, checkOut, nightlyRate]);
+    if (mode === 'create' && unit) setCurrency(unit.currency);
+  }, [unitId, mode, unit]);
 
+  // Derive the stay value from rate × nights, but never silently overwrite a
+  // figure the user typed themselves.
+  const [amountTouched, setAmountTouched] = useState(false);
   React.useEffect(() => {
-    if (unitId) {
-      const u = units.find(unit => unit.id === unitId);
-      if (u) {
-        setNightlyRate(String(u.monthlyRent || ''));
-      }
+    if (amountTouched) return;
+    if (nights > 0 && Number(nightlyRate) > 0) setAmount(String(round2(Number(nightlyRate) * nights)));
+  }, [nights, nightlyRate, amountTouched]);
+
+  const balance = round2(Math.max(0, (Number(amount) || 0) - (Number(deposit) || 0)));
+
+  const clash = useMemo(() => {
+    if (!unitId || !checkIn || !checkOut || checkOut <= checkIn) return null;
+    return (
+      bookings.find(
+        b => b.id !== booking?.id && b.unitId === unitId && b.status !== 'cancelled' && bookingsOverlap(checkIn, checkOut, b.checkIn, b.checkOut)
+      ) || null
+    );
+  }, [unitId, checkIn, checkOut, bookings, booking?.id]);
+
+  const cancelling = mode === 'edit' && status === 'cancelled' && booking?.status !== 'cancelled';
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    if (checkOut <= checkIn) {
+      setError('The departure date must be after the arrival date.');
+      return;
     }
-  }, [unitId, units]);
-
-  React.useEffect(() => {
-    if (editCheckIn && editCheckOut && editNightlyRate) {
-      const inDate = new Date(editCheckIn);
-      const outDate = new Date(editCheckOut);
-      const diffTime = outDate.getTime() - inDate.getTime();
-      const nights = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      if (nights > 0) {
-        const rate = Number(editNightlyRate) || 0;
-        setEditAmount(String(rate * nights));
-      }
+    if (Number(deposit) > Number(amount)) {
+      setError('The deposit cannot exceed the total stay value.');
+      return;
     }
-  }, [editCheckIn, editCheckOut, editNightlyRate]);
-
-  React.useEffect(() => {
-    if (editUnitId && editingBooking && editingBooking.unitId !== editUnitId) {
-      const u = units.find(unit => unit.id === editUnitId);
-      if (u) {
-        setEditNightlyRate(String(u.monthlyRent || ''));
-      }
+    if (clash && status !== 'cancelled') {
+      setError(`Those dates clash with ${clash.guestName} (${formatDayLabel(clash.checkIn)} to ${formatDayLabel(clash.checkOut)}).`);
+      return;
     }
-  }, [editUnitId, units, editingBooking]);
-
-  const [errorMsg, setErrorMsg] = useState('');
-  const [successMsg, setSuccessMsg] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  // Permissions gate calculations
-  const canAddBookings = activeRole === 'ADMINISTRATOR' || activeRole === 'MANAGER' || (activeRole === 'JUNIOR_OFFICER' && (juniorHasAdvancedAccess || juniorPermissions?.addBookings));
-  const canEditBookings = activeRole === 'ADMINISTRATOR' || activeRole === 'MANAGER' || (activeRole === 'JUNIOR_OFFICER' && (juniorHasAdvancedAccess || juniorPermissions?.editBookings));
-  const canCancelBookings = activeRole === 'ADMINISTRATOR' || activeRole === 'MANAGER' || (activeRole === 'JUNIOR_OFFICER' && (juniorHasAdvancedAccess || juniorPermissions?.cancelBookings));
-
-  // Numeric sorting of units (Villa 1 to 16)
-  const sortedUnits = [...units].sort((a, b) => {
-    const numA = parseInt(a.number, 10) || 0;
-    const numB = parseInt(b.number, 10) || 0;
-    return numA - numB;
-  });
-
-  // Calculate active month days
-  const [yearStr, monthStr] = calendarMonth.split('-');
-  const year = parseInt(yearStr, 10);
-  const monthIndex = parseInt(monthStr, 10) - 1; // 0-indexed
-  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-  const daysArray = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-
-  const getDayOfWeekLetter = (dayNum: number) => {
+    setBusy(true);
+    setError('');
     try {
-      const d = new Date(year, monthIndex, dayNum);
-      const days = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-      return days[d.getDay()];
-    } catch {
-      return '';
-    }
-  };
-
-  const isWeekendDay = (dayNum: number) => {
-    try {
-      const d = new Date(year, monthIndex, dayNum);
-      const day = d.getDay();
-      return day === 0 || day === 6;
-    } catch {
-      return false;
-    }
-  };
-
-  // Standard month string helper
-  const monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
-  ];
-  const displayMonthYear = `${monthNames[monthIndex]} ${year}`;
-
-  const handlePrevMonth = () => {
-    const prevDate = new Date(year, monthIndex - 1, 1);
-    setCalendarMonth(prevDate.toISOString().slice(0, 7));
-  };
-
-  const handleNextMonth = () => {
-    const nextDate = new Date(year, monthIndex + 1, 1);
-    setCalendarMonth(nextDate.toISOString().slice(0, 7));
-  };
-
-  // Check if a villa is booked on a specific day
-  const getBookingForDay = (unitIdStr: string, dayNum: number) => {
-    const targetDate = new Date(year, monthIndex, dayNum, 12, 0, 0); // Midday to handle timezone offsets
-    return bookings.find(b => {
-      if (b.unitId !== unitIdStr || b.status === 'cancelled') return false;
-      const start = new Date(b.checkIn + 'T12:00:00');
-      const end = new Date(b.checkOut + 'T12:00:00');
-      return targetDate >= start && targetDate <= end;
-    });
-  };
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchCheckIn || !searchCheckOut || !searchUnitId) {
-      alert('Please fill in check-in, check-out, and choose a unit to search.');
-      return;
-    }
-
-    const checkInDate = new Date(searchCheckIn);
-    const checkOutDate = new Date(searchCheckOut);
-
-    if (checkInDate >= checkOutDate) {
-      alert('Check-out must be after check-in.');
-      return;
-    }
-
-    // Check overlaps
-    const conflict = bookings.find(b => {
-      if (b.unitId === searchUnitId && b.status !== 'cancelled' && b.status !== 'checked-out') {
-        const bIn = new Date(b.checkIn);
-        const bOut = new Date(b.checkOut);
-        return (checkInDate < bOut && checkOutDate > bIn);
-      }
-      return false;
-    });
-
-    if (conflict) {
-      setSearchResult('occupied');
-      setConflictingBooking(conflict);
-    } else {
-      setSearchResult('available');
-      setConflictingBooking(null);
-    }
-  };
-
-  const handleCreateBooking = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    if (!guestName || !checkIn || !checkOut || !unitId) {
-      setErrorMsg('Guest name, check-in/out, and unit selection are required.');
-      return;
-    }
-
-    if (new Date(checkIn) >= new Date(checkOut)) {
-      setErrorMsg('Departure date must fall after Arrival date.');
-      return;
-    }
-
-    if (!canAddBookings) {
-      setErrorMsg('Unauthorized: Junior Officers cannot create reservations without administrative override settings.');
-      return;
-    }
-
-    const selectedUnit = units.find(u => u.id === unitId);
-    if (!selectedUnit) return;
-
-    setLoading(true);
-
-    try {
-      const amtNum = Number(amount) || 0;
-      const depNum = Number(deposit) || 0;
-      const balNum = Math.max(0, amtNum - depNum);
-
-      await onAddBooking({
+      await onSubmit({
         unitId,
-        unitNumber: selectedUnit.number,
         guestName,
         guestEmail,
         guestPhone,
         checkIn,
         checkOut,
         source,
-        amount: amtNum,
-        nightlyRate: Number(nightlyRate) || undefined,
-        currency: selectedUnit.currency,
-        depositPaid: depNum,
-        balanceDue: balNum,
-        status: 'confirmed',
+        status,
+        currency,
+        nightlyRate: nightlyRate === '' ? undefined : Number(nightlyRate),
+        amount: Number(amount) || 0,
+        depositPaid: Number(deposit) || 0,
         notes
       });
-
-      setSuccessMsg('Booking saved successfully!');
-      setIsAdding(false);
-      
-      // Reset form
-      setGuestName('');
-      setGuestEmail('');
-      setGuestPhone('');
-      setCheckIn('');
-      setCheckOut('');
-      setNightlyRate('');
-      setAmount('');
-      setDeposit('');
-      setNotes('');
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error scheduling booking.');
+    } catch (err) {
+      setError(errorMessage(err, 'Could not save the reservation.'));
     } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleOpenEditModal = (b: Booking) => {
-    if (!canEditBookings) {
-      alert('Unauthorized: Junior Officers do not have permission to modify reservations.');
-      return;
-    }
-    setEditingBooking(b);
-    setEditGuestName(b.guestName);
-    setEditGuestEmail(b.guestEmail || '');
-    setEditGuestPhone(b.guestPhone || '');
-    setEditCheckIn(b.checkIn);
-    setEditCheckOut(b.checkOut);
-    setEditUnitId(b.unitId);
-    setEditSource(b.source);
-    setEditNightlyRate(b.nightlyRate ? b.nightlyRate.toString() : '');
-    setEditAmount(b.amount.toString());
-    setEditDeposit(b.depositPaid.toString());
-    setEditStatus(b.status);
-    setEditNotes(b.notes || '');
-    setErrorMsg('');
-    setSuccessMsg('');
-  };
-
-  const handleSaveEdit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingBooking) return;
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    if (!editGuestName || !editCheckIn || !editCheckOut || !editUnitId) {
-      setErrorMsg('Guest name, check-in/out, and unit selection are required.');
-      return;
-    }
-
-    if (new Date(editCheckIn) >= new Date(editCheckOut)) {
-      setErrorMsg('Departure date must fall after Arrival date.');
-      return;
-    }
-
-    const selectedUnit = units.find(u => u.id === editUnitId);
-    if (!selectedUnit) return;
-
-    setLoading(true);
-
-    try {
-      const amtNum = Number(editAmount) || 0;
-      const depNum = Number(editDeposit) || 0;
-      const balNum = Math.max(0, amtNum - depNum);
-
-      const fieldsToUpdate = {
-        unitId: editUnitId,
-        unitNumber: selectedUnit.number,
-        guestName: editGuestName,
-        guestEmail: editGuestEmail,
-        guestPhone: editGuestPhone,
-        checkIn: editCheckIn,
-        checkOut: editCheckOut,
-        source: editSource,
-        nightlyRate: Number(editNightlyRate) || undefined,
-        amount: amtNum,
-        depositPaid: depNum,
-        balanceDue: balNum,
-        status: editStatus,
-        notes: editNotes
-      };
-
-      await onUpdateBooking(editingBooking.id, fieldsToUpdate);
-      setSuccessMsg('Reservation updated successfully!');
-      setEditingBooking(null);
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error updating reservation.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCellClick = (unit: Unit, day: number) => {
-    const clickedBooking = getBookingForDay(unit.id, day);
-    if (clickedBooking) {
-      handleOpenEditModal(clickedBooking);
-    } else {
-      if (!canAddBookings) {
-        alert('Unauthorized: Junior Officers do not have permission to book guests.');
-        return;
-      }
-      // Prefill booking form
-      const prefilledDate = `${calendarMonth}-${day.toString().padStart(2, '0')}`;
-      setUnitId(unit.id);
-      setCheckIn(prefilledDate);
-      setCheckOut(''); // Leave checkout to user
-      setIsAdding(true);
-    }
-  };
-
-  const getSourceBadge = (src: Booking['source']) => {
-    switch (src) {
-      case 'Airbnb': return 'bg-rose-50 text-rose-700 border-rose-100';
-      case 'Booking.com': return 'bg-blue-50 text-blue-700 border-blue-100';
-      case 'Direct': return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-      case 'Blocked': return 'bg-slate-100 text-slate-700 border-slate-200';
-      case 'Unavailable': return 'bg-slate-200 text-slate-800 border-slate-300';
-    }
-  };
-
-  const getStatusBadge = (stat: Booking['status']) => {
-    switch (stat) {
-      case 'confirmed': return 'bg-indigo-50 text-indigo-700 border-indigo-100';
-      case 'checked-in': return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-      case 'checked-out': return 'bg-slate-100 text-slate-500 border-slate-200';
-      case 'cancelled': return 'bg-red-50 text-red-600 border-red-100';
+      setBusy(false);
     }
   };
 
   return (
-    <>
-      <div className="space-y-6 print:hidden">
-      {/* Search Availability & Views Selector */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Availability Engine Panel */}
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs space-y-4 lg:col-span-1">
-          <div className="flex justify-between items-center pb-2 border-b border-slate-50">
-            <h3 className="text-sm font-display font-semibold text-slate-900">Availability Checker</h3>
-            <Search className="w-4 h-4 text-slate-400" />
-          </div>
+    <Modal
+      title={mode === 'create' ? 'New guest reservation' : `Reservation — ${booking?.guestName}`}
+      subtitle={unit ? getUnitDisplayName(unit.number) : undefined}
+      onClose={onClose}
+      maxWidthClass="max-w-lg"
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton busy={busy} busyLabel="Saving…" form="vds-booking-form" className="flex-1">
+            {mode === 'create' ? 'Save reservation' : 'Save changes'}
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-booking-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
 
-          <form onSubmit={handleSearch} className="space-y-3.5 text-xs">
-            <div>
-              <label className="text-xs font-mono text-slate-500 block mb-1">Check-in Date</label>
-              <input
-                type="date"
-                value={searchCheckIn}
-                onChange={(e) => setSearchCheckIn(e.target.value)}
-                required
-                className="w-full p-2.5 border border-slate-200 rounded-xl font-mono"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-mono text-slate-500 block mb-1">Check-out Date</label>
-              <input
-                type="date"
-                value={searchCheckOut}
-                onChange={(e) => setSearchCheckOut(e.target.value)}
-                required
-                className="w-full p-2.5 border border-slate-200 rounded-xl font-mono"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-mono text-slate-500 block mb-1">Villa Unit</label>
-              <select
-                value={searchUnitId}
-                onChange={(e) => setSearchUnitId(e.target.value)}
-                required
-                className="w-full p-2.5 border border-slate-200 rounded-xl"
-              >
-                <option value="">Select Villa</option>
-                {sortedUnits.map(u => (
-                  <option key={u.id} value={u.id}>{getUnitDisplayName(u.number)} ({u.status})</option>
-                ))}
-              </select>
-            </div>
+        {booking?.externalUid && (
+          <InfoNote>
+            Imported from the {booking.source} calendar. Platform feeds carry dates only, so guest contact details and
+            the stay value must be entered here. Re-syncing will update the dates but will not overwrite what you enter.
+          </InfoNote>
+        )}
 
-            <button
-              type="submit"
-              className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white font-medium rounded-xl transition-all"
+        {clash && status !== 'cancelled' && (
+          <ErrorNote>
+            These dates clash with {clash.guestName} ({formatDayLabel(clash.checkIn)} to {formatDayLabel(clash.checkOut)}).
+            A stay ending on another&apos;s arrival date is fine; overlapping nights are not.
+          </ErrorNote>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Villa" htmlFor="bf-unit" required>
+            <select id="bf-unit" value={unitId} onChange={e => setUnitId(e.target.value)} required className={inputClass}>
+              <option value="">Select villa</option>
+              {bookableUnits.map(u => (
+                <option key={u.id} value={u.id}>
+                  {getUnitDisplayName(u.number)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Channel" htmlFor="bf-source" required>
+            <select id="bf-source" value={source} onChange={e => setSource(e.target.value as Booking['source'])} className={inputClass}>
+              <option value="Direct">Direct</option>
+              <option value="Airbnb">Airbnb</option>
+              <option value="Booking.com">Booking.com</option>
+              <option value="Blocked">Owner block / hold</option>
+              <option value="Unavailable">Unavailable (maintenance)</option>
+            </select>
+          </Field>
+        </div>
+
+        <Field label="Guest name" htmlFor="bf-guest" required>
+          <input id="bf-guest" type="text" value={guestName} onChange={e => setGuestName(e.target.value)} required className={inputClass} />
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Guest email" htmlFor="bf-email">
+            <input id="bf-email" type="email" value={guestEmail} onChange={e => setGuestEmail(e.target.value)} className={inputClass} />
+          </Field>
+          <Field label="Guest phone" htmlFor="bf-phone">
+            <input id="bf-phone" type="tel" value={guestPhone} onChange={e => setGuestPhone(e.target.value)} className={inputClass} />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Arrival" htmlFor="bf-in" required>
+            <input id="bf-in" type="date" value={checkIn} onChange={e => setCheckIn(e.target.value)} required className={monoInputClass} />
+          </Field>
+          <Field label="Departure" htmlFor="bf-out" required hint={nights > 0 ? `${nights} night${nights === 1 ? '' : 's'}` : undefined}>
+            <input id="bf-out" type="date" value={checkOut} min={checkIn || undefined} onChange={e => setCheckOut(e.target.value)} required className={monoInputClass} />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Nightly rate" htmlFor="bf-rate">
+            <input id="bf-rate" type="number" min="0" step="0.01" value={nightlyRate} onChange={e => setNightlyRate(e.target.value)} className={monoInputClass} />
+          </Field>
+          <Field label="Total stay value" htmlFor="bf-amount" required>
+            <input
+              id="bf-amount"
+              type="number"
+              min="0"
+              step="0.01"
+              value={amount}
+              onChange={e => {
+                setAmountTouched(true);
+                setAmount(e.target.value);
+              }}
+              required
+              className={monoInputClass}
+            />
+          </Field>
+          <Field label="Currency" htmlFor="bf-cur" required>
+            <select id="bf-cur" value={currency} onChange={e => setCurrency(e.target.value as Currency)} className={inputClass}>
+              <option value="USD">USD ($)</option>
+              <option value="JMD">JMD (J$)</option>
+            </select>
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Deposit received" htmlFor="bf-dep" hint="A receipt is raised automatically for this amount.">
+            <input id="bf-dep" type="number" min="0" step="0.01" value={deposit} onChange={e => setDeposit(e.target.value)} className={monoInputClass} />
+          </Field>
+          <Field label="Balance due on arrival" htmlFor="bf-bal">
+            <input id="bf-bal" type="text" value={formatMoneyLong(balance, currency)} readOnly className={`${monoInputClass} bg-slate-100`} />
+          </Field>
+        </div>
+
+        {mode === 'edit' && (
+          <Field label="Status" htmlFor="bf-status" required>
+            <select
+              id="bf-status"
+              value={status}
+              onChange={e => setStatus(e.target.value as Booking['status'])}
+              disabled={booking?.status === 'cancelled'}
+              className={inputClass}
             >
-              Verify Availability
-            </button>
-          </form>
+              <option value="confirmed">Confirmed</option>
+              <option value="checked-in">Checked in</option>
+              <option value="checked-out">Checked out</option>
+              <option value="cancelled" disabled={!canCancel}>
+                Cancelled{canCancel ? '' : ' (requires permission)'}
+              </option>
+            </select>
+          </Field>
+        )}
 
-          {searchResult !== 'idle' && (
-            <div className={`p-4 rounded-xl border text-xs space-y-1.5 ${
-              searchResult === 'available' ? 'bg-emerald-50 border-emerald-100 text-emerald-800' : 'bg-red-50 border-red-100 text-red-800'
-            }`}>
-              <div className="flex items-center gap-1.5 font-semibold">
-                {searchResult === 'available' ? (
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 text-red-600" />
-                )}
-                <span>{searchResult === 'available' ? 'Villa Available' : 'Villa Occupied'}</span>
-              </div>
-              <p className="font-mono text-[11px] text-slate-500 leading-normal">
-                {searchResult === 'available' 
-                  ? 'No conflicting reservations exist. You can safely record a direct booking for these dates.'
-                  : `Conflicting Booking: Reserved by ${conflictingBooking?.guestName} (${conflictingBooking?.checkIn} to ${conflictingBooking?.checkOut})`}
-              </p>
-            </div>
-          )}
-        </div>
+        {cancelling && (Number(deposit) > 0 || (booking?.depositPaid || 0) > 0) && (
+          <InfoNote tone="amber">
+            Cancelling voids the deposit receipt for this reservation. The receipt stays in the ledger marked VOID, with
+            the reason recorded — it is not deleted.
+          </InfoNote>
+        )}
 
-        {/* View Switcher Controls Dashboard */}
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-xs lg:col-span-2 flex flex-col justify-between">
-          <div className="space-y-3">
-            <div className="flex justify-between items-center pb-2 border-b border-slate-50">
-              <h3 className="text-sm font-display font-semibold text-slate-900">Reservations Panel</h3>
-              <div className="flex gap-1.5 bg-slate-100 p-1 rounded-lg">
-                <button
-                  type="button"
-                  onClick={() => setViewMode('calendar')}
-                  className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
-                    viewMode === 'calendar' ? 'bg-white text-teal-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  Visual Scheduler
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('list')}
-                  className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
-                    viewMode === 'list' ? 'bg-white text-teal-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  Detailed List
-                </button>
-              </div>
-            </div>
+        {booking?.status === 'cancelled' && <InfoNote>This reservation is cancelled and cannot be reinstated. Create a new one instead.</InfoNote>}
 
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Villaggio Del Sol gatehouse and manager reservations desk. Switch to the <strong>Visual Scheduler</strong> for a timeline representation across all 16 villas, or use the <strong>Detailed List</strong> to perform guest checks and payments processing.
-            </p>
-          </div>
+        <Field label="Notes" htmlFor="bf-notes">
+          <textarea id="bf-notes" rows={2} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
 
-          <div className="pt-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-            <div className="flex items-center gap-2 bg-slate-50 px-3.5 py-1.5 rounded-xl border border-slate-100">
-              <button
-                type="button"
-                onClick={handlePrevMonth}
-                className="p-1 hover:bg-slate-200 rounded-lg text-slate-600 transition-colors"
-                title="Previous Month"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-              <span className="text-xs font-bold text-slate-700 font-mono w-32 text-center">{displayMonthYear}</span>
-              <button
-                type="button"
-                onClick={handleNextMonth}
-                className="p-1 hover:bg-slate-200 rounded-lg text-slate-600 transition-colors"
-                title="Next Month"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
+/* ------------------------------------------------------------------ */
 
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setShowPrintOptions(!showPrintOptions)}
-                className={`px-4 py-2 border rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all ${
-                  showPrintOptions 
-                    ? 'bg-amber-50 border-amber-200 text-amber-800' 
-                    : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                }`}
-              >
-                <Printer className="w-4 h-4" /> Print Report...
-              </button>
-              <button
-                onClick={() => {
-                  if (!canAddBookings) {
-                    alert('Unauthorized: Junior Officers do not have permission to book guests directly.');
-                    return;
-                  }
-                  setIsAdding(true);
-                }}
-                className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-medium flex items-center gap-1.5 transition-all shadow-xs"
-              >
-                <Plus className="w-4 h-4" /> New Guest Reservation
-              </button>
-            </div>
-          </div>
+function ReservationsReport({
+  bookings,
+  from,
+  to,
+  generatedBy,
+  onClose
+}: {
+  bookings: Booking[];
+  from: string;
+  to: string;
+  generatedBy: string;
+  onClose: () => void;
+}) {
+  // Include any stay that overlaps the range, not only those starting inside it.
+  const rows = bookings
+    .filter(b => b.checkIn <= to && b.checkOut >= from)
+    .sort((a, b) => a.checkIn.localeCompare(b.checkIn) || a.unitNumber.localeCompare(b.unitNumber));
 
-          {showPrintOptions && (
-            <div className="mt-4 p-4 bg-amber-50/40 border border-amber-100 rounded-xl space-y-3">
-              <div className="flex justify-between items-center">
-                <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wide flex items-center gap-1.5">
-                  <Printer className="w-3.5 h-3.5" /> Print Reservations by Date Range
-                </h4>
-                <button 
-                  type="button" 
-                  onClick={() => setShowPrintOptions(false)} 
-                  className="text-slate-400 hover:text-slate-600 text-sm font-bold"
-                >
-                  ✕
-                </button>
-              </div>
-              <p className="text-[11px] text-amber-800">
-                Specify a range of arrival and departure dates to filter down the generated ledger. Leave fields blank to print all records.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 items-end">
-                <div>
-                  <label className="text-[10px] font-mono text-slate-600 block mb-1">From Arrival Date</label>
-                  <input
-                    type="date"
-                    value={printStart}
-                    onChange={(e) => setPrintStart(e.target.value)}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono bg-white text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-mono text-slate-600 block mb-1">To Departure Date</label>
-                  <input
-                    type="date"
-                    value={printEnd}
-                    onChange={(e) => setPrintEnd(e.target.value)}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono bg-white text-slate-800"
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!printStart || !printEnd) {
-                        alert('Please fill both check-in (From) and check-out (To) dates for printing reservation periods.');
-                        return;
-                      }
-                      window.print();
-                    }}
-                    className="flex-1 py-2.5 px-3 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-medium flex items-center justify-center gap-1.5 shadow-xs transition-all"
-                  >
-                    <Printer className="w-3.5 h-3.5" /> Execute Print
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPrintStart('');
-                      setPrintEnd('');
-                    }}
-                    className="px-3 py-2.5 border border-slate-200 hover:bg-slate-100 text-slate-500 rounded-xl text-xs font-semibold transition-all bg-white"
-                    title="Clear filter"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+  const totals = rows.reduce<Record<Currency, { value: number; deposit: number; balance: number; nights: number }>>(
+    (acc, b) => {
+      if (b.status === 'cancelled') return acc;
+      acc[b.currency].value = round2(acc[b.currency].value + b.amount);
+      acc[b.currency].deposit = round2(acc[b.currency].deposit + b.depositPaid);
+      acc[b.currency].balance = round2(acc[b.currency].balance + b.balanceDue);
+      acc[b.currency].nights += nightsBetween(b.checkIn, b.checkOut);
+      return acc;
+    },
+    { USD: { value: 0, deposit: 0, balance: 0, nights: 0 }, JMD: { value: 0, deposit: 0, balance: 0, nights: 0 } }
+  );
 
-      {/* Success/Error Notifications */}
-      {errorMsg && (
-        <div className="p-4 bg-red-50 border border-red-100 text-red-800 text-xs rounded-xl flex items-center gap-2">
-          <AlertCircle className="w-4.5 h-4.5 text-red-600" />
-          <span>{errorMsg}</span>
-        </div>
-      )}
+  return (
+    <PrintPortal title="Reservations report" subtitle={`${formatDayLabel(from)} to ${formatDayLabel(to)}`} onClose={onClose} maxWidthClass="max-w-5xl">
+      <PrintLetterhead
+        documentTitle="Guest Reservations Report"
+        meta={`Period ${formatDayLabel(from)} — ${formatDayLabel(to)}`}
+        generatedBy={generatedBy}
+      />
 
-      {successMsg && (
-        <div className="p-4 bg-teal-50 border border-teal-100 text-teal-800 text-xs rounded-xl">
-          {successMsg}
-        </div>
-      )}
-
-      {/* INTERACTIVE TIMELINE SCHEDULER VIEW */}
-      {viewMode === 'calendar' && (
-        <div className="bg-white border border-slate-100 rounded-2xl shadow-xs overflow-hidden">
-          <div className="p-4 bg-slate-50 border-b border-slate-100 flex justify-between items-center text-xs">
-            <span className="text-slate-500 font-mono">
-              Click any active bar to **Edit Guest reservation details**. Click any empty grid cell to **create a booking**.
-            </span>
-            <div className="flex items-center gap-3.5">
-              <div className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded bg-emerald-500"></span>
-                <span className="text-[10px] text-slate-500 font-mono">Direct</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded bg-rose-500"></span>
-                <span className="text-[10px] text-slate-500 font-mono">Airbnb</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded bg-blue-500"></span>
-                <span className="text-[10px] text-slate-500 font-mono">Booking.com</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded bg-slate-400"></span>
-                <span className="text-[10px] text-slate-500 font-mono">Blocked</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <div className="min-w-[1100px]">
-              {/* Calendar Grid Header */}
-              <div className="grid grid-cols-[140px_repeat(31,1fr)] bg-slate-50 text-[10px] font-mono text-slate-500 border-b border-slate-100">
-                <div className="p-3.5 font-bold border-r border-slate-200 sticky left-0 bg-slate-50 z-10 text-slate-700">Villa Unit</div>
-                {daysArray.map(day => {
-                  const weekend = isWeekendDay(day);
-                  return (
-                    <div 
-                      key={day} 
-                      className={`py-2 px-1 text-center font-bold border-r border-slate-100 flex flex-col items-center justify-center ${
-                        weekend ? 'bg-amber-50/80 text-amber-900 border-r border-amber-100' : 'text-slate-600'
-                      }`}
-                    >
-                      <span className="text-[11px] leading-tight">{day}</span>
-                      <span className="text-[8px] font-semibold opacity-70 font-sans leading-none mt-0.5">{getDayOfWeekLetter(day)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Rows matching each Villa */}
-              <div className="divide-y divide-slate-100">
-                {sortedUnits.map(unit => (
-                  <div key={unit.id} className="grid grid-cols-[140px_repeat(31,1fr)] items-center group">
-                    <div className="p-3 font-semibold text-xs border-r border-slate-200 sticky left-0 bg-white group-hover:bg-slate-50 z-10 flex flex-col justify-center min-h-[56px]">
-                      <span className="text-slate-900 font-bold">Villa {unit.number}</span>
-                      <span className="text-[8px] font-mono text-slate-400 uppercase leading-none mt-1">{unit.status}</span>
-                    </div>
-
-                    {daysArray.map(day => {
-                      const b = getBookingForDay(unit.id, day);
-                      const weekend = isWeekendDay(day);
-                      let cellClass = `p-1 h-14 border-r border-slate-100/60 last:border-0 relative hover:bg-slate-50/50 flex items-center justify-center transition-colors ${
-                        weekend ? 'bg-amber-50/20' : ''
-                      }`;
-                      let barClass = "";
-                      
-                      if (b) {
-                        if (b.source === 'Airbnb') barClass = "bg-rose-500 text-white hover:bg-rose-600 ring-1 ring-rose-200";
-                        else if (b.source === 'Booking.com') barClass = "bg-blue-500 text-white hover:bg-blue-600 ring-1 ring-blue-200";
-                        else if (b.source === 'Blocked' || b.source === 'Unavailable') barClass = "bg-slate-400 text-white hover:bg-slate-500 ring-1 ring-slate-200";
-                        else barClass = "bg-emerald-500 text-white hover:bg-emerald-600 ring-1 ring-emerald-200";
-                      }
-
-                      return (
-                        <div 
-                          key={day} 
-                          className={cellClass}
-                          onClick={() => handleCellClick(unit, day)}
-                        >
-                          {b ? (
-                            <button
-                              type="button"
-                              title={`${b.guestName} (${b.checkIn} to ${b.checkOut}) - Rate: ${b.nightlyRate || 'N/A'}`}
-                              className={`w-full h-11 px-1 text-[9px] font-bold rounded-lg truncate text-center cursor-pointer shadow-xs transition-all flex flex-col items-center justify-center gap-0.5 ${barClass}`}
-                            >
-                              <span className="truncate w-full max-w-full block leading-none">{b.guestName.split(' ')[0]}</span>
-                              {b.nightlyRate && <span className="text-[8px] opacity-95 leading-none font-mono font-medium">${b.nightlyRate}</span>}
-                            </button>
-                          ) : (
-                            <div className="opacity-0 group-hover:opacity-100 text-slate-350 hover:text-teal-600 cursor-pointer text-xs font-bold w-full h-full flex items-center justify-center">
-                              +
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* DETAILED LIST DIRECTORY VIEW */}
-      {viewMode === 'list' && (
-        <div className="bg-white border border-slate-100 rounded-2xl shadow-xs overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
+      {rows.length === 0 ? (
+        <p className="text-xs italic text-slate-500">No reservations overlap this period.</p>
+      ) : (
+        <>
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
               <thead>
-                <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 font-mono text-[10px] uppercase">
-                  <th className="p-3">Guest Details</th>
-                  <th className="p-3">Villa No</th>
-                  <th className="p-3">Check-In / Out</th>
-                  <th className="p-3">Source</th>
-                  <th className="p-3">Status</th>
-                  <th className="p-3">Stay Budget</th>
-                  <th className="p-3 text-right">Operations & Adjustments</th>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Villa</th>
+                  <th className="p-2">Guest</th>
+                  <th className="p-2">Arrival</th>
+                  <th className="p-2">Departure</th>
+                  <th className="p-2 text-right">Nights</th>
+                  <th className="p-2">Channel</th>
+                  <th className="p-2">Status</th>
+                  <th className="p-2 text-right">Stay value</th>
+                  <th className="p-2 text-right">Deposit</th>
+                  <th className="p-2 text-right">Balance</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-50">
-                {bookings.map(b => (
-                  <tr key={b.id} className="hover:bg-slate-50/20">
-                    <td className="p-3">
-                      <p className="font-semibold text-slate-900">{b.guestName}</p>
-                      {b.guestEmail && <p className="text-[10px] text-slate-400 font-mono mt-0.5">{b.guestEmail}</p>}
-                      {b.guestPhone && <p className="text-[10px] text-slate-400 font-mono">{b.guestPhone}</p>}
+              <tbody className="font-mono">
+                {rows.map(b => (
+                  <tr key={b.id} className={b.status === 'cancelled' ? 'text-slate-500 line-through' : ''}>
+                    <td className="p-2 font-bold">{getUnitDisplayName(b.unitNumber)}</td>
+                    <td className="p-2 font-sans">
+                      <span className="font-semibold">{b.guestName}</span>
+                      {b.guestEmail && <span className="block text-[9px] text-slate-500">{b.guestEmail}</span>}
                     </td>
-                    <td className="p-3 font-semibold font-mono">Villa {b.unitNumber}</td>
-                    <td className="p-3 text-[11px] font-mono text-slate-600">
-                      <div>{b.checkIn}</div>
-                      <div className="text-[10px] text-slate-400">to {b.checkOut}</div>
-                    </td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] border font-medium font-mono ${getSourceBadge(b.source)}`}>
-                        {b.source}
-                      </span>
-                    </td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] border font-medium ${getStatusBadge(b.status)}`}>
-                        {b.status}
-                      </span>
-                    </td>
-                    <td className="p-3 font-mono text-[11px]">
-                      <div className="text-slate-700 font-semibold">Total: {b.currency === 'USD' ? '$' : 'J$'}{b.amount}</div>
-                      <div className="text-teal-600 mt-0.5">Dep: {b.currency === 'USD' ? '$' : 'J$'}{b.depositPaid}</div>
-                      <div className="text-red-500">Bal: {b.currency === 'USD' ? '$' : 'J$'}{b.balanceDue}</div>
-                    </td>
-                    <td className="p-3 text-right space-y-1 sm:space-y-0 sm:space-x-1">
-                      {canEditBookings && (
-                        <button
-                          onClick={() => handleOpenEditModal(b)}
-                          className="px-2 py-1 text-[10px] font-semibold bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md inline-flex items-center gap-1 transition-colors"
-                        >
-                          <Edit2 className="w-3 h-3" /> Edit
-                        </button>
-                      )}
-                      {b.status === 'confirmed' && (
-                        <button
-                          onClick={() => onUpdateBookingStatus(b.id, 'checked-in')}
-                          className="px-2 py-1 text-[10px] font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-md transition-colors"
-                        >
-                          Check In
-                        </button>
-                      )}
-                      {b.status === 'checked-in' && (
-                        <button
-                          onClick={() => onUpdateBookingStatus(b.id, 'checked-out')}
-                          className="px-2 py-1 text-[10px] font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 rounded-md transition-colors"
-                        >
-                          Check Out
-                        </button>
-                      )}
-                      {b.status !== 'cancelled' && b.status !== 'checked-out' && canCancelBookings && (
-                        <button
-                          onClick={() => onUpdateBookingStatus(b.id, 'cancelled')}
-                          className="px-2 py-1 text-[10px] font-semibold bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 rounded-md transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </td>
+                    <td className="p-2">{formatDayLabel(b.checkIn)}</td>
+                    <td className="p-2">{formatDayLabel(b.checkOut)}</td>
+                    <td className="p-2 text-right">{nightsBetween(b.checkIn, b.checkOut)}</td>
+                    <td className="p-2">{b.source}</td>
+                    <td className="p-2 uppercase">{b.status}</td>
+                    <td className="p-2 text-right font-semibold">{formatMoney(b.amount, b.currency)}</td>
+                    <td className="p-2 text-right">{formatMoney(b.depositPaid, b.currency)}</td>
+                    <td className="p-2 text-right font-semibold">{formatMoney(b.balanceDue, b.currency)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        </div>
-      )}
+          </TableScroller>
 
-      {/* Booking Form Dialog */}
-      {isAdding && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <form onSubmit={handleCreateBooking} className="bg-white rounded-2xl max-w-md w-full shadow-xl border border-slate-100 overflow-hidden">
-            <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-              <h3 className="text-base font-display font-semibold text-slate-900">Add New Guest Reservation</h3>
-              <button type="button" onClick={() => setIsAdding(false)} className="text-slate-400 hover:text-slate-600 font-semibold text-xl">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-3.5 max-h-[70vh] overflow-y-auto">
-              <div>
-                <label className="text-xs font-mono text-slate-500 block mb-1">Target Villa</label>
-                <select
-                  value={unitId}
-                  onChange={(e) => setUnitId(e.target.value)}
-                  required
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                >
-                  <option value="">Select Villa</option>
-                  {sortedUnits.map(u => (
-                    <option key={u.id} value={u.id}>{getUnitDisplayName(u.number)} (HOA Curr: {u.currency})</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs font-mono text-slate-500 block mb-1">Guest Name</label>
-                <input
-                  type="text"
-                  value={guestName}
-                  onChange={(e) => setGuestName(e.target.value)}
-                  placeholder="e.g. John Doe"
-                  required
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Email</label>
-                  <input
-                    type="email"
-                    value={guestEmail}
-                    onChange={(e) => setGuestEmail(e.target.value)}
-                    placeholder="john@doe.com"
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Phone</label>
-                  <input
-                    type="text"
-                    value={guestPhone}
-                    onChange={(e) => setGuestPhone(e.target.value)}
-                    placeholder="+1-3 Miami"
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Arrival Date</label>
-                  <input
-                    type="date"
-                    value={checkIn}
-                    onChange={(e) => setCheckIn(e.target.value)}
-                    required
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Departure Date</label>
-                  <input
-                    type="date"
-                    value={checkOut}
-                    onChange={(e) => setCheckOut(e.target.value)}
-                    required
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Stay Channel Source</label>
-                  <select
-                    value={source}
-                    onChange={(e) => setSource(e.target.value as Booking['source'])}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                  >
-                    <option value="Direct">Direct Guest</option>
-                    <option value="Airbnb">Airbnb</option>
-                    <option value="Booking.com">Booking.com</option>
-                    <option value="Blocked">Blocked Owners</option>
-                    <option value="Unavailable">Maintenance Out of Order</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Booking Notes</label>
-                  <input
-                    type="text"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="Notes..."
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                  />
-                </div>
-              </div>
-
-               <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="text-[10px] font-mono text-slate-500 block mb-1">Nightly Rate</label>
-                  <input
-                    type="number"
-                    value={nightlyRate}
-                    onChange={(e) => setNightlyRate(e.target.value)}
-                    placeholder="Rate/night"
-                    required
-                    className="w-full text-xs p-2 border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-mono text-slate-500 block mb-1">Deposit Paid</label>
-                  <input
-                    type="number"
-                    value={deposit}
-                    onChange={(e) => setDeposit(e.target.value)}
-                    placeholder="Deposit"
-                    className="w-full text-xs p-2 border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-mono text-slate-500 block mb-1">Total stay (Auto-calc)</label>
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="Total amount"
-                    className="w-full text-xs p-2 bg-slate-50 border border-slate-250 rounded-xl font-mono font-bold text-teal-700"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="p-4 bg-slate-50 border-t border-slate-100 flex gap-3">
-              <button
-                type="submit"
-                disabled={loading}
-                className="flex-1 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-medium transition-all"
-              >
-                {loading ? 'Validating Overlaps...' : 'Approve & Reserve Stay'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsAdding(false)}
-                className="px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-xs font-medium hover:bg-slate-100 transition-all"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Edit Booking Form Dialog */}
-      {editingBooking && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <form onSubmit={handleSaveEdit} className="bg-white rounded-2xl max-w-md w-full shadow-xl border border-slate-100 overflow-hidden">
-            <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-              <div>
-                <h3 className="text-base font-display font-semibold text-slate-900">Edit Guest Reservation</h3>
-                <p className="text-[10px] text-slate-400 font-mono mt-0.5">Booking Record Ref: {editingBooking.id}</p>
-              </div>
-              <button type="button" onClick={() => setEditingBooking(null)} className="text-slate-400 hover:text-slate-600 font-semibold text-xl">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-3.5 max-h-[70vh] overflow-y-auto">
-              <div>
-                <label className="text-xs font-mono text-slate-500 block mb-1">Target Villa</label>
-                <select
-                  value={editUnitId}
-                  onChange={(e) => setEditUnitId(e.target.value)}
-                  required
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-semibold"
-                >
-                  {sortedUnits.map(u => (
-                    <option key={u.id} value={u.id}>{getUnitDisplayName(u.number)} (HOA: {u.currency})</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs font-mono text-slate-500 block mb-1">Guest Name</label>
-                <input
-                  type="text"
-                  value={editGuestName}
-                  onChange={(e) => setEditGuestName(e.target.value)}
-                  required
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-semibold"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Email</label>
-                  <input
-                    type="email"
-                    value={editGuestEmail}
-                    onChange={(e) => setEditGuestEmail(e.target.value)}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Phone</label>
-                  <input
-                    type="text"
-                    value={editGuestPhone}
-                    onChange={(e) => setEditGuestPhone(e.target.value)}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Arrival Date</label>
-                  <input
-                    type="date"
-                    value={editCheckIn}
-                    onChange={(e) => setEditCheckIn(e.target.value)}
-                    required
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Departure Date</label>
-                  <input
-                    type="date"
-                    value={editCheckOut}
-                    onChange={(e) => setEditCheckOut(e.target.value)}
-                    required
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Stay Channel Source</label>
-                  <select
-                    value={editSource}
-                    onChange={(e) => setEditSource(e.target.value as Booking['source'])}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl"
-                  >
-                    <option value="Direct">Direct Guest</option>
-                    <option value="Airbnb">Airbnb</option>
-                    <option value="Booking.com">Booking.com</option>
-                    <option value="Blocked">Blocked Owners</option>
-                    <option value="Unavailable">Maintenance Out of Order</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-xs font-mono text-slate-500 block mb-1">Reservation Status</label>
-                  <select
-                    value={editStatus}
-                    onChange={(e) => setEditStatus(e.target.value as Booking['status'])}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-xl font-semibold"
-                  >
-                    <option value="confirmed">Confirmed</option>
-                    <option value="checked-in">Checked In</option>
-                    <option value="checked-out">Checked Out</option>
-                    <option value="cancelled">Cancelled</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="text-[10px] font-mono text-slate-500 block mb-1">Nightly Rate</label>
-                  <input
-                    type="number"
-                    value={editNightlyRate}
-                    onChange={(e) => setEditNightlyRate(e.target.value)}
-                    placeholder="Rate/night"
-                    required
-                    className="w-full text-xs p-2 border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-mono text-slate-500 block mb-1">Deposit Paid</label>
-                  <input
-                    type="number"
-                    value={editDeposit}
-                    onChange={(e) => setEditDeposit(e.target.value)}
-                    className="w-full text-xs p-2 border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-mono text-slate-500 block mb-1">Total Stay (Auto-calc)</label>
-                  <input
-                    type="number"
-                    value={editAmount}
-                    onChange={(e) => setEditAmount(e.target.value)}
-                    className="w-full text-xs p-2 bg-slate-50 border border-slate-250 rounded-xl font-mono font-bold text-teal-700"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-mono text-slate-500 block mb-1">Booking Notes</label>
-                <textarea
-                  rows={2}
-                  value={editNotes}
-                  onChange={(e) => setEditNotes(e.target.value)}
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-xl text-slate-700"
-                />
-              </div>
-            </div>
-
-            <div className="p-4 bg-slate-50 border-t border-slate-100 flex gap-3">
-              <button
-                type="submit"
-                disabled={loading}
-                className="flex-1 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-medium transition-all"
-              >
-                {loading ? 'Verifying Conflict...' : 'Save Changes'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditingBooking(null)}
-                className="px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-xs font-medium hover:bg-slate-100 transition-all"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-      </div>
-
-      {/* PRINT-ONLY RESERVATION REPORT SECTION */}
-      <div id="print-reservations-area" className="hidden print:block p-8 bg-white font-sans text-slate-900">
-        <div className="border-b-2 border-slate-950 pb-4 mb-6">
-          <h1 className="text-2xl font-bold uppercase tracking-wider">Villaggio Del Sol</h1>
-          <p className="text-sm font-semibold tracking-wide text-slate-600 mt-1">GUEST RESERVATIONS REPORT</p>
-          <p className="text-xs font-mono text-slate-500 mt-2">
-            Filter Period: {printStart || 'All Time'} to {printEnd || 'All Time'} | Generated: {new Date().toLocaleDateString()}
-          </p>
-        </div>
-
-        <table className="w-full text-xs text-left border-collapse border border-slate-300">
-          <thead>
-            <tr className="bg-slate-100 uppercase font-bold text-[10px] border-b border-slate-300">
-              <th className="p-2 border border-slate-300">Villa</th>
-              <th className="p-2 border border-slate-300">Guest Name</th>
-              <th className="p-2 border border-slate-300">Arrival</th>
-              <th className="p-2 border border-slate-300">Departure</th>
-              <th className="p-2 border border-slate-300">Channel</th>
-              <th className="p-2 border border-slate-300">Status</th>
-              <th className="p-2 border border-slate-300 text-right">Nightly Rate</th>
-              <th className="p-2 border border-slate-300 text-right">Total Stay</th>
-              <th className="p-2 border border-slate-300 text-right">Deposit Paid</th>
-              <th className="p-2 border border-slate-300 text-right">Balance Due</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200">
-            {bookings
-              .filter(b => (!printStart || b.checkIn <= printEnd) && (!printEnd || b.checkOut >= printStart))
-              .map(b => (
-                <tr key={b.id} className="text-[11px]">
-                  <td className="p-2 border border-slate-300 font-bold font-mono">Villa {b.unitNumber}</td>
-                  <td className="p-2 border border-slate-300">
-                    <div className="font-semibold">{b.guestName}</div>
-                    {b.guestEmail && <div className="text-[9px] text-slate-500">{b.guestEmail}</div>}
-                  </td>
-                  <td className="p-2 border border-slate-300 font-mono">{b.checkIn}</td>
-                  <td className="p-2 border border-slate-300 font-mono">{b.checkOut}</td>
-                  <td className="p-2 border border-slate-300 font-mono">{b.source}</td>
-                  <td className="p-2 border border-slate-300 uppercase">{b.status}</td>
-                  <td className="p-2 border border-slate-300 text-right font-mono">${b.nightlyRate || '-'}</td>
-                  <td className="p-2 border border-slate-300 text-right font-mono">{b.currency === 'USD' ? '$' : 'J$'}{b.amount}</td>
-                  <td className="p-2 border border-slate-300 text-right font-mono text-emerald-700">{b.currency === 'USD' ? '$' : 'J$'}{b.depositPaid}</td>
-                  <td className="p-2 border border-slate-300 text-right font-mono text-red-600 font-semibold">{b.currency === 'USD' ? '$' : 'J$'}{b.balanceDue}</td>
-                </tr>
+          <section className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {(['USD', 'JMD'] as Currency[])
+              .filter(c => totals[c].value > 0 || totals[c].deposit > 0)
+              .map(c => (
+                <dl key={c} className="space-y-1 rounded-xl border border-slate-300 p-3 text-xs">
+                  <p className="mb-1 font-mono text-[9px] font-bold uppercase text-slate-500">{c} totals (excludes cancelled)</p>
+                  <div className="flex justify-between gap-3">
+                    <dt>Nights sold</dt>
+                    <dd className="font-mono font-semibold">{totals[c].nights}</dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <dt>Stay value</dt>
+                    <dd className="font-mono font-semibold">{formatMoney(totals[c].value, c)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <dt>Deposits received</dt>
+                    <dd className="font-mono font-semibold">{formatMoney(totals[c].deposit, c)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-3 border-t border-slate-300 pt-1 font-bold">
+                    <dt>Balance outstanding</dt>
+                    <dd className="font-mono">{formatMoney(totals[c].balance, c)}</dd>
+                  </div>
+                </dl>
               ))}
-          </tbody>
-        </table>
-        
-        <div className="mt-8 pt-4 border-t border-slate-200 text-center text-[10px] text-slate-400 font-mono">
-          Confidential - Villaggio Del Sol Reservations Management Ledger
-        </div>
-      </div>
-    </>
+          </section>
+        </>
+      )}
+
+      <p className="mt-8 border-t border-slate-300 pt-3 text-center font-mono text-[9px] uppercase text-slate-500">
+        Confidential — Villaggio Del Sol reservations ledger
+      </p>
+    </PrintPortal>
   );
 }

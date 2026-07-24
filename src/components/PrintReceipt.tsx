@@ -4,140 +4,107 @@
  */
 
 import React from 'react';
-import { Payment } from '../types';
-import { Printer, X, ShieldCheck, RefreshCw, FileText } from 'lucide-react';
+import { Payment, Unit, getUnitDisplayName } from '../types';
+import { formatMoneyLong } from '../lib/money';
+import { formatDayLabel } from '../lib/dates';
+import PrintPortal, { PrintLetterhead } from './PrintPortal';
 
 interface PrintReceiptProps {
   payment: Payment;
+  units: Unit[];
   onClose: () => void;
+  onMarkPrinted: (paymentId: string) => Promise<unknown>;
 }
 
-export default function PrintReceipt({ payment, onClose }: PrintReceiptProps) {
-  const handlePrint = () => {
-    window.print();
-  };
+export default function PrintReceipt({ payment, units, onClose, onMarkPrinted }: PrintReceiptProps) {
+  const unit = units.find(u => u.id === payment.unitId);
+  const unitLabel = unit ? getUnitDisplayName(unit.number) : `Unit ${payment.unitNumber}`;
+  const isReprint = (payment.printCount || 0) > 0;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 print:relative print:bg-white print:p-0">
-      <div className="bg-white rounded-2xl max-w-sm w-full max-h-[95vh] overflow-y-auto shadow-2xl border border-slate-100 flex flex-col print:shadow-none print:border-none print:max-h-full print:overflow-visible">
-        
-        {/* Navigation / Header Buttons (will be hidden during print) */}
-        <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 print:hidden">
-          <span className="text-xs font-mono font-medium text-slate-500">Print Receipt Viewer</span>
-          <div className="flex gap-2">
-            <button
-              onClick={handlePrint}
-              className="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              Print Receipt
-            </button>
-            <button
-              onClick={onClose}
-              className="p-1.5 border border-slate-200 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-all"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+    <PrintPortal
+      title={`Receipt ${payment.receiptNo}`}
+      subtitle={`${payment.payerName} — ${formatMoneyLong(payment.amount, payment.currency)}`}
+      maxWidthClass="max-w-md"
+      onClose={onClose}
+      onBeforePrint={() => {
+        // Recorded server-side so a second copy is identifiable as a reprint.
+        void onMarkPrinted(payment.id).catch(() => undefined);
+      }}
+    >
+      <PrintLetterhead
+        documentTitle="Official Receipt"
+        meta={`Receipt No. ${payment.receiptNo}`}
+        generatedBy={payment.staffMember}
+      />
+
+      {payment.status === 'reversed' && (
+        <div className="print-emphasis mb-5 rounded-lg border-2 border-red-600 bg-red-50 p-3 text-center">
+          <p className="text-base font-black uppercase tracking-[0.3em] text-red-700">VOID</p>
+          <p className="mt-1 font-mono text-[10px] leading-relaxed text-red-800">
+            Voided by {payment.reversedBy} on {formatDayLabel(payment.reversalDate || '')}
+            <br />
+            Reason: “{payment.reversalReason}”
+          </p>
         </div>
+      )}
 
-        {/* Printable Document Area */}
-        <div id="printable-receipt-area" className="p-6 space-y-5 bg-white font-sans text-slate-800">
-          
-          {/* Brand Header */}
-          <div className="text-center space-y-1">
-            <h2 className="text-lg font-display font-bold text-slate-900 tracking-tight">VILLAGGIO DEL SOL</h2>
-            <p className="text-[10px] font-mono text-slate-500 uppercase">16-Unit HOA gated Residence</p>
-            <p className="text-[11px] text-slate-400">Ocho Rios, St. Ann, Jamaica</p>
-          </div>
-
-          <div className="border-y border-dashed border-slate-200 py-3 flex justify-between text-xs font-mono">
-            <div>
-              <p className="text-slate-400">RECEIPT NO:</p>
-              <p className="font-semibold text-slate-900">{payment.receiptNo}</p>
-            </div>
-            <div className="text-right">
-              <p className="text-slate-400">DATE:</p>
-              <p className="font-semibold text-slate-900">{payment.date}</p>
-            </div>
-          </div>
-
-          {/* Core Information Grid */}
-          <div className="space-y-3.5 text-xs">
-            <div className="flex justify-between pb-2 border-b border-slate-100">
-              <span className="text-slate-400">Received From:</span>
-              <span className="font-semibold text-slate-900">{payment.payerName}</span>
-            </div>
-            
-            <div className="flex justify-between pb-2 border-b border-slate-100">
-              <span className="text-slate-400">Villa Allocation:</span>
-              <span className="font-semibold text-slate-900 font-mono">Unit {payment.unitNumber}</span>
-            </div>
-
-            <div className="flex justify-between pb-2 border-b border-slate-100">
-              <span className="text-slate-400">Payment Category:</span>
-              <span className="font-semibold text-slate-900">{payment.category} Account</span>
-            </div>
-
-            <div className="flex justify-between pb-2 border-b border-slate-100">
-              <span className="text-slate-400">Payment Method:</span>
-              <span className="font-semibold text-slate-900">{payment.method}</span>
-            </div>
-
-            {payment.reference && (
-              <div className="flex justify-between pb-2 border-b border-slate-100">
-                <span className="text-slate-400">TXN Reference ID:</span>
-                <span className="font-semibold text-slate-900 font-mono">{payment.reference}</span>
-              </div>
-            )}
-
-            {payment.notes && (
-              <div className="pb-2 border-b border-slate-100">
-                <span className="text-slate-400 block mb-0.5">Notes:</span>
-                <span className="text-slate-600 italic block">"{payment.notes}"</span>
-              </div>
-            )}
-          </div>
-
-          {/* Giant Amount Display */}
-          <div className="p-4 bg-slate-50 rounded-xl text-center border border-slate-100">
-            <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Total Amount Settled</span>
-            <span className="text-2xl font-mono font-bold text-slate-900 mt-1 block">
-              {payment.currency === 'USD' ? 'USD $' : 'JMD J$'}{payment.amount.toLocaleString()}
-            </span>
-          </div>
-
-          {/* Audit Trail Signatures */}
-          <div className="border-t border-slate-100 pt-4 flex justify-between items-center text-[10px] font-mono text-slate-400">
-            <div>
-              <p>RECORDED BY STAFF:</p>
-              <p className="font-semibold text-slate-700 uppercase mt-0.5">{payment.staffMember}</p>
-            </div>
-            <div className="text-right">
-              <p>RECEIPT STATUS:</p>
-              <p className={`font-bold uppercase mt-0.5 ${payment.status === 'completed' ? 'text-emerald-600' : 'text-red-500'}`}>
-                {payment.status}
-              </p>
-            </div>
-          </div>
-
-          {payment.status === 'reversed' && (
-            <div className="p-3 bg-red-50 border border-red-100 text-red-800 text-[10px] rounded-lg font-mono leading-normal">
-              <p className="font-semibold uppercase text-red-700">⚠️ VOID RECEIPT HISTORY:</p>
-              <p className="mt-0.5"><strong>Voided by:</strong> {payment.reversedBy} on {payment.reversalDate}</p>
-              <p className="mt-0.5"><strong>Reason:</strong> "{payment.reversalReason}"</p>
-            </div>
-          )}
-
-          {/* Professional Footer */}
-          <div className="text-center pt-2 border-t border-dashed border-slate-100">
-            <p className="text-[9px] font-mono text-slate-400 uppercase">Thank you for your cooperation.</p>
-            <p className="text-[8px] font-mono text-slate-300 mt-0.5">VDS Property Ledger System Audit Signature verified.</p>
-          </div>
-
+      {isReprint && payment.status !== 'reversed' && (
+        <div className="print-emphasis mb-4 rounded-lg border border-amber-400 bg-amber-50 px-3 py-1.5 text-center">
+          <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-amber-800">
+            Reprint — duplicate of receipt {payment.receiptNo}
+          </p>
         </div>
+      )}
 
+      <dl className="space-y-0 text-xs">
+        {[
+          ['Date received', formatDayLabel(payment.date)],
+          ['Received from', payment.payerName],
+          ['Villa allocation', unitLabel],
+          ['Payment for', `${payment.category}`],
+          ['Payment method', payment.method],
+          ...(payment.reference ? [['Reference', payment.reference]] : [])
+        ].map(([label, value]) => (
+          <div key={label} className="flex justify-between gap-4 border-b border-slate-200 py-2">
+            <dt className="text-slate-500">{label}</dt>
+            <dd className="text-right font-semibold text-slate-900">{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {payment.notes && (
+        <div className="mt-3 border-b border-slate-200 pb-2 text-xs">
+          <span className="mb-0.5 block text-slate-500">Notes</span>
+          <span className="block italic text-slate-700">“{payment.notes}”</span>
+        </div>
+      )}
+
+      <div className="mt-5 rounded-xl border border-slate-300 bg-slate-50 p-4 text-center">
+        <span className="block font-mono text-[10px] uppercase tracking-wider text-slate-500">Amount received</span>
+        <span className="mt-1 block font-mono text-2xl font-bold text-slate-900">
+          {formatMoneyLong(payment.amount, payment.currency)}
+        </span>
+        <span className="mt-1 block font-mono text-[9px] text-slate-500">
+          Received in {payment.currency}. This receipt does not convert currencies.
+        </span>
       </div>
-    </div>
+
+      <div className="mt-6 flex items-end justify-between gap-6 border-t border-slate-200 pt-5 text-[10px] font-mono text-slate-500">
+        <div className="flex-1">
+          <div className="mb-1 h-7 border-b border-slate-400" />
+          <p className="uppercase">Received by</p>
+          <p className="mt-0.5 font-semibold uppercase text-slate-700">{payment.staffMember}</p>
+        </div>
+        <div className="flex-1 text-right">
+          <div className="mb-1 h-7 border-b border-slate-400" />
+          <p className="uppercase">Payer signature</p>
+        </div>
+      </div>
+
+      <p className="mt-5 border-t border-dashed border-slate-300 pt-2 text-center font-mono text-[9px] uppercase text-slate-400">
+        Villaggio Del Sol — retain this receipt as proof of payment
+      </p>
+    </PrintPortal>
   );
 }

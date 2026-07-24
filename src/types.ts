@@ -5,11 +5,44 @@
 
 export type UserRole = 'ADMINISTRATOR' | 'MANAGER' | 'FINANCE_OFFICER' | 'JUNIOR_OFFICER';
 
+export type Currency = 'USD' | 'JMD';
+
+export const CURRENCIES: Currency[] = ['USD', 'JMD'];
+
+export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Credit Card' | 'Cheque' | 'Other';
+
+export const PAYMENT_METHODS: PaymentMethod[] = ['Cash', 'Bank Transfer', 'Credit Card', 'Cheque', 'Other'];
+
+export type PaymentCategory = 'Rent' | 'Maintenance' | 'Booking' | 'Utility' | 'Other';
+
+export const PAYMENT_CATEGORIES: PaymentCategory[] = ['Rent', 'Maintenance', 'Booking', 'Utility', 'Other'];
+
+/** Categories that are billed through the recurring charge ledger. */
+export type ChargeCategory = 'Rent' | 'Maintenance';
+
 export interface User {
   id: string;
   name: string;
+  username: string;
   email: string;
+  position: string;
   role: UserRole;
+  active: boolean;
+  mustChangePassword: boolean;
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+/** The authenticated user as exposed to the browser. Never carries password material. */
+export interface SessionUser {
+  id: string;
+  name: string;
+  username: string;
+  email: string;
+  position: string;
+  role: UserRole;
+  mustChangePassword: boolean;
+  permissions: RolePermissions;
 }
 
 export interface RolePermissions {
@@ -21,45 +54,85 @@ export interface RolePermissions {
   enterUtilities: boolean;
   recordExpenses: boolean;
   modifySettledRecords: boolean;
+  postCharges: boolean;
   hasVetoPower?: boolean;
 }
+
+export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
+  'addBookings',
+  'editBookings',
+  'cancelBookings',
+  'editUnits',
+  'enterUtilities',
+  'recordExpenses',
+  'postCharges',
+  'reversePayments',
+  'modifySettledRecords'
+];
+
+export const PERMISSION_LABELS: Record<string, string> = {
+  addBookings: 'Create guest reservations',
+  editBookings: 'Edit guest reservations',
+  cancelBookings: 'Cancel reservations & issue refunds',
+  editUnits: 'Edit the unit register (rates, owners, tenants)',
+  enterUtilities: 'Record utility meter readings',
+  recordExpenses: 'Record property expenses',
+  postCharges: 'Post monthly rent & maintenance charges',
+  reversePayments: 'Reverse payments & void receipts',
+  modifySettledRecords: 'Modify settled ledger records'
+};
 
 export interface StaffProfile {
   name: string;
   position: string;
 }
 
+export interface ICalFeed {
+  id: string;
+  unitId: string;
+  unitNumber: string;
+  url: string;
+  source: 'Airbnb' | 'Booking.com' | 'Other';
+  active: boolean;
+  lastSyncAt?: string;
+  lastResult?: string;
+  lastStatus?: 'ok' | 'error';
+}
+
 export interface AppSettings {
-  juniorHasAdvancedAccess: boolean;
-  juniorPermissions?: RolePermissions;
-  rolePermissions?: {
+  /** Indicative JMD per 1 USD, used only for display conversions. Never used to convert stored amounts. */
+  fxRateJmdPerUsd: number;
+  rolePermissions: {
     MANAGER: RolePermissions;
     FINANCE_OFFICER: RolePermissions;
     JUNIOR_OFFICER: RolePermissions;
   };
-  staffProfiles?: {
-    ADMINISTRATOR: StaffProfile;
-    MANAGER: StaffProfile;
-    FINANCE_OFFICER: StaffProfile;
-    JUNIOR_OFFICER: StaffProfile;
-  };
-  vendors?: string[];
+  vendors: string[];
+  icalFeeds: ICalFeed[];
+  /** Legacy fields retained so older databases keep loading. No longer read by the app. */
+  juniorHasAdvancedAccess?: boolean;
+  juniorPermissions?: RolePermissions;
+  staffProfiles?: Record<string, StaffProfile>;
 }
+
+export type UnitStatus = 'long-term' | 'short-term' | 'owner-occupied' | 'vacant' | 'unavailable';
+
+export const UNIT_STATUSES: UnitStatus[] = ['long-term', 'short-term', 'owner-occupied', 'vacant', 'unavailable'];
 
 export interface Unit {
   id: string;
-  number: string; // "1" to "16"
+  number: string; // display label, e.g. "1" or "A1" — may be edited, so never use as a join key
   ownerName: string;
   ownerEmail: string;
   ownerPhone: string;
   tenantName: string;
   tenantEmail: string;
   tenantPhone: string;
-  status: 'long-term' | 'short-term' | 'owner-occupied' | 'vacant' | 'unavailable';
+  status: UnitStatus;
   monthlyRent: number;
   monthlyMaintenance: number;
-  currency: 'USD' | 'JMD';
-  maintCurrency?: 'USD' | 'JMD';
+  currency: Currency;
+  maintCurrency?: Currency;
   meterNumber: string;
   notes: string;
   rentDueDay?: number;
@@ -79,28 +152,55 @@ export interface Booking {
   guestName: string;
   guestEmail: string;
   guestPhone: string;
-  checkIn: string; // YYYY-MM-DD
-  checkOut: string; // YYYY-MM-DD
+  checkIn: string; // YYYY-MM-DD (arrival, inclusive)
+  checkOut: string; // YYYY-MM-DD (departure, exclusive — the unit is free again on this date)
   source: 'Direct' | 'Airbnb' | 'Booking.com' | 'Blocked' | 'Unavailable';
   amount: number;
   nightlyRate?: number;
-  currency: 'USD' | 'JMD';
+  currency: Currency;
   depositPaid: number;
   balanceDue: number;
   status: 'confirmed' | 'checked-in' | 'checked-out' | 'cancelled';
   notes?: string;
+  /** Set for reservations imported from an external iCalendar feed. Used for idempotent re-import. */
+  externalUid?: string;
+  externalFeedId?: string;
+  importedAt?: string;
+}
+
+/**
+ * A billed obligation. Outstanding balances are always
+ * (sum of open charges) - (sum of completed payments), per unit, per category, per currency.
+ */
+export interface Charge {
+  id: string;
+  unitId: string;
+  unitNumber: string;
+  category: ChargeCategory;
+  periodMonth: string; // YYYY-MM
+  dueDate: string; // YYYY-MM-DD
+  amount: number;
+  currency: Currency;
+  status: 'open' | 'void';
+  payerName: string;
+  createdAt: string;
+  createdBy: string;
+  voidedBy?: string;
+  voidedAt?: string;
+  voidReason?: string;
 }
 
 export interface Payment {
   id: string;
   receiptNo: string;
   payerName: string;
+  unitId: string;
   unitNumber: string;
-  category: 'Rent' | 'Maintenance' | 'Booking' | 'Utility' | 'Other';
+  category: PaymentCategory;
   amount: number;
-  currency: 'USD' | 'JMD';
+  currency: Currency;
   date: string; // YYYY-MM-DD
-  method: 'Cash' | 'Bank Transfer' | 'Credit Card' | 'Check' | 'Other';
+  method: PaymentMethod;
   reference: string;
   notes: string;
   staffMember: string;
@@ -108,33 +208,66 @@ export interface Payment {
   reversedBy?: string;
   reversalReason?: string;
   reversalDate?: string;
+  /** Number of times this receipt has been rendered for printing. >0 means a reprint. */
+  printCount?: number;
+  /** Set when the payment was generated from another record, so the two stay in step. */
+  bookingId?: string;
+  utilityId?: string;
 }
 
 export interface UtilityReading {
   id: string;
+  unitId: string;
   unitNumber: string;
   meterNumber: string;
-  billingPeriod: string; // e.g., "2026-06"
+  billingPeriod: string; // YYYY-MM
   previousReading: number;
   currentReading: number;
   consumption: number;
   amountCharged: number;
-  currency: 'USD' | 'JMD';
+  currency: Currency;
   status: 'unpaid' | 'paid';
+  /** Receipt raised when the reading was settled. */
+  paymentId?: string;
 }
+
+export type ExpenseCategory =
+  | 'Maintenance'
+  | 'Security'
+  | 'Landscaping'
+  | 'Utilities'
+  | 'Payroll'
+  | 'Property Taxes'
+  | 'Supplies'
+  | 'Contractors'
+  | 'Other';
+
+export const EXPENSE_CATEGORIES: ExpenseCategory[] = [
+  'Maintenance',
+  'Security',
+  'Landscaping',
+  'Utilities',
+  'Payroll',
+  'Property Taxes',
+  'Supplies',
+  'Contractors',
+  'Other'
+];
 
 export interface Expense {
   id: string;
-  category: 'Maintenance' | 'Security' | 'Landscaping' | 'Utilities' | 'Payroll' | 'Property Taxes' | 'Supplies' | 'Contractors' | 'Other';
+  category: ExpenseCategory;
   vendor: string;
   description: string;
+  /** '' means a property-wide (General) expense. */
+  unitId: string;
   unitNumber: string; // unit number or "General"
   amount: number;
-  currency: 'USD' | 'JMD';
-  date: string; // YYYY-MM-DD (created date / logged date)
-  dueDate?: string; // YYYY-MM-DD
-  datePaid?: string; // YYYY-MM-DD
-  paymentMethod?: string; // "Bank Transfer" | "Cash" | "Credit/Debit Card" | "Cheque" | "Other"
+  currency: Currency;
+  date: string; // YYYY-MM-DD (logged date)
+  dueDate?: string;
+  datePaid?: string;
+  paymentMethod?: PaymentMethod;
   status: 'paid' | 'pending';
   reference: string;
   notes: string;
@@ -148,22 +281,28 @@ export interface AuditLog {
   action: string;
   recordType: string;
   recordId: string;
-  previousValue: string; // JSON string or text
-  newValue: string; // JSON string or text
+  previousValue: string;
+  newValue: string;
   approvedBy?: string;
 }
 
 export interface UnitActivity {
   id: string;
   unitId: string;
-  unitNumber: string; // e.g., "A1", "1", "2"
-  residentName: string; // e.g. "Yvonne Clarke"
+  unitNumber: string;
+  residentName: string;
   residentRole: 'Owner' | 'Tenant' | 'Guest' | 'Other';
-  activityType: 'Construction Work' | 'Pool Reservation' | 'Maintenance Request' | 'Noise / Event Notice' | 'Amenity Access' | 'Other Activity';
-  dateCaptured: string; // YYYY-MM-DD
+  activityType:
+    | 'Construction Work'
+    | 'Pool Reservation'
+    | 'Maintenance Request'
+    | 'Noise / Event Notice'
+    | 'Amenity Access'
+    | 'Other Activity';
+  dateCaptured: string;
   notes: string;
-  loggedBy: string; // Staff member name
-  loggedAt: string; // ISO datetime
+  loggedBy: string;
+  loggedAt: string;
 }
 
 export function getUnitDisplayName(number: string): string {
@@ -174,3 +313,10 @@ export function getUnitDisplayName(number: string): string {
   return `Villa Unit ${num}`;
 }
 
+export const UNIT_STATUS_LABELS: Record<UnitStatus, string> = {
+  'long-term': 'Long-term Lease',
+  'short-term': 'Short-term / Airbnb',
+  'owner-occupied': 'Owner Occupied',
+  vacant: 'Vacant',
+  unavailable: 'Unavailable'
+};
