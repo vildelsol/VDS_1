@@ -1,0 +1,6 @@
+{
+  "name": "Villaggio Del Sol Property Management",
+  "description": "Lightweight internal property-management application for Villaggio Del Sol staff in Ocho Rios, Jamaica.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
