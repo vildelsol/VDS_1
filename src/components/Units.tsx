@@ -9,6 +9,7 @@ import {
   Booking,
   Charge,
   Currency,
+  Expense,
   Payment,
   SessionUser,
   Tenancy,
@@ -23,6 +24,7 @@ import {
 import {
   accountBalance,
   bookingsForUnit,
+  expensesForUnit,
   liveUnitState,
   paymentsForUnit,
   utilitiesForUnit
@@ -55,6 +57,7 @@ interface UnitsProps {
   utilities: UtilityReading[];
   bookings: Booking[];
   tenancies: Tenancy[];
+  expenses: Expense[];
   unitActivities: UnitActivity[];
   settings: AppSettings;
   session: SessionUser;
@@ -94,6 +97,7 @@ export default function Units({
   utilities,
   bookings,
   tenancies,
+  expenses,
   unitActivities,
   settings,
   session,
@@ -215,6 +219,7 @@ export default function Units({
           payments={payments}
           units={units}
           tenancies={tenancies}
+          expenses={expenses}
           unitActivities={unitActivities}
           settings={settings}
           canEdit={canEdit}
@@ -307,6 +312,7 @@ export default function Units({
           utilities={utilities}
           bookings={bookings}
           tenancies={tenancies}
+          expenses={expenses}
           unitActivities={unitActivities}
           generatedBy={session.name}
           onClose={() => setPrintUnit(null)}
@@ -324,6 +330,7 @@ function UnitDetail({
   payments,
   units,
   tenancies,
+  expenses,
   unitActivities,
   settings,
   canEdit,
@@ -341,6 +348,7 @@ function UnitDetail({
   payments: Payment[];
   units: Unit[];
   tenancies: Tenancy[];
+  expenses: Expense[];
   unitActivities: UnitActivity[];
   settings: AppSettings;
   canEdit: boolean;
@@ -357,6 +365,7 @@ function UnitDetail({
   const rentAccount = accountBalance(unit, 'Rent', charges, payments, undefined, units);
   const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, undefined, units);
   const activities = unitActivities.filter(a => a.unitId === unit.id);
+  const unitExpenses = expensesForUnit(expenses, unit, units).sort((a, b) => (b.datePaid || b.date).localeCompare(a.datePaid || a.date));
   const unitTenancies = tenancies
     .filter(t => t.unitId === unit.id)
     .sort((a, b) => (b.startedOn || '').localeCompare(a.startedOn || '') || b.recordedAt.localeCompare(a.recordedAt));
@@ -562,6 +571,32 @@ function UnitDetail({
                   <p className="font-mono text-[9px] text-slate-400">
                     Logged by {activity.loggedBy} on {formatDayLabel(activity.loggedAt.substring(0, 10))}
                   </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="space-y-3">
+          <h4 className="border-b border-slate-100 pb-1 font-mono text-xs uppercase tracking-wider text-slate-400">
+            Expenses charged to this villa ({unitExpenses.length})
+          </h4>
+          {unitExpenses.length === 0 ? (
+            <EmptyState title="No expenses recorded against this villa" hint="Expenses allocated to this villa in the Expense register appear here." />
+          ) : (
+            <ul className="space-y-2">
+              {unitExpenses.map(expense => (
+                <li key={expense.id} className="flex items-start justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone="slate">{expense.category}</Badge>
+                      <span className="font-semibold text-slate-800">{expense.vendor}</span>
+                      {expense.status === 'pending' ? <Badge tone="amber">Pending</Badge> : <Badge tone="green">Paid</Badge>}
+                    </div>
+                    {expense.description && <p className="mt-1 leading-relaxed text-slate-600">{expense.description}</p>}
+                    <p className="mt-0.5 font-mono text-[10px] text-slate-400">{formatDayLabel(expense.datePaid || expense.date)}{expense.reference ? ` · ${expense.reference}` : ''}</p>
+                  </div>
+                  <span className="shrink-0 font-mono font-semibold text-slate-800">{formatMoney(expense.amount, expense.currency)}</span>
                 </li>
               ))}
             </ul>
@@ -1275,6 +1310,7 @@ function UnitLedgerDocument({
   utilities,
   bookings,
   tenancies,
+  expenses,
   unitActivities,
   generatedBy,
   onClose
@@ -1286,6 +1322,7 @@ function UnitLedgerDocument({
   utilities: UtilityReading[];
   bookings: Booking[];
   tenancies: Tenancy[];
+  expenses: Expense[];
   unitActivities: UnitActivity[];
   generatedBy: string;
   onClose: () => void;
@@ -1301,6 +1338,10 @@ function UnitLedgerDocument({
   const unitBookings = useMemo(
     () => bookingsForUnit(bookings, unit, units).sort((a, b) => a.checkIn.localeCompare(b.checkIn)),
     [bookings, unit, units]
+  );
+  const unitExpenses = useMemo(
+    () => expensesForUnit(expenses, unit, units).sort((a, b) => (a.datePaid || a.date).localeCompare(b.datePaid || b.date)),
+    [expenses, unit, units]
   );
   const activities = unitActivities.filter(a => a.unitId === unit.id);
   const rent = accountBalance(unit, 'Rent', charges, payments, undefined, units);
@@ -1451,8 +1492,39 @@ function UnitLedgerDocument({
         )}
       </PrintSection>
 
+      {unitExpenses.length > 0 && (
+        <PrintSection title="IV. Expenses charged to this villa">
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Date</th>
+                  <th className="p-2">Vendor</th>
+                  <th className="p-2">Category</th>
+                  <th className="p-2">Description</th>
+                  <th className="p-2">Status</th>
+                  <th className="p-2 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {unitExpenses.map(e => (
+                  <tr key={e.id}>
+                    <td className="p-2">{formatDayLabel(e.datePaid || e.date)}</td>
+                    <td className="p-2 font-sans font-semibold">{e.vendor}</td>
+                    <td className="p-2">{e.category}</td>
+                    <td className="p-2 font-sans">{e.description || '—'}</td>
+                    <td className="p-2 uppercase">{e.status}</td>
+                    <td className="p-2 text-right font-semibold">{formatMoney(e.amount, e.currency)} {e.currency}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        </PrintSection>
+      )}
+
       {unitBookings.length > 0 && (
-        <PrintSection title="IV. Guest reservations">
+        <PrintSection title="V. Guest reservations">
           <TableScroller>
             <table className="w-full text-left text-[10px]">
               <thead>
@@ -1485,7 +1557,7 @@ function UnitLedgerDocument({
       )}
 
       {activities.length > 0 && (
-        <PrintSection title="V. Resident &amp; property activity">
+        <PrintSection title="VI. Resident &amp; property activity">
           <TableScroller>
             <table className="w-full text-left text-[10px]">
               <thead>

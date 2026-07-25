@@ -15,6 +15,7 @@ import {
   SessionUser,
   Unit,
   UtilityReading,
+  getAllocationLabel,
   getUnitDisplayName
 } from '../types';
 import { utilitiesForUnit } from '../lib/finance';
@@ -453,7 +454,7 @@ function ExpensesPanel({ expenses, canEdit, onEdit }: { expenses: Expense[]; can
                     <td className="p-4">
                       <Badge>{e.category}</Badge>
                     </td>
-                    <td className="p-4 font-mono text-[11px]">{e.unitNumber === 'General' ? 'Property-wide' : getUnitDisplayName(e.unitNumber)}</td>
+                    <td className="p-4 font-mono text-[11px]">{getAllocationLabel(e.unitNumber)}</td>
                     <td className="p-4 font-mono text-[11px] text-slate-500">{e.reference || '—'}</td>
                     <td className="p-4 text-right font-mono font-semibold">
                       {formatMoney(e.amount, e.currency)}
@@ -762,7 +763,10 @@ function ExpenseForm({
   const [category, setCategory] = useState<ExpenseCategory>(expense?.category || 'Maintenance');
   const [vendor, setVendor] = useState(expense?.vendor || '');
   const [description, setDescription] = useState(expense?.description || '');
-  const [unitId, setUnitId] = useState(expense?.unitId || '');
+  // Allocation is a villa id, or a named location token ("general" / "office").
+  const [allocation, setAllocation] = useState<string>(
+    expense?.unitId || (expense?.unitNumber === 'Office' ? 'office' : 'general')
+  );
   const [amount, setAmount] = useState(expense ? String(expense.amount) : '');
   const [currency, setCurrency] = useState<Currency>(expense?.currency || 'JMD');
   const [date, setDate] = useState(expense?.date || today());
@@ -785,8 +789,8 @@ function ExpenseForm({
         category,
         vendor,
         description,
-        unitId: unitId || undefined,
-        unitNumber: unitId ? undefined : 'General',
+        unitId: allocation === 'general' || allocation === 'office' ? undefined : allocation,
+        unitNumber: allocation === 'office' ? 'Office' : allocation === 'general' ? 'General' : undefined,
         amount: Number(amount),
         currency,
         date,
@@ -832,14 +836,19 @@ function ExpenseForm({
               ))}
             </select>
           </Field>
-          <Field label="Allocation" htmlFor="ef-unit" hint="Leave as property-wide for shared costs.">
-            <select id="ef-unit" value={unitId} onChange={e => setUnitId(e.target.value)} className={inputClass}>
-              <option value="">Property-wide (General)</option>
-              {units.map(u => (
-                <option key={u.id} value={u.id}>
-                  {getUnitDisplayName(u.number)}
-                </option>
-              ))}
+          <Field label="Allocation" htmlFor="ef-unit" hint="Charge to a specific villa, the office, or shared/common property.">
+            <select id="ef-unit" value={allocation} onChange={e => setAllocation(e.target.value)} className={inputClass}>
+              <optgroup label="Property-wide">
+                <option value="general">General / common property</option>
+                <option value="office">Office</option>
+              </optgroup>
+              <optgroup label="Villas">
+                {units.map(u => (
+                  <option key={u.id} value={u.id}>
+                    {getUnitDisplayName(u.number)}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </Field>
         </div>

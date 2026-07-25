@@ -105,8 +105,28 @@
     color: #000 !important;
   }
 
+  /* Column headings must read as headings, not another data row. Give the whole
+     header row a shaded fill and a heavy rule under it so the table body is
+     clearly separated from its headings on paper. */
+  .vds-print-document thead th {
+    background: #e2e8f0 !important; /* slate-200 */
+    border-bottom: 2px solid #0f172a !important;
+    font-weight: 700 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
   .vds-print-document thead {
     display: table-header-group; /* repeat headings on each page */
+  }
+
+  /* Zebra striping so long tables stay readable row-to-row on paper. */
+  .vds-print-document tbody tr:nth-child(even) td {
+    background: #f8fafc !important; /* slate-50 */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   .vds-print-document tr,

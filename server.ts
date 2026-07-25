@@ -28,6 +28,7 @@ import {
   Payment,
   PaymentCategory,
   PaymentMethod,
+  PROPERTY_LOCATIONS,
   Tenancy,
   Unit,
   UNIT_STATUSES,
@@ -63,6 +64,7 @@ import {
   destroySession,
   ensureBootstrapAdmin,
   hashPassword,
+  isRequestSecure,
   passwordComplaint,
   permissionsFor,
   readSessionToken,
@@ -80,6 +82,9 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 
 app.use(express.json({ limit: '1mb' }));
 app.disable('x-powered-by');
+// Honour x-forwarded-proto from a TLS-terminating reverse proxy (for the hosted
+// HTTPS option), so req.secure is accurate. Harmless on a direct LAN connection.
+app.set('trust proxy', true);
 
 /**
  * Liveness probe. Deliberately unauthenticated and dependency-free, so the client
@@ -312,7 +317,7 @@ app.post(
 
     if (!result) throw new ApiError(401, 'Incorrect username or password.');
     loginAttempts.delete(`${req.ip}:${username}`);
-    setSessionCookie(res, result.token, IS_PROD);
+    setSessionCookie(res, result.token, isRequestSecure(req));
     res.json({ user: result.user });
   })
 );
@@ -1616,8 +1621,13 @@ app.post(
  * ------------------------------------------------------------------ */
 
 function readExpenseFields(db: Database, body: Record<string, unknown>, existing?: Expense) {
-  const isGeneral = !body.unitId && (!body.unitNumber || body.unitNumber === 'General');
-  const unit = isGeneral ? undefined : resolveUnit(db, body);
+  // A non-villa allocation ("General" / "Office") is identified by unitNumber with
+  // no unitId; anything else must resolve to a real villa.
+  const rawLocation = String(body.unitNumber ?? '').trim();
+  const isNamedLocation = !body.unitId && (PROPERTY_LOCATIONS as readonly string[]).includes(rawLocation);
+  const isUnspecified = !body.unitId && (!rawLocation || rawLocation === '');
+  const unit = isNamedLocation || isUnspecified ? undefined : resolveUnit(db, body);
+  const location: string = unit ? unit.number : isNamedLocation ? rawLocation : 'General';
 
   const status = requireEnum(body.status ?? existing?.status ?? 'paid', ['paid', 'pending'] as const, 'Expense status');
   const date = requireDay(body.date ?? existing?.date ?? today(), 'Expense date');
@@ -1630,7 +1640,7 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
     vendor: requireString(body.vendor ?? existing?.vendor, 'Vendor or payee', 160),
     description: optionalString(body.description ?? existing?.description, 1000),
     unitId: unit?.id ?? '',
-    unitNumber: unit?.number ?? 'General',
+    unitNumber: location,
     amount: requirePositiveAmount(body.amount ?? existing?.amount, 'Expense amount'),
     currency: requireCurrency(body.currency ?? existing?.currency),
     date,

@@ -5,7 +5,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { AppSettings, Booking, Currency, SessionUser, Unit, getUnitDisplayName } from '../types';
-import { bookingCoversNight, bookingsForUnit, bookingsOverlap } from '../lib/finance';
+import { BookingClash, bookingCoversNight, bookingOverlaps, bookingsForUnit, bookingsOverlap } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, parseDay, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
@@ -71,6 +71,14 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
     () => [...units].sort((a, b) => (parseInt(a.number, 10) || 0) - (parseInt(b.number, 10) || 0) || a.number.localeCompare(b.number)),
     [units]
   );
+
+  /**
+   * Safety net: the create/edit forms already refuse overlapping dates, but an
+   * import, a data restore, or an edit on another device could still leave two
+   * live reservations sharing nights on the same villa. Surface any such clash
+   * loudly so staff can resolve it before a double-booking reaches a guest.
+   */
+  const overlapWarnings: BookingClash[] = useMemo(() => bookingOverlaps(bookings), [bookings]);
 
   /* ---------------- calendar ---------------- */
 
@@ -184,6 +192,23 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
     <div className="space-y-6">
       {error && <ErrorNote>{error}</ErrorNote>}
       {success && <SuccessNote>{success}</SuccessNote>}
+
+      {overlapWarnings.length > 0 && (
+        <div role="alert" className="space-y-2 rounded-2xl border-2 border-red-200 bg-red-50 p-4 text-xs text-red-800">
+          <p className="flex items-center gap-1.5 font-semibold">
+            <AlertCircle className="h-4 w-4 text-red-600" />
+            {overlapWarnings.length} overlapping reservation{overlapWarnings.length === 1 ? '' : 's'} detected — resolve to avoid a double-booking
+          </p>
+          <ul className="space-y-1">
+            {overlapWarnings.map((c, i) => (
+              <li key={i} className="font-mono text-[11px]">
+                {getUnitDisplayName(c.unitNumber)}: <strong>{c.a.guestName}</strong> ({formatDayLabel(c.a.checkIn)}–{formatDayLabel(c.a.checkOut)}) overlaps{' '}
+                <strong>{c.b.guestName}</strong> ({formatDayLabel(c.b.checkIn)}–{formatDayLabel(c.b.checkOut)}). Cancel or move one in the list below.
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <section className="space-y-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">

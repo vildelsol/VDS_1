@@ -30,7 +30,7 @@ import PrintReceipt from './components/PrintReceipt';
 import NotificationsTab from './components/NotificationsTab';
 import Login, { ChangePasswordGate } from './components/Login';
 import { ConnectionState, api, errorMessage, setUnauthenticatedHandler, subscribeConnection } from './lib/api';
-import { delinquentAccounts } from './lib/finance';
+import { countBookingOverlaps, delinquentAccounts } from './lib/finance';
 import {
   BarChart3,
   Bell,
@@ -227,8 +227,8 @@ export default function App() {
     const accounts = delinquentAccounts(data.units, data.charges, data.payments);
     const unpaidUtilities = data.utilities.filter(u => u.status === 'unpaid').length;
     const pendingExpenses = data.expenses.filter(e => e.status === 'pending').length;
-    return accounts.length + unpaidUtilities + pendingExpenses;
-  }, [session, data.units, data.charges, data.payments, data.utilities, data.expenses]);
+    return accounts.length + unpaidUtilities + pendingExpenses + countBookingOverlaps(data.bookings);
+  }, [session, data.units, data.charges, data.payments, data.utilities, data.expenses, data.bookings]);
 
   /* ---------------- gates ---------------- */
 
@@ -403,7 +403,9 @@ export default function App() {
             payments={data.payments}
             utilities={data.utilities}
             expenses={data.expenses}
+            bookings={data.bookings}
             session={session}
+            onNavigateToTab={setActiveTab}
             onRecordPayment={recordPayment}
             onSettleUtility={(id, payload) => mutate(() => api.post(`/api/utilities/${id}/settle`, payload))}
             onUpdateExpense={(id, fields) => mutate(() => api.put(`/api/expenses/${id}`, fields))}
@@ -418,6 +420,7 @@ export default function App() {
             utilities={data.utilities}
             bookings={data.bookings}
             tenancies={data.tenancies}
+            expenses={data.expenses}
             unitActivities={data.unitActivities}
             settings={settings}
             session={session}

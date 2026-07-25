@@ -97,6 +97,23 @@ export function clearSessionCookie(res: Response) {
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
 }
 
+/**
+ * Whether to mark the session cookie `Secure`.
+ *
+ * A `Secure` cookie is only sent back over HTTPS. The property runs on a plain
+ * HTTP LAN (Kamrui → HP over http://hp-name:3000), so forcing Secure by build
+ * mode would drop the cookie and break sign-in there. Decide per request from the
+ * actual connection instead: secure only when the request genuinely arrived over
+ * TLS (direct, or via a reverse proxy that sets x-forwarded-proto=https), or when
+ * an operator explicitly opts in with VDS_FORCE_SECURE_COOKIE=true.
+ */
+export function isRequestSecure(req: Request): boolean {
+  if (process.env.VDS_FORCE_SECURE_COOKIE === 'true') return true;
+  if (req.secure) return true;
+  const forwarded = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  return forwarded === 'https';
+}
+
 export function readSessionToken(req: Request): string | undefined {
   return parseCookies(req.headers.cookie)[SESSION_COOKIE];
 }

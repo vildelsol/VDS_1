@@ -291,14 +291,28 @@ export const EXPENSE_CATEGORIES: ExpenseCategory[] = [
   'Other'
 ];
 
+/**
+ * Where a non-unit cost belongs. Villas are referenced by unitId; these named
+ * locations cover everything that is not a specific villa, so the office and the
+ * common/general property have a real record that flows into the reports.
+ */
+export const PROPERTY_LOCATIONS = ['General', 'Office'] as const;
+export type PropertyLocation = (typeof PROPERTY_LOCATIONS)[number];
+
+export const PROPERTY_LOCATION_LABELS: Record<PropertyLocation, string> = {
+  General: 'General / common property',
+  Office: 'Office'
+};
+
 export interface Expense {
   id: string;
   category: ExpenseCategory;
   vendor: string;
   description: string;
-  /** '' means a property-wide (General) expense. */
+  /** '' means the cost is not tied to a specific villa; see `location`. */
   unitId: string;
-  unitNumber: string; // unit number or "General"
+  /** Villa number, or a PropertyLocation ("General" / "Office") when unitId is ''. */
+  unitNumber: string;
   amount: number;
   currency: Currency;
   date: string; // YYYY-MM-DD (logged date)
@@ -340,6 +354,13 @@ export interface UnitActivity {
   notes: string;
   loggedBy: string;
   loggedAt: string;
+}
+
+/** Human label for an expense allocation: a villa, the office, or common property. */
+export function getAllocationLabel(unitNumber: string): string {
+  if (unitNumber === 'General') return 'General / common';
+  if (unitNumber === 'Office') return 'Office';
+  return getUnitDisplayName(unitNumber);
 }
 
 export function getUnitDisplayName(number: string): string {

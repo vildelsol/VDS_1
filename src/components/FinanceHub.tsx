@@ -118,12 +118,12 @@ export default function FinanceHub({
 
   const [postMonth, setPostMonth] = useState(currentMonth());
 
-  const handlePostMonth = async () => {
+  const handlePostMonth = async (month = postMonth) => {
     setBusy(true);
     setError('');
     setSuccess('');
     try {
-      const result = await onPostMonth(postMonth);
+      const result = await onPostMonth(month);
       setSuccess(result.message);
     } catch (err) {
       setError(errorMessage(err, 'Could not post the monthly charges.'));
@@ -131,6 +131,31 @@ export default function FinanceHub({
       setBusy(false);
     }
   };
+
+  /**
+   * What the one-click "post this month" would raise, and whether it's already
+   * been done. The units rarely change, so the same rents and maintenance fees
+   * recur every month — staff post them in one click rather than re-entering each.
+   */
+  const thisMonth = currentMonth();
+  const monthCharges = useMemo(() => {
+    const rentUnits = units.filter(u => isBillable(u, 'Rent'));
+    const maintUnits = units.filter(u => isBillable(u, 'Maintenance'));
+    const rentPosted = rentUnits.filter(u =>
+      charges.some(c => c.unitId === u.id && c.category === 'Rent' && c.periodMonth === thisMonth && c.status === 'open')
+    ).length;
+    const maintPosted = maintUnits.filter(u =>
+      charges.some(c => c.unitId === u.id && c.category === 'Maintenance' && c.periodMonth === thisMonth && c.status === 'open')
+    ).length;
+    const totalToPost = rentUnits.length + maintUnits.length;
+    const alreadyPosted = rentPosted + maintPosted;
+    return {
+      rentCount: rentUnits.length,
+      maintCount: maintUnits.length,
+      fullyPosted: totalToPost > 0 && alreadyPosted >= totalToPost,
+      anyToPost: totalToPost > alreadyPosted
+    };
+  }, [units, charges, thisMonth]);
 
   /* ---------------- record payment ---------------- */
 
@@ -214,6 +239,45 @@ export default function FinanceHub({
 
       {error && <ErrorNote>{error}</ErrorNote>}
       {success && <SuccessNote>{success}</SuccessNote>}
+
+      {perms.postCharges && monthCharges.anyToPost && (
+        <div className="flex flex-col items-start justify-between gap-3 rounded-2xl border-2 border-amber-200 bg-amber-50 p-5 shadow-xs sm:flex-row sm:items-center">
+          <div className="flex items-start gap-3">
+            <CalendarClock className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+            <div>
+              <p className="text-sm font-semibold text-amber-900">
+                {formatMonthLabel(thisMonth)} charges are not fully posted yet
+              </p>
+              <p className="mt-0.5 text-xs leading-relaxed text-amber-800">
+                Post them in one click to bill every unit at once — rent for {monthCharges.rentCount} long-term lease
+                {monthCharges.rentCount === 1 ? '' : 's'} and maintenance for {monthCharges.maintCount} owner
+                {monthCharges.maintCount === 1 ? '' : 's'}. You do not re-enter these each month; posting is safe to run
+                again and never double-bills.
+              </p>
+            </div>
+          </div>
+          <SubmitButton
+            type="button"
+            busy={busy}
+            busyLabel="Posting…"
+            onClick={() => {
+              setPostMonth(thisMonth);
+              void handlePostMonth(thisMonth);
+            }}
+            className="shrink-0"
+          >
+            <CalendarClock className="h-4 w-4" />
+            Post {formatMonthLabel(thisMonth)} charges
+          </SubmitButton>
+        </div>
+      )}
+
+      {perms.postCharges && monthCharges.fullyPosted && (
+        <div className="flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50/60 px-4 py-2.5 text-xs text-emerald-800">
+          <CheckCircle className="h-4 w-4 text-emerald-600" />
+          {formatMonthLabel(thisMonth)} charges are posted — every unit is billed. Record payments as they come in.
+        </div>
+      )}
 
       {mismatches.length > 0 && (
         <InfoNote tone="amber">

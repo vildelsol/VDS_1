@@ -286,6 +286,31 @@ pm2 startup     # follow the printed instruction so it launches on boot
 
 Nothing to install but a browser. Open `http://<hp-address>:3000` and sign in.
 
+### Both PCs on Wi-Fi (no Ethernet)
+
+This works fine — the HP just needs to stay reachable, and clients need a stable address.
+
+**Use a name, not an IP.** A Wi-Fi router hands out addresses by DHCP, so the HP's `192.168.x.x`
+can change after a reboot. Don't hard-code it. In order of preference:
+
+1. **Tailscale name** — `http://hp-elitedesk:3000` always resolves to the HP regardless of its IP,
+   on your Wi-Fi and off-site. Cleanest option (see *Running it remotely*).
+2. **The HP's computer name** on the same Wi-Fi — `http://HP-ELITEDESK:3000`. Windows resolves this
+   locally with no extra software. Find the name in *Settings → System → About*.
+3. **A DHCP reservation** in your router so the HP always gets the same IP, then use that IP.
+
+**Keep the HP serving** — the one thing to get right when the *server* is on Wi-Fi:
+
+- **Firewall:** the first time you run it, Windows asks "Allow access?" — click **Allow**, and set the
+  Wi-Fi network to **Private**. Without this the Kamrui can't reach port 3000.
+- **Power saving:** stop the HP's Wi-Fi adapter powering down when idle (Device Manager → the Wi-Fi
+  adapter → *Power Management* → untick "Allow the computer to turn off this device"), and set the HP
+  not to sleep. Otherwise it silently drops off the network and clients see "Reconnecting…".
+
+**Blips are handled.** Wi-Fi drops a few seconds more often than a cable would. A save caught in one
+is retried automatically and can't double-record (see *If the connection drops for a few seconds*),
+so Wi-Fi is a safe way to run this.
+
 ### Install it as an app (PWA)
 
 The app is a **Progressive Web App**, so it installs from the browser and then behaves like a

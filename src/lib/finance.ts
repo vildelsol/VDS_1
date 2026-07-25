@@ -332,28 +332,42 @@ export function expensesInPeriod(expenses: Expense[], currency: Currency, start:
   );
 }
 
-/** Expenses paid in one currency over a date range, grouped by category. */
+/**
+ * Expenses in one currency over a date range, grouped by category, with both what
+ * was paid and what is still outstanding (pending). Pending expenses are dated by
+ * their due date, so a bill due in the period counts even before it is paid.
+ */
 export function expenseBreakdown(
   expenses: Expense[],
   currency: Currency,
   start: string,
   end: string
-): { category: string; amount: number; share: number }[] {
-  const rows = expenses
+): { category: string; amount: number; outstanding: number; share: number }[] {
+  const paid = expenses
     .filter(e => e.status === 'paid' && e.currency === currency)
     .filter(e => isWithin(e.datePaid || e.date, start, end));
-  const total = sumMoney(rows.map(e => e.amount));
-  const byCategory = new Map<string, number>();
-  for (const e of rows) {
-    byCategory.set(e.category, sumMoney([byCategory.get(e.category) || 0, e.amount]));
-  }
+  const pending = expenses
+    .filter(e => e.status === 'pending' && e.currency === currency)
+    .filter(e => isWithin(e.dueDate || e.date, start, end));
+
+  const total = sumMoney(paid.map(e => e.amount));
+  const byCategory = new Map<string, { amount: number; outstanding: number }>();
+  const bump = (cat: string, key: 'amount' | 'outstanding', v: number) => {
+    const cur = byCategory.get(cat) || { amount: 0, outstanding: 0 };
+    cur[key] = sumMoney([cur[key], v]);
+    byCategory.set(cat, cur);
+  };
+  for (const e of paid) bump(e.category, 'amount', e.amount);
+  for (const e of pending) bump(e.category, 'outstanding', e.amount);
+
   return Array.from(byCategory.entries())
-    .map(([category, amount]) => ({
+    .map(([category, v]) => ({
       category,
-      amount,
-      share: total > 0 ? round2((amount / total) * 100) : 0
+      amount: v.amount,
+      outstanding: v.outstanding,
+      share: total > 0 ? round2((v.amount / total) * 100) : 0
     }))
-    .sort((a, b) => b.amount - a.amount);
+    .sort((a, b) => b.amount + b.outstanding - (a.amount + a.outstanding));
 }
 
 /**
@@ -388,6 +402,42 @@ export function bookingCoversNight(booking: Booking, day: string): boolean {
 /** Two stays clash when their night ranges overlap. Touching ranges do not clash. */
 export function bookingsOverlap(aIn: string, aOut: string, bIn: string, bOut: string): boolean {
   return aIn < bOut && aOut > bIn;
+}
+
+export interface BookingClash {
+  unitId: string;
+  unitNumber: string;
+  a: Booking;
+  b: Booking;
+}
+
+/**
+ * Every pair of live reservations that share nights on the same unit. The create
+ * and edit forms prevent these, so this is a safety net for imports, restores, or
+ * edits made on another device.
+ */
+export function bookingOverlaps(bookings: Booking[]): BookingClash[] {
+  const active = bookings.filter(b => b.status !== 'cancelled');
+  const byUnit = new Map<string, Booking[]>();
+  for (const b of active) {
+    if (!byUnit.has(b.unitId)) byUnit.set(b.unitId, []);
+    byUnit.get(b.unitId)!.push(b);
+  }
+  const clashes: BookingClash[] = [];
+  for (const list of byUnit.values()) {
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        if (bookingsOverlap(list[i].checkIn, list[i].checkOut, list[j].checkIn, list[j].checkOut)) {
+          clashes.push({ unitId: list[i].unitId, unitNumber: list[i].unitNumber, a: list[i], b: list[j] });
+        }
+      }
+    }
+  }
+  return clashes;
+}
+
+export function countBookingOverlaps(bookings: Booking[]): number {
+  return bookingOverlaps(bookings).length;
 }
 
 /** Live occupancy of a unit today, derived from bookings rather than stored twice. */

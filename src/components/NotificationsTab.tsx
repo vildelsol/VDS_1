@@ -5,6 +5,7 @@
 
 import React, { useMemo, useState } from 'react';
 import {
+  Booking,
   Charge,
   Currency,
   Expense,
@@ -16,10 +17,11 @@ import {
   UtilityReading,
   getUnitDisplayName
 } from '../types';
-import { AccountBalance, delinquentAccounts } from '../lib/finance';
+import { AccountBalance, bookingOverlaps, delinquentAccounts } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
+import type { TabKey } from '../App';
 import {
   Badge,
   EmptyState,
@@ -33,7 +35,7 @@ import {
   inputClass,
   monoInputClass
 } from './ui';
-import { AlertTriangle, Bell, CheckCircle, DollarSign, Gauge, Wrench } from 'lucide-react';
+import { AlertTriangle, Bell, CalendarX, CheckCircle, DollarSign, Gauge, Wrench } from 'lucide-react';
 
 interface NotificationsTabProps {
   units: Unit[];
@@ -41,13 +43,15 @@ interface NotificationsTabProps {
   payments: Payment[];
   utilities: UtilityReading[];
   expenses: Expense[];
+  bookings: Booking[];
   session: SessionUser;
+  onNavigateToTab: (tab: TabKey) => void;
   onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
   onSettleUtility: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateExpense: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
 }
 
-type Filter = 'all' | 'rent' | 'maintenance' | 'utility' | 'expense';
+type Filter = 'all' | 'rent' | 'maintenance' | 'utility' | 'expense' | 'booking';
 
 interface Item {
   id: string;
@@ -61,6 +65,7 @@ interface Item {
   account?: AccountBalance;
   utility?: UtilityReading;
   expense?: Expense;
+  isBooking?: boolean;
 }
 
 export default function NotificationsTab({
@@ -69,7 +74,9 @@ export default function NotificationsTab({
   payments,
   utilities,
   expenses,
+  bookings,
   session,
+  onNavigateToTab,
   onRecordPayment,
   onSettleUtility,
   onUpdateExpense
@@ -134,8 +141,23 @@ export default function NotificationsTab({
         };
       });
 
-    return [...accounts, ...utilityItems, ...expenseItems].sort((a, b) => b.ageDays - a.ageDays);
-  }, [units, charges, payments, utilities, expenses]);
+    const overlapItems = bookingOverlaps(bookings).map<Item>((clash, i) => ({
+      id: `overlap-${clash.unitId}-${i}`,
+      type: 'booking',
+      title: `Double-booking — ${getUnitDisplayName(clash.unitNumber)}`,
+      description:
+        `${clash.a.guestName} (${formatDayLabel(clash.a.checkIn)}–${formatDayLabel(clash.a.checkOut)}) overlaps ` +
+        `${clash.b.guestName} (${formatDayLabel(clash.b.checkIn)}–${formatDayLabel(clash.b.checkOut)}). ` +
+        `Cancel or move one reservation in the Bookings tab.`,
+      amount: 0,
+      currency: 'USD',
+      severity: 'high',
+      ageDays: 9999, // sort to the very top — a clash needs resolving before it reaches a guest
+      isBooking: true
+    }));
+
+    return [...overlapItems, ...accounts, ...utilityItems, ...expenseItems].sort((a, b) => b.ageDays - a.ageDays);
+  }, [units, charges, payments, utilities, expenses, bookings]);
 
   const visible = items.filter(i => filter === 'all' || i.type === filter);
   const highCount = items.filter(i => i.severity === 'high').length;
@@ -148,6 +170,7 @@ export default function NotificationsTab({
 
   const counts: Record<Filter, number> = {
     all: items.length,
+    booking: items.filter(i => i.type === 'booking').length,
     rent: items.filter(i => i.type === 'rent').length,
     maintenance: items.filter(i => i.type === 'maintenance').length,
     utility: items.filter(i => i.type === 'utility').length,
@@ -200,6 +223,7 @@ export default function NotificationsTab({
       <div className="flex flex-wrap gap-2">
         {([
           ['all', 'All'],
+          ['booking', 'Double-bookings'],
           ['rent', 'Rent'],
           ['maintenance', 'Maintenance'],
           ['utility', 'Utilities'],
@@ -240,16 +264,20 @@ export default function NotificationsTab({
               <div className="flex min-w-0 gap-3">
                 <span
                   className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
-                    item.type === 'utility'
-                      ? 'bg-sky-50 text-sky-600'
-                      : item.type === 'expense'
-                        ? 'bg-slate-100 text-slate-600'
-                        : item.severity === 'high'
-                          ? 'bg-red-50 text-red-600'
-                          : 'bg-amber-50 text-amber-600'
+                    item.type === 'booking'
+                      ? 'bg-red-50 text-red-600'
+                      : item.type === 'utility'
+                        ? 'bg-sky-50 text-sky-600'
+                        : item.type === 'expense'
+                          ? 'bg-slate-100 text-slate-600'
+                          : item.severity === 'high'
+                            ? 'bg-red-50 text-red-600'
+                            : 'bg-amber-50 text-amber-600'
                   }`}
                 >
-                  {item.type === 'utility' ? (
+                  {item.type === 'booking' ? (
+                    <CalendarX className="h-4 w-4" />
+                  ) : item.type === 'utility' ? (
                     <Gauge className="h-4 w-4" />
                   ) : item.type === 'expense' ? (
                     <Wrench className="h-4 w-4" />
@@ -261,28 +289,33 @@ export default function NotificationsTab({
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-semibold text-slate-900">{item.title}</p>
                     {item.severity === 'high' && <Badge tone="red">Needs attention</Badge>}
-                    {item.ageDays > 0 && <Badge tone={item.ageDays > 60 ? 'red' : 'amber'}>{item.ageDays} days</Badge>}
+                    {item.type !== 'booking' && item.ageDays > 0 && (
+                      <Badge tone={item.ageDays > 60 ? 'red' : 'amber'}>{item.ageDays} days</Badge>
+                    )}
                   </div>
                   <p className="mt-1 text-xs leading-relaxed text-slate-500">{item.description}</p>
                 </div>
               </div>
 
               <div className="flex shrink-0 items-center gap-4 sm:flex-col sm:items-end">
-                <div className="text-right">
-                  <span className="block font-mono text-[9px] uppercase text-slate-400">
-                    {item.type === 'expense' ? 'To pay' : 'Outstanding'}
-                  </span>
-                  <span className={`font-mono text-base font-bold ${item.type === 'expense' ? 'text-slate-800' : 'text-red-600'}`}>
-                    {formatMoney(item.amount, item.currency)}
-                  </span>
-                  <span className="block font-mono text-[9px] text-slate-400">{item.currency}</span>
-                </div>
+                {item.type !== 'booking' && (
+                  <div className="text-right">
+                    <span className="block font-mono text-[9px] uppercase text-slate-400">
+                      {item.type === 'expense' ? 'To pay' : 'Outstanding'}
+                    </span>
+                    <span className={`font-mono text-base font-bold ${item.type === 'expense' ? 'text-slate-800' : 'text-red-600'}`}>
+                      {formatMoney(item.amount, item.currency)}
+                    </span>
+                    <span className="block font-mono text-[9px] text-slate-400">{item.currency}</span>
+                  </div>
+                )}
                 <ItemAction
                   item={item}
                   perms={perms}
                   onSettleAccount={() => item.account && setSettleAccount(item.account)}
                   onSettleUtility={() => item.utility && setSettleUtility(item.utility)}
                   onSettleExpense={() => item.expense && setSettleExpense(item.expense)}
+                  onOpenBookings={() => onNavigateToTab('bookings')}
                 />
               </div>
             </li>
@@ -341,14 +374,27 @@ function ItemAction({
   perms,
   onSettleAccount,
   onSettleUtility,
-  onSettleExpense
+  onSettleExpense,
+  onOpenBookings
 }: {
   item: Item;
   perms: SessionUser['permissions'];
   onSettleAccount: () => void;
   onSettleUtility: () => void;
   onSettleExpense: () => void;
+  onOpenBookings: () => void;
 }) {
+  if (item.type === 'booking') {
+    return (
+      <button
+        type="button"
+        onClick={onOpenBookings}
+        className="whitespace-nowrap rounded-xl bg-red-600 px-3 py-2 text-[11px] font-medium text-white transition-all hover:bg-red-700"
+      >
+        Resolve in Bookings
+      </button>
+    );
+  }
   if (item.type === 'utility') {
     if (!perms.enterUtilities) return <span className="text-[10px] text-slate-400">Requires utility permission</span>;
     return (
