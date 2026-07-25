@@ -21,12 +21,16 @@ import {
   AccountBalance,
   accountBalance,
   chargeCurrency,
+  chargesForUnit,
   currencyMismatchWarnings,
-  isBillable
+  isBillable,
+  paymentsForUnit
 } from '../lib/finance';
-import { formatMoney, formatMoneyLong } from '../lib/money';
+import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
 import { currentMonth, formatDayLabel, formatMonthLabel, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
+import { openMailDraft } from '../lib/email';
+import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import {
   Badge,
   EmptyState,
@@ -47,6 +51,7 @@ import {
   CheckCircle,
   Edit,
   FileText,
+  Mail,
   Plus,
   Printer,
   RotateCcw,
@@ -178,6 +183,7 @@ export default function FinanceHub({
   const [reversalTarget, setReversalTarget] = useState<Payment | null>(null);
   const [detailTarget, setDetailTarget] = useState<Payment | null>(null);
   const [chargesTarget, setChargesTarget] = useState<AccountBalance | null>(null);
+  const [statementTarget, setStatementTarget] = useState<AccountBalance | null>(null);
 
   const canReverse = !!perms.reversePayments;
   const canModifySettled = !!perms.modifySettledRecords;
@@ -276,8 +282,10 @@ export default function FinanceHub({
           asOf={asOf}
           nameOf={u => u.tenantName || '— no tenant on record —'}
           contactOf={u => u.tenantEmail}
+          payments={payments}
           onReceive={openPaymentFor}
           onViewCharges={setChargesTarget}
+          onPrintStatement={setStatementTarget}
         />
       )}
 
@@ -288,8 +296,10 @@ export default function FinanceHub({
           asOf={asOf}
           nameOf={u => u.ownerName}
           contactOf={u => u.ownerEmail}
+          payments={payments}
           onReceive={openPaymentFor}
           onViewCharges={setChargesTarget}
+          onPrintStatement={setStatementTarget}
         />
       )}
 
@@ -535,6 +545,17 @@ export default function FinanceHub({
           }}
         />
       )}
+
+      {statementTarget && (
+        <AccountStatementDocument
+          account={statementTarget}
+          charges={charges}
+          payments={payments}
+          units={units}
+          generatedBy={session.name}
+          onClose={() => setStatementTarget(null)}
+        />
+      )}
     </div>
   );
 }
@@ -545,19 +566,32 @@ function AccountTable({
   accounts,
   category,
   asOf,
+  payments,
   nameOf,
   contactOf,
   onReceive,
-  onViewCharges
+  onViewCharges,
+  onPrintStatement
 }: {
   accounts: AccountBalance[];
   category: ChargeCategory;
   asOf: string;
+  payments: Payment[];
   nameOf: (u: Unit) => string;
   contactOf: (u: Unit) => string;
   onReceive: (a: AccountBalance) => void;
   onViewCharges: (a: AccountBalance) => void;
+  onPrintStatement: (a: AccountBalance) => void;
 }) {
+  // The most recent completed payment date for an account, so the ledger shows
+  // when money last came in without opening the full statement.
+  const lastPaymentDate = (account: AccountBalance): string | null => {
+    const dates = payments
+      .filter(p => p.unitId === account.unit.id && p.category === category && p.status === 'completed' && p.currency === account.currency)
+      .map(p => p.date)
+      .sort();
+    return dates.length ? dates[dates.length - 1] : null;
+  };
   if (accounts.length === 0) {
     return (
       <EmptyState
@@ -593,6 +627,7 @@ function AccountTable({
                 <th scope="col" className="p-4 text-right">Monthly fee</th>
                 <th scope="col" className="p-4 text-right">Billed to date</th>
                 <th scope="col" className="p-4 text-right">Received</th>
+                <th scope="col" className="p-4">Last payment</th>
                 <th scope="col" className="p-4 text-right">Balance</th>
                 <th scope="col" className="p-4">Ageing</th>
                 <th scope="col" className="p-4 text-right">Action</th>
@@ -617,6 +652,9 @@ function AccountTable({
                       </button>
                     </td>
                     <td className="p-4 text-right font-mono text-emerald-600">{formatMoney(account.paid, account.currency)}</td>
+                    <td className="p-4 font-mono text-[11px] text-slate-500">
+                      {lastPaymentDate(account) ? formatDayLabel(lastPaymentDate(account)!) : <span className="text-slate-300">never</span>}
+                    </td>
                     <td className="p-4 text-right">
                       <span
                         className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-medium ${
@@ -639,19 +677,28 @@ function AccountTable({
                         <span className="text-slate-300">—</span>
                       )}
                     </td>
-                    <td className="p-4 text-right">
-                      {overdue ? (
+                    <td className="p-4">
+                      <div className="flex items-center justify-end gap-2">
                         <button
-                          onClick={() => onReceive(account)}
-                          className="rounded-lg border border-slate-200 px-2.5 py-1.5 font-medium text-teal-700 transition-colors hover:border-teal-200 hover:text-teal-900"
+                          onClick={() => onPrintStatement(account)}
+                          title="Print or email an account statement"
+                          className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 font-medium text-slate-600 transition-colors hover:bg-slate-50"
                         >
-                          Receive payment
+                          <Printer className="h-3.5 w-3.5" /> Statement
                         </button>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 font-medium text-emerald-600">
-                          <CheckCircle className="h-3.5 w-3.5" /> Settled
-                        </span>
-                      )}
+                        {overdue ? (
+                          <button
+                            onClick={() => onReceive(account)}
+                            className="rounded-lg border border-slate-200 px-2.5 py-1.5 font-medium text-teal-700 transition-colors hover:border-teal-200 hover:text-teal-900"
+                          >
+                            Receive payment
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 font-medium text-emerald-600">
+                            <CheckCircle className="h-3.5 w-3.5" /> Settled
+                          </span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -1276,5 +1323,155 @@ function ChargeHistoryModal({
         </p>
       </div>
     </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * A printable, emailable account statement for one tenant or owner: every charge
+ * and payment in date order with a running balance, plus the closing position.
+ * This is the "print from the ledger tab" document, and the email button drafts
+ * it to the account holder.
+ */
+function AccountStatementDocument({
+  account,
+  charges,
+  payments,
+  units,
+  generatedBy,
+  onClose
+}: {
+  account: AccountBalance;
+  charges: Charge[];
+  payments: Payment[];
+  units: Unit[];
+  generatedBy: string;
+  onClose: () => void;
+}) {
+  const { unit, category, currency } = account;
+
+  // Build a single date-ordered ledger of charges (debits) and payments (credits).
+  const rows = useMemo(() => {
+    const debits = chargesForUnit(charges, unit, units)
+      .filter(c => c.category === category && c.status === 'open' && c.currency === currency)
+      .map(c => ({ date: c.dueDate, kind: 'charge' as const, label: `${category} charge — ${formatMonthLabel(c.periodMonth)}`, ref: '', debit: c.amount, credit: 0 }));
+    const credits = paymentsForUnit(payments, unit, units)
+      .filter(p => p.category === category && p.status === 'completed' && p.currency === currency)
+      .map(p => ({ date: p.date, kind: 'payment' as const, label: `Payment received (${p.method})`, ref: p.receiptNo, debit: 0, credit: p.amount }));
+    const merged = [...debits, ...credits].sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'charge' ? -1 : 1));
+    let running = 0;
+    return merged.map(row => {
+      running = round2(running + row.debit - row.credit);
+      return { ...row, running };
+    });
+  }, [charges, payments, unit, units, category, currency]);
+
+  const recipientName = category === 'Maintenance' ? unit.ownerName : unit.tenantName || unit.ownerName;
+  const recipientEmail = category === 'Maintenance' ? unit.ownerEmail : unit.tenantEmail || unit.ownerEmail;
+
+  const emailDraft = () => {
+    const body = [
+      `Dear ${recipientName || 'Sir/Madam'},`,
+      '',
+      `Please find your ${category.toLowerCase()} account statement for ${getUnitDisplayName(unit.number)} below.`,
+      '',
+      `Total billed   : ${formatMoneyLong(account.charged, currency)}`,
+      `Total received : ${formatMoneyLong(account.paid, currency)}`,
+      `Balance ${account.balance >= 0 ? 'due' : 'in credit'} : ${formatMoneyLong(Math.abs(account.balance), currency)}`,
+      '',
+      'A full itemised statement is available on request.',
+      '',
+      'Villaggio Del Sol Management'
+    ].join('\n');
+    openMailDraft({ to: recipientEmail || '', subject: `${category} statement — ${getUnitDisplayName(unit.number)}`, body });
+  };
+
+  return (
+    <PrintPortal
+      title={`${category} statement — ${getUnitDisplayName(unit.number)}`}
+      subtitle={recipientName}
+      onClose={onClose}
+      maxWidthClass="max-w-3xl"
+      actions={
+        <button
+          type="button"
+          onClick={emailDraft}
+          disabled={!recipientEmail}
+          title={recipientEmail ? `Draft an email to ${recipientEmail}` : 'No email address on file for this account'}
+          className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50 disabled:opacity-50"
+        >
+          <Mail className="h-3.5 w-3.5" />
+          Email
+        </button>
+      }
+    >
+      <PrintLetterhead
+        documentTitle={`${category} Account Statement`}
+        meta={getUnitDisplayName(unit.number)}
+        generatedBy={generatedBy}
+      />
+
+      <section className="mb-5 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
+        {[
+          [category === 'Maintenance' ? 'Registered owner' : 'Tenant', recipientName || '—'],
+          ['Account', `${category} (${currency})`],
+          ['Total billed', formatMoney(account.charged, currency)],
+          ['Balance', account.balance >= 0 ? `${formatMoney(account.balance, currency)} due` : `${formatMoney(Math.abs(account.balance), currency)} credit`]
+        ].map(([label, value]) => (
+          <div key={label}>
+            <span className="block font-mono text-[9px] uppercase text-slate-500">{label}</span>
+            <span className="font-semibold text-slate-900">{value}</span>
+          </div>
+        ))}
+      </section>
+
+      {rows.length === 0 ? (
+        <p className="text-xs italic text-slate-500">No charges or payments recorded on this account yet.</p>
+      ) : (
+        <TableScroller>
+          <table className="w-full text-left text-[11px]">
+            <thead>
+              <tr className="font-mono text-[9px] uppercase text-slate-600">
+                <th className="p-2">Date</th>
+                <th className="p-2">Detail</th>
+                <th className="p-2">Receipt</th>
+                <th className="p-2 text-right">Charge</th>
+                <th className="p-2 text-right">Paid</th>
+                <th className="p-2 text-right">Balance</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {rows.map((row, i) => (
+                <tr key={i}>
+                  <td className="p-2 whitespace-nowrap">{formatDayLabel(row.date)}</td>
+                  <td className="p-2 font-sans">{row.label}</td>
+                  <td className="p-2">{row.ref || '—'}</td>
+                  <td className="p-2 text-right">{row.debit ? formatMoney(row.debit, currency) : '—'}</td>
+                  <td className="p-2 text-right text-emerald-700">{row.credit ? formatMoney(row.credit, currency) : '—'}</td>
+                  <td className="p-2 text-right font-semibold">{formatMoney(row.running, currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-slate-400 font-mono font-bold">
+                <td className="p-2" colSpan={3}>Closing balance</td>
+                <td className="p-2 text-right">{formatMoney(account.charged, currency)}</td>
+                <td className="p-2 text-right">{formatMoney(account.paid, currency)}</td>
+                <td className="p-2 text-right">{formatMoney(account.balance, currency)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </TableScroller>
+      )}
+
+      {account.balance > 0 && (
+        <p className="mt-4 rounded-lg border border-slate-300 p-3 text-xs">
+          <strong>Amount due: {formatMoneyLong(account.balance, currency)}</strong>, payable to Villaggio Del Sol.
+        </p>
+      )}
+
+      <PrintSignatures left="Prepared by" right="Received / Acknowledged by" />
+    </PrintPortal>
   );
 }

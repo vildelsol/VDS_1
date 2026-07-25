@@ -25,6 +25,8 @@ interface PrintPortalProps {
   onClose: () => void;
   /** Called just before the browser print dialog opens. */
   onBeforePrint?: () => void;
+  /** Extra toolbar buttons (e.g. Email), shown to the left of Print and hidden when printing. */
+  actions?: React.ReactNode;
   /** Constrains the on-screen preview width; printing always uses the full page. */
   maxWidthClass?: string;
   children: React.ReactNode;
@@ -35,6 +37,7 @@ export default function PrintPortal({
   subtitle,
   onClose,
   onBeforePrint,
+  actions,
   maxWidthClass = 'max-w-4xl',
   children
 }: PrintPortalProps) {
@@ -79,6 +82,7 @@ export default function PrintPortal({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {actions}
             <button
               type="button"
               onClick={handlePrint}

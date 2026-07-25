@@ -16,7 +16,7 @@ import {
   getUnitDisplayName
 } from '../types';
 import { formatDayLabel } from '../lib/dates';
-import { errorMessage } from '../lib/api';
+import { api, errorMessage } from '../lib/api';
 import {
   Badge,
   EmptyState,
@@ -32,7 +32,7 @@ import {
   inputClass,
   monoInputClass
 } from './ui';
-import { CalendarClock, KeyRound, Plus, RefreshCw, ShieldCheck, Trash2, UserPlus, Users } from 'lucide-react';
+import { CalendarClock, Database, Download, KeyRound, Plus, RefreshCw, ShieldCheck, Trash2, UserPlus, Users } from 'lucide-react';
 
 interface SystemSettingsProps {
   settings: AppSettings;
@@ -79,7 +79,7 @@ export default function SystemSettings({
   onRemoveFeed,
   onSyncFeed
 }: SystemSettingsProps) {
-  const [tab, setTab] = useState<'permissions' | 'staff' | 'feeds' | 'general'>('permissions');
+  const [tab, setTab] = useState<'permissions' | 'staff' | 'feeds' | 'backup' | 'general'>('permissions');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [busy, setBusy] = useState(false);
@@ -107,6 +107,7 @@ export default function SystemSettings({
           ['permissions', 'Role permissions'],
           ['staff', 'Staff accounts'],
           ['feeds', 'Calendar feeds'],
+          ['backup', 'Backup & recovery'],
           ['general', 'General']
         ] as const)
           .filter(([key]) => key !== 'staff' || isAdmin)
@@ -199,6 +200,8 @@ export default function SystemSettings({
           onError={err => fail(err, 'Could not update the calendar feeds.')}
         />
       )}
+
+      {tab === 'backup' && <BackupPanel onError={err => fail(err, 'Could not read the backup status.')} onNotify={notify} />}
 
       {tab === 'general' && (
         <GeneralPanel
@@ -744,6 +747,183 @@ function FeedsPanel({
               </li>
             ))}
           </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+interface BackupRecord {
+  file: string;
+  date: string;
+  sizeBytes: number;
+  location: 'local' | 'external';
+}
+
+interface BackupStatus {
+  dataFile: string;
+  localBackupDir: string;
+  externalBackupDir: string | null;
+  retentionDays: number;
+  todayBackedUp: boolean;
+  backups: BackupRecord[];
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function BackupPanel({ onError, onNotify }: { onError: (err: unknown) => void; onNotify: (message: string) => void }) {
+  const [status, setStatus] = useState<BackupStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = React.useCallback(async () => {
+    try {
+      setStatus(await api.get<BackupStatus>('/api/backup/status'));
+    } catch (err) {
+      onError(err);
+    }
+  }, [onError]);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  const runBackup = async () => {
+    setBusy(true);
+    try {
+      const result = await api.post<{ written: BackupRecord[]; status: BackupStatus }>('/api/backup/run');
+      setStatus(result.status);
+      onNotify(
+        result.written.length > 0
+          ? `Backup written: ${result.written.map(w => `${w.file} (${w.location})`).join(', ')}.`
+          : 'No backup target could be written to. Check the folder permissions.'
+      );
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!status) {
+    return <EmptyState title="Reading backup status…" />;
+  }
+
+  const external = status.externalBackupDir;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-xs">
+          <p className="font-mono text-[10px] uppercase text-slate-500">Today&apos;s backup</p>
+          <p className={`mt-1 font-display text-lg font-semibold ${status.todayBackedUp ? 'text-emerald-700' : 'text-amber-700'}`}>
+            {status.todayBackedUp ? 'Taken' : 'Not yet taken'}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-400">Runs automatically, checked hourly</p>
+        </div>
+        <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-xs">
+          <p className="font-mono text-[10px] uppercase text-slate-500">Copies kept</p>
+          <p className="mt-1 font-display text-lg font-semibold text-slate-800">{status.backups.length}</p>
+          <p className="mt-1 text-[11px] text-slate-400">Rolling {status.retentionDays} days</p>
+        </div>
+        <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-xs">
+          <p className="font-mono text-[10px] uppercase text-slate-500">Off-machine copy</p>
+          <p className={`mt-1 font-display text-lg font-semibold ${external ? 'text-emerald-700' : 'text-red-700'}`}>
+            {external ? 'Configured' : 'Not configured'}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-400">{external ? 'Second location in use' : 'Backups are on this disk only'}</p>
+        </div>
+      </div>
+
+      {!external && (
+        <InfoNote tone="amber">
+          <strong>Every copy of your records is on this one machine.</strong> The automatic backups sit on the same disk
+          as the database they protect, so a disk failure, a lost laptop or a deleted folder takes both. Set the{' '}
+          <code className="rounded bg-white px-1 font-mono">VDS_BACKUP_DIR</code> environment variable to a synced folder
+          (Dropbox, iCloud Drive, OneDrive) or an external drive, and a second copy is written there each day. Download
+          a snapshot below in the meantime.
+        </InfoNote>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <SubmitButton type="button" busy={busy} busyLabel="Backing up…" onClick={() => void runBackup()}>
+          <RefreshCw className="h-4 w-4" /> Back up now
+        </SubmitButton>
+        <a
+          href="/api/backup/download"
+          className="flex items-center gap-1.5 rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50"
+        >
+          <Download className="h-4 w-4" /> Download a snapshot
+        </a>
+      </div>
+
+      <div className="space-y-3 rounded-2xl border border-slate-100 bg-white p-5 shadow-xs">
+        <h3 className="flex items-center gap-1.5 font-display text-sm font-semibold text-slate-900">
+          <Database className="h-4 w-4 text-teal-600" />
+          Where the records live
+        </h3>
+        <dl className="space-y-1.5 text-xs">
+          <div className="flex flex-wrap justify-between gap-2">
+            <dt className="text-slate-500">Live database</dt>
+            <dd className="break-all font-mono text-[11px] text-slate-800">{status.dataFile}</dd>
+          </div>
+          <div className="flex flex-wrap justify-between gap-2">
+            <dt className="text-slate-500">Daily backups</dt>
+            <dd className="break-all font-mono text-[11px] text-slate-800">{status.localBackupDir}</dd>
+          </div>
+          <div className="flex flex-wrap justify-between gap-2">
+            <dt className="text-slate-500">Second location</dt>
+            <dd className="break-all font-mono text-[11px] text-slate-800">{external || 'not configured'}</dd>
+          </div>
+        </dl>
+        <InfoNote>
+          <strong>To restore:</strong> stop the application, copy the backup file you want over{' '}
+          <code className="rounded bg-white px-1 font-mono">db.json</code>, and start it again. If{' '}
+          <code className="rounded bg-white px-1 font-mono">db.json</code> is ever damaged, the application refuses to
+          start rather than overwriting it — so nothing is lost while you recover.
+        </InfoNote>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
+        <div className="border-b border-slate-100 bg-slate-50 p-4">
+          <h3 className="font-display text-sm font-semibold text-slate-900">Available backups</h3>
+        </div>
+        {status.backups.length === 0 ? (
+          <div className="p-6">
+            <EmptyState title="No backups yet" hint="The first one is taken the day after the application starts, or immediately with “Back up now”." />
+          </div>
+        ) : (
+          <TableScroller>
+            <table className="w-full min-w-[420px] border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] uppercase text-slate-500">
+                  <th scope="col" className="p-3">Date</th>
+                  <th scope="col" className="p-3">File</th>
+                  <th scope="col" className="p-3">Location</th>
+                  <th scope="col" className="p-3 text-right">Size</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {status.backups.map(b => (
+                  <tr key={`${b.location}-${b.file}`} className="hover:bg-slate-50/50">
+                    <td className="p-3 font-mono">{formatDayLabel(b.date)}</td>
+                    <td className="p-3 font-mono text-[11px] text-slate-500">{b.file}</td>
+                    <td className="p-3">
+                      <Badge tone={b.location === 'external' ? 'green' : 'slate'}>
+                        {b.location === 'external' ? 'Off-machine' : 'This machine'}
+                      </Badge>
+                    </td>
+                    <td className="p-3 text-right font-mono text-slate-500">{formatBytes(b.sizeBytes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
         )}
       </div>
     </div>

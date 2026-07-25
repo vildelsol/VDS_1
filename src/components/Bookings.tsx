@@ -9,7 +9,8 @@ import { bookingCoversNight, bookingsForUnit, bookingsOverlap } from '../lib/fin
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, parseDay, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
-import PrintPortal, { PrintLetterhead } from './PrintPortal';
+import { buildStayReceiptEmail, openMailDraft } from '../lib/email';
+import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import {
   Badge,
   EmptyState,
@@ -25,7 +26,7 @@ import {
   inputClass,
   monoInputClass
 } from './ui';
-import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Plus, Printer, RefreshCw, Search, ShieldCheck } from 'lucide-react';
+import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Mail, Plus, Printer, RefreshCw, Search, ShieldCheck } from 'lucide-react';
 
 interface BookingsProps {
   units: Unit[];
@@ -54,6 +55,7 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
   const [adding, setAdding] = useState<{ unitId?: string; checkIn?: string } | null>(null);
   const [editing, setEditing] = useState<Booking | null>(null);
   const [printing, setPrinting] = useState<{ from: string; to: string } | null>(null);
+  const [receiptBooking, setReceiptBooking] = useState<Booking | null>(null);
   const [showPrintOptions, setShowPrintOptions] = useState(false);
   const [printFrom, setPrintFrom] = useState(monthStart(currentMonth()));
   const [printTo, setPrintTo] = useState(monthEnd(currentMonth()));
@@ -480,6 +482,7 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
                     <th scope="col" className="p-3 text-right">Deposit</th>
                     <th scope="col" className="p-3 text-right">Balance</th>
                     <th scope="col" className="p-3">Status</th>
+                    <th scope="col" className="p-3 text-right">Receipt</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -509,6 +512,17 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
                       <td className="p-3 text-right font-mono font-semibold text-amber-600">{formatMoney(b.balanceDue, b.currency)}</td>
                       <td className="p-3">
                         <Badge tone={b.status === 'checked-in' ? 'green' : b.status === 'confirmed' ? 'blue' : b.status === 'cancelled' ? 'red' : 'slate'}>{b.status}</Badge>
+                      </td>
+                      <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
+                        {b.status !== 'cancelled' && (
+                          <button
+                            onClick={() => setReceiptBooking(b)}
+                            title="Print or email a guest stay receipt"
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50"
+                          >
+                            <Printer className="h-3.5 w-3.5" /> Guest receipt
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -562,7 +576,119 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
           onClose={() => setPrinting(null)}
         />
       )}
+
+      {receiptBooking && (
+        <GuestStayReceipt
+          booking={receiptBooking}
+          unit={units.find(u => u.id === receiptBooking.unitId)}
+          generatedBy={session.name}
+          onClose={() => setReceiptBooking(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * A guest-facing document for a short-term stay — the confirmation/receipt the
+ * guest keeps, distinct from the internal payment receipt in the finance ledger.
+ * It shows the stay, what was paid, and any balance due on arrival.
+ */
+function GuestStayReceipt({
+  booking,
+  unit,
+  generatedBy,
+  onClose
+}: {
+  booking: Booking;
+  unit: Unit | undefined;
+  generatedBy: string;
+  onClose: () => void;
+}) {
+  const villa = unit ? getUnitDisplayName(unit.number) : `Unit ${booking.unitNumber}`;
+  const nights = nightsBetween(booking.checkIn, booking.checkOut);
+  const paidInFull = booking.balanceDue <= 0;
+
+  return (
+    <PrintPortal
+      title={`Guest receipt — ${booking.guestName}`}
+      subtitle={`${villa} · ${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)}`}
+      onClose={onClose}
+      maxWidthClass="max-w-md"
+      actions={
+        <button
+          type="button"
+          onClick={() => openMailDraft(buildStayReceiptEmail(booking, unit))}
+          disabled={!booking.guestEmail}
+          title={booking.guestEmail ? `Draft an email to ${booking.guestEmail}` : 'No guest email on file'}
+          className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50 disabled:opacity-50"
+        >
+          <Mail className="h-3.5 w-3.5" />
+          Email
+        </button>
+      }
+    >
+      <PrintLetterhead
+        documentTitle={paidInFull ? 'Guest Stay Receipt' : 'Guest Stay Confirmation'}
+        meta={villa}
+        generatedBy={generatedBy}
+      />
+
+      <p className="mb-4 text-xs text-slate-700">
+        Dear {booking.guestName}, thank you for choosing Villaggio Del Sol. Your reservation details are confirmed below.
+      </p>
+
+      <dl className="space-y-0 text-xs">
+        {[
+          ['Villa', villa],
+          ['Booking channel', booking.source],
+          ['Arrival', formatDayLabel(booking.checkIn)],
+          ['Departure', formatDayLabel(booking.checkOut)],
+          ['Nights', String(nights)],
+          ...(booking.nightlyRate ? [['Nightly rate', formatMoneyLong(booking.nightlyRate, booking.currency)]] : [])
+        ].map(([label, value]) => (
+          <div key={label} className="flex justify-between gap-4 border-b border-slate-200 py-2">
+            <dt className="text-slate-500">{label}</dt>
+            <dd className="text-right font-semibold text-slate-900">{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      <div className="mt-4 space-y-1.5 rounded-xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs">
+        <div className="flex justify-between">
+          <span className="text-slate-600">Stay total</span>
+          <span className="font-semibold">{formatMoneyLong(booking.amount, booking.currency)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-slate-600">Deposit / paid</span>
+          <span className="font-semibold text-emerald-700">{formatMoneyLong(booking.depositPaid, booking.currency)}</span>
+        </div>
+        <div className="flex justify-between border-t border-slate-300 pt-1.5 text-sm">
+          <span className="font-semibold">{paidInFull ? 'Balance' : 'Balance due on arrival'}</span>
+          <span className={`font-bold ${paidInFull ? 'text-emerald-700' : 'text-amber-700'}`}>
+            {formatMoneyLong(booking.balanceDue, booking.currency)}
+          </span>
+        </div>
+      </div>
+
+      {paidInFull ? (
+        <p className="print-emphasis mt-4 rounded-lg border border-emerald-500 bg-emerald-50 py-1.5 text-center text-xs font-bold uppercase tracking-widest text-emerald-800">
+          Paid in full
+        </p>
+      ) : (
+        <p className="mt-4 text-center text-[11px] text-slate-500">
+          The balance shown is payable on arrival. Amounts are in {booking.currency}.
+        </p>
+      )}
+
+      <PrintSignatures left="Villaggio Del Sol" right="Guest signature" />
+
+      <p className="mt-5 border-t border-dashed border-slate-300 pt-2 text-center font-mono text-[9px] uppercase text-slate-400">
+        Villaggio Del Sol · Ocho Rios, Jamaica · we look forward to welcoming you
+      </p>
+    </PrintPortal>
   );
 }
 

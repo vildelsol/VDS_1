@@ -145,6 +145,43 @@ export interface Unit {
   tenantEmergencyEmail?: string;
 }
 
+/**
+ * An occupancy period for a unit.
+ *
+ * The Unit record carries only the *current* tenant, as a set of editable fields.
+ * Overwriting them, or moving a unit off a long-term lease, used to discard the
+ * previous occupant entirely — so there was no way to answer "who lived in Villa 7
+ * last year, and what were they paying?". Tenancies are append-only: a tenant is
+ * never edited away, their period is closed and a new one opened.
+ */
+export interface Tenancy {
+  id: string;
+  unitId: string;
+  unitNumber: string;
+  tenantName: string;
+  tenantEmail: string;
+  tenantPhone: string;
+  emergencyName: string;
+  emergencyPhone: string;
+  emergencyEmail: string;
+  /** Rent agreed for this occupancy, captured so a later rate change does not rewrite history. */
+  monthlyRent: number;
+  currency: Currency;
+  rentDueDay: number;
+  startedOn: string; // YYYY-MM-DD
+  endedOn?: string; // YYYY-MM-DD
+  endReason?: string;
+  status: 'active' | 'ended';
+  /** True when the tenancy was ended by eviction rather than an ordinary move-out. */
+  evicted?: boolean;
+  /** Rent written off as bad debt at eviction. Retained for the record even though it left the dashboard. */
+  writeOffAmount?: number;
+  writeOffCurrency?: Currency;
+  recordedBy: string;
+  recordedAt: string;
+  closedBy?: string;
+}
+
 export interface Booking {
   id: string;
   unitId: string;

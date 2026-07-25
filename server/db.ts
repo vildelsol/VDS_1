@@ -22,6 +22,7 @@ import {
   Charge,
   Expense,
   Payment,
+  Tenancy,
   Unit,
   UnitActivity,
   User,
@@ -47,6 +48,7 @@ export interface Session {
 export interface Database {
   schemaVersion: number;
   units: Unit[];
+  tenancies: Tenancy[];
   bookings: Booking[];
   charges: Charge[];
   payments: Payment[];
@@ -60,11 +62,22 @@ export interface Database {
   settings: AppSettings;
 }
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const DATA_DIR = process.env.VDS_DATA_DIR || process.cwd();
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const BACKUP_DIR = path.join(DATA_DIR, 'db-backups');
+
+/**
+ * Optional second backup location. Point this at a synced folder (Dropbox,
+ * iCloud Drive, OneDrive) or a mounted external drive so a copy of the records
+ * leaves this machine. Backups written only to db-backups/ sit on the same disk
+ * as the database they are protecting, which does not survive a disk failure or
+ * the folder being deleted.
+ */
+const EXTERNAL_BACKUP_DIR = process.env.VDS_BACKUP_DIR || '';
+
+const BACKUP_RETENTION_DAYS = 30;
 
 export function fullPermissions(): RolePermissions {
   return {
@@ -166,6 +179,7 @@ function emptyDb(): Database {
   return {
     schemaVersion: SCHEMA_VERSION,
     units: seedUnits(),
+    tenancies: [],
     bookings: [],
     charges: [],
     payments: [],
@@ -194,27 +208,108 @@ function writeAtomic(db: Database) {
   fs.renameSync(tmp, DB_FILE);
 }
 
-/** Keep a rolling set of daily backups so a bad edit is always recoverable. */
-function backupOncePerDay() {
-  try {
-    if (!fs.existsSync(DB_FILE)) return;
-    if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    const stamp = new Date().toISOString().substring(0, 10);
-    const target = path.join(BACKUP_DIR, `db-${stamp}.json`);
-    if (!fs.existsSync(target)) {
-      fs.copyFileSync(DB_FILE, target);
-      const files = fs
-        .readdirSync(BACKUP_DIR)
-        .filter(f => f.startsWith('db-') && f.endsWith('.json'))
-        .sort();
-      while (files.length > 30) {
-        const oldest = files.shift();
-        if (oldest) fs.unlinkSync(path.join(BACKUP_DIR, oldest));
-      }
-    }
-  } catch (err) {
-    console.error('[vds] backup failed (continuing):', err);
+export interface BackupRecord {
+  file: string;
+  date: string;
+  sizeBytes: number;
+  location: 'local' | 'external';
+}
+
+function localDayStamp(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function pruneBackups(dir: string) {
+  const files = fs
+    .readdirSync(dir)
+    .filter(f => f.startsWith('db-') && f.endsWith('.json'))
+    .sort();
+  while (files.length > BACKUP_RETENTION_DAYS) {
+    const oldest = files.shift();
+    if (oldest) fs.unlinkSync(path.join(dir, oldest));
   }
+}
+
+/**
+ * Copy the database into the backup folder(s) for today, if not already done.
+ *
+ * This used to be called only from getDb(), which caches after the first call —
+ * so it ran once when the server started and never again. A server left running
+ * for a month produced exactly one backup, dated the day it booted. It is now
+ * driven by a timer as well (see startBackupSchedule) and by every write day
+ * rollover, so an always-on server still gets a copy each day.
+ */
+export function runDailyBackup(force = false): BackupRecord[] {
+  const written: BackupRecord[] = [];
+  const stamp = localDayStamp();
+
+  const targets: { dir: string; location: 'local' | 'external' }[] = [{ dir: BACKUP_DIR, location: 'local' }];
+  if (EXTERNAL_BACKUP_DIR) targets.push({ dir: EXTERNAL_BACKUP_DIR, location: 'external' });
+
+  for (const { dir, location } of targets) {
+    try {
+      if (!fs.existsSync(DB_FILE)) continue;
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const target = path.join(dir, `db-${stamp}.json`);
+      if (force || !fs.existsSync(target)) {
+        // Copy through a temp name so a half-written backup is never mistaken
+        // for a good one if the process dies mid-copy.
+        const tmp = `${target}.partial`;
+        fs.copyFileSync(DB_FILE, tmp);
+        fs.renameSync(tmp, target);
+        written.push({ file: `db-${stamp}.json`, date: stamp, sizeBytes: fs.statSync(target).size, location });
+      }
+      pruneBackups(dir);
+    } catch (err) {
+      // A failing backup must never take the application down with it.
+      console.error(`[vds] backup to ${dir} failed (continuing):`, (err as Error).message);
+    }
+  }
+  return written;
+}
+
+export function listBackups(): BackupRecord[] {
+  const out: BackupRecord[] = [];
+  const targets: { dir: string; location: 'local' | 'external' }[] = [{ dir: BACKUP_DIR, location: 'local' }];
+  if (EXTERNAL_BACKUP_DIR) targets.push({ dir: EXTERNAL_BACKUP_DIR, location: 'external' });
+
+  for (const { dir, location } of targets) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      for (const file of fs.readdirSync(dir)) {
+        if (!file.startsWith('db-') || !file.endsWith('.json')) continue;
+        const stat = fs.statSync(path.join(dir, file));
+        out.push({ file, date: file.slice(3, 13), sizeBytes: stat.size, location });
+      }
+    } catch {
+      /* an unreadable backup folder is reported as "no backups", not a crash */
+    }
+  }
+  return out.sort((a, b) => b.date.localeCompare(a.date) || a.location.localeCompare(b.location));
+}
+
+let backupTimer: NodeJS.Timeout | null = null;
+
+/** Check hourly whether today's backup exists yet. Cheap, and survives a long uptime. */
+export function startBackupSchedule() {
+  if (backupTimer) return;
+  runDailyBackup();
+  backupTimer = setInterval(() => runDailyBackup(), 60 * 60 * 1000);
+  // Do not hold the process open purely for the backup timer.
+  if (typeof backupTimer.unref === 'function') backupTimer.unref();
+}
+
+export function backupStatus() {
+  const backups = listBackups();
+  return {
+    dataFile: DB_FILE,
+    localBackupDir: BACKUP_DIR,
+    externalBackupDir: EXTERNAL_BACKUP_DIR || null,
+    retentionDays: BACKUP_RETENTION_DAYS,
+    todayBackedUp: backups.some(b => b.date === localDayStamp()),
+    backups: backups.slice(0, 60)
+  };
 }
 
 let cache: Database | null = null;
@@ -233,7 +328,7 @@ function readFromDisk(): Database {
 /** Load the database, running the migration exactly once per process start. */
 export function getDb(): Database {
   if (cache) return cache;
-  backupOncePerDay();
+  runDailyBackup();
   let db: Database;
   try {
     db = readFromDisk();
@@ -369,6 +464,55 @@ function migrate(db: Database): boolean {
   if (!db.counters) {
     db.counters = { receiptYear: new Date().getFullYear(), receiptSeq: 0 };
     changed = true;
+  }
+
+  // Open a tenancy record for every unit that already has a tenant, so the
+  // occupancy currently on file becomes the start of a retained history rather
+  // than something that disappears the next time the unit is edited.
+  //
+  // This is written as a reconciliation rather than a one-shot version check:
+  // the shape of the array cannot be used to detect "not yet migrated" (the
+  // default database supplies an empty one), and a reconciliation also repairs a
+  // unit whose tenancy record went missing for any other reason.
+  {
+    if (!Array.isArray(db.tenancies)) db.tenancies = [];
+    const opened: string[] = [];
+    for (const unit of db.units) {
+      if (!unit.tenantName || !unit.tenantName.trim()) continue;
+      const alreadyTracked = db.tenancies.some(
+        t => t.unitId === unit.id && t.status === 'active' && t.tenantName.trim().toLowerCase() === unit.tenantName.trim().toLowerCase()
+      );
+      if (alreadyTracked) continue;
+      db.tenancies.push({
+        id: `ten-migrated-${unit.id}`,
+        unitId: unit.id,
+        unitNumber: unit.number,
+        tenantName: unit.tenantName.trim(),
+        tenantEmail: unit.tenantEmail || '',
+        tenantPhone: unit.tenantPhone || '',
+        emergencyName: unit.tenantEmergencyName || '',
+        emergencyPhone: unit.tenantEmergencyPhone || '',
+        emergencyEmail: unit.tenantEmergencyEmail || '',
+        monthlyRent: unit.monthlyRent || 0,
+        currency: unit.currency,
+        rentDueDay: unit.rentDueDay || 1,
+        // The true move-in date is not recorded anywhere, so it is left blank
+        // rather than invented. Staff can correct it on the tenancy record.
+        startedOn: '',
+        status: 'active',
+        recordedBy: 'System Migration',
+        recordedAt: new Date().toISOString()
+      });
+      opened.push(`${unit.number}: ${unit.tenantName.trim()}`);
+    }
+    if (opened.length > 0) {
+      note(
+        `Opened ${opened.length} tenancy record(s) from the current unit register`,
+        'Tenancy',
+        'backfill',
+        `Occupancy history now survives unit edits. Start dates are unknown and left blank: ${opened.join(' | ')}`
+      );
+    }
   }
 
   // Settings: drop the blanket junior override, add the new granular permission.

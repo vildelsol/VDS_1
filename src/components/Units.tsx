@@ -11,6 +11,7 @@ import {
   Currency,
   Payment,
   SessionUser,
+  Tenancy,
   UNIT_STATUSES,
   UNIT_STATUS_LABELS,
   Unit,
@@ -53,10 +54,13 @@ interface UnitsProps {
   payments: Payment[];
   utilities: UtilityReading[];
   bookings: Booking[];
+  tenancies: Tenancy[];
   unitActivities: UnitActivity[];
   settings: AppSettings;
   session: SessionUser;
   onUpdateUnit: (unit: Record<string, unknown> & { id: string }) => Promise<unknown>;
+  onUpdateTenancy: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
+  onEvictTenancy: (id: string, payload: Record<string, unknown>) => Promise<{ writtenOff: number; currency: string; chargesVoided: number }>;
   onAddUnitActivity: (payload: Record<string, unknown>) => Promise<unknown>;
   onDeleteUnitActivity: (id: string) => Promise<unknown>;
 }
@@ -89,10 +93,13 @@ export default function Units({
   payments,
   utilities,
   bookings,
+  tenancies,
   unitActivities,
   settings,
   session,
   onUpdateUnit,
+  onUpdateTenancy,
+  onEvictTenancy,
   onAddUnitActivity,
   onDeleteUnitActivity
 }: UnitsProps) {
@@ -100,10 +107,14 @@ export default function Units({
   const [editing, setEditing] = useState(false);
   const [printUnit, setPrintUnit] = useState<Unit | null>(null);
   const [logActivityFor, setLogActivityFor] = useState<Unit | null>(null);
+  const [editTenancy, setEditTenancy] = useState<Tenancy | null>(null);
+  const [evictTenancy, setEvictTenancy] = useState<Tenancy | null>(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
   const canEdit = !!session.permissions.editUnits;
+  // Eviction writes off owed rent, so it is a veto-level action, like reversing a payment.
+  const canEvict = !!session.permissions.reversePayments;
   const isAdmin = session.role === 'ADMINISTRATOR';
   const todayStr = today();
 
@@ -203,12 +214,16 @@ export default function Units({
           charges={charges}
           payments={payments}
           units={units}
+          tenancies={tenancies}
           unitActivities={unitActivities}
           settings={settings}
           canEdit={canEdit}
+          canEvict={canEvict}
           onClose={() => setSelected(null)}
           onEdit={() => setEditing(true)}
           onPrint={() => setPrintUnit(live)}
+          onEditTenancy={setEditTenancy}
+          onEvictTenancy={setEvictTenancy}
           onLogActivity={() => setLogActivityFor(live)}
           onDeleteActivity={async id => {
             try {
@@ -249,6 +264,40 @@ export default function Units({
         />
       )}
 
+      {editTenancy && (
+        <TenancyEditor
+          tenancy={editTenancy}
+          onClose={() => setEditTenancy(null)}
+          onSave={async fields => {
+            await onUpdateTenancy(editTenancy.id, fields);
+            setSuccess('Tenancy record updated. The occupancy history is retained in full.');
+            setError('');
+            setEditTenancy(null);
+          }}
+        />
+      )}
+
+      {evictTenancy && (
+        <EvictModal
+          tenancy={evictTenancy}
+          charges={charges}
+          payments={payments}
+          units={units}
+          onClose={() => setEvictTenancy(null)}
+          onSubmit={async payload => {
+            const result = await onEvictTenancy(evictTenancy.id, payload);
+            setSuccess(
+              `${evictTenancy.tenantName} evicted from ${getUnitDisplayName(evictTenancy.unitNumber)}. ` +
+                (result.writtenOff > 0
+                  ? `${formatMoneyLong(result.writtenOff, result.currency as 'USD' | 'JMD')} of unpaid rent was written off and cleared from the dashboard; the record is kept.`
+                  : 'There was no outstanding rent to write off.')
+            );
+            setError('');
+            setEvictTenancy(null);
+          }}
+        />
+      )}
+
       {printUnit && (
         <UnitLedgerDocument
           unit={printUnit}
@@ -257,6 +306,7 @@ export default function Units({
           payments={payments}
           utilities={utilities}
           bookings={bookings}
+          tenancies={tenancies}
           unitActivities={unitActivities}
           generatedBy={session.name}
           onClose={() => setPrintUnit(null)}
@@ -273,12 +323,16 @@ function UnitDetail({
   charges,
   payments,
   units,
+  tenancies,
   unitActivities,
   settings,
   canEdit,
+  canEvict,
   onClose,
   onEdit,
   onPrint,
+  onEditTenancy,
+  onEvictTenancy,
   onLogActivity,
   onDeleteActivity
 }: {
@@ -286,12 +340,16 @@ function UnitDetail({
   charges: Charge[];
   payments: Payment[];
   units: Unit[];
+  tenancies: Tenancy[];
   unitActivities: UnitActivity[];
   settings: AppSettings;
   canEdit: boolean;
+  canEvict: boolean;
   onClose: () => void;
   onEdit: () => void;
   onPrint: () => void;
+  onEditTenancy: (t: Tenancy) => void;
+  onEvictTenancy: (t: Tenancy) => void;
   onLogActivity: () => void;
   onDeleteActivity: (id: string) => Promise<void>;
 }) {
@@ -299,6 +357,9 @@ function UnitDetail({
   const rentAccount = accountBalance(unit, 'Rent', charges, payments, undefined, units);
   const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, undefined, units);
   const activities = unitActivities.filter(a => a.unitId === unit.id);
+  const unitTenancies = tenancies
+    .filter(t => t.unitId === unit.id)
+    .sort((a, b) => (b.startedOn || '').localeCompare(a.startedOn || '') || b.recordedAt.localeCompare(a.recordedAt));
 
   return (
     <Modal title={getUnitDisplayName(unit.number)} subtitle={UNIT_STATUS_LABELS[unit.status]} onClose={onClose} maxWidthClass="max-w-lg">
@@ -343,6 +404,81 @@ function UnitDetail({
             )}
           </section>
         )}
+
+        <section className="space-y-3">
+          <h4 className="border-b border-slate-100 pb-1 font-mono text-xs uppercase tracking-wider text-slate-400">
+            Occupancy history ({unitTenancies.length})
+          </h4>
+          {unitTenancies.length === 0 ? (
+            <EmptyState
+              title="No tenancy recorded for this villa"
+              hint="A tenancy opens automatically when a tenant is entered on a long-term lease, and is kept permanently once closed."
+            />
+          ) : (
+            <ul className="space-y-2">
+              {unitTenancies.map(tenancy => (
+                <li
+                  key={tenancy.id}
+                  className={`rounded-xl border p-3 text-xs ${
+                    tenancy.status === 'active' ? 'border-indigo-100 bg-indigo-50/40' : 'border-slate-100 bg-slate-50'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-semibold text-slate-900">{tenancy.tenantName}</span>
+                        {tenancy.status === 'active' ? <Badge tone="green">Current</Badge> : <Badge tone="slate">Past</Badge>}
+                      </div>
+                      <p className="mt-1 font-mono text-[10px] text-slate-500">
+                        {tenancy.startedOn ? formatDayLabel(tenancy.startedOn) : 'move-in date not recorded'}
+                        {' → '}
+                        {tenancy.endedOn ? formatDayLabel(tenancy.endedOn) : 'present'}
+                        {' · '}
+                        {formatMoneyLong(tenancy.monthlyRent, tenancy.currency)}/month
+                      </p>
+                      {(tenancy.tenantEmail || tenancy.tenantPhone) && (
+                        <p className="mt-0.5 text-[10px] text-slate-500">
+                          {[tenancy.tenantEmail, tenancy.tenantPhone].filter(Boolean).join(' • ')}
+                        </p>
+                      )}
+                      {tenancy.endReason && <p className="mt-0.5 text-[10px] italic text-slate-500">{tenancy.endReason}</p>}
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-1.5">
+                      {canEdit && (
+                        <button
+                          type="button"
+                          onClick={() => onEditTenancy(tenancy)}
+                          className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          {tenancy.status === 'active' ? 'Record move-out' : 'Correct dates'}
+                        </button>
+                      )}
+                      {tenancy.status === 'active' && canEvict && (
+                        <button
+                          type="button"
+                          onClick={() => onEvictTenancy(tenancy)}
+                          className="rounded-lg border border-red-200 bg-white px-2.5 py-1 text-[10px] font-medium text-red-600 hover:bg-red-50"
+                        >
+                          Evict tenant
+                        </button>
+                      )}
+                      {tenancy.evicted && <Badge tone="red">Evicted</Badge>}
+                      {tenancy.writeOffAmount !== undefined && tenancy.writeOffAmount > 0 && tenancy.writeOffCurrency && (
+                        <span className="text-[9px] font-mono text-red-600">
+                          {formatMoneyLong(tenancy.writeOffAmount, tenancy.writeOffCurrency)} written off
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="font-mono text-[10px] leading-relaxed text-slate-400">
+            Tenancies are never deleted. Changing the tenant or taking the villa off a long-term lease closes the
+            current period and keeps it here, together with every receipt issued to that tenant.
+          </p>
+        </section>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <BillingCard
@@ -842,6 +978,200 @@ function UnitEditor({
 
 /* ------------------------------------------------------------------ */
 
+function EvictModal({
+  tenancy,
+  charges,
+  payments,
+  units,
+  onClose,
+  onSubmit
+}: {
+  tenancy: Tenancy;
+  charges: Charge[];
+  payments: Payment[];
+  units: Unit[];
+  onClose: () => void;
+  onSubmit: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [reason, setReason] = useState('');
+  const [effectiveDate, setEffectiveDate] = useState(today());
+  const [confirmed, setConfirmed] = useState(false);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // Preview the rent that would be written off: open rent charges for the unit in
+  // the tenancy's currency, minus rent already received. Mirrors the server.
+  const unit = units.find(u => u.id === tenancy.unitId);
+  const account = unit ? accountBalance(unit, 'Rent', charges, payments, undefined, units) : null;
+  const writeOff = account && account.balance > 0 ? account.balance : 0;
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    if (reason.trim().length < 5) {
+      setError('Give a reason of at least 5 characters. It is stored permanently in the record.');
+      return;
+    }
+    if (!confirmed) {
+      setError('Please confirm you understand the outstanding rent will be written off.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit({ reason: reason.trim(), effectiveDate });
+    } catch (err) {
+      setError(errorMessage(err, 'Could not process the eviction.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Evict tenant"
+      subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
+      onClose={onClose}
+      footer={
+        <div className="flex gap-3">
+          <button
+            type="submit"
+            form="vds-evict-form"
+            disabled={busy}
+            className="flex-1 rounded-xl bg-red-600 py-2.5 text-xs font-medium text-white transition-all hover:bg-red-700 disabled:opacity-60"
+          >
+            {busy ? 'Processing…' : 'Evict and write off'}
+          </button>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-evict-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <InfoNote tone="amber">
+          Recording an eviction ends this tenancy, frees the villa, and <strong>writes off the tenant&apos;s unpaid
+          rent</strong> so it stops appearing on the dashboard and in the notifications hub. Nothing is deleted — the
+          tenancy, the receipts, and the written-off amount stay in the record and audit trail as bad debt.
+        </InfoNote>
+
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-center">
+          <span className="block font-mono text-[10px] uppercase text-red-700">Rent to be written off</span>
+          <span className="font-mono text-lg font-bold text-red-700">
+            {writeOff > 0 ? formatMoneyLong(writeOff, tenancy.currency) : `${formatMoneyLong(0, tenancy.currency)} — nothing outstanding`}
+          </span>
+        </div>
+
+        <Field label="Effective date of eviction" htmlFor="ev-date" required>
+          <input id="ev-date" type="date" value={effectiveDate} max={today()} onChange={e => setEffectiveDate(e.target.value)} required className={monoInputClass} />
+        </Field>
+
+        <Field label="Reason / reference" htmlFor="ev-reason" required hint="e.g. Non-payment of rent for 3 months; notice served 2026-05-01; court order VDS-2026-14.">
+          <textarea id="ev-reason" rows={3} value={reason} onChange={e => setReason(e.target.value)} required className={inputClass} />
+        </Field>
+
+        <label className="flex items-start gap-2 text-xs text-slate-700">
+          <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} className="mt-0.5" />
+          <span>I have the authority to evict this tenant and understand the outstanding rent will be written off as bad debt.</span>
+        </label>
+      </form>
+    </Modal>
+  );
+}
+
+function TenancyEditor({
+  tenancy,
+  onClose,
+  onSave
+}: {
+  tenancy: Tenancy;
+  onClose: () => void;
+  onSave: (fields: Record<string, unknown>) => Promise<void>;
+}) {
+  const closing = tenancy.status === 'active';
+  const [startedOn, setStartedOn] = useState(tenancy.startedOn || '');
+  const [endedOn, setEndedOn] = useState(tenancy.endedOn || (closing ? today() : ''));
+  const [endReason, setEndReason] = useState(tenancy.endReason || '');
+  const [recordEnd, setRecordEnd] = useState(!closing);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    if (recordEnd && startedOn && endedOn && endedOn < startedOn) {
+      setError('The move-out date cannot fall before the move-in date.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await onSave({
+        startedOn,
+        ...(recordEnd ? { endedOn, endReason } : {})
+      });
+    } catch (err) {
+      setError(errorMessage(err, 'Could not update the tenancy record.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={closing ? 'Record move-out' : 'Correct tenancy dates'}
+      subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
+      onClose={onClose}
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton busy={busy} busyLabel="Saving…" form="vds-tenancy-form" className="flex-1">
+            Save tenancy record
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-tenancy-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <InfoNote>
+          Record the dates the tenant actually moved in and out, not the date the paperwork was done. Receipts already
+          issued to {tenancy.tenantName} are unaffected and stay in the ledger either way.
+        </InfoNote>
+
+        <Field
+          label="Move-in date"
+          htmlFor="tn-start"
+          hint={tenancy.startedOn ? undefined : 'Not recorded — this tenancy predates occupancy tracking.'}
+        >
+          <input id="tn-start" type="date" value={startedOn} max={today()} onChange={e => setStartedOn(e.target.value)} className={monoInputClass} />
+        </Field>
+
+        {closing && (
+          <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+            <input type="checkbox" checked={recordEnd} onChange={e => setRecordEnd(e.target.checked)} className="mt-0.5" />
+            <span>
+              <strong>Close this tenancy.</strong> The villa is marked vacant and the current tenant fields are cleared,
+              but this record and all their receipts are kept permanently.
+            </span>
+          </label>
+        )}
+
+        {recordEnd && (
+          <>
+            <Field label="Move-out date" htmlFor="tn-end" required>
+              <input id="tn-end" type="date" value={endedOn} min={startedOn || undefined} onChange={e => setEndedOn(e.target.value)} required className={monoInputClass} />
+            </Field>
+            <Field label="Reason" htmlFor="tn-reason" hint="e.g. Lease expired and not renewed; moved to Kingston.">
+              <textarea id="tn-reason" rows={2} value={endReason} onChange={e => setEndReason(e.target.value)} className={inputClass} />
+            </Field>
+          </>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
 function LogActivityModal({
   unit,
   onClose,
@@ -944,6 +1274,7 @@ function UnitLedgerDocument({
   payments,
   utilities,
   bookings,
+  tenancies,
   unitActivities,
   generatedBy,
   onClose
@@ -954,6 +1285,7 @@ function UnitLedgerDocument({
   payments: Payment[];
   utilities: UtilityReading[];
   bookings: Booking[];
+  tenancies: Tenancy[];
   unitActivities: UnitActivity[];
   generatedBy: string;
   onClose: () => void;
@@ -1017,7 +1349,41 @@ function UnitLedgerDocument({
           ))}
       </section>
 
-      <PrintSection title="I. Payments received">
+      {tenancies.filter(t => t.unitId === unit.id).length > 0 && (
+        <PrintSection title="I. Occupancy history">
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Tenant</th>
+                  <th className="p-2">Moved in</th>
+                  <th className="p-2">Moved out</th>
+                  <th className="p-2 text-right">Rent agreed</th>
+                  <th className="p-2">Contact</th>
+                  <th className="p-2">Reason ended</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {tenancies
+                  .filter(t => t.unitId === unit.id)
+                  .sort((a, b) => (b.startedOn || '').localeCompare(a.startedOn || ''))
+                  .map(t => (
+                    <tr key={t.id}>
+                      <td className="p-2 font-sans font-semibold">{t.tenantName}</td>
+                      <td className="p-2">{t.startedOn ? formatDayLabel(t.startedOn) : 'not recorded'}</td>
+                      <td className="p-2">{t.endedOn ? formatDayLabel(t.endedOn) : 'present'}</td>
+                      <td className="p-2 text-right">{formatMoney(t.monthlyRent, t.currency)} {t.currency}</td>
+                      <td className="p-2 font-sans">{[t.tenantEmail, t.tenantPhone].filter(Boolean).join(' • ') || '—'}</td>
+                      <td className="p-2 font-sans">{t.endReason || '—'}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        </PrintSection>
+      )}
+
+      <PrintSection title="II. Payments received">
         {unitPayments.length === 0 ? (
           <p className="text-xs italic text-slate-500">No payments recorded for this villa.</p>
         ) : (
@@ -1052,7 +1418,7 @@ function UnitLedgerDocument({
         )}
       </PrintSection>
 
-      <PrintSection title="II. Utility meter readings">
+      <PrintSection title="III. Utility meter readings">
         {unitUtilities.length === 0 ? (
           <p className="text-xs italic text-slate-500">No meter readings recorded for this villa.</p>
         ) : (
@@ -1086,7 +1452,7 @@ function UnitLedgerDocument({
       </PrintSection>
 
       {unitBookings.length > 0 && (
-        <PrintSection title="III. Guest reservations">
+        <PrintSection title="IV. Guest reservations">
           <TableScroller>
             <table className="w-full text-left text-[10px]">
               <thead>
@@ -1119,7 +1485,7 @@ function UnitLedgerDocument({
       )}
 
       {activities.length > 0 && (
-        <PrintSection title="IV. Resident &amp; property activity">
+        <PrintSection title="V. Resident &amp; property activity">
           <TableScroller>
             <table className="w-full text-left text-[10px]">
               <thead>

@@ -4,22 +4,27 @@
  */
 
 import React from 'react';
-import { Payment, Unit, getUnitDisplayName } from '../types';
+import { Booking, Payment, Unit, getUnitDisplayName } from '../types';
 import { formatMoneyLong } from '../lib/money';
 import { formatDayLabel } from '../lib/dates';
+import { buildReceiptEmail, openMailDraft, receiptRecipient } from '../lib/email';
 import PrintPortal, { PrintLetterhead } from './PrintPortal';
+import { Mail } from 'lucide-react';
 
 interface PrintReceiptProps {
   payment: Payment;
   units: Unit[];
+  bookings: Booking[];
   onClose: () => void;
   onMarkPrinted: (paymentId: string) => Promise<unknown>;
 }
 
-export default function PrintReceipt({ payment, units, onClose, onMarkPrinted }: PrintReceiptProps) {
+export default function PrintReceipt({ payment, units, bookings, onClose, onMarkPrinted }: PrintReceiptProps) {
   const unit = units.find(u => u.id === payment.unitId);
+  const booking = payment.bookingId ? bookings.find(b => b.id === payment.bookingId) : undefined;
   const unitLabel = unit ? getUnitDisplayName(unit.number) : `Unit ${payment.unitNumber}`;
   const isReprint = (payment.printCount || 0) > 0;
+  const recipient = receiptRecipient(payment, unit, booking);
 
   return (
     <PrintPortal
@@ -31,6 +36,18 @@ export default function PrintReceipt({ payment, units, onClose, onMarkPrinted }:
         // Recorded server-side so a second copy is identifiable as a reprint.
         void onMarkPrinted(payment.id).catch(() => undefined);
       }}
+      actions={
+        <button
+          type="button"
+          onClick={() => openMailDraft(buildReceiptEmail(payment, unit, recipient))}
+          disabled={!recipient.email}
+          title={recipient.email ? `Draft an email to ${recipient.email}` : 'No email address on file for this account'}
+          className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50 disabled:opacity-50"
+        >
+          <Mail className="h-3.5 w-3.5" />
+          Email
+        </button>
+      }
     >
       <PrintLetterhead
         documentTitle="Official Receipt"

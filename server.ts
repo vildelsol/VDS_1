@@ -12,6 +12,7 @@
  *  - Records reference units by stable id, and renaming a unit cascades.
  */
 
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
@@ -27,6 +28,7 @@ import {
   Payment,
   PaymentCategory,
   PaymentMethod,
+  Tenancy,
   Unit,
   UNIT_STATUSES,
   UnitActivity,
@@ -41,10 +43,13 @@ import { bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable 
 import {
   Database,
   addAudit,
+  backupStatus,
   getDb,
   nextReceiptNo,
   noPermissions,
   read,
+  runDailyBackup,
+  startBackupSchedule,
   transaction
 } from './server/db';
 import {
@@ -311,6 +316,7 @@ app.get(
       payments: db.payments,
       utilities: db.utilities,
       expenses: db.expenses,
+      tenancies: db.tenancies,
       auditLogs: db.auditLogs.slice(0, 2000),
       unitActivities: db.unitActivities,
       settings: db.settings,
@@ -441,6 +447,72 @@ app.post(
 );
 
 /* ------------------------------------------------------------------ *
+ * Backup and recovery
+ * ------------------------------------------------------------------ */
+
+app.get(
+  '/api/backup/status',
+  handler((req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_settings');
+    res.json(backupStatus());
+  })
+);
+
+/** Take a backup now, on top of the scheduled daily one. */
+app.post(
+  '/api/backup/run',
+  handler((req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_settings');
+    const written = runDailyBackup(true);
+    const who = actor(req);
+    void transaction(db => {
+      addAudit(db, who.name, who.role, 'Took a manual backup', 'Backup', 'manual', '', written.map(w => `${w.location}: ${w.file}`).join(', ') || 'no target writable');
+    });
+    res.json({ success: true, written, status: backupStatus() });
+  })
+);
+
+/**
+ * Download a full snapshot. This is the copy that leaves the machine — the point
+ * of it is that a disk failure, a stolen laptop or a deleted folder does not take
+ * the records with it. Password hashes and live sessions are stripped, so the
+ * file is safe to store off-site and cannot be used to sign in as anyone.
+ */
+app.get(
+  '/api/backup/download',
+  handler((req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_settings');
+    const db = getDb();
+    const snapshot = {
+      exportedAt: new Date().toISOString(),
+      exportedBy: req.auth!.user.name,
+      schemaVersion: db.schemaVersion,
+      note: 'Villaggio Del Sol records export. Credentials and sessions are deliberately excluded.',
+      units: db.units,
+      tenancies: db.tenancies,
+      bookings: db.bookings,
+      charges: db.charges,
+      payments: db.payments,
+      utilities: db.utilities,
+      expenses: db.expenses,
+      unitActivities: db.unitActivities,
+      auditLogs: db.auditLogs,
+      counters: db.counters,
+      settings: db.settings,
+      users: db.users.map(u => ({ id: u.id, name: u.name, username: u.username, role: u.role, active: u.active }))
+    };
+    const stamp = today();
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="villaggio-del-sol-records-${stamp}.json"`);
+    const who = actor(req);
+    void transaction(db2 => {
+      addAudit(db2, who.name, who.role, 'Downloaded a records snapshot', 'Backup', 'download', '', `Snapshot dated ${stamp}`);
+    });
+    res.send(JSON.stringify(snapshot, null, 2));
+  })
+);
+
+/* ------------------------------------------------------------------ *
  * Settings
  * ------------------------------------------------------------------ */
 
@@ -486,8 +558,251 @@ app.post(
 );
 
 /* ------------------------------------------------------------------ *
- * Units
+ * Units and tenancies
  * ------------------------------------------------------------------ */
+
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+function activeTenancy(db: Database, unitId: string): Tenancy | undefined {
+  return db.tenancies.find(t => t.unitId === unitId && t.status === 'active');
+}
+
+function closeTenancy(db: Database, tenancy: Tenancy, endedOn: string, reason: string, closedBy: string) {
+  tenancy.status = 'ended';
+  tenancy.endedOn = endedOn;
+  tenancy.endReason = reason;
+  tenancy.closedBy = closedBy;
+}
+
+/**
+ * Keep the tenancy history in step with an edit to the unit register.
+ *
+ * The unit record holds only the *current* occupant. Overwriting the tenant
+ * fields, or moving the unit off a long-term lease, previously discarded that
+ * person outright — so the system could not answer who occupied a villa last
+ * year or what they were paying. Nothing is erased here: the open tenancy is
+ * closed with a reason and a new one is opened.
+ */
+function syncTenancy(db: Database, unit: Unit, original: Unit, staffName: string, role: UserRole): string {
+  const current = activeTenancy(db, unit.id);
+  const wantsTenant = unit.status === 'long-term' && !!unit.tenantName.trim();
+  const stamp = today();
+
+  if (!wantsTenant) {
+    if (current) {
+      const reason =
+        unit.status !== 'long-term'
+          ? `Unit status changed from ${original.status} to ${unit.status}.`
+          : 'Tenant removed from the unit register.';
+      closeTenancy(db, current, stamp, reason, staffName);
+      addAudit(
+        db,
+        staffName,
+        role,
+        `Closed tenancy for ${current.tenantName} at ${unit.number}`,
+        'Tenancy',
+        current.id,
+        current,
+        `Ended ${stamp}. ${reason} The tenancy record and all their receipts are retained.`
+      );
+      return `tenancy for ${current.tenantName} closed and retained in history`;
+    }
+    return '';
+  }
+
+  if (current && sameName(current.tenantName, unit.tenantName)) {
+    // Same person: keep the open tenancy and refresh their details on it.
+    const before = { ...current };
+    current.tenantName = unit.tenantName.trim();
+    current.tenantEmail = unit.tenantEmail;
+    current.tenantPhone = unit.tenantPhone;
+    current.emergencyName = unit.tenantEmergencyName || '';
+    current.emergencyPhone = unit.tenantEmergencyPhone || '';
+    current.emergencyEmail = unit.tenantEmergencyEmail || '';
+    current.monthlyRent = unit.monthlyRent;
+    current.currency = unit.currency;
+    current.rentDueDay = unit.rentDueDay || 1;
+    if (JSON.stringify(before) !== JSON.stringify(current)) {
+      addAudit(db, staffName, role, `Updated tenancy details for ${current.tenantName} at ${unit.number}`, 'Tenancy', current.id, before, current);
+    }
+    return '';
+  }
+
+  if (current) {
+    closeTenancy(db, current, stamp, `Replaced by ${unit.tenantName.trim()}.`, staffName);
+    addAudit(
+      db,
+      staffName,
+      role,
+      `Closed tenancy for ${current.tenantName} at ${unit.number}`,
+      'Tenancy',
+      current.id,
+      current,
+      `Ended ${stamp}, replaced by ${unit.tenantName.trim()}. The tenancy record and all their receipts are retained.`
+    );
+  }
+
+  const tenancy: Tenancy = {
+    id: `ten-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    unitId: unit.id,
+    unitNumber: unit.number,
+    tenantName: unit.tenantName.trim(),
+    tenantEmail: unit.tenantEmail,
+    tenantPhone: unit.tenantPhone,
+    emergencyName: unit.tenantEmergencyName || '',
+    emergencyPhone: unit.tenantEmergencyPhone || '',
+    emergencyEmail: unit.tenantEmergencyEmail || '',
+    monthlyRent: unit.monthlyRent,
+    currency: unit.currency,
+    rentDueDay: unit.rentDueDay || 1,
+    startedOn: stamp,
+    status: 'active',
+    recordedBy: staffName,
+    recordedAt: new Date().toISOString()
+  };
+  db.tenancies.push(tenancy);
+  addAudit(db, staffName, role, `Opened tenancy for ${tenancy.tenantName} at ${unit.number}`, 'Tenancy', tenancy.id, '', tenancy);
+  return current ? `tenant changed to ${tenancy.tenantName}` : `tenancy opened for ${tenancy.tenantName}`;
+}
+
+/**
+ * Correct a tenancy's dates or close it on the date the tenant actually left.
+ * Without this, a move-out recorded a fortnight late would be dated the day the
+ * paperwork was done rather than the day it happened.
+ */
+app.put(
+  '/api/tenancies/:id',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'edit_unit');
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const tenancy = await transaction(db => {
+      const record = db.tenancies.find(t => t.id === id);
+      if (!record) throw new ApiError(404, 'Tenancy record not found.');
+      const before = { ...record };
+
+      if (body.startedOn !== undefined) {
+        record.startedOn = body.startedOn === '' ? '' : requireDay(body.startedOn, 'Move-in date');
+      }
+      if (body.endedOn !== undefined && body.endedOn !== '') {
+        const endedOn = requireDay(body.endedOn, 'Move-out date');
+        if (record.startedOn && endedOn < record.startedOn) {
+          bad('The move-out date cannot fall before the move-in date.');
+        }
+        record.endedOn = endedOn;
+        record.status = 'ended';
+        record.endReason = optionalString(body.endReason, 500) || record.endReason || 'Tenancy ended.';
+        record.closedBy = req.auth!.user.name;
+
+        // The unit only shows a current tenant while a tenancy is open.
+        const unit = db.units.find(u => u.id === record.unitId);
+        if (unit && sameName(unit.tenantName, record.tenantName)) {
+          unit.tenantName = '';
+          unit.tenantEmail = '';
+          unit.tenantPhone = '';
+          unit.tenantEmergencyName = '';
+          unit.tenantEmergencyPhone = '';
+          unit.tenantEmergencyEmail = '';
+          if (unit.status === 'long-term') unit.status = 'vacant';
+        }
+      }
+      if (body.endReason !== undefined && record.status === 'ended') {
+        record.endReason = optionalString(body.endReason, 500);
+      }
+
+      const who = actor(req);
+      addAudit(db, who.name, who.role, `Updated tenancy record for ${record.tenantName} at ${record.unitNumber}`, 'Tenancy', id, before, record);
+      return record;
+    });
+    res.json({ success: true, tenancy });
+  })
+);
+
+/**
+ * Evict a tenant and write off the rent they owe.
+ *
+ * An eviction is a financial decision, not routine data entry: the outstanding
+ * rent leaves the dashboard and the notifications hub, which are driven by open
+ * charges. So this is gated behind the same veto-level permission as reversing a
+ * payment (Managers and Administrators), voids the tenant's open rent charges as
+ * bad debt, and records the written-off total on the tenancy and in the audit
+ * trail. Nothing is deleted — the debt is retained as history, it simply stops
+ * counting as collectable.
+ */
+app.post(
+  '/api/tenancies/:id/evict',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'reverse_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+    const reason = requireString(body.reason, 'A reason for the eviction', 800);
+    if (reason.length < 5) bad('Give a reason of at least 5 characters. It is stored permanently.');
+    const effectiveDate = requireDay(body.effectiveDate || today(), 'Effective date');
+    if (effectiveDate > today()) bad('The effective date cannot be in the future.');
+
+    const result = await transaction(db => {
+      const record = db.tenancies.find(t => t.id === id);
+      if (!record) throw new ApiError(404, 'Tenancy record not found.');
+      if (record.status === 'ended') throw new ApiError(400, 'That tenancy has already ended.');
+      if (record.startedOn && effectiveDate < record.startedOn) {
+        bad('The eviction date cannot fall before the move-in date.');
+      }
+      const before = { ...record };
+      const who = actor(req);
+
+      // Void the tenant's open rent charges. They are matched on the unit, in the
+      // tenancy's own currency, so a USD and a JMD account are never mixed.
+      const openRent = db.charges.filter(
+        c => c.unitId === record.unitId && c.category === 'Rent' && c.status === 'open' && c.currency === record.currency
+      );
+      let writtenOff = 0;
+      for (const charge of openRent) {
+        writtenOff = round2(writtenOff + charge.amount);
+        charge.status = 'void';
+        charge.voidedBy = who.name;
+        charge.voidedAt = new Date().toISOString();
+        charge.voidReason = `Written off — tenant evicted (${reason}).`;
+      }
+
+      record.status = 'ended';
+      record.evicted = true;
+      record.endedOn = effectiveDate;
+      record.endReason = `Evicted: ${reason}`;
+      record.writeOffAmount = writtenOff;
+      record.writeOffCurrency = record.currency;
+      record.closedBy = who.name;
+
+      // Clear the current tenant from the unit and free it.
+      const unit = db.units.find(u => u.id === record.unitId);
+      if (unit && sameName(unit.tenantName, record.tenantName)) {
+        unit.tenantName = '';
+        unit.tenantEmail = '';
+        unit.tenantPhone = '';
+        unit.tenantEmergencyName = '';
+        unit.tenantEmergencyPhone = '';
+        unit.tenantEmergencyEmail = '';
+        if (unit.status === 'long-term') unit.status = 'vacant';
+      }
+
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Evicted ${record.tenantName} from ${record.unitNumber} and wrote off ${record.writeOffCurrency} ${writtenOff}`,
+        'Tenancy',
+        id,
+        before,
+        record,
+        who.name
+      );
+
+      return { tenancy: record, writtenOff, currency: record.currency, chargesVoided: openRent.length };
+    });
+
+    res.json({ success: true, ...result });
+  })
+);
 
 app.put(
   '/api/units/:id',
@@ -572,16 +887,19 @@ app.put(
         relabel(db.bookings);
         relabel(db.charges);
         relabel(db.unitActivities);
+        relabel(db.tenancies);
         for (const feed of db.settings.icalFeeds) {
           if (feed.unitId === id) feed.unitNumber = number;
         }
       }
 
       const who = actor(req);
+      const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role);
+
       const parts: string[] = [];
       if (original.number !== number) parts.push(`renamed "${original.number}" to "${number}" (${cascaded} linked record(s) relabelled)`);
       if (original.ownerName !== updatedUnit.ownerName) parts.push('new owner');
-      if (original.tenantName !== updatedUnit.tenantName) parts.push('tenant changed');
+      if (tenancyNote) parts.push(tenancyNote);
       if (original.status !== status) parts.push(`status ${original.status} to ${status}`);
       if (original.monthlyRent !== monthlyRent) parts.push('rent changed');
       if (original.monthlyMaintenance !== monthlyMaintenance) parts.push('maintenance fee changed');
@@ -1557,6 +1875,9 @@ app.use('/api', (req, res) => res.status(404).json({ error: `Unknown API route: 
 
 async function startServer() {
   bootstrap();
+  // Backups run on a timer, not only at boot, so an always-on server still gets
+  // a daily copy.
+  startBackupSchedule();
 
   if (!IS_PROD) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });

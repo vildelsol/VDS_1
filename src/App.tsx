@@ -12,6 +12,7 @@ import {
   Expense,
   Payment,
   SessionUser,
+  Tenancy,
   Unit,
   UnitActivity,
   User,
@@ -75,6 +76,7 @@ interface DbSnapshot {
   payments: Payment[];
   utilities: UtilityReading[];
   expenses: Expense[];
+  tenancies: Tenancy[];
   auditLogs: AuditLog[];
   unitActivities: UnitActivity[];
   settings: AppSettings;
@@ -89,6 +91,7 @@ const EMPTY: Omit<DbSnapshot, 'settings' | 'currentUser'> = {
   payments: [],
   utilities: [],
   expenses: [],
+  tenancies: [],
   auditLogs: [],
   unitActivities: [],
   users: []
@@ -146,6 +149,7 @@ export default function App() {
         payments: snapshot.payments || [],
         utilities: snapshot.utilities || [],
         expenses: snapshot.expenses || [],
+        tenancies: snapshot.tenancies || [],
         auditLogs: snapshot.auditLogs || [],
         unitActivities: snapshot.unitActivities || [],
         users: snapshot.users || []
@@ -188,6 +192,21 @@ export default function App() {
       const result = await fn();
       await refresh();
       return result;
+    },
+    [refresh]
+  );
+
+  /**
+   * Record a payment, refresh, and open its receipt so staff can print or email
+   * it straight away. Every "receive payment" entry point routes through this, so
+   * a receipt is always one step away the moment money is taken.
+   */
+  const recordPayment = useCallback(
+    async (payload: Record<string, unknown>): Promise<Payment> => {
+      const result = await api.post<{ payment: Payment }>('/api/payments', payload);
+      await refresh();
+      setActiveReceipt(result.payment);
+      return result.payment;
     },
     [refresh]
   );
@@ -359,7 +378,7 @@ export default function App() {
             settings={settings}
             session={session}
             onRefresh={refresh}
-            onRecordPayment={payload => mutate(() => api.post<{ payment: Payment }>('/api/payments', payload).then(r => r.payment))}
+            onRecordPayment={recordPayment}
             onNavigateToTab={setActiveTab}
           />
         )}
@@ -372,7 +391,7 @@ export default function App() {
             utilities={data.utilities}
             expenses={data.expenses}
             session={session}
-            onRecordPayment={payload => mutate(() => api.post<{ payment: Payment }>('/api/payments', payload).then(r => r.payment))}
+            onRecordPayment={recordPayment}
             onSettleUtility={(id, payload) => mutate(() => api.post(`/api/utilities/${id}/settle`, payload))}
             onUpdateExpense={(id, fields) => mutate(() => api.put(`/api/expenses/${id}`, fields))}
           />
@@ -385,10 +404,13 @@ export default function App() {
             payments={data.payments}
             utilities={data.utilities}
             bookings={data.bookings}
+            tenancies={data.tenancies}
             unitActivities={data.unitActivities}
             settings={settings}
             session={session}
             onUpdateUnit={unit => mutate(() => api.put(`/api/units/${unit.id}`, unit))}
+            onUpdateTenancy={(id, fields) => mutate(() => api.put(`/api/tenancies/${id}`, fields))}
+            onEvictTenancy={(id, payload) => mutate(() => api.post<{ writtenOff: number; currency: string; chargesVoided: number }>(`/api/tenancies/${id}/evict`, payload))}
             onAddUnitActivity={payload => mutate(() => api.post('/api/unit-activities', payload))}
             onDeleteUnitActivity={id => mutate(() => api.del(`/api/unit-activities/${id}`))}
           />
@@ -400,7 +422,7 @@ export default function App() {
             charges={data.charges}
             payments={data.payments}
             session={session}
-            onRecordPayment={payload => mutate(() => api.post<{ payment: Payment }>('/api/payments', payload).then(r => r.payment))}
+            onRecordPayment={recordPayment}
             onReversePayment={(id, reason) => mutate(() => api.post(`/api/payments/${id}/reverse`, { reversalReason: reason }))}
             onUpdatePayment={(id, fields) => mutate(() => api.put(`/api/payments/${id}`, fields))}
             onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}
@@ -472,6 +494,7 @@ export default function App() {
         <PrintReceipt
           payment={activeReceipt}
           units={data.units}
+          bookings={data.bookings}
           onClose={() => setActiveReceipt(null)}
           onMarkPrinted={id => api.post(`/api/payments/${id}/mark-printed`).then(() => refresh())}
         />
