@@ -81,6 +81,77 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 app.use(express.json({ limit: '1mb' }));
 app.disable('x-powered-by');
 
+/**
+ * Liveness probe. Deliberately unauthenticated and dependency-free, so the client
+ * can tell "the server is reachable" apart from "my session expired" when a
+ * connection drops. Used by the reconnect logic to know when the network is back.
+ */
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
+});
+
+/**
+ * Idempotency for mutating requests.
+ *
+ * On a flaky link a client may resend a request whose response was lost — without
+ * this, "record payment" retried after a dropped response would create a second
+ * receipt. The client attaches a stable `Idempotency-Key` per logical action and
+ * reuses it across retries. The first success is remembered and replayed verbatim
+ * for any repeat of the same key, so a retry is a safe no-op.
+ *
+ * Kept in memory with a TTL: retries happen within seconds, so this covers the
+ * real case. It intentionally does not survive a server restart — a restart in the
+ * middle of a client's retry window is rare, and persisting every key would bloat
+ * the database. Only successful (2xx) responses are cached; a failed attempt can
+ * always be retried.
+ */
+interface IdempotentEntry {
+  status: number;
+  body: unknown;
+  at: number;
+}
+const idempotencyCache = new Map<string, IdempotentEntry>();
+const IDEMPOTENCY_TTL_MS = 6 * 60 * 60 * 1000;
+const idempotencyInFlight = new Set<string>();
+
+function pruneIdempotency() {
+  const cutoff = Date.now() - IDEMPOTENCY_TTL_MS;
+  for (const [key, entry] of idempotencyCache) {
+    if (entry.at < cutoff) idempotencyCache.delete(key);
+  }
+}
+
+const MUTATING = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+
+function idempotency(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const key = req.header('Idempotency-Key');
+  if (!key || !MUTATING.has(req.method)) return next();
+
+  const cached = idempotencyCache.get(key);
+  if (cached) {
+    res.setHeader('Idempotent-Replayed', 'true');
+    return res.status(cached.status).json(cached.body);
+  }
+  // A duplicate that arrives while the first is still processing: tell the client
+  // to back off rather than run the action twice concurrently.
+  if (idempotencyInFlight.has(key)) {
+    return res.status(409).json({ error: 'This action is still being processed. Please wait.' });
+  }
+  idempotencyInFlight.add(key);
+
+  const originalJson = res.json.bind(res);
+  res.json = (body: unknown) => {
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      idempotencyCache.set(key, { status: res.statusCode, body, at: Date.now() });
+      if (idempotencyCache.size > 5000) pruneIdempotency();
+    }
+    idempotencyInFlight.delete(key);
+    return originalJson(body);
+  };
+  res.on('close', () => idempotencyInFlight.delete(key));
+  next();
+}
+
 /* ------------------------------------------------------------------ *
  * Small helpers
  * ------------------------------------------------------------------ */
@@ -278,6 +349,7 @@ app.get(
  * ------------------------------------------------------------------ */
 
 app.use('/api', requireAuth(getDb));
+app.use('/api', idempotency);
 
 app.post(
   '/api/auth/change-password',

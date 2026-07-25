@@ -29,7 +29,7 @@ import SystemSettings from './components/SystemSettings';
 import PrintReceipt from './components/PrintReceipt';
 import NotificationsTab from './components/NotificationsTab';
 import Login, { ChangePasswordGate } from './components/Login';
-import { api, errorMessage, setUnauthenticatedHandler } from './lib/api';
+import { ConnectionState, api, errorMessage, setUnauthenticatedHandler, subscribeConnection } from './lib/api';
 import { delinquentAccounts } from './lib/finance';
 import {
   BarChart3,
@@ -106,6 +106,13 @@ export default function App() {
   const [activeReceipt, setActiveReceipt] = useState<Payment | null>(null);
   const [apiError, setApiError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [connection, setConnectionState] = useState<ConnectionState>('online');
+  const [pendingWrites, setPendingWrites] = useState(0);
+
+  useEffect(() => subscribeConnection((state, pending) => {
+    setConnectionState(state);
+    setPendingWrites(pending);
+  }), []);
 
   /* ---------------- session ---------------- */
 
@@ -234,7 +241,12 @@ export default function App() {
   }
 
   if (!session) {
-    return <Login onSignedIn={user => setSession(user)} />;
+    return (
+      <>
+        <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
+        <Login onSignedIn={user => setSession(user)} />
+      </>
+    );
   }
 
   if (session.mustChangePassword) {
@@ -289,6 +301,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 font-sans text-slate-800 md:flex-row">
+      <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
       <aside className="flex w-full shrink-0 flex-col justify-between bg-slate-900 p-6 text-slate-400 print:hidden md:w-64">
         <div className="space-y-8">
           <div>
@@ -499,6 +512,28 @@ export default function App() {
           onMarkPrinted={id => api.post(`/api/payments/${id}/mark-printed`).then(() => refresh())}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * A fixed banner that appears only when the link to the server is interrupted.
+ * It reassures the user their in-progress save is being retried, not lost.
+ */
+function ConnectionBanner({ connection, pendingWrites }: { connection: ConnectionState; pendingWrites: number }) {
+  if (connection === 'online') return null;
+  return (
+    <div
+      role="status"
+      className="fixed inset-x-0 top-0 z-[200] flex items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-center text-xs font-medium text-amber-950 shadow-md print:hidden"
+    >
+      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+      <span>
+        Reconnecting to the server…
+        {pendingWrites > 0
+          ? ` ${pendingWrites} entr${pendingWrites === 1 ? 'y is' : 'ies are'} being saved and will complete automatically when the connection returns.`
+          : ' The application will resume automatically.'}
+      </span>
     </div>
   );
 }

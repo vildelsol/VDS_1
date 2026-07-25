@@ -254,20 +254,91 @@ active tenancy:
 
 A Junior or Finance Officer cannot do this; the button does not appear for them.
 
+## The two-computer setup (HP + Kamrui)
+
+The intended deployment: the **HP EliteDesk** runs the server and holds the database; the **Kamrui
+mini PC** (and any other device) is just a client that opens the app in a browser. **No Docker is
+needed** — it runs directly on Node.
+
+### On the HP (the server)
+
+1. Install [Node.js](https://nodejs.org) (LTS).
+2. Put this folder on the HP (copy it, or `git clone`), then:
+   ```bash
+   npm install
+   npm run setup      # choose data folder, backup folder, admin password, port
+   npm run build
+   npm start
+   ```
+3. Note the HP's address on your network. With Tailscale (below) it's a `100.x.y.z` address or a
+   name like `hp-elitedesk`.
+
+**Keep it running.** For a permanent install the server should start with the machine and restart
+if it stops. On Windows the simplest route is [PM2](https://pm2.keymetrics.io):
+```bash
+npm install -g pm2
+pm2 start dist/server.cjs --name villaggio --env production
+pm2 save
+pm2 startup     # follow the printed instruction so it launches on boot
+```
+
+### On the Kamrui (and any other device)
+
+Nothing to install but a browser. Open `http://<hp-address>:3000` and sign in.
+
+### Install it as an app (PWA)
+
+The app is a **Progressive Web App**, so it installs from the browser and then behaves like a
+desktop program — its own window, its own taskbar/Start-menu icon, no browser chrome.
+
+- **Install:** open the app in Chrome or Edge, then use the install icon in the address bar (or
+  menu → *Install Villaggio Del Sol / Apps → Install this site as an app*). Do this on both the HP
+  and the Kamrui.
+- **Updates are automatic:** when you `npm run build` a new version on the HP, each installed client
+  picks it up on its next launch and reloads itself. **You never reinstall on each computer.**
+- **Always live data:** only the app itself (screens, layout) is cached so it opens instantly and
+  works through a blip. Every figure — balances, receipts, arrears — is always fetched fresh from
+  the HP; nothing financial is ever served from a stale cache.
+
+### If the connection drops for a few seconds
+
+The link between the Kamrui and the HP can hiccup (a switch, Wi-Fi, or Tailscale re-handshake).
+The app is built so a brief drop does not lose work:
+
+- A save in progress is **not failed**; the app waits for the server to come back and **retries the
+  same request automatically**. A "Reconnecting to the server…" banner shows while it waits.
+- Retries are **idempotent**: every action carries a one-time key the server remembers, so if a
+  request reached the HP but the reply was lost on the way back, the retry is recognised and does
+  **not** record it twice. A retried payment can never become a duplicate receipt.
+- Reconnection is automatic when the network returns; the banner clears itself.
+
+This covers short interruptions — the realistic case on a small LAN. It is not full offline working:
+if the outage runs long (over ~90 seconds) the save fails cleanly, the form keeps everything you
+typed, and you retry once the banner clears. Nothing entered is lost.
+
 ## Running it remotely
 
 The app is a normal web server, so staff can reach it from their own devices — but it ships
 configured for a trusted local network, and how you expose it matters.
 
 **Recommended — a private network (Tailscale).** Nothing is published to the open internet and the
-records never leave the property machine:
+records never leave the HP. Step by step:
 
-1. Install [Tailscale](https://tailscale.com) (free) on the machine running the app and on each
-   staff device, all signed into the same account.
-2. Find the property machine's Tailscale address (looks like `100.x.y.z`, or a name like
-   `office-mac`).
-3. Staff open `http://100.x.y.z:3000` from anywhere. That's it — encrypted, no certificate to
-   manage, no ports opened on your router.
+1. **Make a Tailscale account** at <https://tailscale.com> (the free plan is plenty). Sign in with a
+   Google/Microsoft/GitHub account you control.
+2. **Install Tailscale on the HP** (the server): download it from the site, install, and sign in
+   with that account. The HP now has a private address like `100.101.102.103` and a name like
+   `hp-elitedesk` — you'll see it on the Tailscale admin page (*Machines*).
+3. **Install Tailscale on the Kamrui** and on any phone/laptop staff will use, signing each into the
+   **same** account. They all join the same private network.
+4. **Connect:** on the Kamrui, open `http://hp-elitedesk:3000` (or `http://100.101.102.103:3000`).
+   That's it — the traffic is encrypted end to end, no ports are opened on your router, and the app
+   is unreachable to anyone outside your Tailscale account.
+5. **Optional niceties:** in the Tailscale admin you can enable *MagicDNS* so the `hp-elitedesk`
+   name always works, and *HTTPS certificates* if you later want the address to be `https://`.
+
+Because staff reach it over Tailscale from anywhere with internet, this doubles as "remote access"
+— someone at home sees the same live data as someone on-site, all talking to the one HP.
 
 **Alternative — a hosted server** on a small VPS behind a reverse proxy that terminates TLS (Caddy
 does this in two lines). Required if you host it, because session cookies are `Secure` in
@@ -309,6 +380,10 @@ dashboard, ledger, notifications and reports cannot drift apart.
   saved PDF) against that reference. There is no in-app file upload.
 * **Email is drafted, not auto-sent.** Receipts open a pre-filled draft in your own mail app; the
   app never sends mail itself. This is deliberate (see *Receipts*).
+* **Brief-interruption resilience, not full offline.** Short network drops are handled
+  transparently (see above). Working for minutes with no connection to the HP is not supported —
+  editing financial records against stale data over a long outage needs conflict handling this app
+  does not attempt.
 * **Single property.** The data model assumes one property with one set of units.
 * **No refund instrument.** A refund is recorded by voiding the receipt; there is no separate
   outbound-payment record for the cash returned.
