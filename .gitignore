@@ -10,3 +10,6 @@ coverage/
 db.json
 db-backups/
 *.tmp
+
+# stray test cookie jars
+*.jar
