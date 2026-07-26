@@ -355,14 +355,28 @@ export function getDb(): Database {
 /**
  * Serialized read-modify-write. Every mutating request runs through this, so two
  * concurrent requests can never read the same snapshot and clobber each other.
+ *
+ * The handler is given a *copy* of the database, and the copy only replaces the
+ * live one once it has been written to disk. This is what makes a rejected request
+ * leave no trace. Handlers validate as they go and throw part way through — an
+ * update that set a move-in date and then rejected the move-out date used to leave
+ * the new move-in date sitting in the shared cache, where the next unrelated
+ * request would quietly persist it. The request returned 400 and the record
+ * changed anyway. Now a throw discards the copy and the committed state is
+ * untouched.
+ *
+ * Writing before swapping matters too: if the disk write fails, the cache still
+ * matches what is actually on disk rather than drifting ahead of it.
  */
 let queue: Promise<unknown> = Promise.resolve();
 
 export function transaction<T>(fn: (db: Database) => T): Promise<T> {
   const run = queue.then(async () => {
-    const db = getDb();
-    const result = await fn(db);
-    writeAtomic(db);
+    const committed = getDb();
+    const working = structuredClone(committed);
+    const result = await fn(working);
+    writeAtomic(working);
+    cache = working;
     return result;
   });
   // Keep the chain alive even when a transaction rejects.

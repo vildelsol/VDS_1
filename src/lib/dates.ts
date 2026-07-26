@@ -12,11 +12,33 @@
  * immune to a whole-day shift in either direction.
  */
 
+/**
+ * Split YYYY-MM-DD into a real calendar day, or null when it is not one.
+ *
+ * The shape of the string is not enough. `new Date(2026, 1, 31)` does not fail on
+ * 31 February — it rolls forward to 3 March — so a typo of "2026-02-31" used to
+ * pass validation, get stored verbatim, and then silently mean a different day in
+ * every calculation that touched it. A day the month does not have is rejected
+ * here instead.
+ */
+function calendarParts(iso: string): { year: number; month: number; day: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!year || month < 1 || month > 12 || day < 1) return null;
+  // Day 0 of the following month is the last day of this one.
+  const lastDayOfMonth = new Date(year, month, 0).getDate();
+  if (day > lastDayOfMonth) return null;
+  return { year, month, day };
+}
+
 /** Parse YYYY-MM-DD to a Date at local noon, so no timezone can move it to another day. */
 export function parseDay(iso: string): Date {
-  const [y, m, d] = String(iso || '').split('-').map(Number);
-  if (!y || !m || !d) return new Date(NaN);
-  return new Date(y, m - 1, d, 12, 0, 0, 0);
+  const parts = calendarParts(iso);
+  if (!parts) return new Date(NaN);
+  return new Date(parts.year, parts.month - 1, parts.day, 12, 0, 0, 0);
 }
 
 /** Format a Date as a local YYYY-MM-DD calendar day. */
@@ -126,8 +148,7 @@ export function formatDayLabel(day: string): string {
 }
 
 export function isValidDay(day: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) return false;
-  return !isNaN(parseDay(day).getTime());
+  return calendarParts(day) !== null;
 }
 
 export function isValidMonth(month: string): boolean {

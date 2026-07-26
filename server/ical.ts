@@ -12,6 +12,9 @@
  * matches the checkout convention used throughout this application.
  */
 
+import dns from 'dns';
+import net from 'net';
+
 export interface ICalEvent {
   uid: string;
   start: string; // YYYY-MM-DD, inclusive
@@ -152,34 +155,131 @@ export interface FetchResult {
   error?: string;
 }
 
-/** Fetch a feed with a hard timeout so a hanging host cannot wedge the request. */
-export async function fetchICal(url: string, timeoutMs = 15000): Promise<FetchResult> {
+/**
+ * Is this a private, loopback or otherwise internal address?
+ *
+ * A calendar feed is a public URL at Airbnb or Booking.com. Nothing legitimate
+ * points at the machine itself, at another box on the property LAN, or at a cloud
+ * metadata service — but the server fetched whatever address it was given, which
+ * turned the feed setting into a way to probe the internal network from outside it
+ * and read the answer back off the sync result. Anything not on the public
+ * internet is refused.
+ */
+function isInternalAddress(ip: string): boolean {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT — this is Tailscale's range
+    if (a >= 224) return true; // multicast and reserved
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const v = ip.toLowerCase().replace(/^\[|\]$/g, '');
+    if (v === '::1' || v === '::') return true;
+    if (/^f[cd]/.test(v)) return true; // unique local
+    if (v.startsWith('fe80')) return true; // link-local
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v);
+    if (mapped) return isInternalAddress(mapped[1]);
+    return false;
+  }
+  return true; // an address in no form we recognise is not one we will call
+}
+
+/**
+ * Refuse a feed host that resolves anywhere internal.
+ *
+ * Note the limit: the name is resolved here and again by fetch, so a name that
+ * answers differently between the two calls could still slip through. Closing that
+ * needs the connection pinned to the address that was checked. For a setting only
+ * an administrator or manager can reach, refusing the obvious cases is the
+ * proportionate control; it is written down here so it is not mistaken for
+ * airtight.
+ */
+async function assertExternalHost(hostname: string): Promise<void> {
+  const bare = hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(bare)) {
+    if (isInternalAddress(bare)) throw new Error(`${hostname} is an internal address.`);
+    return;
+  }
+  let records: { address: string }[];
+  try {
+    records = await dns.promises.lookup(bare, { all: true });
+  } catch {
+    throw new Error(`${hostname} could not be resolved.`);
+  }
+  if (records.length === 0) throw new Error(`${hostname} could not be resolved.`);
+  for (const record of records) {
+    if (isInternalAddress(record.address)) throw new Error(`${hostname} resolves to the internal address ${record.address}.`);
+  }
+}
+
+/** Validate a feed URL before it is stored, so a bad one is refused at the point of entry. */
+export async function assertFetchableFeedUrl(url: string): Promise<void> {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    return { ok: false, error: 'The feed URL is not a valid URL.' };
+    throw new Error('The feed URL is not a valid URL.');
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Feed URL must start with http:// or https://');
+  }
+  await assertExternalHost(parsed.hostname);
+}
+
+const MAX_REDIRECTS = 5;
+const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
+
+/** Fetch a feed with a hard timeout so a hanging host cannot wedge the request. */
+export async function fetchICal(url: string, timeoutMs = 15000): Promise<FetchResult> {
+  let current: URL;
+  try {
+    current = new URL(url);
+  } catch {
+    return { ok: false, error: 'The feed URL is not a valid URL.' };
+  }
+  if (current.protocol !== 'https:' && current.protocol !== 'http:') {
     return { ok: false, error: 'Feed URL must start with http:// or https://' };
   }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(parsed.toString(), {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: { Accept: 'text/calendar, text/plain, */*' }
-    });
-    if (!res.ok) {
-      return { ok: false, error: `Feed responded with HTTP ${res.status} ${res.statusText}.` };
+    // Redirects are followed by hand so every hop is checked. Letting fetch follow
+    // them meant a public URL could bounce the request to an internal one.
+    for (let hop = 0; ; hop++) {
+      await assertExternalHost(current.hostname);
+
+      const res = await fetch(current.toString(), {
+        signal: controller.signal,
+        redirect: 'manual',
+        headers: { Accept: 'text/calendar, text/plain, */*' }
+      });
+
+      if (REDIRECT_CODES.has(res.status)) {
+        const location = res.headers.get('location');
+        if (!location) return { ok: false, error: `Feed responded with HTTP ${res.status} but gave no destination.` };
+        if (hop >= MAX_REDIRECTS) return { ok: false, error: `Feed redirected more than ${MAX_REDIRECTS} times.` };
+        const next = new URL(location, current);
+        if (next.protocol !== 'https:' && next.protocol !== 'http:') {
+          return { ok: false, error: 'The feed redirected to an address that is not http or https.' };
+        }
+        current = next;
+        continue;
+      }
+
+      if (!res.ok) {
+        return { ok: false, error: `Feed responded with HTTP ${res.status} ${res.statusText}.` };
+      }
+      const text = await res.text();
+      if (!text.includes('BEGIN:VCALENDAR')) {
+        return { ok: false, error: 'The URL did not return an iCalendar document.' };
+      }
+      return { ok: true, text };
     }
-    const text = await res.text();
-    if (!text.includes('BEGIN:VCALENDAR')) {
-      return { ok: false, error: 'The URL did not return an iCalendar document.' };
-    }
-    return { ok: true, text };
   } catch (err) {
     const message = (err as Error).name === 'AbortError' ? `Timed out after ${timeoutMs / 1000}s.` : (err as Error).message;
     return { ok: false, error: `Could not reach the feed: ${message}` };

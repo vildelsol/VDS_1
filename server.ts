@@ -74,7 +74,7 @@ import {
   toSessionUser,
   verifyPassword
 } from './server/auth';
-import { classifyEvent, fetchICal, parseICal } from './server/ical';
+import { assertFetchableFeedUrl, classifyEvent, fetchICal, parseICal } from './server/ical';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -202,6 +202,21 @@ function actor(req: AuthedRequest): { name: string; role: UserRole } {
   return { name: req.auth!.user.name, role: req.auth!.user.role };
 }
 
+/**
+ * Run a transaction whose result the response does not wait for — an audit note
+ * attached to an action that has already happened.
+ *
+ * These were written as `void transaction(...)`, which leaves the rejection
+ * unhandled. Node treats an unhandled rejection as fatal, so a failure to write
+ * the audit note (a full disk, a read-only data folder) would take the whole
+ * server down rather than logging and carrying on.
+ */
+function auditInBackground(label: string, fn: (db: Database) => void) {
+  transaction(fn).catch(err => {
+    console.error(`[vds] could not record the audit entry for ${label}:`, (err as Error).message);
+  });
+}
+
 /** Wrap an async handler so thrown ApiErrors become clean JSON responses. */
 function handler(fn: (req: AuthedRequest, res: express.Response) => Promise<unknown> | unknown) {
   return async (req: AuthedRequest, res: express.Response) => {
@@ -298,17 +313,24 @@ function resolveUnit(db: Database, body: { unitId?: unknown; unitNumber?: unknow
 
 let bootstrapPassword: string | null = null;
 
-function bootstrap() {
-  const db = getDb();
-  bootstrapPassword = ensureBootstrapAdmin(db);
+/**
+ * Seed the first administrator, inside a transaction.
+ *
+ * This used to create the account by mutating the loaded database directly and
+ * then rely on a later write to persist it. Transactions now hand the handler a
+ * copy and only commit it on success, so an edit made outside one is not part of
+ * any write — the seeded administrator would have existed in memory only and been
+ * gone at the next restart. Creating it in the transaction means the account is on
+ * disk before the port opens.
+ */
+async function bootstrap() {
+  await transaction(db => {
+    bootstrapPassword = ensureBootstrapAdmin(db);
+    if (bootstrapPassword) {
+      addAudit(db, 'System', 'ADMINISTRATOR', 'Created bootstrap administrator account', 'User', 'admin', '', 'username: admin');
+    }
+  });
   if (bootstrapPassword) {
-    // Persist the seeded administrator.
-    void transaction(inner => {
-      if (inner.users.length === 0) {
-        inner.users = db.users;
-      }
-      addAudit(inner, 'System', 'ADMINISTRATOR', 'Created bootstrap administrator account', 'User', 'admin', '', 'username: admin');
-    });
     console.log('\n' + '='.repeat(72));
     console.log('  FIRST RUN — an administrator account has been created.');
     console.log('    username: admin');
@@ -426,6 +448,31 @@ app.get(
  * ------------------------------------------------------------------ */
 
 app.use('/api', requireAuth(getDb));
+
+/**
+ * Hold an account to its forced password change.
+ *
+ * A new or reset account is issued a password by whoever created it, and that
+ * person knows it. The sign-in screen sends such a user straight to "choose a new
+ * password", but that was the only thing standing in the way — the API itself was
+ * happy to accept work from an account still on its handed-over password, so
+ * anyone who knew it could record payments as that member of staff.
+ *
+ * Reads stay open so the app can render, and so does signing out. Everything that
+ * writes is refused until the password has actually been changed.
+ */
+const PASSWORD_CHANGE_ALLOWED = new Set(['/auth/change-password', '/auth/logout']);
+
+app.use('/api', (req: AuthedRequest, res, next) => {
+  if (!req.auth?.user.mustChangePassword) return next();
+  if (!MUTATING.has(req.method)) return next();
+  if (PASSWORD_CHANGE_ALLOWED.has(req.path)) return next();
+  return res.status(403).json({
+    error: 'Choose a new password before recording anything. Your account is still on the password it was issued with.',
+    code: 'PASSWORD_CHANGE_REQUIRED'
+  });
+});
+
 app.use('/api', idempotency);
 
 app.post(
@@ -614,7 +661,7 @@ app.post(
     requirePermission(req, 'manage_settings');
     const written = runDailyBackup(true);
     const who = actor(req);
-    void transaction(db => {
+    auditInBackground('a manual backup', db => {
       addAudit(db, who.name, who.role, 'Took a manual backup', 'Backup', 'manual', '', written.map(w => `${w.location}: ${w.file}`).join(', ') || 'no target writable');
     });
     res.json({ success: true, written, status: backupStatus() });
@@ -654,7 +701,7 @@ app.get(
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="villaggio-del-sol-records-${stamp}.json"`);
     const who = actor(req);
-    void transaction(db2 => {
+    auditInBackground('a records snapshot download', db2 => {
       addAudit(db2, who.name, who.role, 'Downloaded a records snapshot', 'Backup', 'download', '', `Snapshot dated ${stamp}`);
     });
     res.send(JSON.stringify(snapshot, null, 2));
@@ -1840,10 +1887,19 @@ app.post(
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'manage_settings');
     const body = req.body || {};
+
+    // Checked here rather than inside the transaction: it does a DNS lookup, and
+    // the transaction queue is serialized — every other write would wait on it.
+    const url = requireString(body.url, 'Feed URL', 2000);
+    if (!/^https?:\/\//i.test(url)) bad('The feed URL must start with http:// or https://');
+    try {
+      await assertFetchableFeedUrl(url);
+    } catch (err) {
+      throw new ApiError(400, `That feed URL cannot be used: ${(err as Error).message}`);
+    }
+
     const feed = await transaction(db => {
       const unit = resolveUnit(db, body);
-      const url = requireString(body.url, 'Feed URL', 2000);
-      if (!/^https?:\/\//i.test(url)) bad('The feed URL must start with http:// or https://');
       if (db.settings.icalFeeds.some(f => f.url === url && f.unitId === unit.id)) {
         throw new ApiError(400, 'That feed is already linked to this villa.');
       }
@@ -2042,7 +2098,7 @@ app.post(
 app.use('/api', (req, res) => res.status(404).json({ error: `Unknown API route: ${req.method} ${req.path}` }));
 
 async function startServer() {
-  bootstrap();
+  await bootstrap();
   // Backups run on a timer, not only at boot, so an always-on server still gets
   // a daily copy.
   startBackupSchedule();
