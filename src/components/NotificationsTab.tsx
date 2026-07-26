@@ -397,6 +397,8 @@ function ItemAction({
   }
   if (item.type === 'utility') {
     if (!perms.enterUtilities) return <span className="text-[10px] text-slate-400">Requires utility permission</span>;
+    // Settling issues a receipt, so it needs the payment permission too.
+    if (!perms.recordPayments) return <span className="text-[10px] text-slate-400">Requires payment permission</span>;
     return (
       <SubmitButton type="button" onClick={onSettleUtility} className="whitespace-nowrap px-3 py-2 text-[11px]">
         Settle &amp; receipt
@@ -411,6 +413,7 @@ function ItemAction({
       </SubmitButton>
     );
   }
+  if (!perms.recordPayments) return <span className="text-[10px] text-slate-400">Requires payment permission</span>;
   return (
     <SubmitButton type="button" onClick={onSettleAccount} className="whitespace-nowrap px-3 py-2 text-[11px]">
       Receive payment

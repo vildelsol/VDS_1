@@ -125,6 +125,7 @@ export default function UtilitiesAndExpenses({
           units={units}
           utilities={utilities}
           canEdit={canUtilities}
+          canSettle={canUtilities && !!session.permissions.recordPayments}
           onEdit={setEditingUtility}
           onSettle={setSettlingUtility}
         />
@@ -210,12 +211,15 @@ function UtilitiesPanel({
   units,
   utilities,
   canEdit,
+  canSettle,
   onEdit,
   onSettle
 }: {
   units: Unit[];
   utilities: UtilityReading[];
   canEdit: boolean;
+  /** Settling takes money and issues a receipt, so it needs the payment permission too. */
+  canSettle: boolean;
   onEdit: (u: UtilityReading) => void;
   onSettle: (u: UtilityReading) => void;
 }) {
@@ -323,7 +327,7 @@ function UtilitiesPanel({
                             Edit
                           </button>
                         )}
-                        {u.status === 'unpaid' && canEdit && (
+                        {u.status === 'unpaid' && canSettle && (
                           <button onClick={() => onSettle(u)} className="rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-teal-700">
                             Settle
                           </button>

@@ -226,14 +226,16 @@ export default function FinanceHub({
           <Field label="Balances as at" htmlFor="vds-asof">
             <input id="vds-asof" type="date" value={asOf} max={today()} onChange={e => setAsOf(e.target.value || today())} className={monoInputClass} />
           </Field>
-          <button
-            onClick={() => setPayTarget({ unit: units[0], category: 'Rent', amount: 0, currency: units[0]?.currency || 'JMD' })}
-            disabled={units.length === 0}
-            className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-medium text-white shadow-xs transition-all hover:bg-teal-700 disabled:opacity-60"
-          >
-            <Plus className="h-4 w-4" />
-            Record payment
-          </button>
+          {perms.recordPayments && (
+            <button
+              onClick={() => setPayTarget({ unit: units[0], category: 'Rent', amount: 0, currency: units[0]?.currency || 'JMD' })}
+              disabled={units.length === 0}
+              className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-medium text-white shadow-xs transition-all hover:bg-teal-700 disabled:opacity-60"
+            >
+              <Plus className="h-4 w-4" />
+              Record payment
+            </button>
+          )}
         </div>
       </div>
 

@@ -46,6 +46,13 @@ export interface SessionUser {
 }
 
 export interface RolePermissions {
+  /**
+   * Take money and issue a receipt. Granted to every role by default: when nobody
+   * senior is on site the junior officer still has to run the day, and collecting
+   * rent is the day. It is a permission rather than an open door so it can be
+   * withdrawn from a role in System Settings when that is wanted.
+   */
+  recordPayments: boolean;
   editBookings: boolean;
   cancelBookings: boolean;
   addBookings: boolean;
@@ -59,6 +66,7 @@ export interface RolePermissions {
 }
 
 export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
+  'recordPayments',
   'addBookings',
   'editBookings',
   'cancelBookings',
@@ -71,6 +79,7 @@ export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
 ];
 
 export const PERMISSION_LABELS: Record<string, string> = {
+  recordPayments: 'Record payments & issue receipts',
   addBookings: 'Create guest reservations',
   editBookings: 'Edit guest reservations',
   cancelBookings: 'Cancel reservations & issue refunds',

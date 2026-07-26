@@ -1380,6 +1380,9 @@ app.put(
 app.post(
   '/api/payments',
   handler(async (req: AuthedRequest, res) => {
+    // Granted to every role by default, so the desk keeps working when nobody
+    // senior is on site — but it is a permission, so it can be withdrawn.
+    requirePermission(req, 'record_payment');
     const body = req.body || {};
 
     const payment = await transaction(db => {
@@ -1647,7 +1650,11 @@ app.put(
 app.post(
   '/api/utilities/:id/settle',
   handler(async (req: AuthedRequest, res) => {
+    // Settling takes money and issues a receipt, so it needs the payment
+    // permission as well — otherwise withdrawing "record payments" from a role
+    // would leave this as an open side door to the same thing.
     requirePermission(req, 'enter_utility');
+    requirePermission(req, 'record_payment');
     const { id } = req.params;
     const body = req.body || {};
 

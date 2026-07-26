@@ -81,6 +81,7 @@ const BACKUP_RETENTION_DAYS = 30;
 
 export function fullPermissions(): RolePermissions {
   return {
+    recordPayments: true,
     editBookings: true,
     cancelBookings: true,
     addBookings: true,
@@ -95,6 +96,7 @@ export function fullPermissions(): RolePermissions {
 
 export function noPermissions(): RolePermissions {
   return {
+    recordPayments: false,
     editBookings: false,
     cancelBookings: false,
     addBookings: false,
@@ -112,6 +114,7 @@ function defaultRolePermissions(): AppSettings['rolePermissions'] {
     MANAGER: fullPermissions(),
     FINANCE_OFFICER: {
       ...noPermissions(),
+      recordPayments: true,
       editUnits: true,
       enterUtilities: true,
       recordExpenses: true,
@@ -119,6 +122,10 @@ function defaultRolePermissions(): AppSettings['rolePermissions'] {
     },
     JUNIOR_OFFICER: {
       ...noPermissions(),
+      // The junior officer covers the desk when nobody senior is on site, so
+      // taking a rent payment is part of the ordinary day rather than an
+      // escalation. Withdraw it in System Settings if that changes.
+      recordPayments: true,
       addBookings: true
     }
   };
@@ -528,7 +535,13 @@ function migrate(db: Database): boolean {
   for (const role of ['MANAGER', 'FINANCE_OFFICER', 'JUNIOR_OFFICER'] as const) {
     const base = settings.rolePermissions[role] || noPermissions();
     const merged = { ...noPermissions(), ...base };
-    if (merged.postCharges === undefined) merged.postCharges = role !== 'JUNIOR_OFFICER';
+    if (base.postCharges === undefined) merged.postCharges = role !== 'JUNIOR_OFFICER';
+    // Recording a payment was not a permission before this version — every signed
+    // in member of staff could issue a receipt. A database written then carries no
+    // value for it, and the merge above would read that absence as "denied",
+    // taking the till away from the whole team on the next restart. Absence means
+    // "as it was", so grant it. Withdrawing it is a deliberate act in Settings.
+    if (base.recordPayments === undefined) merged.recordPayments = true;
     if (JSON.stringify(base) !== JSON.stringify(merged)) {
       settings.rolePermissions[role] = merged;
       changed = true;

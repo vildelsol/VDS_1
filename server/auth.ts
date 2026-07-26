@@ -186,6 +186,7 @@ export function ensureBootstrapAdmin(db: Database): string | null {
 
 /** Actions gated by the permission matrix. */
 export type GatedAction =
+  | 'record_payment'
   | 'add_booking'
   | 'edit_booking'
   | 'cancel_booking'
@@ -199,6 +200,7 @@ export type GatedAction =
   | 'manage_users';
 
 const ACTION_TO_PERMISSION: Record<Exclude<GatedAction, 'manage_settings' | 'manage_users'>, keyof RolePermissions> = {
+  record_payment: 'recordPayments',
   add_booking: 'addBookings',
   edit_booking: 'editBookings',
   cancel_booking: 'cancelBookings',
@@ -220,6 +222,7 @@ export function can(auth: NonNullable<AuthedRequest['auth']>, action: GatedActio
 }
 
 export const ACTION_DENIED_MESSAGE: Record<GatedAction, string> = {
+  record_payment: 'Your role is not permitted to record payments or issue receipts.',
   add_booking: 'Your role is not permitted to create reservations.',
   edit_booking: 'Your role is not permitted to modify reservations.',
   cancel_booking: 'Your role is not permitted to cancel reservations or issue refunds.',

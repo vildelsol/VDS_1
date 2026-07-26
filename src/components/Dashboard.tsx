@@ -161,13 +161,15 @@ export default function Dashboard({
           <h3 className="font-display text-sm font-semibold tracking-wide">Operational quick actions</h3>
           <p className="mt-1 text-xs text-teal-100/80">Record a payment received at the office without leaving this page.</p>
         </div>
-        <button
-          onClick={() => setPayTarget('blank')}
-          className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold text-teal-900 shadow-sm transition-all hover:bg-teal-50 sm:w-auto"
-        >
-          <ArrowUpRight className="h-4 w-4 text-emerald-600" />
-          Receive payment
-        </button>
+        {session.permissions.recordPayments && (
+          <button
+            onClick={() => setPayTarget('blank')}
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold text-teal-900 shadow-sm transition-all hover:bg-teal-50 sm:w-auto"
+          >
+            <ArrowUpRight className="h-4 w-4 text-emerald-600" />
+            Receive payment
+          </button>
+        )}
       </div>
 
       {/* Overview */}
@@ -247,13 +249,15 @@ export default function Dashboard({
                     <span className="block font-mono text-[9px] text-slate-400">{account.currency}</span>
                   </div>
                 </div>
-                <button
-                  onClick={() => setPayTarget(account)}
-                  className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-red-50 py-1.5 text-[10px] font-semibold text-red-700 transition-all hover:bg-red-100"
-                >
-                  <ArrowUpRight className="h-3.5 w-3.5" />
-                  Receive payment
-                </button>
+                {session.permissions.recordPayments && (
+                  <button
+                    onClick={() => setPayTarget(account)}
+                    className="flex w-full items-center justify-center gap-1 rounded-lg border border-red-200 bg-red-50 py-1.5 text-[10px] font-semibold text-red-700 transition-all hover:bg-red-100"
+                  >
+                    <ArrowUpRight className="h-3.5 w-3.5" />
+                    Receive payment
+                  </button>
+                )}
               </div>
             ))}
           </div>
