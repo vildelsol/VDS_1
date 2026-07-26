@@ -1,0 +1,50 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Test runner. Each module boots its own server on a fresh temp data directory,
+ * so nothing here touches the real db.json. Exits non-zero if anything fails.
+ *
+ *   npm test
+ *
+ * Requires a build first (npm test does this for you): the tests run the compiled
+ * dist/server.cjs, the same artifact that runs in production.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+
+const projectRoot = process.cwd();
+
+if (!fs.existsSync(path.join(projectRoot, 'dist', 'server.cjs'))) {
+  console.error('dist/server.cjs is missing. Run `npm run build` first (or just `npm test`, which builds).');
+  process.exit(1);
+}
+
+const modules = ['auth', 'ledger', 'permissions', 'integrity', 'ssrf'];
+let port = 3971;
+let totalPass = 0;
+let totalFail = 0;
+const allFailures = [];
+
+for (const name of modules) {
+  const mod = await import(`./${name}.test.mjs`);
+  console.log(`\n== ${mod.title} ==`);
+  try {
+    const res = await mod.default({ port: port++, projectRoot });
+    totalPass += res.pass;
+    totalFail += res.fail;
+    for (const f of res.failures) allFailures.push(`[${res.name}] ${f}`);
+  } catch (err) {
+    totalFail++;
+    allFailures.push(`[${name}] harness error — ${err.message}`);
+    console.log(`  FAIL harness error — ${err.message}`);
+  }
+}
+
+console.log(`\n==== ${totalPass} passed, ${totalFail} failed ====`);
+if (allFailures.length) {
+  console.log('\nFailures:');
+  for (const f of allFailures) console.log(`  - ${f}`);
+  process.exit(1);
+}
