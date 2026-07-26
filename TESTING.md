@@ -61,8 +61,9 @@ HP EliteDesk (server) and Kamrui (client) before going live.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
    83 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
-3. **Start the server** on the HP: `npm run build` then `npm start` (or the
-   provided `start-villaggio.bat`). Confirm the console prints the URL.
+3. **Start the server** on the HP by double-clicking `Villaggio-Del-Sol.bat`. The first
+   run installs, builds, adds a desktop icon and starts; later runs start straight away.
+   Confirm the console prints the URL and the one-time admin password.
 4. **Sign in on the server PC itself** at `http://localhost:3000`. First run prints
    a one-time admin password to the console; you will be forced to change it.
 5. **Sign in from the Kamrui client** over Tailscale, e.g.

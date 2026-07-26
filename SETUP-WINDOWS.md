@@ -8,37 +8,41 @@ You do **not** need to understand any of the technical parts. Just follow the st
 
 ---
 
-## Part 1 — Install it on the HP (once)
+## Part 1 — Start it on the HP
 
 ### Step 1: Get the program folder onto the HP
 Copy the `pm-app` folder onto the HP — for example onto the Desktop. (You can copy it
 from a USB stick, or download it; see *"Where do I get it?"* at the bottom.)
 
-### Step 2: Run the installer
-1. Open the `pm-app` folder.
-2. Double-click **`install-windows.bat`**.
-3. A blue window opens and does everything for you.
+### Step 2: Double-click **`Villaggio-Del-Sol.bat`**
+That is the whole thing. There is no separate installer and nothing to activate.
 
-- If it says **Node.js is not installed**, it will open a website. Download the big
-  green **LTS** button, install it (just click Next → Next → Finish), then double-click
-  **`install-windows.bat`** again.
-- When it asks questions (folders, password), you can just press **Enter** to accept
-  each suggestion. Where it asks for a **backup folder**, choose a OneDrive or an
-  external USB drive folder if you have one — that keeps a safe copy off the computer.
-- **Write down the password it shows you.** You'll need it the first time you sign in.
+- **The first time**, it sets itself up: it installs what it needs, prepares the
+  application, and adds a **"Villaggio Del Sol"** icon to the Desktop. This takes a few
+  minutes — leave the window open.
+- **Every time after that**, it starts straight away.
+- Once the icon is on the Desktop, use that from then on. It does exactly the same
+  thing.
 
-When it finishes, you'll have a **"Villaggio Del Sol"** icon on the desktop.
+If it says **Node.js is needed**, it opens the download page for you. Download the big
+green **LTS** button, install it (click Next → Next → Finish), then double-click
+**`Villaggio-Del-Sol.bat`** again. That is a one-time thing for the computer.
 
-### Step 3: Start the program
-1. Double-click the **Villaggio Del Sol** icon on the desktop.
-2. A green window opens (leave it open — that's the "engine") and your browser opens
-   the app.
-3. Sign in with username **admin** and the password from Step 2. You'll be asked to
-   choose your own password straight away.
+### Step 3: Sign in
+1. A green window stays open — that is the "engine". **Leave it open** while anyone is
+   using the program. Closing it shuts the program down.
+2. Your browser opens the app automatically.
+3. The very first time, the green window prints a **one-time admin password**.
+   **Write it down.** Sign in with username **admin** and that password; you will be
+   asked to choose your own password straight away.
 4. Go to **System Settings → Staff accounts** and make an account for each person, so
    everyone signs in as themselves.
 
 That's it — the HP is now running the program.
+
+> **If the window flashes and disappears:** a file called `last-run-log.txt` is written
+> next to `Villaggio-Del-Sol.bat` every time it runs. Send that file — it says what went
+> wrong.
 
 ---
 
@@ -73,15 +77,17 @@ Yes. Install Tailscale on your laptop, sign into the same Tailscale account, and
 because your laptop is really just viewing what's on the HP.
 
 **Where are my records kept? Are they safe?**
-Everything is a single file on the HP (chosen during setup). The program keeps a fresh
-backup every day, and a second copy on the backup folder you picked. From inside the
-app, **System Settings → Backup & recovery** has a "Download a snapshot" button — use
-it before anything risky.
+Everything is in a single file called `db.json`, kept next to the program on the HP. The
+program keeps a fresh backup every day. From inside the app, **System Settings → Backup
+& recovery** has a "Download a snapshot" button — use it before anything risky.
 
-**Can I get a `.exe` installer instead?**
-The `install-windows.bat` file *is* the installer — double-clicking it is the same idea
-as running a `.exe`. A traditional signed `.exe` would show Windows security warnings
-unless it's professionally code-signed, so the batch installer is the safer route.
+To keep a copy **off** the computer as well (strongly recommended), see
+`VDS_BACKUP_DIR` in `TESTING.md` — point it at a OneDrive folder or a USB drive.
+
+**Can I get a `.exe` instead?**
+`Villaggio-Del-Sol.bat` already behaves like one: double-click, it does everything. A
+true single `.exe` — where the computer needs nothing installed at all, not even
+Node.js — is planned as a later step, built and tested on a real Windows machine.
 
 **Where do I get the program folder? Can I use GitHub?**
 Two options:

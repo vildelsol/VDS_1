@@ -1,0 +1,27 @@
+# Windows batch files must have CRLF line endings.
+#
+# These were authored on macOS and committed with Unix (LF) endings. cmd.exe
+# tolerates that for simple scripts, but mis-parses caret (^) line continuations
+# and parenthesised blocks, which made install-windows.bat die on launch before
+# it reached any pause — the window just flashed and closed with no error.
+# Forcing CRLF here means the checkout is always correct on Windows regardless of
+# which machine wrote the file.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Everything else: normalise to LF in the repository.
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.mjs  text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.ico binary
+*.jpg binary
+*.pdf binary
