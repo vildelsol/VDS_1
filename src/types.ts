@@ -377,6 +377,13 @@ export function getUnitDisplayName(number: string): string {
   if (num.toLowerCase().includes('villa')) {
     return num;
   }
+  // "General" and "Office" are property allocations, not villas. Calling this on
+  // one produced "Villa Unit Office", which labels a communal cost as belonging to
+  // a villa that does not exist. Guarded here as well as at the call sites,
+  // because the two helpers are easy to confuse.
+  if ((PROPERTY_LOCATIONS as readonly string[]).includes(num)) {
+    return num;
+  }
   return `Villa Unit ${num}`;
 }
 

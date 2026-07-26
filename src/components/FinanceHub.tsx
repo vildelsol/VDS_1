@@ -737,7 +737,11 @@ function AccountTable({
                               ? 'bg-sky-50 text-sky-700'
                               : account.status === 'not-billed'
                                 ? 'bg-amber-50 text-amber-700'
-                                : 'bg-emerald-50 text-emerald-700'
+                                : account.status === 'settled'
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : // Nothing is billed here at all (vacant, or the rate is zero).
+                                    // Neutral, because green reads as "collected".
+                                    'bg-slate-50 text-slate-500'
                         }`}
                       >
                         {account.status === 'in-arrears'

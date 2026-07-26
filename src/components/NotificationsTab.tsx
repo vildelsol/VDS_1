@@ -15,6 +15,7 @@ import {
   SessionUser,
   Unit,
   UtilityReading,
+  getAllocationLabel,
   getUnitDisplayName
 } from '../types';
 import { AccountBalance, bookingOverlaps, delinquentAccounts } from '../lib/finance';
@@ -130,7 +131,7 @@ export default function NotificationsTab({
           id: `expense-${e.id}`,
           type: 'expense',
           title: `Expense due — ${e.vendor}`,
-          description: `${e.category}${e.unitNumber !== 'General' ? ` for ${getUnitDisplayName(e.unitNumber)}` : ' (property-wide)'}: ${
+          description: `${e.category}${e.unitNumber !== 'General' ? ` for ${getAllocationLabel(e.unitNumber)}` : ' (property-wide)'}: ${
             e.description || 'no description recorded'
           }. Due ${formatDayLabel(due)}${overdueBy > 0 ? ` — ${overdueBy} days overdue` : ''}.`,
           amount: e.amount,

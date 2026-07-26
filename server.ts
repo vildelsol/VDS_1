@@ -779,7 +779,15 @@ function closeTenancy(db: Database, tenancy: Tenancy, endedOn: string, reason: s
  * year or what they were paying. Nothing is erased here: the open tenancy is
  * closed with a reason and a new one is opened.
  */
-function syncTenancy(db: Database, unit: Unit, original: Unit, staffName: string, role: UserRole): string {
+function syncTenancy(
+  db: Database,
+  unit: Unit,
+  original: Unit,
+  staffName: string,
+  role: UserRole,
+  /** The real move-in date, when whoever is recording the tenant knows it. */
+  movedInOn?: string
+): string {
   const current = activeTenancy(db, unit.id);
   const wantsTenant = unit.status === 'long-term' && !!unit.tenantName.trim();
   const stamp = today();
@@ -851,7 +859,14 @@ function syncTenancy(db: Database, unit: Unit, original: Unit, staffName: string
     monthlyRent: unit.monthlyRent,
     currency: unit.currency,
     rentDueDay: unit.rentDueDay || 1,
-    startedOn: stamp,
+    // Only a changeover genuinely starts today. The first time a tenant is
+    // recorded against a villa, the register is usually being filled in for
+    // people who already live there — stamping today invented a move-in date for
+    // tenants of several years, and then refused to backdate their move-out or
+    // eviction to the day it actually happened ("cannot fall before the move-in
+    // date"). Unknown is left unknown, exactly as the migration does, and staff
+    // can set the real date on the tenancy record.
+    startedOn: movedInOn || (current ? stamp : ''),
     status: 'active',
     recordedBy: staffName,
     recordedAt: new Date().toISOString()
@@ -1090,7 +1105,9 @@ app.put(
       }
 
       const who = actor(req);
-      const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role);
+      const movedInOn = body.tenantMovedInOn ? requireDay(body.tenantMovedInOn, 'Move-in date') : undefined;
+      if (movedInOn && movedInOn > today()) bad('The move-in date cannot be in the future.');
+      const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role, movedInOn);
 
       const parts: string[] = [];
       if (original.number !== number) parts.push(`renamed "${original.number}" to "${number}" (${cascaded} linked record(s) relabelled)`);

@@ -726,7 +726,15 @@ function BillingCard({
       {balance !== undefined && (
         <p
           className={`mt-1.5 font-mono text-[10px] font-semibold ${
-            balance > 0 ? 'text-red-600' : balance < 0 ? 'text-sky-600' : status === 'not-billed' ? 'text-amber-600' : 'text-emerald-600'
+            balance > 0
+              ? 'text-red-600'
+              : balance < 0
+                ? 'text-sky-600'
+                : status === 'not-billed'
+                  ? 'text-amber-600'
+                  : status === 'settled'
+                    ? 'text-emerald-600'
+                    : 'text-slate-500'
           }`}
         >
           {balance > 0
@@ -735,7 +743,9 @@ function BillingCard({
               ? `${formatMoney(Math.abs(balance), balanceCurrency)} in credit`
               : status === 'not-billed'
                 ? 'Not yet billed'
-                : 'Account settled'}
+                : status === 'settled'
+                  ? 'Account settled'
+                  : 'Not billed'}
         </p>
       )}
     </div>
