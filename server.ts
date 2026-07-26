@@ -82,9 +82,31 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 
 app.use(express.json({ limit: '1mb' }));
 app.disable('x-powered-by');
-// Honour x-forwarded-proto from a TLS-terminating reverse proxy (for the hosted
-// HTTPS option), so req.secure is accurate. Harmless on a direct LAN connection.
-app.set('trust proxy', true);
+
+/**
+ * Proxy trust is OFF unless an operator turns it on.
+ *
+ * This used to be `trust proxy: true` unconditionally, so Express believed the
+ * `X-Forwarded-For` header on every request. On the property's direct LAN there is
+ * no proxy to set that header — which meant any client could invent one. Since the
+ * sign-in throttle is keyed on the client address, an attacker got a fresh bucket
+ * per request and could guess passwords without limit (measured: 25 of 25 spoofed
+ * attempts sailed past a throttle that had already fired).
+ *
+ * Set VDS_TRUST_PROXY only when the server genuinely sits behind a reverse proxy
+ * you control: `true` (trust any hop), a hop count such as `1`, or a comma
+ * separated list of trusted proxy addresses/subnets.
+ */
+const TRUST_PROXY = String(process.env.VDS_TRUST_PROXY || '').trim();
+if (!TRUST_PROXY || TRUST_PROXY === 'false') {
+  app.set('trust proxy', false);
+} else if (TRUST_PROXY === 'true') {
+  app.set('trust proxy', true);
+} else if (/^\d+$/.test(TRUST_PROXY)) {
+  app.set('trust proxy', Number(TRUST_PROXY));
+} else {
+  app.set('trust proxy', TRUST_PROXY);
+}
 
 /**
  * Liveness probe. Deliberately unauthenticated and dependency-free, so the client
@@ -230,6 +252,27 @@ function requireDay(value: unknown, field: string): string {
   return v;
 }
 
+/**
+ * A readable id derived from a parent record, guaranteed not to collide.
+ *
+ * Charges and the receipts raised from a booking or a utility bill take their id
+ * from the record they belong to (`chg-2026-07-unit-1-rent`, `p-utility-ut-123`),
+ * which reads well in the audit trail. But those ids are only unique while the
+ * parent is settled once. Voiding a charge and re-posting the month, or voiding a
+ * utility receipt and settling the bill again, both produced a *second* row with
+ * the *same* id — and every lookup here uses `.find()`, which returns the voided
+ * one. The live charge or receipt then became impossible to void through the API.
+ *
+ * The base id is still used whenever it is free, so existing records keep the ids
+ * they already have; a repeat gets `-r2`, `-r3`, and so on.
+ */
+function uniqueRecordId(rows: { id: string }[], baseId: string): string {
+  if (!rows.some(r => r.id === baseId)) return baseId;
+  let revision = 2;
+  while (rows.some(r => r.id === `${baseId}-r${revision}`)) revision++;
+  return `${baseId}-r${revision}`;
+}
+
 function findUnitOrFail(db: Database, unitId: unknown): Unit {
   const unit = db.units.find(u => u.id === String(unitId ?? ''));
   if (!unit) throw new ApiError(400, 'The selected villa unit could not be found.');
@@ -280,18 +323,47 @@ function bootstrap() {
  * ------------------------------------------------------------------ */
 
 const loginAttempts = new Map<string, { count: number; first: number }>();
+const THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 
-function throttleLogin(key: string) {
+/**
+ * Count a failed sign-in against a bucket, refusing once it is over its limit.
+ *
+ * Two buckets are checked per attempt: one per (address, username) and a looser
+ * one per username. The second exists because an attacker on the LAN can hold more
+ * than one address, and the account being guessed at is the thing worth protecting.
+ * Its limit is set well above anything a person mistyping their own password will
+ * reach.
+ */
+function bumpAttempt(key: string, limit: number) {
   const now = Date.now();
   const entry = loginAttempts.get(key);
-  if (!entry || now - entry.first > 15 * 60 * 1000) {
+  if (!entry || now - entry.first > THROTTLE_WINDOW_MS) {
     loginAttempts.set(key, { count: 1, first: now });
     return;
   }
   entry.count += 1;
-  if (entry.count > 10) {
+  if (entry.count > limit) {
     throw new ApiError(429, 'Too many sign-in attempts. Wait 15 minutes and try again.');
   }
+}
+
+/** Drop buckets whose window has closed, so the map cannot grow without bound. */
+function pruneLoginAttempts() {
+  const cutoff = Date.now() - THROTTLE_WINDOW_MS;
+  for (const [key, entry] of loginAttempts) {
+    if (entry.first < cutoff) loginAttempts.delete(key);
+  }
+}
+
+function throttleLogin(ip: string, username: string) {
+  if (loginAttempts.size > 1000) pruneLoginAttempts();
+  bumpAttempt(`ip:${ip}:${username}`, 10);
+  bumpAttempt(`user:${username}`, 30);
+}
+
+function clearLoginAttempts(ip: string, username: string) {
+  loginAttempts.delete(`ip:${ip}:${username}`);
+  loginAttempts.delete(`user:${username}`);
 }
 
 app.post(
@@ -300,7 +372,7 @@ app.post(
     const username = String(req.body?.username ?? '').trim().toLowerCase();
     const password = String(req.body?.password ?? '');
     if (!username || !password) bad('Username and password are required.');
-    throttleLogin(`${req.ip}:${username}`);
+    throttleLogin(req.ip || 'unknown', username);
 
     const result = await transaction(db => {
       const user = db.users.find(u => u.username.toLowerCase() === username);
@@ -316,7 +388,7 @@ app.post(
     });
 
     if (!result) throw new ApiError(401, 'Incorrect username or password.');
-    loginAttempts.delete(`${req.ip}:${username}`);
+    clearLoginAttempts(req.ip || 'unknown', username);
     setSessionCookie(res, result.token, isRequestSecure(req));
     res.json({ user: result.user });
   })
@@ -1034,7 +1106,9 @@ app.post(
           }
           const dueDay = category === 'Rent' ? unit.rentDueDay || 1 : unit.maintDueDay || 1;
           const charge: Charge = {
-            id: `chg-${monthString}-${unit.id}-${category.toLowerCase()}`,
+            // Re-posting a month after a charge was voided must raise a *new*
+            // charge, not a second row wearing the voided one's id.
+            id: uniqueRecordId(db.charges, `chg-${monthString}-${unit.id}-${category.toLowerCase()}`),
             unitId: unit.id,
             unitNumber: unit.number,
             category,
@@ -1140,44 +1214,47 @@ function assertNoOverlap(db: Database, unitId: string, checkIn: string, checkOut
  * The original version spliced the payment row out of the ledger when a deposit
  * was reduced to zero, destroying an issued receipt. Receipts are financial
  * records: this reverses them instead, leaving the void visible and audited.
+ *
+ * Only the *live* receipt is ever touched. Matching on the booking alone found
+ * voided receipts too, so restoring a deposit after its receipt was voided flipped
+ * that receipt back to "completed" and deleted the reversal reason off it — a void
+ * silently undone, which `PUT /api/payments/:id` explicitly refuses to allow.
+ * Voiding is one-way here as well: a booking that regains a deposit gets a new
+ * receipt with its own number, and the voided one stays voided.
  */
 function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: string, role: UserRole) {
-  const existing = db.payments.find(p => p.bookingId === booking.id);
+  const live = db.payments.find(p => p.bookingId === booking.id && p.status === 'completed');
 
   if (booking.status === 'cancelled' || booking.depositPaid <= 0) {
-    if (existing && existing.status === 'completed') {
-      const before = { ...existing };
-      existing.status = 'reversed';
-      existing.reversedBy = staffName;
-      existing.reversalDate = today();
-      existing.reversalReason =
+    if (live) {
+      const before = { ...live };
+      live.status = 'reversed';
+      live.reversedBy = staffName;
+      live.reversalDate = today();
+      live.reversalReason =
         booking.status === 'cancelled'
           ? 'Reservation cancelled — deposit receipt voided.'
           : 'Reservation deposit reduced to zero — deposit receipt voided.';
-      addAudit(db, staffName, role, 'Voided booking deposit receipt', 'Payment', existing.id, before, existing, staffName);
+      addAudit(db, staffName, role, 'Voided booking deposit receipt', 'Payment', live.id, before, live, staffName);
     }
     return;
   }
 
-  if (existing) {
-    if (existing.amount !== booking.depositPaid || existing.currency !== booking.currency || existing.status !== 'completed') {
-      const before = { ...existing };
-      existing.amount = booking.depositPaid;
-      existing.currency = booking.currency;
-      existing.payerName = booking.guestName;
-      existing.unitId = booking.unitId;
-      existing.unitNumber = booking.unitNumber;
-      existing.status = 'completed';
-      delete existing.reversedBy;
-      delete existing.reversalDate;
-      delete existing.reversalReason;
-      addAudit(db, staffName, role, 'Adjusted booking deposit receipt to match the reservation', 'Payment', existing.id, before, existing);
+  if (live) {
+    if (live.amount !== booking.depositPaid || live.currency !== booking.currency) {
+      const before = { ...live };
+      live.amount = booking.depositPaid;
+      live.currency = booking.currency;
+      live.payerName = booking.guestName;
+      live.unitId = booking.unitId;
+      live.unitNumber = booking.unitNumber;
+      addAudit(db, staffName, role, 'Adjusted booking deposit receipt to match the reservation', 'Payment', live.id, before, live);
     }
     return;
   }
 
   const payment: Payment = {
-    id: `p-booking-${booking.id}`,
+    id: uniqueRecordId(db.payments, `p-booking-${booking.id}`),
     receiptNo: nextReceiptNo(db),
     payerName: booking.guestName,
     unitId: booking.unitId,
@@ -1586,7 +1663,9 @@ app.post(
 
       const who = actor(req);
       const payment: Payment = {
-        id: `p-utility-${utility.id}`,
+        // Settling again after the first receipt was voided issues a fresh
+        // receipt; it must not reuse the voided receipt's id.
+        id: uniqueRecordId(db.payments, `p-utility-${utility.id}`),
         receiptNo: nextReceiptNo(db),
         payerName: optionalString(body.payerName, 120) || unit?.ownerName || 'Resident',
         unitId: utility.unitId,

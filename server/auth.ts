@@ -104,14 +104,16 @@ export function clearSessionCookie(res: Response) {
  * HTTP LAN (Kamrui → HP over http://hp-name:3000), so forcing Secure by build
  * mode would drop the cookie and break sign-in there. Decide per request from the
  * actual connection instead: secure only when the request genuinely arrived over
- * TLS (direct, or via a reverse proxy that sets x-forwarded-proto=https), or when
- * an operator explicitly opts in with VDS_FORCE_SECURE_COOKIE=true.
+ * TLS, or when an operator explicitly opts in with VDS_FORCE_SECURE_COOKIE=true.
+ *
+ * `req.secure` is Express's own answer and already accounts for the configured
+ * proxy trust: it honours `x-forwarded-proto` from a reverse proxy the operator
+ * has declared via VDS_TRUST_PROXY, and ignores that header otherwise. Reading the
+ * header directly, as this used to, believed whatever an unproxied client claimed.
  */
 export function isRequestSecure(req: Request): boolean {
   if (process.env.VDS_FORCE_SECURE_COOKIE === 'true') return true;
-  if (req.secure) return true;
-  const forwarded = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
-  return forwarded === 'https';
+  return req.secure;
 }
 
 export function readSessionToken(req: Request): string | undefined {
