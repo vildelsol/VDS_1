@@ -18,6 +18,7 @@ import {
   getUnitDisplayName
 } from '../types';
 import {
+  ACCOUNT_STATUS_LABEL,
   AccountBalance,
   accountBalance,
   chargeCurrency,
@@ -47,6 +48,7 @@ import {
   monoInputClass
 } from './ui';
 import {
+  AlertTriangle,
   CalendarClock,
   CheckCircle,
   Edit,
@@ -723,15 +725,26 @@ function AccountTable({
                     </td>
                     <td className="p-4 text-right">
                       <span
+                        title={
+                          account.status === 'not-billed'
+                            ? `${account.currency} ${monthly} per month is set up for this villa, but no charge has been raised yet. Post the month's charges to bill it.`
+                            : undefined
+                        }
                         className={`rounded-md px-2 py-0.5 font-mono text-[11px] font-medium ${
-                          overdue ? 'bg-red-50 text-red-700' : account.balance < 0 ? 'bg-sky-50 text-sky-700' : 'bg-emerald-50 text-emerald-700'
+                          account.status === 'in-arrears'
+                            ? 'bg-red-50 text-red-700'
+                            : account.status === 'credit'
+                              ? 'bg-sky-50 text-sky-700'
+                              : account.status === 'not-billed'
+                                ? 'bg-amber-50 text-amber-700'
+                                : 'bg-emerald-50 text-emerald-700'
                         }`}
                       >
-                        {overdue
+                        {account.status === 'in-arrears'
                           ? formatMoney(account.balance, account.currency)
-                          : account.balance < 0
+                          : account.status === 'credit'
                             ? `${formatMoney(Math.abs(account.balance), account.currency)} credit`
-                            : 'Settled'}
+                            : ACCOUNT_STATUS_LABEL[account.status]}
                       </span>
                     </td>
                     <td className="p-4">
@@ -759,10 +772,16 @@ function AccountTable({
                           >
                             Receive payment
                           </button>
-                        ) : (
+                        ) : account.status === 'not-billed' ? (
+                          <span className="inline-flex items-center gap-1 font-medium text-amber-600" title="Nothing has been billed for this account yet.">
+                            <AlertTriangle className="h-3.5 w-3.5" /> Not yet billed
+                          </span>
+                        ) : account.status === 'settled' ? (
                           <span className="inline-flex items-center gap-1 font-medium text-emerald-600">
                             <CheckCircle className="h-3.5 w-3.5" /> Settled
                           </span>
+                        ) : (
+                          <span className="text-slate-300">—</span>
                         )}
                       </div>
                     </td>
@@ -807,6 +826,7 @@ function RecordPaymentModal({
   const [reference, setReference] = useState('');
   const [notes, setNotes] = useState('');
   const [confirmMismatch, setConfirmMismatch] = useState(false);
+  const [confirmNoCharge, setConfirmNoCharge] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -824,6 +844,15 @@ function RecordPaymentModal({
 
   const expectedCurrency = unit && (category === 'Rent' || category === 'Maintenance') ? chargeCurrency(unit, category as ChargeCategory) : null;
   const currencyMismatch = !!expectedCurrency && expectedCurrency !== currency;
+
+  /**
+   * Nothing billed on this account yet, so this money would land as a credit on a
+   * villa that reads as owing nothing — which is how a payment appears to vanish.
+   */
+  const noOpenCharge =
+    !!unit &&
+    (category === 'Rent' || category === 'Maintenance') &&
+    !charges.some(c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === currency);
 
   const outstandingHint = useMemo(() => {
     if (!unit || (category !== 'Rent' && category !== 'Maintenance')) return null;
@@ -857,7 +886,8 @@ function RecordPaymentModal({
         method,
         reference,
         notes,
-        confirmCurrencyMismatch: confirmMismatch
+        confirmCurrencyMismatch: confirmMismatch,
+        confirmNoOpenCharge: confirmNoCharge
       });
     } catch (err) {
       setError(errorMessage(err, 'Could not record the payment.'));
@@ -940,6 +970,20 @@ function RecordPaymentModal({
             <label className="flex items-start gap-2">
               <input type="checkbox" checked={confirmMismatch} onChange={e => setConfirmMismatch(e.target.checked)} className="mt-0.5" />
               <span>Record it in {currency} anyway — I will reconcile the account separately.</span>
+            </label>
+          </div>
+        )}
+
+        {noOpenCharge && !currencyMismatch && (
+          <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+            <p>
+              Nothing has been billed to <strong>{getUnitDisplayName(unit!.number)}</strong> for {category.toLowerCase()} yet,
+              so this money would sit as a <strong>credit</strong> rather than settling anything. Post the month&apos;s
+              charges first and the payment will clear the balance properly.
+            </p>
+            <label className="flex items-start gap-2">
+              <input type="checkbox" checked={confirmNoCharge} onChange={e => setConfirmNoCharge(e.target.checked)} className="mt-0.5" />
+              <span>Record it as a credit on the account anyway.</span>
             </label>
           </div>
         )}

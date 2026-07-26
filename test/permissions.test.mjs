@@ -24,6 +24,10 @@ export default async function run({ port, projectRoot }) {
     await jr.post('/api/auth/login', { username: 'junior', password: 'JuniorPass-11!' }, { captureCookie: true });
     await jr.post('/api/auth/change-password', { currentPassword: 'JuniorPass-11!', newPassword: 'JuniorOwn-22!' });
 
+    // Bill the month first, so the junior's payments settle a real charge rather
+    // than tripping the "nothing has been billed yet" guard.
+    await admin.post('/api/charges/post-month', { monthString: '2026-07' });
+
     const pay = () => jr.post('/api/payments', { unitId: 'unit-1', category: 'Rent', amount: 5000, currency: 'JMD', payerName: 'Walk-in', method: 'Cash' });
 
     // --- default: junior covers the desk ---

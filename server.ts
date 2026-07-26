@@ -1451,6 +1451,20 @@ app.post(
               `A payment in a different currency will not reduce the ${expected} balance. Re-enter it in ${expected}, or confirm to record it anyway.`
           );
         }
+
+        // Money taken against an account with nothing billed becomes a credit
+        // sitting on a villa that reads as owing nothing — the payment looks lost.
+        // Say so before it happens rather than after.
+        const hasOpenCharge = db.charges.some(
+          c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === currency
+        );
+        if (!hasOpenCharge && !body.confirmNoOpenCharge) {
+          throw new ApiError(
+            400,
+            `Nothing has been billed to ${unit.number} for ${category.toLowerCase()} yet, so this payment would be recorded as a credit ` +
+              `rather than settling anything. Post the month's charges first, or confirm to record it as a credit on the account.`
+          );
+        }
       }
 
       const who = actor(req);

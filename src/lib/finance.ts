@@ -94,10 +94,37 @@ export function isBillable(unit: Unit, category: ChargeCategory): boolean {
   return unit.status !== 'unavailable' && chargeAmount(unit, 'Maintenance') > 0;
 }
 
+/**
+ * What an account is actually doing, as one value the whole application agrees on.
+ *
+ * `balance <= 0` used to be rendered as "Settled" everywhere, which quietly told
+ * staff that money was collected when in fact **nothing had ever been billed**.
+ * Setting a rent figure on a unit does not create a debt — a debt exists only once
+ * the month is posted — so a freshly configured villa read as a green, settled
+ * account with a tick beside it. In a system whose whole job is knowing who owes
+ * what, that is the most dangerous thing it could say. The two cases are separated
+ * here, at the single source of truth, rather than in each screen.
+ */
+export type AccountStatus =
+  /** Billed and fully paid. Genuinely settled. */
+  | 'settled'
+  /** Configured to be billed, but no charge has been raised yet. Nothing is owed *yet*. */
+  | 'not-billed'
+  /** Owes money. */
+  | 'in-arrears'
+  /** Paid more than was billed. */
+  | 'credit'
+  /** Not billed for this category at all (vacant, unavailable, or no amount set). */
+  | 'inactive';
+
 export interface AccountBalance {
   unit: Unit;
   category: ChargeCategory;
   currency: Currency;
+  /** Whether this unit is configured to be billed for this category at all. */
+  billable: boolean;
+  /** The single label every screen should render from. Never derive this locally. */
+  status: AccountStatus;
   /** Open charges raised on or before `asOf`. */
   charged: number;
   /** Completed payments received on or before `asOf`, in the billing currency. */
@@ -159,10 +186,26 @@ export function accountBalance(
 
   const oldestUnpaidDays = unpaidCharges.length > 0 ? Math.max(0, daysSince(unpaidCharges[0].dueDate)) : 0;
 
+  const billable = isBillable(unit, category);
+  const status: AccountStatus =
+    balance > 0
+      ? 'in-arrears'
+      : balance < 0
+        ? 'credit'
+        : charged > 0
+          ? 'settled'
+          : billable
+            ? // Configured to be billed, but the month has never been posted, so no
+              // charge exists to owe. Deliberately not "settled".
+              'not-billed'
+            : 'inactive';
+
   return {
     unit,
     category,
     currency,
+    billable,
+    status,
     charged,
     paid,
     balance,
@@ -170,6 +213,33 @@ export function accountBalance(
     oldestUnpaidDays,
     mismatchedCurrencyPayments: mismatched
   };
+}
+
+/** Human label for an account status, so every screen words it identically. */
+export const ACCOUNT_STATUS_LABEL: Record<AccountStatus, string> = {
+  settled: 'Settled',
+  'not-billed': 'Not yet billed',
+  'in-arrears': 'In arrears',
+  credit: 'In credit',
+  inactive: 'Not billed'
+};
+
+/**
+ * Accounts that are configured to be billed but have no charge raised yet.
+ *
+ * These are invisible to `delinquentAccounts` (they owe nothing, because nothing
+ * was billed) yet they are exactly the accounts that need attention — the rent is
+ * set up and simply is not being collected. Surfaced so the dashboard can say so.
+ */
+export function unbilledAccounts(units: Unit[], charges: Charge[], payments: Payment[], asOf?: string): AccountBalance[] {
+  const out: AccountBalance[] = [];
+  for (const unit of units) {
+    for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
+      const account = accountBalance(unit, category, charges, payments, asOf, units);
+      if (account.status === 'not-billed') out.push(account);
+    }
+  }
+  return out;
 }
 
 export interface PeriodStatement {

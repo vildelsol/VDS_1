@@ -18,7 +18,19 @@ export default async function run({ port, projectRoot }) {
     await activateAdmin(c, 'LedgerTest-1234!', 'LedgerNew-9876!');
     await makeLongTermUnit(c);
 
-    const rent = extra => ({ unitId: 'unit-1', category: 'Rent', amount: 50000, currency: 'JMD', payerName: 'Tenant', method: 'Cash', ...extra });
+    // confirmNoOpenCharge mirrors a user ticking "record it as a credit anyway".
+    // These checks are about receipt mechanics, not the billing flow; the guard
+    // itself is covered separately below.
+    const rent = extra => ({
+      unitId: 'unit-1',
+      category: 'Rent',
+      amount: 50000,
+      currency: 'JMD',
+      payerName: 'Tenant',
+      method: 'Cash',
+      confirmNoOpenCharge: true,
+      ...extra
+    });
 
     // --- payment validation ---
     T.check('a negative payment is refused', (await c.post('/api/payments', rent({ amount: -5 }))).status === 400);

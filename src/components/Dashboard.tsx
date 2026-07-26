@@ -26,7 +26,8 @@ import {
   delinquentAccounts,
   expensesInPeriod,
   isOccupied,
-  ownerBilledUnitIds
+  ownerBilledUnitIds,
+  unbilledAccounts
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { addDays, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
@@ -94,6 +95,12 @@ export default function Dashboard({
   /* ---------------- arrears ---------------- */
 
   const arrears = useMemo(() => delinquentAccounts(units, charges, payments), [units, charges, payments]);
+  /**
+   * Accounts set up to be billed that have never had a charge raised. They owe
+   * nothing, so they never appear in arrears — which is exactly why an unbilled
+   * villa could sit here looking fine while its rent was never collected.
+   */
+  const unbilled = useMemo(() => unbilledAccounts(units, charges, payments), [units, charges, payments]);
   const arrearsByCurrency = useMemo(() => {
     const out: Record<Currency, number> = { USD: 0, JMD: 0 };
     for (const account of arrears) {
@@ -206,7 +213,10 @@ export default function Dashboard({
                 ]
                   .filter(Boolean)
                   .join(' + ') + ' outstanding'
-              : 'All billed accounts settled'
+              : unbilled.length > 0
+                ? // Never say everything is settled while accounts are set up but unbilled.
+                  `${unbilled.length} account${unbilled.length === 1 ? '' : 's'} not yet billed`
+                : 'All billed accounts settled'
           }
           icon={<AlertTriangle className="h-6 w-6" />}
           tone={arrears.length > 0 ? 'red' : 'slate'}
@@ -446,6 +456,7 @@ export default function Dashboard({
       {payTarget && (
         <QuickReceiveModal
           units={units}
+          charges={charges}
           account={payTarget === 'blank' ? null : payTarget}
           onClose={() => setPayTarget(null)}
           onSubmit={async payload => {
@@ -548,11 +559,13 @@ function TransitionList({
 
 function QuickReceiveModal({
   units,
+  charges,
   account,
   onClose,
   onSubmit
 }: {
   units: Unit[];
+  charges: Charge[];
   account: AccountBalance | null;
   onClose: () => void;
   onSubmit: (payload: Record<string, unknown>) => Promise<void>;
@@ -567,10 +580,17 @@ function QuickReceiveModal({
   const [reference, setReference] = useState('');
   const [notes, setNotes] = useState('');
   const [confirmMismatch, setConfirmMismatch] = useState(false);
+  const [confirmNoCharge, setConfirmNoCharge] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const unit = units.find(u => u.id === unitId);
+
+  /** Nothing billed yet: this money would land as a credit, not settle anything. */
+  const noOpenCharge =
+    !!unit &&
+    (category === 'Rent' || category === 'Maintenance') &&
+    !charges.some(c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === currency);
 
   /**
    * Prefill from the unit register. The original picked `unit.currency` even for
@@ -616,7 +636,8 @@ function QuickReceiveModal({
         method,
         reference,
         notes,
-        confirmCurrencyMismatch: confirmMismatch
+        confirmCurrencyMismatch: confirmMismatch,
+        confirmNoOpenCharge: confirmNoCharge
       });
     } catch (err) {
       setError(errorMessage(err, 'Could not record the payment.'));
@@ -707,6 +728,19 @@ function QuickReceiveModal({
             <label className="flex items-start gap-2">
               <input type="checkbox" checked={confirmMismatch} onChange={e => setConfirmMismatch(e.target.checked)} className="mt-0.5" />
               <span>Record in {currency} anyway.</span>
+            </label>
+          </div>
+        )}
+
+        {noOpenCharge && !mismatch && (
+          <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+            <p>
+              Nothing has been billed to {getUnitDisplayName(unit!.number)} for {category.toLowerCase()} yet, so this would
+              be recorded as a <strong>credit</strong> rather than settling anything. Post the month&apos;s charges first.
+            </p>
+            <label className="flex items-start gap-2">
+              <input type="checkbox" checked={confirmNoCharge} onChange={e => setConfirmNoCharge(e.target.checked)} className="mt-0.5" />
+              <span>Record it as a credit anyway.</span>
             </label>
           </div>
         )}

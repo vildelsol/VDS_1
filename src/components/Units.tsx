@@ -22,6 +22,7 @@ import {
   getUnitDisplayName
 } from '../types';
 import {
+  AccountStatus,
   accountBalance,
   bookingsForUnit,
   expensesForUnit,
@@ -498,6 +499,7 @@ function UnitDetail({
             dueNote={unit.status === 'long-term' ? `Due on the ${unit.rentDueDay || 1}${ordinal(unit.rentDueDay || 1)} of each month` : undefined}
             balance={unit.status === 'long-term' ? rentAccount.balance : undefined}
             balanceCurrency={rentAccount.currency}
+            status={rentAccount.status}
           />
           <BillingCard
             title="Monthly HOA maintenance"
@@ -507,6 +509,7 @@ function UnitDetail({
             dueNote={`Due on the ${unit.maintDueDay || 1}${ordinal(unit.maintDueDay || 1)} of each month`}
             balance={unit.status !== 'unavailable' ? maintAccount.balance : undefined}
             balanceCurrency={maintAccount.currency}
+            status={maintAccount.status}
           />
         </div>
 
@@ -698,7 +701,8 @@ function BillingCard({
   fxRate,
   dueNote,
   balance,
-  balanceCurrency
+  balanceCurrency,
+  status
 }: {
   title: string;
   amount: number;
@@ -707,6 +711,8 @@ function BillingCard({
   dueNote?: string;
   balance?: number;
   balanceCurrency: Currency;
+  /** From finance.ts, so this card cannot disagree with the ledger. */
+  status?: AccountStatus;
 }) {
   const other: Currency = currency === 'USD' ? 'JMD' : 'USD';
   return (
@@ -718,12 +724,18 @@ function BillingCard({
       </span>
       {dueNote && <p className="mt-1.5 text-[10px] font-medium text-slate-500">{dueNote}</p>}
       {balance !== undefined && (
-        <p className={`mt-1.5 font-mono text-[10px] font-semibold ${balance > 0 ? 'text-red-600' : balance < 0 ? 'text-sky-600' : 'text-emerald-600'}`}>
+        <p
+          className={`mt-1.5 font-mono text-[10px] font-semibold ${
+            balance > 0 ? 'text-red-600' : balance < 0 ? 'text-sky-600' : status === 'not-billed' ? 'text-amber-600' : 'text-emerald-600'
+          }`}
+        >
           {balance > 0
             ? `${formatMoney(balance, balanceCurrency)} outstanding`
             : balance < 0
               ? `${formatMoney(Math.abs(balance), balanceCurrency)} in credit`
-              : 'Account settled'}
+              : status === 'not-billed'
+                ? 'Not yet billed'
+                : 'Account settled'}
         </p>
       )}
     </div>
