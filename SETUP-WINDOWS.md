@@ -11,8 +11,15 @@ You do **not** need to understand any of the technical parts. Just follow the st
 ## Part 1 — Start it on the HP
 
 ### Step 1: Get the program folder onto the HP
-Copy the `pm-app` folder onto the HP — for example onto the Desktop. (You can copy it
-from a USB stick, or download it; see *"Where do I get it?"* at the bottom.)
+Put the program in **its own folder** — for example on the Desktop. If you were given a
+**zip**, right-click it → **Extract All**, and let it create its own folder (the default).
+You should end up with a folder like `villaggio-del-sol-app` that contains
+`Villaggio-Del-Sol` and the other files.
+
+> ⚠️ **Do not drop the loose files straight onto the C: drive** (the top level, next to
+> `Windows` and `Program Files`). The program can't run from there and will tell you to
+> move it into a folder first. Keeping it in its own folder — Desktop is perfect — avoids
+> that.
 
 ### Step 2: Double-click **`Villaggio-Del-Sol.bat`**
 That is the whole thing. There is no separate installer and nothing to activate.
