@@ -53,15 +53,20 @@ set NODE_ENV=production
 set PORT=3000
 if exist ".env" for /f "usebackq tokens=1,2 delims==" %%A in (".env") do if /I "%%A"=="PORT" set PORT=%%B
 
-echo   Starting up. Your browser will open in a moment.
+REM The server opens the browser itself, the moment it is actually ready to
+REM answer. A fixed timer in a second window used to open it too early on a
+REM first run, leaving the browser loading against a server that had not
+REM finished starting.
+set VDS_OPEN_BROWSER=1
+
+echo   Starting up. Your browser will open by itself when ready.
+echo   On the very first run this can take up to a minute.
 echo.
 echo   KEEP THIS WINDOW OPEN while the program is being used.
 echo   Closing this window shuts the program down.
 echo.
 echo   ------------------------------------------------------------
 echo.
-
-start "" cmd /c "timeout /t 5 >nul & start "" http://localhost:%PORT%"
 
 node dist\server.cjs
 

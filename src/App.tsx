@@ -30,7 +30,7 @@ import SystemSettings from './components/SystemSettings';
 import PrintReceipt from './components/PrintReceipt';
 import NotificationsTab from './components/NotificationsTab';
 import Login, { ChangePasswordGate } from './components/Login';
-import { ConnectionState, api, errorMessage, setUnauthenticatedHandler, subscribeConnection } from './lib/api';
+import { ApiError, ConnectionState, api, errorMessage, setUnauthenticatedHandler, subscribeConnection } from './lib/api';
 import { countBookingOverlaps, delinquentAccounts } from './lib/finance';
 import {
   BarChart3,
@@ -104,6 +104,7 @@ const EMPTY: Omit<DbSnapshot, 'settings' | 'currentUser'> = {
 export default function App() {
   const [session, setSession] = useState<SessionUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [bootError, setBootError] = useState('');
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [data, setData] = useState<Omit<DbSnapshot, 'settings' | 'currentUser'>>(EMPTY);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -128,23 +129,36 @@ export default function App() {
     });
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .get<{ user: SessionUser }>('/api/auth/me')
-      .then(res => {
-        if (!cancelled) setSession(res.user);
-      })
-      .catch(() => {
-        /* not signed in — the login screen is the expected outcome */
-      })
-      .finally(() => {
-        if (!cancelled) setAuthChecked(true);
-      });
-    return () => {
-      cancelled = true;
-    };
+  /**
+   * Probe for an existing session on start-up.
+   *
+   * This fails fast rather than sitting in the reconnect loop: until it settles the
+   * application can only show a loading spinner, and a spinner that never resolves
+   * is indistinguishable from a broken program. A server that is not up yet is
+   * reported as exactly that, with a way to try again.
+   */
+  const checkSession = useCallback(async () => {
+    setBootError('');
+    setAuthChecked(false);
+    try {
+      const res = await api.get<{ user: SessionUser }>('/api/auth/me', { failFast: true });
+      setSession(res.user);
+    } catch (err) {
+      // 401 is the ordinary "nobody is signed in" answer — show the login screen.
+      if (!(err instanceof ApiError && err.isAuthError)) {
+        setBootError(
+          errorMessage(err, 'Could not reach the server.') +
+            ' If the program has just been started it may still be starting up.'
+        );
+      }
+    } finally {
+      setAuthChecked(true);
+    }
   }, []);
+
+  useEffect(() => {
+    void checkSession();
+  }, [checkSession]);
 
   /* ---------------- data ---------------- */
 
@@ -237,11 +251,11 @@ export default function App() {
   /* ---------------- gates ---------------- */
 
   if (!authChecked) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-900 text-slate-400">
-        <Loader2 className="h-5 w-5 animate-spin" />
-      </div>
-    );
+    return <StartingUp />;
+  }
+
+  if (!session && bootError) {
+    return <CannotReachServer message={bootError} onRetry={() => void checkSession()} />;
   }
 
   if (!session) {
@@ -265,6 +279,9 @@ export default function App() {
   if (!settings) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50 text-slate-500">
+        {/* Loading the first snapshot is also a moment the link can drop, so the
+            reconnect banner has to be reachable from here too. */}
+        <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
         {apiError ? (
           <>
             <p className="max-w-md text-center text-sm text-red-700">{apiError}</p>
@@ -531,6 +548,59 @@ export default function App() {
           onMarkPrinted={id => api.post(`/api/payments/${id}/mark-printed`).then(() => refresh())}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * The start-up screen.
+ *
+ * A bare spinner on its own was the whole of this screen, which meant a server
+ * that was slow to answer looked identical to a program that had failed. If the
+ * wait runs past a couple of seconds it now says what it is waiting for, so the
+ * operator knows to leave it alone rather than wonder whether it is broken.
+ */
+function StartingUp() {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSlow(true), 2500);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-900 px-6 text-center text-slate-400">
+      <Loader2 className="h-5 w-5 animate-spin" />
+      {slow && (
+        <>
+          <p className="text-sm font-medium text-slate-200">Starting up…</p>
+          <p className="max-w-sm text-xs leading-relaxed text-slate-500">
+            Waiting for the property server to answer. The first start after an update takes longer than usual — this
+            screen will move on by itself.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Shown when the server could not be reached at all, with a way to try again. */
+function CannotReachServer({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-900 px-6 text-center">
+      <div className="w-full max-w-md space-y-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-6">
+        <h1 className="font-display text-base font-semibold text-white">The program is not ready yet</h1>
+        <p className="text-xs leading-relaxed text-slate-400">{message}</p>
+        <p className="text-[11px] leading-relaxed text-slate-500">
+          Leave the green “Villaggio Del Sol” window open — closing it shuts the program down. If this keeps happening,
+          restart the computer and start the program again.
+        </p>
+        <button
+          onClick={onRetry}
+          className="w-full rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-medium text-white transition-colors hover:bg-teal-700"
+        >
+          Try again
+        </button>
+      </div>
     </div>
   );
 }

@@ -15,6 +15,7 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
+import { spawn } from 'child_process';
 import { createServer as createViteServer } from 'vite';
 import {
   Booking,
@@ -2145,9 +2146,61 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Villaggio Del Sol operations server running at http://localhost:${PORT}`);
+    openBrowserIfAsked();
   });
+
+  // A leftover copy of the program still holding the port is the single most
+  // common start-up failure on the office PC. Say so in plain words rather than
+  // printing a stack trace at someone who cannot act on it.
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `\n  The program appears to be running already (port ${PORT} is in use).\n` +
+          '  Close the other Villaggio Del Sol window, or restart this computer,\n' +
+          '  then start the program again.\n'
+      );
+      process.exit(1);
+    }
+    console.error('[vds] server error:', err);
+    process.exit(1);
+  });
+}
+
+/**
+ * Open the operator's browser, but only once the port is genuinely accepting
+ * connections.
+ *
+ * The Windows launcher used to open the browser on a blind five-second timer in a
+ * second console window, started *before* this process. On a first run — where the
+ * database is created and the administrator password is hashed before the port
+ * opens — the browser regularly arrived first and was left staring at a server
+ * that was not answering yet. Waiting for the real "listening" callback removes
+ * the race, and removes the mystery second window with it.
+ *
+ * Off unless asked for, so tests and headless runs never launch a browser.
+ */
+function openBrowserIfAsked() {
+  if (process.env.VDS_OPEN_BROWSER !== '1') return;
+  const url = `http://localhost:${PORT}`;
+  try {
+    const [command, args] =
+      process.platform === 'win32'
+        ? // ComSpec is the authoritative path to the command interpreter; the bare
+          // name is only a fallback. `start ""` needs the empty title argument, or
+          // it treats the URL as the window title and opens nothing.
+          [process.env.ComSpec || 'cmd', ['/c', 'start', '', url]]
+        : process.platform === 'darwin'
+          ? ['open', [url]]
+          : ['xdg-open', [url]];
+    const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    // A machine with no default browser must not take the server down with it.
+    child.on('error', () => console.log(`[vds] could not open a browser — open ${url} yourself.`));
+    child.unref();
+  } catch {
+    console.log(`[vds] could not open a browser — open ${url} yourself.`);
+  }
 }
 
 startServer().catch(err => {

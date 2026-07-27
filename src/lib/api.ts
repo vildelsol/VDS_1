@@ -85,6 +85,19 @@ const RETRY_EVERY_MS = 2000;
 const MAX_WAIT_MS = 90_000;
 const HEALTH_TIMEOUT_MS = 4000;
 
+/**
+ * How long any single attempt may sit there before it is treated as a drop.
+ *
+ * Without this the client could wait forever. A refused connection rejects
+ * immediately, but a socket that is *accepted and then never answered* — a server
+ * still finishing its start-up, a wedged process, or a half-open Tailscale
+ * connection — leaves `fetch` pending with no timeout of its own. The retry cap
+ * below never came into play, because a request that never settles never throws:
+ * the application simply sat on its loading spinner indefinitely. Every attempt is
+ * now bounded, so a stall is detected and handled like any other interruption.
+ */
+const ATTEMPT_TIMEOUT_MS = 20_000;
+
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 async function serverReachable(): Promise<boolean> {
@@ -142,7 +155,17 @@ async function parse(res: Response): Promise<unknown> {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+interface RequestOptions {
+  /**
+   * Give up as soon as the server cannot be reached, instead of waiting out the
+   * reconnect window. Used for the start-up session probe: there is nothing to
+   * lose by failing fast, and a silent wait there is indistinguishable from the
+   * application being broken.
+   */
+  failFast?: boolean;
+}
+
+async function request<T>(method: string, path: string, body?: unknown, opts: RequestOptions = {}): Promise<T> {
   const isMutation = MUTATING.has(method);
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -158,18 +181,29 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   try {
     for (;;) {
       let res: Response;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
       try {
         res = await fetch(path, {
           method,
           headers,
           credentials: 'same-origin',
+          signal: controller.signal,
           body: body === undefined ? undefined : JSON.stringify(body)
         });
       } catch {
-        // Network-level failure (server unreachable). Wait for it to return, then
-        // retry the identical request — safe because of the idempotency key.
+        // Unreachable, or accepted and left hanging past the attempt timeout.
+        // Either way the attempt is over.
+        if (opts.failFast) {
+          setConnection('reconnecting');
+          throw new ApiError(0, 'The server is not responding yet.');
+        }
+        // Wait for it to return, then retry the identical request — safe because
+        // of the idempotency key.
         await waitForServer(deadline);
         continue;
+      } finally {
+        clearTimeout(timer);
       }
 
       // The request reached the server: we are online.
@@ -199,7 +233,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>('GET', path),
+  get: <T>(path: string, opts?: RequestOptions) => request<T>('GET', path, undefined, opts),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body ?? {}),
   del: <T>(path: string, body?: unknown) => request<T>('DELETE', path, body ?? {})
