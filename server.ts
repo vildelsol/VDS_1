@@ -33,6 +33,7 @@ import {
   Tenancy,
   Unit,
   UNIT_STATUSES,
+  UNIT_STATUS_LABELS,
   UnitActivity,
   UtilityReading,
   UserRole,
@@ -1479,11 +1480,18 @@ app.post(
           c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === currency
         );
         if (!hasOpenCharge && !body.confirmNoOpenCharge) {
-          throw new ApiError(
-            400,
-            `Nothing has been billed to ${unit.number} for ${category.toLowerCase()} yet, so this payment would be recorded as a credit ` +
-              `rather than settling anything. Post the month's charges first, or confirm to record it as a credit on the account.`
-          );
+          // A villa that is not billed for this category at all needs different
+          // advice from one that is simply not posted yet: telling someone to
+          // post the month's charges is useless for an owner-occupied villa,
+          // because posting would never raise a rent charge against it.
+          const message = !isBillable(unit, category as ChargeCategory)
+            ? `${unit.number} is ${UNIT_STATUS_LABELS[unit.status].toLowerCase()} and is not billed for ${category.toLowerCase()}. ` +
+              (category === 'Rent'
+                ? 'Owners pay HOA maintenance rather than rent — record it under Maintenance, or confirm to hold it as a credit.'
+                : 'Set a monthly fee on the villa first, or confirm to hold it as a credit.')
+            : `Nothing has been billed to ${unit.number} for ${category.toLowerCase()} yet, so this payment would be recorded as a credit ` +
+              `rather than settling anything. Post the month's charges first, or confirm to record it as a credit on the account.`;
+          throw new ApiError(400, message);
         }
       }
 

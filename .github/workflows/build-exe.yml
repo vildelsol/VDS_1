@@ -60,6 +60,14 @@ jobs:
             --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 \
             --overwrite
 
+      # A headless CI runner has no Desktop folder, so the executable's shortcut
+      # step (which skips gracefully when there is none) would have nothing to
+      # write into. Create one first, so the verification below genuinely tests
+      # the real-user case: given a normal Windows Desktop, is the shortcut made.
+      - name: Ensure a Desktop folder exists for the shortcut test
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE 'Desktop') | Out-Null
+
       # Prove the artifact this workflow is about to publish actually starts,
       # serves the app with no dist/ folder alongside it, and answers a real
       # request — not just that the assembly steps above exited cleanly.

@@ -42,10 +42,12 @@ import {
   LayoutDashboard,
   Loader2,
   LogOut,
+  Menu,
   RefreshCw,
   Settings,
   TrendingUp,
-  Wrench
+  Wrench,
+  X
 } from 'lucide-react';
 
 export type TabKey =
@@ -105,6 +107,7 @@ export default function App() {
   const [session, setSession] = useState<SessionUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [bootError, setBootError] = useState('');
+  const [navOpen, setNavOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [data, setData] = useState<Omit<DbSnapshot, 'settings' | 'currentUser'>>(EMPTY);
   const [settings, setSettings] = useState<AppSettings | null>(null);

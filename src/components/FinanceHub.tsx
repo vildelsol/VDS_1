@@ -14,6 +14,7 @@ import {
   PaymentCategory,
   PaymentMethod,
   SessionUser,
+  UNIT_STATUS_LABELS,
   Unit,
   getUnitDisplayName
 } from '../types';
@@ -852,8 +853,38 @@ function RecordPaymentModal({
     }
   }, [unitId, category, unit]);
 
+  /**
+   * Move off Rent when the villa selected is not rent-billable.
+   *
+   * An owner-occupied villa has no tenant and is never billed rent, so leaving the
+   * category on the default of Rent produced an immediate warning about rent that
+   * this villa will never owe. Switching with the villa means the common case —
+   * an owner paying their HOA maintenance — is simply correct from the start.
+   * Only fires when the villa actually changes, so a deliberate choice stands.
+   */
+  const lastUnitRef = React.useRef(unitId);
+  React.useEffect(() => {
+    if (unitId === lastUnitRef.current) return;
+    lastUnitRef.current = unitId;
+    if (!unit) return;
+    if (category === 'Rent' && !isBillable(unit, 'Rent') && isBillable(unit, 'Maintenance')) {
+      setCategory('Maintenance');
+    }
+  }, [unitId, unit, category]);
+
   const expectedCurrency = unit && (category === 'Rent' || category === 'Maintenance') ? chargeCurrency(unit, category as ChargeCategory) : null;
   const currencyMismatch = !!expectedCurrency && expectedCurrency !== currency;
+
+  const isLedgerCategory = category === 'Rent' || category === 'Maintenance';
+
+  /**
+   * This villa is not billed for this category at all — an owner-occupied or
+   * vacant villa against Rent, most often. Kept separate from "nothing posted
+   * yet" below, because the advice for the two is opposite: telling someone to
+   * post the month's charges is useless here, as posting a month would never
+   * raise a rent charge for a villa that has no tenant.
+   */
+  const notBillableForCategory = !!unit && isLedgerCategory && !isBillable(unit, category as ChargeCategory);
 
   /**
    * Nothing billed on this account yet, so this money would land as a credit on a
@@ -861,7 +892,8 @@ function RecordPaymentModal({
    */
   const noOpenCharge =
     !!unit &&
-    (category === 'Rent' || category === 'Maintenance') &&
+    isLedgerCategory &&
+    !notBillableForCategory &&
     !charges.some(c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === currency);
 
   const outstandingHint = useMemo(() => {
@@ -980,6 +1012,22 @@ function RecordPaymentModal({
             <label className="flex items-start gap-2">
               <input type="checkbox" checked={confirmMismatch} onChange={e => setConfirmMismatch(e.target.checked)} className="mt-0.5" />
               <span>Record it in {currency} anyway — I will reconcile the account separately.</span>
+            </label>
+          </div>
+        )}
+
+        {notBillableForCategory && !currencyMismatch && (
+          <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+            <p>
+              <strong>{getUnitDisplayName(unit!.number)}</strong> is {UNIT_STATUS_LABELS[unit!.status].toLowerCase()} and is
+              not billed for {category.toLowerCase()}.
+              {category === 'Rent'
+                ? ' Owners pay HOA maintenance rather than rent — switch the category to Maintenance if that is what this money is for.'
+                : ' Set a monthly fee on the villa first if it should be billed.'}
+            </p>
+            <label className="flex items-start gap-2">
+              <input type="checkbox" checked={confirmNoCharge} onChange={e => setConfirmNoCharge(e.target.checked)} className="mt-0.5" />
+              <span>Record it as a credit on this account anyway.</span>
             </label>
           </div>
         )}
@@ -1591,7 +1639,7 @@ function AccountStatementDocument({
         </p>
       )}
 
-      <PrintSignatures left="Prepared by" right="Received / Acknowledged by" />
+      <PrintSignatures left="Prepared by" leftName={generatedBy} right="Received / Acknowledged by" rightName={recipientName} />
     </PrintPortal>
   );
 }

@@ -97,7 +97,7 @@ export default function PrintReceipt({ payment, units, bookings, onClose, onMark
         </div>
       )}
 
-      <div className="mt-5 rounded-xl border border-slate-300 bg-slate-50 p-4 text-center">
+      <div className="print-outline mt-5 rounded-xl border border-slate-300 bg-slate-50 p-4 text-center">
         <span className="block font-mono text-[10px] uppercase tracking-wider text-slate-500">Amount received</span>
         <span className="mt-1 block font-mono text-2xl font-bold text-slate-900">
           {formatMoneyLong(payment.amount, payment.currency)}
@@ -107,17 +107,43 @@ export default function PrintReceipt({ payment, units, bookings, onClose, onMark
         </span>
       </div>
 
-      <div className="mt-6 flex items-end justify-between gap-6 border-t border-slate-200 pt-5 text-[10px] font-mono text-slate-500">
-        <div className="flex-1">
-          <div className="mb-1 h-7 border-b border-slate-400" />
-          <p className="uppercase">Received by</p>
-          <p className="mt-0.5 font-semibold uppercase text-slate-700">{payment.staffMember}</p>
+      {/*
+        Signatures are only meaningful for cash handed over in person: that is the
+        one case where a person physically took money and both sides need to
+        attest to it. A bank transfer, card or cheque already has its own
+        independent record at the bank, so printing empty signature lines for
+        those invited a signature that proves nothing.
+
+        Both columns are a two-line grid of identical structure, so the two
+        signature rules sit on exactly the same baseline. The previous version
+        used flex with `items-end` and unequal content — one column had a name
+        line and the other did not — which pushed the two rules to different
+        heights.
+      */}
+      {payment.method === 'Cash' ? (
+        <div className="mt-6 grid grid-cols-2 gap-6 border-t border-slate-200 pt-5 font-mono text-[10px] text-slate-500">
+          <div>
+            <div className="mb-1 h-7 border-b border-slate-400" />
+            <p className="uppercase">Received by</p>
+            <p className="mt-0.5 font-semibold uppercase text-slate-700">{payment.staffMember}</p>
+          </div>
+          <div>
+            <div className="mb-1 h-7 border-b border-slate-400" />
+            <p className="uppercase">Payer signature</p>
+            <p className="mt-0.5 font-semibold uppercase text-slate-700">{payment.payerName}</p>
+          </div>
         </div>
-        <div className="flex-1 text-right">
-          <div className="mb-1 h-7 border-b border-slate-400" />
-          <p className="uppercase">Payer signature</p>
+      ) : (
+        <div className="mt-6 border-t border-slate-200 pt-4 text-center font-mono text-[9px] leading-relaxed text-slate-500">
+          <p>
+            Paid by {payment.method.toLowerCase()} — no signature is required, as the transaction is evidenced by the
+            {payment.reference ? ` reference ${payment.reference}` : ' banking record'}.
+          </p>
+          <p className="mt-1">
+            Recorded by <span className="font-semibold uppercase text-slate-700">{payment.staffMember}</span>
+          </p>
         </div>
-      </div>
+      )}
 
       <p className="mt-5 border-t border-dashed border-slate-300 pt-2 text-center font-mono text-[9px] uppercase text-slate-400">
         Villaggio Del Sol — retain this receipt as proof of payment

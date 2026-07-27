@@ -29,11 +29,20 @@ import {
   expensesInPeriod,
   isBillable
 } from '../lib/finance';
-import { formatMoney, round2, sumMoney } from '../lib/money';
-import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
+import { formatMoney, formatMoneyPlain, round2, sumMoney } from '../lib/money';
+import {
+  addMonths,
+  currentMonth,
+  formatDayLabel,
+  formatMonthLabel,
+  monthEnd,
+  monthStart,
+  monthsBetween,
+  today
+} from '../lib/dates';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
-import { Badge, EmptyState, Field, InfoNote, SubmitButton, TableScroller, tableHeadRowClass } from './ui';
-import { Landmark, Printer, TrendingDown, TrendingUp } from 'lucide-react';
+import { Badge, EmptyState, ErrorNote, Field, InfoNote, SecondaryButton, SubmitButton, TableScroller, monoInputClass, tableHeadRowClass } from './ui';
+import { Download, Landmark, Printer, TrendingDown, TrendingUp } from 'lucide-react';
 
 interface ProjectionsProps {
   units: Unit[];
@@ -92,20 +101,26 @@ export interface CurrencyProjection {
 const LOOKBACK_OPTIONS = [3, 6, 12] as const;
 const HORIZON_OPTIONS = [3, 6, 12] as const;
 
+/** The historical window a projection is averaged over. */
+interface LookbackWindow {
+  from: string;
+  to: string;
+  /** Whole months in the window — the divisor for every average below. */
+  months: number;
+}
+
 function buildProjection(
   currency: Currency,
   units: Unit[],
   charges: Charge[],
   payments: Payment[],
   expenses: Expense[],
-  lookback: number,
+  window: LookbackWindow,
   horizon: number
 ): CurrencyProjection {
-  // Look-back window: the last `lookback` completed calendar months, ending with
-  // last month. The current, partial month is excluded so it cannot understate the
-  // averages.
-  const from = monthStart(addMonths(currentMonth(), -lookback));
-  const to = monthEnd(addMonths(currentMonth(), -1));
+  const { from, to } = window;
+  // Never divide by zero if a range somehow collapses to nothing.
+  const lookback = Math.max(1, window.months);
 
   const maintReceived = collectedInPeriod(payments, currency, from, to).maintenance;
   const maintBilled = chargedInPeriod(charges, currency, from, to).maintenance;
@@ -239,17 +254,105 @@ function analysisFor(p: CurrencyProjection, horizon: number): string[] {
 export default function Projections({ units, charges, payments, expenses, settings, session }: ProjectionsProps) {
   const [lookback, setLookback] = useState<number>(6);
   const [horizon, setHorizon] = useState<number>(6);
+  const [customRange, setCustomRange] = useState(false);
+  const [customFrom, setCustomFrom] = useState(monthStart(addMonths(currentMonth(), -6)));
+  const [customTo, setCustomTo] = useState(monthEnd(addMonths(currentMonth(), -1)));
   const [printing, setPrinting] = useState(false);
+
+  const invalidRange = customRange && customTo < customFrom;
+
+  /**
+   * The historical window the run-rate is averaged over: either the last N
+   * completed months, or an explicit range. The preset deliberately ends with
+   * last month — the current, part-finished month would drag every average down.
+   */
+  const basis = useMemo<LookbackWindow>(() => {
+    if (customRange) {
+      return { from: customFrom, to: customTo, months: monthsBetween(customFrom, customTo).length };
+    }
+    return {
+      from: monthStart(addMonths(currentMonth(), -lookback)),
+      to: monthEnd(addMonths(currentMonth(), -1)),
+      months: lookback
+    };
+  }, [customRange, customFrom, customTo, lookback]);
 
   const projections = useMemo(
     () =>
-      (['JMD', 'USD'] as Currency[])
-        .map(currency => buildProjection(currency, units, charges, payments, expenses, lookback, horizon))
-        .filter(p => p.active),
-    [units, charges, payments, expenses, lookback, horizon]
+      invalidRange
+        ? []
+        : (['JMD', 'USD'] as Currency[])
+            .map(currency => buildProjection(currency, units, charges, payments, expenses, basis, horizon))
+            .filter(p => p.active),
+    [units, charges, payments, expenses, basis, horizon, invalidRange]
   );
 
   const hasData = projections.length > 0;
+
+  /**
+   * Export the projection as a spreadsheet, so the committee can adjust figures
+   * by hand — change an assessment, add a planned expense — without needing the
+   * application. CSV with a byte-order mark, which Excel opens directly with
+   * accents and currency symbols intact.
+   */
+  const downloadSpreadsheet = () => {
+    const rows: string[][] = [];
+    rows.push(['VILLAGGIO DEL SOL — STRATA CORPORATION']);
+    rows.push(['Financial projection']);
+    rows.push(['Basis', `${formatDayLabel(basis.from)} to ${formatDayLabel(basis.to)}`, `${basis.months} month(s)`]);
+    rows.push(['Projected forward', `${horizon} month(s)`]);
+    rows.push(['Generated', formatDayLabel(today()), 'by', session.name]);
+    rows.push(['Note', 'Maintenance (HOA) contributions only. Rent and booking income belong to individual proprietors.']);
+    rows.push(['Note', 'USD and JMD are projected separately and are never combined.']);
+
+    for (const p of projections) {
+      rows.push([]);
+      rows.push([`=== ${p.currency} ===`]);
+      rows.push(['Measure', 'Amount']);
+      rows.push(['Current monthly assessment', formatMoneyPlain(p.contractedMonthly)]);
+      rows.push(['Contributing proprietors', String(p.contributingUnits)]);
+      rows.push([`Received over basis (${p.lookback} mo.)`, formatMoneyPlain(p.maintReceived)]);
+      rows.push([`Billed over basis (${p.lookback} mo.)`, formatMoneyPlain(p.maintBilled)]);
+      rows.push([`Expenses paid over basis (${p.lookback} mo.)`, formatMoneyPlain(p.expensesPaid)]);
+      rows.push(['Collection rate %', p.rate === null ? 'n/a' : String(p.rate)]);
+      rows.push(['Projected monthly contributions', formatMoneyPlain(p.projectedIncome)]);
+      rows.push(['Projected monthly expenditure', formatMoneyPlain(p.projectedExpense)]);
+      rows.push(['Projected monthly net', formatMoneyPlain(p.projectedNet)]);
+      rows.push(['Maintenance arrears outstanding today', formatMoneyPlain(p.arrears)]);
+      rows.push([]);
+      rows.push(['Month', 'Contributions', 'Expenditure', 'Net', 'Cumulative']);
+      for (const row of p.forecast) {
+        rows.push([
+          formatMonthLabel(row.month),
+          formatMoneyPlain(row.income),
+          formatMoneyPlain(row.expenditure),
+          formatMoneyPlain(row.net),
+          formatMoneyPlain(row.cumulative)
+        ]);
+      }
+      rows.push([
+        `TOTAL (${horizon} months)`,
+        formatMoneyPlain(p.horizonIncome),
+        formatMoneyPlain(p.horizonExpense),
+        formatMoneyPlain(p.horizonNet),
+        formatMoneyPlain(p.horizonNet)
+      ]);
+      rows.push([]);
+      rows.push(['Summary']);
+      for (const line of analysisFor(p, horizon)) rows.push([line]);
+    }
+
+    const csv = rows.map(r => r.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `VDS_projection_${basis.from}_to_${basis.to}_plus${horizon}m.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="space-y-6">
@@ -264,26 +367,43 @@ export default function Projections({ units, charges, payments, expenses, settin
               A forward view of maintenance contributions against operating expenditure, for the body corporate.
             </p>
           </div>
-          <SubmitButton type="button" onClick={() => setPrinting(true)} disabled={!hasData}>
-            <Printer className="h-4 w-4" /> Print projection
-          </SubmitButton>
+          <div className="flex flex-wrap gap-2">
+            <SecondaryButton onClick={downloadSpreadsheet} disabled={!hasData} className="flex items-center gap-1.5">
+              <Download className="h-4 w-4" /> Export for Excel
+            </SecondaryButton>
+            <SubmitButton type="button" onClick={() => setPrinting(true)} disabled={!hasData}>
+              <Printer className="h-4 w-4" /> Print projection
+            </SubmitButton>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Base the run-rate on" htmlFor="pj-lookback">
-            <div className="flex gap-2" id="pj-lookback">
+            <div className="flex flex-wrap gap-2" id="pj-lookback">
               {LOOKBACK_OPTIONS.map(n => (
                 <button
                   key={n}
-                  onClick={() => setLookback(n)}
-                  aria-pressed={lookback === n}
+                  onClick={() => {
+                    setCustomRange(false);
+                    setLookback(n);
+                  }}
+                  aria-pressed={!customRange && lookback === n}
                   className={`rounded-lg px-3 py-1.5 font-mono text-xs font-semibold transition-colors ${
-                    lookback === n ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                    !customRange && lookback === n ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   {n} months
                 </button>
               ))}
+              <button
+                onClick={() => setCustomRange(true)}
+                aria-pressed={customRange}
+                className={`rounded-lg px-3 py-1.5 font-mono text-xs font-semibold transition-colors ${
+                  customRange ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Custom range
+              </button>
             </div>
           </Field>
           <Field label="Project forward" htmlFor="pj-horizon">
@@ -303,6 +423,24 @@ export default function Projections({ units, charges, payments, expenses, settin
             </div>
           </Field>
         </div>
+
+        {customRange && (
+          <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-3">
+            <Field label="Basis from" htmlFor="pj-from">
+              <input id="pj-from" type="date" value={customFrom} max={today()} onChange={e => setCustomFrom(e.target.value)} className={monoInputClass} />
+            </Field>
+            <Field label="Basis to" htmlFor="pj-to">
+              <input id="pj-to" type="date" value={customTo} max={today()} onChange={e => setCustomTo(e.target.value)} className={monoInputClass} />
+            </Field>
+            <p className="pb-2 font-mono text-[11px] text-slate-500">
+              {invalidRange
+                ? 'Invalid range'
+                : `${formatDayLabel(basis.from)} → ${formatDayLabel(basis.to)} (${basis.months} month${basis.months === 1 ? '' : 's'})`}
+            </p>
+          </div>
+        )}
+
+        {invalidRange && <ErrorNote>The end date must fall on or after the start date.</ErrorNote>}
 
         <InfoNote>
           Straight-line projection — no growth or seasonality is assumed. Income is maintenance (HOA) contributions only;
@@ -353,7 +491,9 @@ export default function Projections({ units, charges, payments, expenses, settin
       {printing && (
         <ProjectionDocument
           projections={projections}
-          lookback={lookback}
+          lookback={basis.months}
+          basisFrom={basis.from}
+          basisTo={basis.to}
           horizon={horizon}
           settings={settings}
           generatedBy={session.name}
@@ -500,6 +640,8 @@ function ForecastTable({ projections }: { projections: CurrencyProjection[] }) {
 function ProjectionDocument({
   projections,
   lookback,
+  basisFrom,
+  basisTo,
   horizon,
   settings,
   generatedBy,
@@ -507,6 +649,8 @@ function ProjectionDocument({
 }: {
   projections: CurrencyProjection[];
   lookback: number;
+  basisFrom: string;
+  basisTo: string;
   horizon: number;
   settings: AppSettings;
   generatedBy: string;
@@ -529,7 +673,10 @@ function ProjectionDocument({
         <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Basis and assumptions</h3>
         <ul className="list-disc space-y-1 pl-5 text-[11px] leading-relaxed">
           <li>Prepared for the Strata Corporation (body corporate). Income is maintenance (HOA) contributions only; rent and short-term booking income belong to individual proprietors and are excluded.</li>
-          <li>Projection is straight-line from the run-rate of the last {lookback} completed months — no growth, inflation or seasonality is assumed.</li>
+          <li>
+            Projection is straight-line from the run-rate of {formatDayLabel(basisFrom)} to {formatDayLabel(basisTo)} (
+            {lookback} month{lookback === 1 ? '' : 's'}) — no growth, inflation or seasonality is assumed.
+          </li>
           <li>Projected contributions are the current monthly assessment tempered by the recent collection rate; expenditure is the average of expenses paid over the period.</li>
           <li>USD and JMD are projected separately and never combined. No opening bank balance is assumed — figures represent cash movement, not a bank position.</li>
         </ul>
@@ -615,7 +762,7 @@ function ProjectionDocument({
         Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD, used for display only; USD and JMD are never combined.
       </p>
 
-      <PrintSignatures left="Prepared by" right="Treasurer / Executive Committee" />
+      <PrintSignatures left="Prepared by" leftName={generatedBy} right="Treasurer / Executive Committee" />
     </PrintPortal>
   );
 }

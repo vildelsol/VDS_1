@@ -460,7 +460,14 @@ function UnitDetail({
                           onClick={() => onEditTenancy(tenancy)}
                           className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-50"
                         >
-                          {tenancy.status === 'active' ? 'Record move-out' : 'Correct dates'}
+                          {/*
+                            Named for what the screen actually does. "Record
+                            move-out" described only half of it — the same form
+                            sets the move-in date, and closing the tenancy is an
+                            optional tick inside it, so the old label read as a
+                            one-way action people were wary of opening.
+                          */}
+                          {tenancy.status === 'active' ? 'Edit tenancy dates' : 'Correct dates'}
                         </button>
                       )}
                       {tenancy.status === 'active' && canEvict && (
@@ -1176,7 +1183,7 @@ function TenancyEditor({
 
   return (
     <Modal
-      title={closing ? 'Record move-out' : 'Correct tenancy dates'}
+      title={closing ? 'Edit tenancy dates' : 'Correct tenancy dates'}
       subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
       onClose={onClose}
       footer={

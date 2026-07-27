@@ -127,7 +127,7 @@ export function PrintLetterhead({
         <p className="mt-0.5 text-[10px] text-slate-400">16-Unit Gated Residence — Internal Operations Record</p>
       </div>
       <div className="text-right">
-        <div className="rounded-lg border border-slate-900 bg-white px-3 py-1 font-mono text-[10px] font-bold uppercase text-slate-900">
+        <div className="print-outline inline-block rounded-lg border border-slate-900 bg-white px-3 py-1 font-mono text-[10px] font-bold uppercase text-slate-900">
           {documentTitle}
         </div>
         {meta && <p className="mt-2 font-mono text-[10px] text-slate-500">{meta}</p>}
@@ -140,18 +140,40 @@ export function PrintLetterhead({
   );
 }
 
-/** Signature block for documents that get countersigned. */
-export function PrintSignatures({ left = 'Authorised Property Officer', right = 'Reviewed By' }: { left?: string; right?: string }) {
+/**
+ * Signature block for documents that get countersigned.
+ *
+ * `leftName` / `rightName` print the actual person under the rule, rather than
+ * only the role. A line labelled just "Prepared by" leaves no record of *who*
+ * prepared it once the sheet is filed, which is the whole point of signing it.
+ * Both columns keep an identical two-line structure so the rules stay on the
+ * same baseline whether or not a name is supplied.
+ */
+export function PrintSignatures({
+  left = 'Authorised Property Officer',
+  right = 'Reviewed By',
+  leftName,
+  rightName
+}: {
+  left?: string;
+  right?: string;
+  leftName?: string;
+  rightName?: string;
+}) {
   return (
     <div className="mt-12 grid grid-cols-2 gap-8 border-t border-slate-200 pt-10 text-center text-xs">
-      <div>
-        <div className="mx-auto h-8 w-2/3 border-b border-slate-500" />
-        <span className="mt-1 block font-mono text-[10px] uppercase text-slate-500">{left}</span>
-      </div>
-      <div>
-        <div className="mx-auto h-8 w-2/3 border-b border-slate-500" />
-        <span className="mt-1 block font-mono text-[10px] uppercase text-slate-500">{right}</span>
-      </div>
+      {[
+        { label: left, name: leftName },
+        { label: right, name: rightName }
+      ].map((column, i) => (
+        <div key={i}>
+          <div className="mx-auto h-8 w-2/3 border-b border-slate-500" />
+          <span className="mt-1 block font-mono text-[10px] uppercase text-slate-500">{column.label}</span>
+          <span className="block min-h-[1.2em] font-mono text-[10px] font-semibold uppercase text-slate-800">
+            {column.name || ''}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

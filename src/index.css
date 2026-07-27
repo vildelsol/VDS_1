@@ -153,6 +153,25 @@
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+
+  /*
+   * Rounded, bordered boxes (the receipt's amount panel, the letterhead's
+   * document-title badge) print with an even rule on all four sides.
+   *
+   * A 1px CSS border is a fraction of a device pixel at print resolution, so the
+   * rasteriser rounds each edge independently — the right and bottom edges of a
+   * rounded box routinely came out visibly thinner than the top and left, or
+   * dropped out altogether. A point-based width maps onto the print grid exactly,
+   * and box-sizing keeps the box inside its own layout so the right edge is never
+   * clipped at the page margin.
+   */
+  .vds-print-document .print-outline {
+    border-width: 1pt !important;
+    border-style: solid !important;
+    box-sizing: border-box !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }
 
 /* On screen the portal is a normal modal overlay. */

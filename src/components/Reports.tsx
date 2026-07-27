@@ -1043,7 +1043,7 @@ function StatementDocument({
         {settings.fxRateJmdPerUsd} JMD, used for display only.
       </p>
 
-      <PrintSignatures left="Prepared by" right="Reviewed / Approved by" />
+      <PrintSignatures left="Prepared by" leftName={generatedBy} right="Reviewed / Approved by" />
     </PrintPortal>
   );
 }
