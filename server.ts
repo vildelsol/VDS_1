@@ -16,7 +16,6 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { spawn } from 'child_process';
-import { createServer as createViteServer } from 'vite';
 import {
   Booking,
   Charge,
@@ -2129,6 +2128,61 @@ app.post(
 
 app.use('/api', (req, res) => res.status(404).json({ error: `Unknown API route: ${req.method} ${req.path}` }));
 
+/**
+ * Single Executable Application (SEA) support.
+ *
+ * `node:sea` is only meaningful once a build has actually been packaged with
+ * Node's `--experimental-sea-config` step and had its client assets injected;
+ * every other way of running this file — `npm run dev`, `npm start`, the
+ * Windows `.bat` launcher, the automated tests — has no such packaging and must
+ * carry on exactly as before. `isSea()` is the one call that tells the two
+ * apart, so it gates everything below it. Guarded with a try/catch because the
+ * module does not exist at all on Node versions old enough that a user's
+ * machine could still be running one.
+ */
+async function loadSeaAssets(): Promise<typeof import('node:sea') | null> {
+  try {
+    const sea = await import('node:sea');
+    return sea.isSea() ? sea : null;
+  } catch {
+    return null;
+  }
+}
+
+const EMBEDDED_ASSET_MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon'
+};
+
+/** Serve the client shell from assets embedded in the executable, not disk. */
+function serveEmbeddedAssets(sea: typeof import('node:sea')) {
+  const indexHtml = Buffer.from(sea.getAsset('index.html'));
+  return (req: express.Request, res: express.Response) => {
+    // Express has already normalised req.path (collapsing "..", decoding
+    // percent-escapes), so this is a defence-in-depth check, not the only one.
+    const key = req.path === '/' ? 'index.html' : req.path.replace(/^\/+/, '');
+    if (!key.includes('..')) {
+      try {
+        const asset = sea.getAsset(key);
+        res.setHeader('Content-Type', EMBEDDED_ASSET_MIME[path.extname(key)] || 'application/octet-stream');
+        res.send(Buffer.from(asset));
+        return;
+      } catch {
+        // Not an embedded file — fall through to the SPA shell below, exactly
+        // like express.static() falling through to the "*" route today.
+      }
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(indexHtml);
+  };
+}
+
 async function startServer() {
   await bootstrap();
   // Backups run on a timer, not only at boot, so an always-on server still gets
@@ -2136,14 +2190,31 @@ async function startServer() {
   startBackupSchedule();
 
   if (!IS_PROD) {
+    // Imported dynamically, and only here, so a production run — including one
+    // packaged as a single executable with no node_modules alongside it — never
+    // has to resolve the `vite` package at all. A static top-level import is
+    // hoisted and evaluated unconditionally by the bundler regardless of which
+    // branch runs, which used to mean dist/server.cjs required `vite` even in
+    // production; that is why it was listed as a production dependency rather
+    // than a dev one. This makes the dev server the only thing that needs it.
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    const seaAssets = await loadSeaAssets();
+    if (seaAssets) {
+      // Packaged as a single executable: the client shell (index.html, JS, CSS,
+      // icons) was embedded into the binary at build time rather than shipped as
+      // a dist/ folder next to it. Nothing here touches the filesystem for
+      // these files.
+      app.use(serveEmbeddedAssets(seaAssets));
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath));
+      app.get('*', (_req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {

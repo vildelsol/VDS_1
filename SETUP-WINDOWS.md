@@ -94,7 +94,10 @@ To keep a copy **off** the computer as well (strongly recommended), see
 **Can I get a `.exe` instead?**
 `Villaggio-Del-Sol.bat` already behaves like one: double-click, it does everything. A
 true single `.exe` — where the computer needs nothing installed at all, not even
-Node.js — is planned as a later step, built and tested on a real Windows machine.
+Node.js — is built automatically, but not yet handed out. It is assembled by GitHub on a
+real Windows machine each time a new version is released, and comes as one file you can
+put anywhere and double-click. Once a release is published you will be given a link to
+`Villaggio-Del-Sol.exe` directly — no folder, no `npm install`, no Node.js.
 
 **Where do I get the program folder? Can I use GitHub?**
 Two options:

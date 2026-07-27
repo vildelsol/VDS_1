@@ -7,11 +7,15 @@
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist server.js sea-config.json",
     "lint": "tsc --noEmit",
     "test": "npm run build && node test/run.mjs",
     "test:run": "node test/run.mjs",
-    "setup": "node scripts/setup.mjs"
+    "setup": "node scripts/setup.mjs",
+    "build:exe-bundle": "esbuild server.ts --bundle --platform=node --format=cjs --external:vite --outfile=dist/server-bundle.cjs",
+    "build:sea-config": "node scripts/build-sea-assets.mjs",
+    "build:sea-blob": "node --experimental-sea-config sea-config.json",
+    "build:exe-prep": "npm run build && npm run build:exe-bundle && npm run build:sea-config && npm run build:sea-blob"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

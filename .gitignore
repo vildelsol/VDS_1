@@ -6,6 +6,11 @@ coverage/
 *.log
 .env*
 
+# Generated fresh by every exe build (npm run build:exe-prep) — see
+# scripts/build-sea-assets.mjs. Never hand-edited, never committed.
+sea-config.json
+*.blob
+
 # Live operational data and its backups — financial records, never commit these.
 db.json
 db-backups/

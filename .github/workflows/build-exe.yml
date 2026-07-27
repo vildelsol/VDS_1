@@ -1,0 +1,98 @@
+# Builds the single-file Windows program: one .exe, nothing else to install.
+#
+# GitHub does not build this automatically — this file is what tells it to.
+# It runs on a real Windows machine (GitHub does not offer a way to build a
+# genuine .exe from macOS or Linux), bundles the server and embeds the built
+# client app *inside* the executable itself (see scripts/build-sea-assets.mjs
+# and server.ts), then verifies the result actually runs before publishing it.
+#
+# Two ways it starts:
+#   - Pushing a tag like "v1.0.0" also publishes the .exe to that release.
+#   - The "Run workflow" button on the Actions tab, any time, for a build to
+#     download and hand to someone without cutting a release.
+name: Build Windows executable
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Run the same automated suite that gates every change on the test PC,
+      # so a build that would fail on a real machine never reaches Releases.
+      - name: Run the test suite
+        run: npm test
+
+      - name: Build the client and the self-contained server bundle
+        run: |
+          npm run build
+          npm run build:exe-bundle
+          npm run build:sea-config
+          npm run build:sea-blob
+
+      # This is Node's own documented recipe for a Single Executable
+      # Application: copy the Node binary that is building it, then inject the
+      # prepared blob (server code + embedded client assets) into that copy.
+      # The result needs no Node.js installed on the machine that runs it.
+      - name: Assemble Villaggio-Del-Sol.exe
+        shell: bash
+        run: |
+          node -e "require('fs').copyFileSync(process.execPath, 'Villaggio-Del-Sol.exe')"
+          npx --yes postject Villaggio-Del-Sol.exe NODE_SEA_BLOB dist/sea-prep.blob \
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 \
+            --overwrite
+
+      # Prove the artifact this workflow is about to publish actually starts,
+      # serves the app with no dist/ folder alongside it, and answers a real
+      # request — not just that the assembly steps above exited cleanly.
+      - name: Smoke-test the built executable
+        shell: bash
+        run: |
+          mkdir -p smoke-test-data
+          VDS_DATA_DIR="$(pwd)/smoke-test-data" VDS_ADMIN_PASSWORD="CiSmokeTest#12345" \
+            VDS_BACKUP_DIR="" PORT=3999 NODE_ENV=production \
+            ./Villaggio-Del-Sol.exe &
+          SERVER_PID=$!
+          ok=""
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:3999/api/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then
+            echo "The executable did not answer /api/health in time."
+            exit 1
+          fi
+          curl -sf http://127.0.0.1:3999/ | grep -q "Villaggio Del Sol"
+          kill "$SERVER_PID" 2>/dev/null || true
+
+      - name: Upload the executable as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Villaggio-Del-Sol-exe
+          path: Villaggio-Del-Sol.exe
+          retention-days: 30
+
+      - name: Publish to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Villaggio-Del-Sol.exe
+          generate_release_notes: true
