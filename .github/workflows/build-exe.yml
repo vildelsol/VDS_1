@@ -84,7 +84,7 @@ jobs:
           mkdir -p smoke-test-data
           VDS_DATA_DIR="$(pwd)/smoke-test-data" VDS_ADMIN_PASSWORD="CiSmokeTest#12345" \
             VDS_BACKUP_DIR="" PORT=3999 VDS_OPEN_BROWSER=0 \
-            ./Villaggio-Del-Sol.exe &
+            ./Villaggio-Del-Sol.exe > exe-console.log 2>&1 &
           SERVER_PID=$!
           ok=""
           for i in $(seq 1 40); do
@@ -97,12 +97,16 @@ jobs:
           fi
           curl -sf http://127.0.0.1:3999/ | grep -q "Villaggio Del Sol"
           kill "$SERVER_PID" 2>/dev/null || true
+          echo "----- the executable's own console output -----"
+          cat exe-console.log || true
 
-      # The executable creates this in the background (fire-and-forget, so a
-      # slow or failed shortcut never delays or breaks the server itself) —
-      # this cannot be exercised on macOS/Linux at all, so this is the only real
-      # verification that the PowerShell step behind it actually works, on an
-      # actual Windows machine, before every release.
+      # The executable creates the shortcut synchronously during start-up, so by
+      # the time it answered /api/health above the shortcut must already exist.
+      # None of this can be exercised on macOS or Linux, so this is the only real
+      # verification that the PowerShell behind it works, on an actual Windows
+      # machine, before every release. It caught a genuine bug once already: the
+      # first version spawned a detached child and swallowed its errors, and
+      # produced no shortcut at all while reporting success.
       - name: Verify the Desktop shortcut was created
         shell: pwsh
         run: |
@@ -113,6 +117,8 @@ jobs:
             Start-Sleep -Seconds 1
           }
           if (-not $found) {
+            Write-Host "----- the executable's own console output -----"
+            Get-Content exe-console.log -ErrorAction SilentlyContinue
             Write-Error "Desktop shortcut was not created at $shortcut"
             exit 1
           }

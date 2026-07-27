@@ -16,7 +16,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import {
   Booking,
   Charge,
@@ -2320,27 +2320,40 @@ async function startServer() {
 function createDesktopShortcutIfNeeded() {
   if (!packagedExe || process.platform !== 'win32') return;
   const desktop = process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'Desktop') : '';
-  if (!desktop) return;
+  if (!desktop || !fs.existsSync(desktop)) return;
   const shortcutPath = path.join(desktop, 'Villaggio Del Sol.lnk');
+  if (fs.existsSync(shortcutPath)) return;
+
+  const exePath = process.execPath;
+  const workDir = path.dirname(exePath);
+  const esc = (s: string) => s.replace(/'/g, "''");
+  const script =
+    `$w = New-Object -ComObject WScript.Shell; ` +
+    `$s = $w.CreateShortcut('${esc(shortcutPath)}'); ` +
+    `$s.TargetPath = '${esc(exePath)}'; ` +
+    `$s.WorkingDirectory = '${esc(workDir)}'; ` +
+    `$s.Description = 'Villaggio Del Sol Property Operations'; ` +
+    `$s.Save()`;
+
   try {
-    if (fs.existsSync(shortcutPath)) return;
-    const exePath = process.execPath;
-    const workDir = path.dirname(exePath);
-    const esc = (s: string) => s.replace(/'/g, "''");
-    const script =
-      `$w = New-Object -COM WScript.Shell; ` +
-      `$s = $w.CreateShortcut('${esc(shortcutPath)}'); ` +
-      `$s.TargetPath = '${esc(exePath)}'; ` +
-      `$s.WorkingDirectory = '${esc(workDir)}'; ` +
-      `$s.Description = 'Villaggio Del Sol Property Operations'; ` +
-      `$s.Save()`;
-    const child = spawn('powershell', ['-NoProfile', '-Command', script], { detached: true, stdio: 'ignore' });
-    // A shortcut is a nicety, not a functional requirement — never let a failure
-    // here affect the server that is already up and running.
-    child.on('error', () => {});
-    child.unref();
-  } catch {
-    /* best effort */
+    // Run this to completion rather than detached-and-forgotten. A detached child
+    // is not guaranteed to outlive its parent's process tree — that is why the
+    // first attempt silently produced no shortcut at all — and swallowing the
+    // error meant nothing ever said so. It costs about a second, once, before the
+    // first request can arrive, and any failure is now reported.
+    execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      timeout: 20_000,
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    console.log(`[vds] Desktop shortcut created: ${shortcutPath}`);
+  } catch (err) {
+    // A shortcut is a convenience, never a requirement — the program is already
+    // running and must stay running.
+    console.log(
+      `[vds] could not create the Desktop shortcut (${err instanceof Error ? err.message : String(err)}).\n` +
+        '      The program still works — right-click the file and choose "Send to → Desktop" if you want one.'
+    );
   }
 }
 
