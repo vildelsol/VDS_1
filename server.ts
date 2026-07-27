@@ -43,6 +43,8 @@ import { round2, toMoney } from './src/lib/money';
 import { isValidDay, isValidMonth, today, dueDateForMonth, monthStart, nightsBetween } from './src/lib/dates';
 import { bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable } from './src/lib/finance';
 import {
+  DATA_DIR,
+  DB_FILE,
   Database,
   addAudit,
   backupStatus,
@@ -2194,9 +2196,51 @@ function serveEmbeddedAssets(sea: typeof import('node:sea')) {
 let packagedExe = false;
 let seaModule: Awaited<ReturnType<typeof loadSeaAssets>> = null;
 
+/**
+ * Require an explicit keypress before creating a brand new database.
+ *
+ * Only reached for a packaged executable with an interactive console and no
+ * existing db.json — i.e. exactly the "just double-clicked somewhere new" case,
+ * never the ordinary .bat/npm-start/test paths, and never a headless run (an
+ * automated build's smoke test has no TTY, so this never blocks it).
+ */
+function confirmNewDatabase(): Promise<void> {
+  return new Promise(resolve => {
+    console.log(
+      '\n' +
+        '  ============================================================\n' +
+        '     NEW DATABASE\n' +
+        '  ============================================================\n\n' +
+        '  No existing records were found in this folder:\n' +
+        `    ${DATA_DIR}\n\n` +
+        '  Continuing will create a brand new, EMPTY set of records here.\n\n' +
+        '  Only do this on the ONE computer that should hold the real\n' +
+        '  records (usually the office server). If you meant to connect\n' +
+        "  to that computer's existing records instead, close this window\n" +
+        '  now and open a web browser to its address — do not continue.\n'
+    );
+    process.stdout.write('  Press Enter to create a new database here, or close this window to cancel: ');
+    process.stdin.resume();
+    process.stdin.once('data', () => {
+      process.stdin.pause();
+      resolve();
+    });
+  });
+}
+
 async function startServer() {
   seaModule = await loadSeaAssets();
   packagedExe = !!seaModule;
+
+  // A double-clicked executable is easy to run on the wrong machine — most
+  // dangerously, on a second PC that was only ever meant to be a client of the
+  // one real office server. That silently starts a brand new, empty database
+  // there, with no link back to the real records. Caught here, before bootstrap
+  // creates anything: if no database exists yet and a person is actually sitting
+  // at a real console (not a script or a CI run), make them confirm first.
+  if (packagedExe && !fs.existsSync(DB_FILE) && process.stdin.isTTY) {
+    await confirmNewDatabase();
+  }
 
   await bootstrap();
   // Backups run on a timer, not only at boot, so an always-on server still gets
