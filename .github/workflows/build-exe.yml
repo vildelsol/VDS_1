@@ -63,12 +63,19 @@ jobs:
       # Prove the artifact this workflow is about to publish actually starts,
       # serves the app with no dist/ folder alongside it, and answers a real
       # request — not just that the assembly steps above exited cleanly.
+      #
+      # Deliberately does NOT set NODE_ENV: an end user double-clicks the exe with
+      # no environment variables at all, and setting NODE_ENV=production here once
+      # hid a crash that only happened on that bare double-click (the server took
+      # its dev branch and tried to import Vite, which is not bundled in). The
+      # executable must detect it is packaged and run in production on its own.
+      # VDS_OPEN_BROWSER=0 stops it launching a browser on the headless runner.
       - name: Smoke-test the built executable
         shell: bash
         run: |
           mkdir -p smoke-test-data
           VDS_DATA_DIR="$(pwd)/smoke-test-data" VDS_ADMIN_PASSWORD="CiSmokeTest#12345" \
-            VDS_BACKUP_DIR="" PORT=3999 NODE_ENV=production \
+            VDS_BACKUP_DIR="" PORT=3999 VDS_OPEN_BROWSER=0 \
             ./Villaggio-Del-Sol.exe &
           SERVER_PID=$!
           ok=""

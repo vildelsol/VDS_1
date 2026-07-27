@@ -15,6 +15,7 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { spawn } from 'child_process';
 import {
   Booking,
@@ -2183,13 +2184,26 @@ function serveEmbeddedAssets(sea: typeof import('node:sea')) {
   };
 }
 
+/**
+ * Whether this process is a packaged single-file executable, resolved once at
+ * start-up. Kept at module scope so the branch selection, the browser launcher
+ * and the fatal-error handler all agree, including the top-level catch that runs
+ * if bootstrap itself throws. Determined before bootstrap so even that failure
+ * is handled the packaged way (window held open) rather than vanishing.
+ */
+let packagedExe = false;
+let seaModule: Awaited<ReturnType<typeof loadSeaAssets>> = null;
+
 async function startServer() {
+  seaModule = await loadSeaAssets();
+  packagedExe = !!seaModule;
+
   await bootstrap();
   // Backups run on a timer, not only at boot, so an always-on server still gets
   // a daily copy.
   startBackupSchedule();
 
-  if (!IS_PROD) {
+  if (!IS_PROD && !packagedExe) {
     // Imported dynamically, and only here, so a production run — including one
     // packaged as a single executable with no node_modules alongside it — never
     // has to resolve the `vite` package at all. A static top-level import is
@@ -2197,24 +2211,27 @@ async function startServer() {
     // branch runs, which used to mean dist/server.cjs required `vite` even in
     // production; that is why it was listed as a production dependency rather
     // than a dev one. This makes the dev server the only thing that needs it.
+    //
+    // `packagedExe` is checked as well as IS_PROD because double-clicking the
+    // executable sets no environment variables at all: NODE_ENV is then unset,
+    // IS_PROD is false, and without this guard the executable would take this
+    // dev branch and try to import Vite — which is deliberately not bundled into
+    // it — and crash on start-up. A packaged build is always production.
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
+  } else if (packagedExe && seaModule) {
+    // Packaged as a single executable: the client shell (index.html, JS, CSS,
+    // icons) was embedded into the binary at build time rather than shipped as
+    // a dist/ folder next to it. Nothing here touches the filesystem for
+    // these files.
+    app.use(serveEmbeddedAssets(seaModule));
   } else {
-    const seaAssets = await loadSeaAssets();
-    if (seaAssets) {
-      // Packaged as a single executable: the client shell (index.html, JS, CSS,
-      // icons) was embedded into the binary at build time rather than shipped as
-      // a dist/ folder next to it. Nothing here touches the filesystem for
-      // these files.
-      app.use(serveEmbeddedAssets(seaAssets));
-    } else {
-      const distPath = path.join(process.cwd(), 'dist');
-      app.use(express.static(distPath));
-      app.get('*', (_req, res) => {
-        res.sendFile(path.join(distPath, 'index.html'));
-      });
-    }
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
@@ -2227,15 +2244,14 @@ async function startServer() {
   // printing a stack trace at someone who cannot act on it.
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(
-        `\n  The program appears to be running already (port ${PORT} is in use).\n` +
+      void endFatally(
+        `The program appears to be running already (port ${PORT} is in use).\n` +
           '  Close the other Villaggio Del Sol window, or restart this computer,\n' +
-          '  then start the program again.\n'
+          '  then start the program again.'
       );
-      process.exit(1);
+      return;
     }
-    console.error('[vds] server error:', err);
-    process.exit(1);
+    void fatalStartupError(err);
   });
 }
 
@@ -2250,10 +2266,16 @@ async function startServer() {
  * that was not answering yet. Waiting for the real "listening" callback removes
  * the race, and removes the mystery second window with it.
  *
- * Off unless asked for, so tests and headless runs never launch a browser.
+ * A packaged executable opens the browser by default: it is double-clicked with
+ * no wrapper to set VDS_OPEN_BROWSER, and a console window of server logs with no
+ * app on screen reads as "it did not launch". Every other run opens the browser
+ * only when explicitly asked (the .bat sets VDS_OPEN_BROWSER=1), so tests and
+ * headless/service runs never do. VDS_OPEN_BROWSER=0 forces it off in all cases.
  */
 function openBrowserIfAsked() {
-  if (process.env.VDS_OPEN_BROWSER !== '1') return;
+  const explicit = process.env.VDS_OPEN_BROWSER;
+  const shouldOpen = explicit === '1' || (packagedExe && explicit !== '0');
+  if (!shouldOpen) return;
   const url = `http://localhost:${PORT}`;
   try {
     const [command, args] =
@@ -2274,7 +2296,40 @@ function openBrowserIfAsked() {
   }
 }
 
-startServer().catch(err => {
-  console.error('[vds] failed to start:', err);
+/**
+ * End the process on a fatal start-up problem, but leave a trace a person can
+ * actually read.
+ *
+ * A double-clicked executable is given its own console window that closes the
+ * instant the process exits — so an unhandled start-up error just makes the
+ * window "flash and vanish", with nothing to go on. This writes the message to a
+ * file next to the data as well, and, when running as that double-clicked
+ * executable, holds the window open until a key is pressed so the error can be
+ * read. Every non-packaged run (tests, npm start, the .bat, a service) exits
+ * immediately as before.
+ */
+async function endFatally(message: string): Promise<never> {
+  console.error('\n  ' + message + '\n');
+  try {
+    const logPath = path.join(process.env.VDS_DATA_DIR || process.cwd(), 'last-run-error.txt');
+    fs.writeFileSync(logPath, `${new Date().toISOString()}\n${message}\n`);
+    console.error(`  A copy of this was saved to:\n    ${logPath}\n`);
+  } catch {
+    /* best effort — the message is already on screen */
+  }
+  if (packagedExe && process.stdin.isTTY) {
+    process.stderr.write('  Press Enter to close this window...');
+    await new Promise<void>(resolve => {
+      process.stdin.resume();
+      process.stdin.once('data', () => resolve());
+    });
+  }
   process.exit(1);
-});
+}
+
+function fatalStartupError(err: unknown): Promise<never> {
+  const detail = err instanceof Error ? err.stack || err.message : String(err);
+  return endFatally('The program could not start.\n\n  ' + detail);
+}
+
+startServer().catch(fatalStartupError);
