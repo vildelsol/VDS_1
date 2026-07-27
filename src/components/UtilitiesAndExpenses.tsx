@@ -22,6 +22,7 @@ import { utilitiesForUnit } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
+import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import {
   Badge,
   EmptyState,
@@ -38,7 +39,7 @@ import {
   monoInputClass,
   tableHeadRowClass
 } from './ui';
-import { CheckCircle, Clock, Gauge, Plus, Search, Wrench } from 'lucide-react';
+import { CheckCircle, Clock, Gauge, Plus, Printer, Search, Wrench } from 'lucide-react';
 
 interface UtilitiesAndExpensesProps {
   units: Unit[];
@@ -129,9 +130,10 @@ export default function UtilitiesAndExpenses({
           canSettle={canUtilities && !!session.permissions.recordPayments}
           onEdit={setEditingUtility}
           onSettle={setSettlingUtility}
+          generatedBy={session.name}
         />
       ) : (
-        <ExpensesPanel expenses={expenses} canEdit={canExpenses} onEdit={setEditingExpense} />
+        <ExpensesPanel expenses={expenses} canEdit={canExpenses} onEdit={setEditingExpense} generatedBy={session.name} />
       )}
 
       {addingUtility && (
@@ -214,7 +216,8 @@ function UtilitiesPanel({
   canEdit,
   canSettle,
   onEdit,
-  onSettle
+  onSettle,
+  generatedBy
 }: {
   units: Unit[];
   utilities: UtilityReading[];
@@ -223,7 +226,9 @@ function UtilitiesPanel({
   canSettle: boolean;
   onEdit: (u: UtilityReading) => void;
   onSettle: (u: UtilityReading) => void;
+  generatedBy: string;
 }) {
+  const [printing, setPrinting] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'all' | 'unpaid' | 'paid'>('all');
   const [unitFilter, setUnitFilter] = useState('all');
   const [periodFilter, setPeriodFilter] = useState('');
@@ -268,6 +273,41 @@ function UtilitiesPanel({
           <input id="ut-period" type="month" value={periodFilter} onChange={e => setPeriodFilter(e.target.value)} className={monoInputClass} />
         </Field>
       </div>
+
+      <div className="flex justify-end">
+        <SecondaryButton onClick={() => setPrinting(true)} disabled={rows.length === 0} className="flex items-center gap-1.5">
+          <Printer className="h-4 w-4" /> Print this list
+        </SecondaryButton>
+      </div>
+
+      {printing && (
+        <ListPrintDocument
+          title="Utility Meter Readings"
+          subtitle={`${rows.length} reading${rows.length === 1 ? '' : 's'}`}
+          generatedBy={generatedBy}
+          onClose={() => setPrinting(false)}
+          headers={['Villa', 'Meter', 'Period', 'Previous', 'Current', 'Consumption', 'Charge', 'Status']}
+          alignRight={[3, 4, 5, 6]}
+          rows={rows.map(u => [
+            getUnitDisplayName(u.unitNumber),
+            u.meterNumber || '—',
+            formatMonthLabel(u.billingPeriod),
+            u.previousReading.toLocaleString(),
+            u.currentReading.toLocaleString(),
+            u.consumption.toLocaleString(),
+            `${formatMoney(u.amountCharged, u.currency)} ${u.currency}`,
+            u.status === 'paid' ? 'Settled' : 'Unpaid'
+          ])}
+          totals={(['JMD', 'USD'] as Currency[])
+            .map(currency => ({
+              currency,
+              total: sumMoney(rows.filter(r => r.currency === currency).map(r => r.amountCharged)),
+              unpaid: sumMoney(rows.filter(r => r.currency === currency && r.status === 'unpaid').map(r => r.amountCharged))
+            }))
+            .filter(t => t.total !== 0)
+            .map(t => `${t.currency}: ${formatMoney(t.total, t.currency)} charged, of which ${formatMoney(t.unpaid, t.currency)} unpaid`)}
+        />
+      )}
 
       {(unpaidTotals.JMD > 0 || unpaidTotals.USD > 0) && (
         <InfoNote tone="amber">
@@ -348,7 +388,18 @@ function UtilitiesPanel({
 
 /* ------------------------------------------------------------------ */
 
-function ExpensesPanel({ expenses, canEdit, onEdit }: { expenses: Expense[]; canEdit: boolean; onEdit: (e: Expense) => void }) {
+function ExpensesPanel({
+  expenses,
+  canEdit,
+  onEdit,
+  generatedBy
+}: {
+  expenses: Expense[];
+  canEdit: boolean;
+  onEdit: (e: Expense) => void;
+  generatedBy: string;
+}) {
+  const [printing, setPrinting] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'pending'>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | ExpenseCategory>('all');
@@ -384,6 +435,38 @@ function ExpensesPanel({ expenses, canEdit, onEdit }: { expenses: Expense[]; can
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <SecondaryButton onClick={() => setPrinting(true)} disabled={rows.length === 0} className="flex items-center gap-1.5">
+          <Printer className="h-4 w-4" /> Print this list
+        </SecondaryButton>
+      </div>
+
+      {printing && (
+        <ListPrintDocument
+          title="Expense Register"
+          subtitle={`${rows.length} expense${rows.length === 1 ? '' : 's'}`}
+          generatedBy={generatedBy}
+          onClose={() => setPrinting(false)}
+          headers={['Date', 'Vendor', 'Category', 'Allocation', 'Reference', 'Status', 'Amount']}
+          alignRight={[6]}
+          rows={rows.map(e => [
+            formatDayLabel(e.datePaid || e.date),
+            e.vendor,
+            e.category,
+            getAllocationLabel(e.unitNumber),
+            e.reference || '—',
+            e.status === 'paid' ? 'Paid' : 'Pending',
+            `${formatMoney(e.amount, e.currency)} ${e.currency}`
+          ])}
+          totals={(['JMD', 'USD'] as Currency[])
+            .filter(currency => totals[currency].paid !== 0 || totals[currency].pending !== 0)
+            .map(
+              currency =>
+                `${currency}: ${formatMoney(totals[currency].paid, currency)} paid, ${formatMoney(totals[currency].pending, currency)} still pending`
+            )}
+        />
+      )}
+
       <div className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-xs sm:grid-cols-2 lg:grid-cols-5">
         <Field label="Search" htmlFor="ex-search">
           <div className="relative">
@@ -928,5 +1011,85 @@ function ExpenseForm({
         </Field>
       </form>
     </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * A printable version of whatever list is currently on screen.
+ *
+ * Deliberately prints the *filtered* rows rather than everything: the useful
+ * paper is "the unpaid bills for June", not the whole register. The filters that
+ * produced it are visible on screen, and the row count is printed on the sheet,
+ * so a printout is never mistaken for the complete list.
+ */
+function ListPrintDocument({
+  title,
+  subtitle,
+  headers,
+  rows,
+  alignRight = [],
+  totals = [],
+  generatedBy,
+  onClose
+}: {
+  title: string;
+  subtitle: string;
+  headers: string[];
+  rows: string[][];
+  alignRight?: number[];
+  totals?: string[];
+  generatedBy: string;
+  onClose: () => void;
+}) {
+  const right = new Set(alignRight);
+  return (
+    <PrintPortal title={title} subtitle={subtitle} onClose={onClose} maxWidthClass="max-w-4xl">
+      <PrintLetterhead documentTitle={title} meta={subtitle} generatedBy={generatedBy} />
+
+      <TableScroller>
+        <table className="w-full text-left text-[10px]">
+          <thead>
+            <tr className="font-mono text-[9px] uppercase text-slate-600">
+              {headers.map((h, i) => (
+                <th key={h} className={`p-2 ${right.has(i) ? 'text-right' : ''}`}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="font-mono">
+            {rows.map((row, i) => (
+              <tr key={i}>
+                {row.map((cell, j) => (
+                  <td key={j} className={`p-2 ${right.has(j) ? 'text-right' : ''}`}>
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableScroller>
+
+      {totals.length > 0 && (
+        <div className="mt-4 border-t border-slate-400 pt-2 text-[11px]">
+          <p className="mb-1 font-mono text-[9px] font-bold uppercase text-slate-500">Totals for the rows shown</p>
+          <ul className="list-disc space-y-0.5 pl-5">
+            {totals.map(line => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
+        This sheet shows the {rows.length} row(s) matching the filters in use when it was printed, not necessarily the
+        whole register. USD and JMD are listed separately and are never combined.
+      </p>
+
+      <PrintSignatures left="Prepared by" leftName={generatedBy} right="Reviewed / Approved by" />
+    </PrintPortal>
   );
 }

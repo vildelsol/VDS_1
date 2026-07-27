@@ -25,12 +25,13 @@ import {
   AccountStatus,
   accountBalance,
   bookingsForUnit,
+  chargesForUnit,
   expensesForUnit,
   liveUnitState,
   paymentsForUnit,
   utilitiesForUnit
 } from '../lib/finance';
-import { convertIndicative, formatMoney, formatMoneyLong } from '../lib/money';
+import { convertIndicative, formatMoney, formatMoneyLong, round2, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, nightsBetween, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
@@ -114,6 +115,7 @@ export default function Units({
   const [logActivityFor, setLogActivityFor] = useState<Unit | null>(null);
   const [editTenancy, setEditTenancy] = useState<Tenancy | null>(null);
   const [evictTenancy, setEvictTenancy] = useState<Tenancy | null>(null);
+  const [printTenancy, setPrintTenancy] = useState<Tenancy | null>(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -229,6 +231,7 @@ export default function Units({
           onEdit={() => setEditing(true)}
           onPrint={() => setPrintUnit(live)}
           onEditTenancy={setEditTenancy}
+          onPrintTenancy={setPrintTenancy}
           onEvictTenancy={setEvictTenancy}
           onLogActivity={() => setLogActivityFor(live)}
           onDeleteActivity={async id => {
@@ -319,6 +322,18 @@ export default function Units({
           onClose={() => setPrintUnit(null)}
         />
       )}
+
+      {printTenancy && (
+        <TenancyRecordDocument
+          tenancy={printTenancy}
+          unit={units.find(u => u.id === printTenancy.unitId) || null}
+          units={units}
+          charges={charges}
+          payments={payments}
+          generatedBy={session.name}
+          onClose={() => setPrintTenancy(null)}
+        />
+      )}
     </div>
   );
 }
@@ -341,6 +356,7 @@ function UnitDetail({
   onPrint,
   onEditTenancy,
   onEvictTenancy,
+  onPrintTenancy,
   onLogActivity,
   onDeleteActivity
 }: {
@@ -359,6 +375,7 @@ function UnitDetail({
   onPrint: () => void;
   onEditTenancy: (t: Tenancy) => void;
   onEvictTenancy: (t: Tenancy) => void;
+  onPrintTenancy: (t: Tenancy) => void;
   onLogActivity: () => void;
   onDeleteActivity: (id: string) => Promise<void>;
 }) {
@@ -470,6 +487,14 @@ function UnitDetail({
                           {tenancy.status === 'active' ? 'Edit tenancy dates' : 'Correct dates'}
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => onPrintTenancy(tenancy)}
+                        title="Print this tenant's own record"
+                        className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-50"
+                      >
+                        <Printer className="h-3 w-3" /> Print record
+                      </button>
                       {tenancy.status === 'active' && canEvict && (
                         <button
                           type="button"
@@ -1625,5 +1650,178 @@ function PrintSection({ title, children }: { title: string; children: React.Reac
       <h3 className="border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider text-slate-900">{title}</h3>
       {children}
     </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * One tenant's own record, for the period they actually occupied the villa.
+ *
+ * The unit ledger prints everything that has ever happened to a villa, across
+ * every occupant. When a tenant moves out — for a deposit return, a reference, or
+ * a dispute — what is needed is the opposite: only their months, only their
+ * money. Charges and receipts are therefore filtered to the tenancy's own dates,
+ * so a previous or subsequent tenant's figures can never appear on it.
+ */
+function TenancyRecordDocument({
+  tenancy,
+  unit,
+  units,
+  charges,
+  payments,
+  generatedBy,
+  onClose
+}: {
+  tenancy: Tenancy;
+  unit: Unit | null;
+  units: Unit[];
+  charges: Charge[];
+  payments: Payment[];
+  generatedBy: string;
+  onClose: () => void;
+}) {
+  // The occupancy window. An open-ended tenancy runs to today.
+  const start = tenancy.startedOn || '';
+  const end = tenancy.endedOn || today();
+  const inWindow = (day: string) => (!start || day >= start) && day <= end;
+
+  const rows = useMemo(() => {
+    if (!unit) return [];
+    const debits = chargesForUnit(charges, unit, units)
+      .filter(c => c.category === 'Rent' && c.status === 'open' && inWindow(c.dueDate))
+      .map(c => ({
+        date: c.dueDate,
+        kind: 'charge' as const,
+        detail: `Rent charged — ${formatMonthLabel(c.periodMonth)}`,
+        ref: '',
+        debit: c.amount,
+        credit: 0,
+        currency: c.currency
+      }));
+    const credits = paymentsForUnit(payments, unit, units)
+      .filter(p => p.category === 'Rent' && p.status === 'completed' && inWindow(p.date))
+      .map(p => ({
+        date: p.date,
+        kind: 'payment' as const,
+        detail: `Payment received (${p.method})`,
+        ref: p.receiptNo,
+        debit: 0,
+        credit: p.amount,
+        currency: p.currency
+      }));
+    return [...debits, ...credits].sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'charge' ? -1 : 1));
+  }, [charges, payments, unit, units, start, end]);
+
+  const currency = tenancy.currency || unit?.currency || 'JMD';
+  const charged = sumMoney(rows.filter(r => r.currency === currency).map(r => r.debit));
+  const paid = sumMoney(rows.filter(r => r.currency === currency).map(r => r.credit));
+  const balance = round2(charged - paid);
+
+  return (
+    <PrintPortal
+      title={`Tenant record — ${tenancy.tenantName}`}
+      subtitle={getUnitDisplayName(tenancy.unitNumber)}
+      onClose={onClose}
+      maxWidthClass="max-w-3xl"
+    >
+      <PrintLetterhead
+        documentTitle="Tenant Record"
+        meta={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
+        generatedBy={generatedBy}
+      />
+
+      <section className="mb-5 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
+        {[
+          ['Tenant', tenancy.tenantName],
+          ['Villa', getUnitDisplayName(tenancy.unitNumber)],
+          ['Moved in', tenancy.startedOn ? formatDayLabel(tenancy.startedOn) : 'Not recorded'],
+          [
+            'Moved out',
+            tenancy.endedOn ? formatDayLabel(tenancy.endedOn) : tenancy.status === 'active' ? 'Still in occupancy' : 'Not recorded'
+          ],
+          ['Agreed rent', `${formatMoney(tenancy.monthlyRent, currency)} per month`],
+          ['Rent due day', tenancy.rentDueDay ? `${tenancy.rentDueDay} of each month` : '—'],
+          ['Email', tenancy.tenantEmail || 'Not recorded'],
+          ['Telephone', tenancy.tenantPhone || 'Not recorded']
+        ].map(([label, value]) => (
+          <div key={label}>
+            <span className="block font-mono text-[9px] uppercase text-slate-500">{label}</span>
+            <span className="font-semibold text-slate-900">{value}</span>
+          </div>
+        ))}
+      </section>
+
+      {tenancy.evicted && (
+        <div className="print-emphasis mb-5 rounded-lg border-2 border-red-600 bg-red-50 p-3">
+          <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-red-700">Tenancy ended by eviction</p>
+          {tenancy.writeOffAmount ? (
+            <p className="mt-1 font-mono text-[10px] text-red-800">
+              Rent written off as bad debt: {formatMoney(tenancy.writeOffAmount, tenancy.writeOffCurrency || currency)}
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      {tenancy.endReason && (
+        <p className="mb-5 text-[11px] italic text-slate-700">Reason recorded: “{tenancy.endReason}”</p>
+      )}
+
+      <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
+        Rent account for this occupancy
+      </h3>
+
+      {rows.length === 0 ? (
+        <p className="text-xs italic text-slate-500">No rent charges or receipts fall inside this occupancy period.</p>
+      ) : (
+        <TableScroller>
+          <table className="w-full text-left text-[11px]">
+            <thead>
+              <tr className="font-mono text-[9px] uppercase text-slate-600">
+                <th className="p-2">Date</th>
+                <th className="p-2">Detail</th>
+                <th className="p-2">Receipt</th>
+                <th className="p-2 text-right">Charged</th>
+                <th className="p-2 text-right">Paid</th>
+              </tr>
+            </thead>
+            <tbody className="font-mono">
+              {rows.map((row, i) => (
+                <tr key={i}>
+                  <td className="p-2 whitespace-nowrap">{formatDayLabel(row.date)}</td>
+                  <td className="p-2 font-sans">{row.detail}</td>
+                  <td className="p-2">{row.ref || '—'}</td>
+                  <td className="p-2 text-right">{row.debit ? formatMoney(row.debit, row.currency) : '—'}</td>
+                  <td className="p-2 text-right">{row.credit ? formatMoney(row.credit, row.currency) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-slate-400 font-mono font-bold">
+                <td className="p-2" colSpan={3}>
+                  Totals for this occupancy
+                </td>
+                <td className="p-2 text-right">{formatMoney(charged, currency)}</td>
+                <td className="p-2 text-right">{formatMoney(paid, currency)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </TableScroller>
+      )}
+
+      <p className="mt-4 rounded-lg border border-slate-300 p-3 text-xs print-outline">
+        <strong>
+          Closing position: {balance > 0 ? `${formatMoneyLong(balance, currency)} outstanding` : balance < 0 ? `${formatMoneyLong(Math.abs(balance), currency)} in credit` : 'settled in full'}
+        </strong>
+      </p>
+
+      <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
+        This record covers {tenancy.tenantName} only, for the occupancy dates shown above. Rent charged and received
+        outside those dates belongs to another occupancy and is deliberately excluded. For everything that has happened
+        to this villa across all occupants, print the unit ledger instead.
+      </p>
+
+      <PrintSignatures left="Prepared by" leftName={generatedBy} right="Tenant acknowledgement" rightName={tenancy.tenantName} />
+    </PrintPortal>
   );
 }
