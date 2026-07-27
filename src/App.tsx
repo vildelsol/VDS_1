@@ -24,6 +24,7 @@ import FinanceHub from './components/FinanceHub';
 import Bookings from './components/Bookings';
 import UtilitiesAndExpenses from './components/UtilitiesAndExpenses';
 import Reports from './components/Reports';
+import Projections from './components/Projections';
 import Audit from './components/Audit';
 import SystemSettings from './components/SystemSettings';
 import PrintReceipt from './components/PrintReceipt';
@@ -43,6 +44,7 @@ import {
   LogOut,
   RefreshCw,
   Settings,
+  TrendingUp,
   Wrench
 } from 'lucide-react';
 
@@ -54,6 +56,7 @@ export type TabKey =
   | 'bookings'
   | 'utilities'
   | 'reports'
+  | 'projections'
   | 'audit'
   | 'settings';
 
@@ -65,6 +68,7 @@ const TAB_TITLES: Record<TabKey, string> = {
   bookings: 'Short-Term Bookings',
   utilities: 'Utilities & Expenses',
   reports: 'Operational Reports',
+  projections: 'Financial Projections',
   audit: 'Audit Trail',
   settings: 'System Settings'
 };
@@ -289,6 +293,7 @@ export default function App() {
     { key: 'bookings', label: 'Short-Term Bookings', icon: <Calendar className="h-4 w-4" />, visible: true },
     { key: 'utilities', label: 'Utilities & Expenses', icon: <Wrench className="h-4 w-4" />, visible: true },
     { key: 'reports', label: 'Operational Reports', icon: <BarChart3 className="h-4 w-4" />, visible: true },
+    { key: 'projections', label: 'Financial Projections', icon: <TrendingUp className="h-4 w-4" />, visible: true },
     { key: 'audit', label: 'Audit Trail', icon: <ClipboardList className="h-4 w-4" />, visible: true },
     {
       key: 'settings',
@@ -482,6 +487,17 @@ export default function App() {
             expenses={data.expenses}
             utilities={data.utilities}
             bookings={data.bookings}
+            settings={settings}
+            session={session}
+          />
+        )}
+
+        {activeTab === 'projections' && (
+          <Projections
+            units={data.units}
+            charges={data.charges}
+            payments={data.payments}
+            expenses={data.expenses}
             settings={settings}
             session={session}
           />

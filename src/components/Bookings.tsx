@@ -24,7 +24,8 @@ import {
   SuccessNote,
   TableScroller,
   inputClass,
-  monoInputClass
+  monoInputClass,
+  tableHeadRowClass
 } from './ui';
 import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Mail, Plus, Printer, RefreshCw, Search, ShieldCheck } from 'lucide-react';
 
@@ -497,7 +498,7 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
             <TableScroller>
               <table className="w-full min-w-[900px] border-collapse text-left text-xs">
                 <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] uppercase text-slate-500">
+                  <tr className={tableHeadRowClass}>
                     <th scope="col" className="p-3">Villa</th>
                     <th scope="col" className="p-3">Guest</th>
                     <th scope="col" className="p-3">Dates</th>

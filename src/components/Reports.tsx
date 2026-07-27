@@ -42,7 +42,7 @@ import {
   today
 } from '../lib/dates';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
-import { Badge, EmptyState, ErrorNote, Field, InfoNote, SecondaryButton, SubmitButton, TableScroller, inputClass, monoInputClass } from './ui';
+import { Badge, EmptyState, ErrorNote, Field, InfoNote, SecondaryButton, SubmitButton, TableScroller, monoInputClass, tableHeadRowClass } from './ui';
 import { BarChart3, Download, Printer, TrendingDown, TrendingUp } from 'lucide-react';
 
 interface ReportsProps {
@@ -705,7 +705,7 @@ function AccountBalancesTable({ units, charges, payments, asOf }: { units: Unit[
       <TableScroller>
         <table className="w-full min-w-[760px] border-collapse text-left text-xs">
           <thead>
-            <tr className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] uppercase text-slate-500">
+            <tr className={tableHeadRowClass}>
               <th scope="col" className="p-3">Villa</th>
               <th scope="col" className="p-3">Account</th>
               <th scope="col" className="p-3">Currency</th>

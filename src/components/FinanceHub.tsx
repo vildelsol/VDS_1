@@ -45,7 +45,8 @@ import {
   SuccessNote,
   TableScroller,
   inputClass,
-  monoInputClass
+  monoInputClass,
+  tableHeadRowClass
 } from './ui';
 import {
   AlertTriangle,
@@ -466,7 +467,7 @@ export default function FinanceHub({
               <TableScroller>
                 <table className="w-full min-w-[880px] border-collapse text-left text-xs">
                   <thead>
-                    <tr className="border-b border-slate-200 bg-slate-100/50 font-mono text-[10px] uppercase text-slate-500">
+                    <tr className={tableHeadRowClass}>
                       <th scope="col" className="p-4">Receipt no</th>
                       <th scope="col" className="p-4">Payer</th>
                       <th scope="col" className="p-4">Villa</th>
@@ -689,7 +690,7 @@ function AccountTable({
         <TableScroller>
           <table className="w-full min-w-[900px] border-collapse text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] uppercase text-slate-500">
+              <tr className={tableHeadRowClass}>
                 <th scope="col" className="p-4">Villa</th>
                 <th scope="col" className="p-4">{category === 'Rent' ? 'Tenant' : 'Registered owner'}</th>
                 <th scope="col" className="p-4 text-right">Monthly fee</th>
@@ -761,32 +762,37 @@ function AccountTable({
                       )}
                     </td>
                     <td className="p-4">
+                      {/* Two fixed slots so the Statement button and the status/receive-payment
+                          control line up in the same column on every row, regardless of which
+                          state a row is in. */}
                       <div className="flex items-center justify-end gap-2">
                         <button
                           onClick={() => onPrintStatement(account)}
                           title="Print or email an account statement"
-                          className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 font-medium text-slate-600 transition-colors hover:bg-slate-50"
+                          className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 font-medium text-slate-600 transition-colors hover:bg-slate-50"
                         >
                           <Printer className="h-3.5 w-3.5" /> Statement
                         </button>
-                        {overdue ? (
-                          <button
-                            onClick={() => onReceive(account)}
-                            className="rounded-lg border border-slate-200 px-2.5 py-1.5 font-medium text-teal-700 transition-colors hover:border-teal-200 hover:text-teal-900"
-                          >
-                            Receive payment
-                          </button>
-                        ) : account.status === 'not-billed' ? (
-                          <span className="inline-flex items-center gap-1 font-medium text-amber-600" title="Nothing has been billed for this account yet.">
-                            <AlertTriangle className="h-3.5 w-3.5" /> Not yet billed
-                          </span>
-                        ) : account.status === 'settled' ? (
-                          <span className="inline-flex items-center gap-1 font-medium text-emerald-600">
-                            <CheckCircle className="h-3.5 w-3.5" /> Settled
-                          </span>
-                        ) : (
-                          <span className="text-slate-300">—</span>
-                        )}
+                        <div className="flex w-36 shrink-0 justify-end">
+                          {overdue ? (
+                            <button
+                              onClick={() => onReceive(account)}
+                              className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-center font-medium text-teal-700 transition-colors hover:border-teal-200 hover:text-teal-900"
+                            >
+                              Receive payment
+                            </button>
+                          ) : account.status === 'not-billed' ? (
+                            <span className="inline-flex items-center gap-1 font-medium text-amber-600" title="Nothing has been billed for this account yet.">
+                              <AlertTriangle className="h-3.5 w-3.5" /> Not yet billed
+                            </span>
+                          ) : account.status === 'settled' ? (
+                            <span className="inline-flex items-center gap-1 font-medium text-emerald-600">
+                              <CheckCircle className="h-3.5 w-3.5" /> Settled
+                            </span>
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -1367,7 +1373,7 @@ function ChargeHistoryModal({
           <TableScroller>
             <table className="w-full min-w-[520px] border-collapse text-left">
               <thead>
-                <tr className="border-b border-slate-200 font-mono text-[10px] uppercase text-slate-400">
+                <tr className={tableHeadRowClass}>
                   <th scope="col" className="p-2">Period</th>
                   <th scope="col" className="p-2">Due</th>
                   <th scope="col" className="p-2 text-right">Amount</th>

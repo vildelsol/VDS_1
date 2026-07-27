@@ -179,6 +179,15 @@ export const inputClass =
 
 export const monoInputClass = `${inputClass} font-mono`;
 
+/**
+ * The single header-row style every on-screen data table uses. Column labels had
+ * drifted to a faint slate-500 on a barely-there slate-50 fill, which read as
+ * disabled text; this is a darker label on a stronger fill so the headings are
+ * legible and identical on every tab.
+ */
+export const tableHeadRowClass =
+  'border-b border-slate-200 bg-slate-100 font-mono text-[10px] font-semibold uppercase tracking-wide text-slate-700';
+
 export function Badge({
   children,
   tone = 'slate'

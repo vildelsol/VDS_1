@@ -35,7 +35,8 @@ import {
   SuccessNote,
   TableScroller,
   inputClass,
-  monoInputClass
+  monoInputClass,
+  tableHeadRowClass
 } from './ui';
 import { CheckCircle, Clock, Gauge, Plus, Search, Wrench } from 'lucide-react';
 
@@ -287,7 +288,7 @@ function UtilitiesPanel({
           <TableScroller>
             <table className="w-full min-w-[860px] border-collapse text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] uppercase text-slate-500">
+                <tr className={tableHeadRowClass}>
                   <th scope="col" className="p-4">Villa</th>
                   <th scope="col" className="p-4">Meter</th>
                   <th scope="col" className="p-4">Period</th>
@@ -436,7 +437,7 @@ function ExpensesPanel({ expenses, canEdit, onEdit }: { expenses: Expense[]; can
           <TableScroller>
             <table className="w-full min-w-[900px] border-collapse text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-100 bg-slate-50 font-mono text-[10px] uppercase text-slate-500">
+                <tr className={tableHeadRowClass}>
                   <th scope="col" className="p-4">Date</th>
                   <th scope="col" className="p-4">Vendor</th>
                   <th scope="col" className="p-4">Category</th>
