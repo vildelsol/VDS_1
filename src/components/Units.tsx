@@ -83,12 +83,12 @@ const ordinal = (day: number) => {
   }
 };
 
-const STATUS_STYLES: Record<UnitStatus, { card: string; icon: string; badge: Parameters<typeof Badge>[0]['tone'] }> = {
-  'long-term': { card: 'bg-emerald-50/30 border-emerald-100/80 hover:border-emerald-300', icon: 'bg-emerald-50 text-emerald-600', badge: 'green' },
-  'short-term': { card: 'bg-amber-50/30 border-amber-100/80 hover:border-amber-300', icon: 'bg-amber-50 text-amber-600', badge: 'amber' },
-  vacant: { card: 'bg-sky-50/30 border-sky-100/80 hover:border-sky-300', icon: 'bg-sky-50 text-sky-600', badge: 'blue' },
-  unavailable: { card: 'bg-slate-50/50 border-slate-200 hover:border-slate-300', icon: 'bg-slate-100 text-slate-500', badge: 'slate' },
-  'owner-occupied': { card: 'bg-purple-50/30 border-purple-100/80 hover:border-purple-300', icon: 'bg-purple-50 text-purple-600', badge: 'purple' }
+const STATUS_STYLES: Record<UnitStatus, { card: string; icon: string; dot: string; badge: Parameters<typeof Badge>[0]['tone'] }> = {
+  'long-term': { card: 'bg-emerald-50/30 border-emerald-100/80 hover:border-emerald-300', icon: 'bg-emerald-50 text-emerald-600', dot: 'bg-emerald-500', badge: 'green' },
+  'short-term': { card: 'bg-amber-50/30 border-amber-100/80 hover:border-amber-300', icon: 'bg-amber-50 text-amber-600', dot: 'bg-amber-500', badge: 'amber' },
+  vacant: { card: 'bg-sky-50/30 border-sky-100/80 hover:border-sky-300', icon: 'bg-sky-50 text-sky-600', dot: 'bg-sky-500', badge: 'blue' },
+  unavailable: { card: 'bg-slate-50/50 border-slate-200 hover:border-slate-300', icon: 'bg-slate-100 text-slate-500', dot: 'bg-slate-400', badge: 'slate' },
+  'owner-occupied': { card: 'bg-purple-50/30 border-purple-100/80 hover:border-purple-300', icon: 'bg-purple-50 text-purple-600', dot: 'bg-purple-500', badge: 'purple' }
 };
 
 export default function Units({
@@ -142,11 +142,11 @@ export default function Units({
       {success && <SuccessNote>{success}</SuccessNote>}
 
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-100 bg-white p-4 text-xs shadow-xs">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-400">Status legend</span>
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-600">Status legend</span>
         <div className="flex flex-wrap gap-x-5 gap-y-2">
           {UNIT_STATUSES.map(status => (
             <span key={status} className="flex items-center gap-2">
-              <span className={`h-3 w-3 rounded-full border ${STATUS_STYLES[status].icon.replace('bg-', 'bg-').replace('text-', 'border-')}`} />
+              <span className={`h-3 w-3 shrink-0 rounded-full ${STATUS_STYLES[status].dot}`} />
               <span className="font-medium text-slate-700">{UNIT_STATUS_LABELS[status]}</span>
             </span>
           ))}

@@ -2280,6 +2280,7 @@ async function startServer() {
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Villaggio Del Sol operations server running at http://localhost:${PORT}`);
+    createDesktopShortcutIfNeeded();
     openBrowserIfAsked();
   });
 
@@ -2297,6 +2298,42 @@ async function startServer() {
     }
     void fatalStartupError(err);
   });
+}
+
+/**
+ * Create a Desktop shortcut to the packaged executable, the first time it runs.
+ *
+ * Only the old .bat launcher did this (via the same PowerShell technique). A
+ * plain double-clicked .exe has no equivalent step, so day-to-day use meant
+ * re-finding the file each time. Never overwrites an existing shortcut —
+ * matching the .bat's own behaviour — so a shortcut someone made or repointed
+ * themselves is left alone; this is purely a first-run convenience.
+ */
+function createDesktopShortcutIfNeeded() {
+  if (!packagedExe || process.platform !== 'win32') return;
+  const desktop = process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'Desktop') : '';
+  if (!desktop) return;
+  const shortcutPath = path.join(desktop, 'Villaggio Del Sol.lnk');
+  try {
+    if (fs.existsSync(shortcutPath)) return;
+    const exePath = process.execPath;
+    const workDir = path.dirname(exePath);
+    const esc = (s: string) => s.replace(/'/g, "''");
+    const script =
+      `$w = New-Object -COM WScript.Shell; ` +
+      `$s = $w.CreateShortcut('${esc(shortcutPath)}'); ` +
+      `$s.TargetPath = '${esc(exePath)}'; ` +
+      `$s.WorkingDirectory = '${esc(workDir)}'; ` +
+      `$s.Description = 'Villaggio Del Sol Property Operations'; ` +
+      `$s.Save()`;
+    const child = spawn('powershell', ['-NoProfile', '-Command', script], { detached: true, stdio: 'ignore' });
+    // A shortcut is a nicety, not a functional requirement — never let a failure
+    // here affect the server that is already up and running.
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    /* best effort */
+  }
 }
 
 /**

@@ -90,6 +90,26 @@ jobs:
           curl -sf http://127.0.0.1:3999/ | grep -q "Villaggio Del Sol"
           kill "$SERVER_PID" 2>/dev/null || true
 
+      # The executable creates this in the background (fire-and-forget, so a
+      # slow or failed shortcut never delays or breaks the server itself) —
+      # this cannot be exercised on macOS/Linux at all, so this is the only real
+      # verification that the PowerShell step behind it actually works, on an
+      # actual Windows machine, before every release.
+      - name: Verify the Desktop shortcut was created
+        shell: pwsh
+        run: |
+          $shortcut = Join-Path $env:USERPROFILE "Desktop\Villaggio Del Sol.lnk"
+          $found = $false
+          for ($i = 0; $i -lt 20; $i++) {
+            if (Test-Path $shortcut) { $found = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $found) {
+            Write-Error "Desktop shortcut was not created at $shortcut"
+            exit 1
+          }
+          Write-Host "Desktop shortcut created at $shortcut"
+
       - name: Upload the executable as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
