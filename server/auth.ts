@@ -184,6 +184,32 @@ export function ensureBootstrapAdmin(db: Database): string | null {
   return password;
 }
 
+/**
+ * Reset an existing administrator's password, for when it has been lost and
+ * nobody can sign in to use the normal "reset password" screen — that screen
+ * itself requires being signed in as someone with permission to manage staff,
+ * which is no help if the only administrator is the one locked out.
+ *
+ * Never touches an account that is not already an ADMINISTRATOR, so this cannot
+ * be used to escalate any other role. A fresh password is generated rather than
+ * accepted as an argument, so a real password is never left sitting in a file on
+ * disk; the account is forced to change it at next sign-in, exactly like a brand
+ * new account, and every existing session for it is ended so a stolen session
+ * cannot survive the reset.
+ */
+export function resetAdministratorPassword(db: Database, username: string): string | null {
+  const user = db.users.find(u => u.username === username.trim().toLowerCase());
+  if (!user || user.role !== 'ADMINISTRATOR') return null;
+  const password = `VdsReset-${crypto.randomBytes(4).toString('hex')}!`;
+  const { hash, salt } = hashPassword(password);
+  user.passwordHash = hash;
+  user.passwordSalt = salt;
+  user.mustChangePassword = true;
+  user.active = true;
+  destroyAllSessionsFor(db, user.id);
+  return password;
+}
+
 /** Actions gated by the permission matrix. */
 export type GatedAction =
   | 'record_payment'

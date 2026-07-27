@@ -73,6 +73,7 @@ import {
   permissionsFor,
   readSessionToken,
   requireAuth,
+  resetAdministratorPassword,
   resolveAuth,
   setSessionCookie,
   toSessionUser,
@@ -341,6 +342,70 @@ async function bootstrap() {
     console.log(`    password: ${bootstrapPassword}`);
     console.log('  You will be required to change this password at first sign-in.');
     console.log('='.repeat(72) + '\n');
+  }
+}
+
+const RESET_ADMIN_MARKER = 'RESET-ADMIN-PASSWORD.txt';
+
+/**
+ * Recover a lost administrator password — the one gap the normal "reset
+ * password" screen cannot cover, since that screen itself requires being signed
+ * in as an administrator.
+ *
+ * Triggered only by a marker file dropped into the data folder, on this
+ * machine's own file system — never over the network, so nothing reachable from
+ * the Kamrui or from Tailscale can set this off. The file's content, if any, is
+ * the username to reset (blank or missing defaults to "admin"). It is deleted
+ * the instant it is read, before the reset is even attempted, so leaving it
+ * behind by accident cannot repeat the reset on a later restart, and a failed
+ * attempt does not loop.
+ */
+async function resetAdminPasswordIfRequested() {
+  const markerPath = path.join(DATA_DIR, RESET_ADMIN_MARKER);
+  if (!fs.existsSync(markerPath)) return;
+
+  let requested = 'admin';
+  try {
+    const content = fs.readFileSync(markerPath, 'utf-8').trim();
+    if (content) requested = content;
+  } catch {
+    /* fall back to 'admin' */
+  }
+  try {
+    fs.unlinkSync(markerPath);
+  } catch {
+    /* best effort — proceed with the reset regardless */
+  }
+
+  const password = await transaction(db => {
+    const result = resetAdministratorPassword(db, requested);
+    if (result) {
+      addAudit(
+        db,
+        'System',
+        'ADMINISTRATOR',
+        `Administrator password reset from the console for "${requested}"`,
+        'User',
+        requested,
+        '',
+        `Reset via ${RESET_ADMIN_MARKER}`
+      );
+    }
+    return result;
+  });
+
+  if (password) {
+    console.log('\n' + '='.repeat(72));
+    console.log('  ADMINISTRATOR PASSWORD RESET');
+    console.log(`    username: ${requested}`);
+    console.log(`    password: ${password}`);
+    console.log('  You will be required to change this password at next sign-in.');
+    console.log('='.repeat(72) + '\n');
+  } else {
+    console.log(
+      `\n  [vds] ${RESET_ADMIN_MARKER} was found, but no administrator account named "${requested}" exists.\n` +
+        '  Nothing was reset. The file has been removed.\n'
+    );
   }
 }
 
@@ -2371,6 +2436,11 @@ async function startServer() {
   }
 
   await bootstrap();
+  // Skipped when bootstrap just created the account fresh in this same start —
+  // there is nothing to recover from a database that is seconds old.
+  if (!bootstrapPassword) {
+    await resetAdminPasswordIfRequested();
+  }
   // Backups run on a timer, not only at boot, so an always-on server still gets
   // a daily copy.
   startBackupSchedule();

@@ -83,6 +83,25 @@ Yes. Install Tailscale on your laptop, sign into the same Tailscale account, and
 `http://hp-elitedesk:3000`. The HP must be turned **on and awake** at that moment,
 because your laptop is really just viewing what's on the HP.
 
+**Nobody can sign in — the administrator password is lost. What now?**
+The screen inside the app that resets a password only works if you can already sign in as
+an administrator, which is no help if that account itself is the one locked out. Recovery
+instead works directly on the HP, using its files:
+
+1. Make sure the program (the green console window) is **closed**.
+2. Go to the folder next to `Villaggio-Del-Sol.exe` — the same one that holds `db.json`.
+3. Create a new, empty text file there named exactly **`RESET-ADMIN-PASSWORD.txt`**
+   (right-click → New → Text Document, then rename it — if you can't see the `.txt` part
+   to remove it, turn on "File name extensions" in Explorer's View menu first).
+4. Double-click `Villaggio-Del-Sol.exe` to start the program again.
+5. The green console window prints a **new one-time password** for `admin`, exactly like
+   the very first time you ever ran it. Sign in with it and set your own password
+   immediately, as before.
+
+The file is deleted automatically the moment it's used, and every device that was still
+signed in is signed out. This only ever works by being at the HP itself with its files —
+nobody on the Kamrui, or anywhere else, can trigger it.
+
 **Where are my records kept? Are they safe?**
 Everything is in a single file called `db.json`, kept next to the program on the HP. The
 program keeps a fresh backup every day. From inside the app, **System Settings → Backup

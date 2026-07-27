@@ -14,9 +14,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-/** Start a server child on its own temp data dir and wait until it answers. */
-export async function startServer({ port, adminPassword, projectRoot }) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-test-'));
+/**
+ * Start a server child and wait until it answers.
+ *
+ * Reuses a caller-supplied `dataDir` when given — for a test that needs to stop
+ * the server, change something on disk (a marker file, say), and start it again
+ * against the same data — and creates a fresh temp one otherwise. Cleanup of a
+ * caller-supplied dataDir is the caller's responsibility, since the harness did
+ * not create it and does not know when the caller is really done with it.
+ */
+export async function startServer({ port, adminPassword, projectRoot, dataDir: reuseDataDir }) {
+  const ownsDataDir = !reuseDataDir;
+  const dataDir = reuseDataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'vds-test-'));
   const child = spawn(process.execPath, ['dist/server.cjs'], {
     cwd: projectRoot,
     env: {
@@ -66,10 +75,12 @@ export async function startServer({ port, adminPassword, projectRoot }) {
         resolve();
       }, 3000);
     });
-    try {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    } catch {
-      /* best effort */
+    if (ownsDataDir) {
+      try {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
     }
   }
 
