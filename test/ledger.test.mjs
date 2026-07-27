@@ -6,7 +6,7 @@
  * bugs where a record derived from a voided parent could no longer be voided.
  */
 
-import { startServer, makeClient, reporter, activateAdmin, makeLongTermUnit } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, makeLongTermUnit, confirmPayment } from './harness.mjs';
 
 export const title = 'Ledger, receipts & void integrity';
 
@@ -38,9 +38,24 @@ export default async function run({ port, projectRoot }) {
     T.check('an implausibly large payment is refused', (await c.post('/api/payments', rent({ amount: 1e12 }))).status === 400);
     T.check('a currency mismatch warns before recording', (await c.post('/api/payments', rent({ currency: 'USD' }))).status === 400);
 
+    // --- an entry is only an expectation until it is confirmed ---
+    const logged = await c.post('/api/payments', rent({ amount: 4321 }));
+    const loggedPayment = logged.body?.payment;
+    T.check('a recorded payment starts as pending', loggedPayment?.status === 'pending', `status=${loggedPayment?.status}`);
+    T.check('a pending payment carries no receipt number', loggedPayment?.receiptNo === '', `receiptNo="${loggedPayment?.receiptNo}"`);
+    const confirmed = await confirmPayment(c, loggedPayment.id);
+    T.check('confirming it marks it received', confirmed.body?.payment?.status === 'completed', `status=${confirmed.body?.payment?.status}`);
+    T.check('confirming it issues a receipt number', !!confirmed.body?.payment?.receiptNo, `receiptNo="${confirmed.body?.payment?.receiptNo}"`);
+    T.check('confirming it records who received it', !!confirmed.body?.payment?.receivedBy);
+    T.check('confirming twice is refused', (await confirmPayment(c, loggedPayment.id)).status === 400);
+
     // --- receipt numbers are unique under a burst ---
+    // Receipt numbers are handed out at confirmation, so the burst has to be
+    // confirmed to exercise the counter at all.
     const burst = await Promise.all(Array.from({ length: 12 }, (_, i) => c.post('/api/payments', rent({ amount: 100 + i }))));
-    const receipts = burst.map(b => b.body?.payment?.receiptNo).filter(Boolean);
+    const burstIds = burst.map(b => b.body?.payment?.id).filter(Boolean);
+    const burstConfirmed = await Promise.all(burstIds.map(id => confirmPayment(c, id)));
+    const receipts = burstConfirmed.map(b => b.body?.payment?.receiptNo).filter(Boolean);
     T.check('a burst of payments produced distinct receipt numbers', new Set(receipts).size === 12, `${new Set(receipts).size} of 12`);
 
     // --- duplicate charge id: void then re-post ---
@@ -64,7 +79,23 @@ export default async function run({ port, projectRoot }) {
     const utilId = r.body.utility.id;
     T.check('a utility reading derives its own consumption', r.body.utility.consumption === 120);
     const rec1 = (await c.post(`/api/utilities/${utilId}/settle`, { method: 'Cash' })).body.payment;
+
+    // Settling logs an expectation. The bill must stay unpaid, and no receipt
+    // number may be taken, until the money is confirmed — a number handed out
+    // here would be burned on an entry that received nothing.
+    T.check('settling a utility only logs an expected payment', rec1.status === 'pending', `status=${rec1.status}`);
+    T.check('and takes no receipt number yet', rec1.receiptNo === '', `receiptNo="${rec1.receiptNo}"`);
+    let utilNow = (await c.get('/api/db')).body.utilities.find(u => u.id === utilId);
+    T.check('and leaves the bill unpaid', utilNow.status === 'unpaid', `status=${utilNow.status}`);
+
+    const utilConfirmed = (await confirmPayment(c, rec1.id)).body.payment;
+    utilNow = (await c.get('/api/db')).body.utilities.find(u => u.id === utilId);
+    T.check('confirming the receipt settles the bill', utilNow.status === 'paid', `status=${utilNow.status}`);
+    T.check('and issues exactly one receipt number', /^REC-/.test(utilConfirmed.receiptNo), `receiptNo="${utilConfirmed.receiptNo}"`);
+
     await c.post(`/api/payments/${rec1.id}/reverse`, { reversalReason: 'wrong method recorded' });
+    utilNow = (await c.get('/api/db')).body.utilities.find(u => u.id === utilId);
+    T.check('voiding that receipt reopens the bill', utilNow.status === 'unpaid', `status=${utilNow.status}`);
     const rec2 = (await c.post(`/api/utilities/${utilId}/settle`, { method: 'Bank Transfer' })).body.payment;
     T.check('re-settling a utility issues a distinct receipt', rec2 && rec1.id !== rec2.id, `${rec1.id} then ${rec2?.id}`);
     T.check('the new utility receipt can be voided', (await c.post(`/api/payments/${rec2.id}/reverse`, { reversalReason: 'confirming it is reachable' })).status === 200);
@@ -84,8 +115,10 @@ export default async function run({ port, projectRoot }) {
     const old = deps.find(p => p.id === dep1.id);
     T.check('the voided deposit receipt stays voided', old?.status === 'reversed');
     T.check('the reversal reason is preserved on the voided receipt', !!old?.reversalReason);
-    T.check('restoring the deposit issues a new receipt', deps.some(p => p.id !== dep1.id && p.status === 'completed'));
-    T.check('exactly one live deposit receipt exists', deps.filter(p => p.status === 'completed').length === 1);
+    // A restored deposit is an expectation again, not money in hand: it is raised
+    // as pending and has to be confirmed like any other receipt.
+    T.check('restoring the deposit raises a new expected receipt', deps.some(p => p.id !== dep1.id && p.status === 'pending'));
+    T.check('exactly one live deposit receipt exists', deps.filter(p => p.status !== 'reversed').length === 1);
 
     // --- settled-record rules ---
     T.check('a voided receipt cannot be edited', (await c.put(`/api/payments/${dep1.id}`, { amount: 999 })).status === 400);

@@ -38,9 +38,12 @@ export default async function run({ port, projectRoot }) {
     const burst = await Promise.all(Array.from({ length: 20 }, (_, i) => c.post('/api/payments', { unitId: 'unit-1', category: 'Other', amount: 10.01, currency: 'JMD', payerName: `Conc ${i}`, method: 'Cash' })));
     db = (await c.get('/api/db')).body;
     T.check('20 concurrent writes all persist', db.payments.length - before === 20, `${db.payments.length - before}/20`);
-    const recs = burst.map(b => b.body?.payment?.receiptNo).filter(Boolean);
     const ids = burst.map(b => b.body?.payment?.id).filter(Boolean);
-    T.check('20 concurrent writes produced distinct receipt numbers', new Set(recs).size === 20, `${new Set(recs).size} unique`);
+    // Receipt numbers are issued at confirmation, so the counter is exercised by
+    // confirming the burst concurrently rather than by recording it.
+    const confirmedBurst = await Promise.all(ids.map(id => c.post(`/api/payments/${id}/confirm`, {})));
+    const recs = confirmedBurst.map(b => b.body?.payment?.receiptNo).filter(Boolean);
+    T.check('20 concurrent confirmations produced distinct receipt numbers', new Set(recs).size === 20, `${new Set(recs).size} unique`);
     T.check('20 concurrent writes produced distinct record ids', new Set(ids).size === 20, `${new Set(ids).size} unique`);
 
     // --- atomic write: the file is never observed half-written ---

@@ -462,7 +462,10 @@ export default function Dashboard({
           onSubmit={async payload => {
             try {
               const payment = await onRecordPayment(payload);
-              setSuccess(`Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`);
+              setSuccess(
+              `${formatMoneyLong(payment.amount, payment.currency)} logged as expected from ${payment.payerName}. ` +
+                'Confirm it as received in the HOA & Tenants Ledger once the money is in hand — until then it does not affect any balance.'
+            );
               setError('');
               setPayTarget(null);
             } catch (err) {

@@ -53,6 +53,7 @@ import {
   AlertTriangle,
   CalendarClock,
   CheckCircle,
+  Clock,
   Edit,
   FileText,
   Mail,
@@ -69,6 +70,7 @@ interface FinanceHubProps {
   payments: Payment[];
   session: SessionUser;
   onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
+  onConfirmPayment: (paymentId: string, fields?: Record<string, unknown>) => Promise<Payment>;
   onReversePayment: (paymentId: string, reason: string) => Promise<unknown>;
   onUpdatePayment: (paymentId: string, fields: Record<string, unknown>) => Promise<unknown>;
   onPostMonth: (month: string) => Promise<{ message: string }>;
@@ -84,6 +86,7 @@ export default function FinanceHub({
   payments,
   session,
   onRecordPayment,
+  onConfirmPayment,
   onReversePayment,
   onUpdatePayment,
   onPostMonth,
@@ -178,7 +181,7 @@ export default function FinanceHub({
 
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState<'all' | PaymentCategory>('all');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'reversed'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'completed' | 'reversed'>('all');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [page, setPage] = useState(0);
@@ -210,6 +213,7 @@ export default function FinanceHub({
   /* ---------------- modals ---------------- */
 
   const [reversalTarget, setReversalTarget] = useState<Payment | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<Payment | null>(null);
   const [detailTarget, setDetailTarget] = useState<Payment | null>(null);
   const [chargesTarget, setChargesTarget] = useState<AccountBalance | null>(null);
   const [statementTarget, setStatementTarget] = useState<AccountBalance | null>(null);
@@ -415,13 +419,14 @@ export default function FinanceHub({
                 id="vds-status"
                 value={filterStatus}
                 onChange={e => {
-                  setFilterStatus(e.target.value as 'all' | 'completed' | 'reversed');
+                  setFilterStatus(e.target.value as 'all' | 'pending' | 'completed' | 'reversed');
                   setPage(0);
                 }}
                 className={inputClass}
               >
                 <option value="all">All statuses</option>
-                <option value="completed">Completed only</option>
+                <option value="pending">Awaiting confirmation</option>
+                <option value="completed">Received only</option>
                 <option value="reversed">Voided only</option>
               </select>
             </Field>
@@ -484,7 +489,7 @@ export default function FinanceHub({
                       <tr key={p.id} className="transition-colors hover:bg-slate-50/60">
                         <td className="p-4 font-mono font-semibold text-slate-700">
                           <button onClick={() => setDetailTarget(p)} className="underline-offset-2 hover:underline">
-                            {p.receiptNo}
+                            {p.receiptNo || <span className="italic text-slate-400">not yet issued</span>}
                           </button>
                           {(p.printCount || 0) > 1 && <span className="ml-1 text-[9px] text-amber-600">×{p.printCount}</span>}
                         </td>
@@ -504,7 +509,11 @@ export default function FinanceHub({
                         <td className="p-4">
                           {p.status === 'completed' ? (
                             <Badge tone="green">
-                              <CheckCircle className="h-3 w-3" /> Completed
+                              <CheckCircle className="h-3 w-3" /> Received
+                            </Badge>
+                          ) : p.status === 'pending' ? (
+                            <Badge tone="amber">
+                              <Clock className="h-3 w-3" /> Awaiting funds
                             </Badge>
                           ) : (
                             <Badge tone="red">
@@ -514,20 +523,31 @@ export default function FinanceHub({
                         </td>
                         <td className="p-4">
                           <div className="flex justify-end gap-2">
-                            <button
-                              onClick={() => onOpenReceipt(p)}
-                              className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-all hover:bg-slate-50 hover:text-slate-800"
-                              title="Print receipt"
-                              aria-label={`Print receipt ${p.receiptNo}`}
-                            >
-                              <Printer className="h-4 w-4" />
-                            </button>
-                            {p.status === 'completed' && canReverse && (
+                            {p.status === 'pending' && perms.recordPayments && (
+                              <button
+                                onClick={() => setConfirmTarget(p)}
+                                className="rounded-lg bg-teal-600 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-teal-700"
+                                title="Confirm the money has been received"
+                              >
+                                Confirm received
+                              </button>
+                            )}
+                            {p.status === 'completed' && (
+                              <button
+                                onClick={() => onOpenReceipt(p)}
+                                className="rounded-lg border border-slate-200 p-1.5 text-slate-500 transition-all hover:bg-slate-50 hover:text-slate-800"
+                                title="Print receipt"
+                                aria-label={`Print receipt ${p.receiptNo}`}
+                              >
+                                <Printer className="h-4 w-4" />
+                              </button>
+                            )}
+                            {p.status !== 'reversed' && canReverse && (
                               <button
                                 onClick={() => setReversalTarget(p)}
                                 className="rounded-lg border border-red-200 p-1.5 text-red-600 transition-all hover:bg-red-50"
-                                title="Void this receipt"
-                                aria-label={`Void receipt ${p.receiptNo}`}
+                                title={p.status === 'pending' ? 'Cancel this expected payment' : 'Void this receipt'}
+                                aria-label={p.status === 'pending' ? 'Cancel expected payment' : `Void receipt ${p.receiptNo}`}
                               >
                                 <RotateCcw className="h-4 w-4" />
                               </button>
@@ -569,8 +589,25 @@ export default function FinanceHub({
           onClose={() => setPayTarget(null)}
           onSubmit={async payload => {
             const payment = await onRecordPayment(payload);
-            setSuccess(`Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`);
+            setSuccess(
+              `${formatMoneyLong(payment.amount, payment.currency)} logged as expected from ${payment.payerName}. ` +
+                'It does not affect any balance yet — confirm it as received, in the Receipts ledger, once the money is actually in hand.'
+            );
             setPayTarget(null);
+          }}
+        />
+      )}
+
+      {confirmTarget && (
+        <ConfirmReceiptModal
+          payment={confirmTarget}
+          onClose={() => setConfirmTarget(null)}
+          onSubmit={async fields => {
+            const confirmed = await onConfirmPayment(confirmTarget.id, fields);
+            setSuccess(
+              `Receipt ${confirmed.receiptNo} issued for ${formatMoneyLong(confirmed.amount, confirmed.currency)}. The balance and the reports now include it.`
+            );
+            setConfirmTarget(null);
           }}
         />
       )}
@@ -1076,6 +1113,107 @@ function RecordPaymentModal({
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * Confirm that an expected payment has actually arrived.
+ *
+ * The date defaults to the date the entry was logged, but is editable: money
+ * often lands days after someone wrote it down, and the ledger should record when
+ * it *arrived*, not when it was typed. Only at this point is a receipt number
+ * issued and the balance moved.
+ */
+function ConfirmReceiptModal({
+  payment,
+  onClose,
+  onSubmit
+}: {
+  payment: Payment;
+  onClose: () => void;
+  onSubmit: (fields: Record<string, unknown>) => Promise<void>;
+}) {
+  const [date, setDate] = useState(payment.date);
+  const [method, setMethod] = useState<PaymentMethod>(payment.method);
+  const [reference, setReference] = useState(payment.reference || '');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit({ date, method, reference });
+    } catch (err) {
+      setError(errorMessage(err, 'Could not confirm the payment.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Confirm money received"
+      subtitle={`${payment.payerName} — ${formatMoneyLong(payment.amount, payment.currency)}`}
+      onClose={onClose}
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton busy={busy} busyLabel="Confirming…" form="vds-confirm-form" className="flex-1">
+            Confirm and issue receipt
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-confirm-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <InfoNote tone="amber">
+          Only confirm this once the money is genuinely in hand or shown in the account. Confirming issues a receipt
+          number, reduces the outstanding balance, and includes the money in the reports.
+        </InfoNote>
+
+        <dl className="space-y-1 rounded-xl bg-slate-50 p-3 font-mono text-[11px]">
+          <div className="flex justify-between gap-3">
+            <dt className="text-slate-500">Villa</dt>
+            <dd className="font-semibold">{getUnitDisplayName(payment.unitNumber)}</dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-slate-500">For</dt>
+            <dd className="font-semibold">{payment.category}</dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-slate-500">Amount</dt>
+            <dd className="font-semibold">{formatMoneyLong(payment.amount, payment.currency)}</dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-slate-500">Logged by</dt>
+            <dd className="font-semibold">{payment.staffMember}</dd>
+          </div>
+        </dl>
+
+        <Field label="Date the money was received" htmlFor="cf-date" required hint="Defaults to the date it was logged. Change it if the money landed later.">
+          <input id="cf-date" type="date" value={date} max={today()} onChange={e => setDate(e.target.value)} required className={monoInputClass} />
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Method" htmlFor="cf-method" required>
+            <select id="cf-method" value={method} onChange={e => setMethod(e.target.value as PaymentMethod)} className={inputClass}>
+              {PAYMENT_METHODS.map(m => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Reference" htmlFor="cf-ref" hint="Bank transaction id, cheque number.">
+            <input id="cf-ref" type="text" value={reference} onChange={e => setReference(e.target.value)} className={monoInputClass} />
+          </Field>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 
 function ReversalModal({
   payment,

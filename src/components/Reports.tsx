@@ -927,7 +927,7 @@ function StatementDocument({
                     <td className="p-2 font-sans">{p.payerName}</td>
                     <td className="p-2">{p.category}</td>
                     <td className="p-2">{p.method}</td>
-                    <td className="p-2 uppercase">{p.status === 'reversed' ? 'VOID' : 'OK'}</td>
+                    <td className="p-2 uppercase">{p.status === 'reversed' ? 'VOID' : p.status === 'pending' ? 'PENDING' : 'OK'}</td>
                     <td className="p-2 text-right font-semibold">
                       {formatMoney(p.amount, p.currency)} {p.currency}
                     </td>

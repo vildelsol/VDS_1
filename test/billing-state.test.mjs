@@ -76,9 +76,17 @@ export default async function run({ port, projectRoot }) {
       confirmNoOpenCharge: true
     });
     T.check('it can still be recorded deliberately as a credit', forced.status === 200, `status ${forced.status}`);
+
+    // Recording is only an expectation. Until it is confirmed as received it must
+    // move nothing at all — that is the whole point of the two steps.
     db = (await c.get('/api/db')).body;
     rent = statusOf(db, 'unit-1', 'Rent');
-    T.check('and that money then shows as a credit, not as settled', rent.status === 'credit', `status=${rent.status}, balance=${rent.balance}`);
+    T.check('an unconfirmed payment moves nothing on the account', rent.paid === 0 && rent.status === 'not-billed', `paid=${rent.paid} status=${rent.status}`);
+
+    await c.post(`/api/payments/${forced.body.payment.id}/confirm`, {});
+    db = (await c.get('/api/db')).body;
+    rent = statusOf(db, 'unit-1', 'Rent');
+    T.check('and once confirmed that money shows as a credit, not as settled', rent.status === 'credit', `status=${rent.status}, balance=${rent.balance}`);
 
     // --- once billed, the same account behaves normally ---
     await c.post('/api/charges/post-month', { monthString: '2026-07' });
@@ -98,9 +106,15 @@ export default async function run({ port, projectRoot }) {
       method: 'Cash'
     });
     T.check('paying a billed account needs no override', settle.status === 200, `status ${settle.status}`);
+
     db = (await c.get('/api/db')).body;
     maint = statusOf(db, 'unit-1', 'Maintenance');
-    T.check('and it then reads as genuinely settled', maint.status === 'settled', `charged=${maint.charged} paid=${maint.paid} status=${maint.status}`);
+    T.check('the account stays in arrears until the money is confirmed', maint.status === 'in-arrears', `paid=${maint.paid} status=${maint.status}`);
+
+    await c.post(`/api/payments/${settle.body.payment.id}/confirm`, {});
+    db = (await c.get('/api/db')).body;
+    maint = statusOf(db, 'unit-1', 'Maintenance');
+    T.check('and once confirmed it reads as genuinely settled', maint.status === 'settled', `charged=${maint.charged} paid=${maint.paid} status=${maint.status}`);
 
     // --- a villa with no rent set is "inactive", not "not-billed" ---
     await c.put('/api/units/unit-5', { number: '5', ownerName: 'Owner Five', status: 'vacant', monthlyRent: 0, monthlyMaintenance: 0, currency: 'JMD', maintCurrency: 'JMD' });

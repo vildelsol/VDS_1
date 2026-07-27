@@ -121,6 +121,26 @@ export async function activateAdmin(client, oldPassword, newPassword) {
   await client.post('/api/auth/change-password', { currentPassword: oldPassword, newPassword });
 }
 
+/**
+ * Record a payment and confirm it as received, returning the confirmed payment.
+ *
+ * Recording alone only logs an *expected* receipt: it carries no receipt number
+ * and counts for nothing until someone confirms the money actually arrived. Tests
+ * about money that has genuinely been received have to do both steps, exactly as
+ * a person does.
+ */
+export async function recordAndConfirmPayment(client, payload) {
+  const created = await client.post('/api/payments', payload);
+  const id = created.body?.payment?.id;
+  if (!id) return created;
+  return client.post(`/api/payments/${id}/confirm`, {});
+}
+
+/** Confirm an already-logged payment by id. */
+export function confirmPayment(client, id, body = {}) {
+  return client.post(`/api/payments/${id}/confirm`, body);
+}
+
 /** Configure unit-1 as a long-term let with a tenant, so it is billable. */
 export async function makeLongTermUnit(client, id = 'unit-1', over = {}) {
   return client.put(`/api/units/${id}`, {

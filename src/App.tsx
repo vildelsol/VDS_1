@@ -229,13 +229,30 @@ export default function App() {
   );
 
   /**
-   * Record a payment, refresh, and open its receipt so staff can print or email
-   * it straight away. Every "receive payment" entry point routes through this, so
-   * a receipt is always one step away the moment money is taken.
+   * Log an expected payment.
+   *
+   * This deliberately does not open a receipt: nothing has been received yet, and
+   * a receipt is proof of receipt. The entry sits on the ledger awaiting
+   * confirmation, and `confirmPayment` below is what turns it into money.
    */
   const recordPayment = useCallback(
     async (payload: Record<string, unknown>): Promise<Payment> => {
       const result = await api.post<{ payment: Payment }>('/api/payments', payload);
+      await refresh();
+      return result.payment;
+    },
+    [refresh]
+  );
+
+  /**
+   * Confirm that an expected payment actually arrived, then open its receipt.
+   *
+   * This is the point at which a receipt exists at all, so it is also the point
+   * at which one is offered for printing or emailing.
+   */
+  const confirmPayment = useCallback(
+    async (paymentId: string, fields: Record<string, unknown> = {}): Promise<Payment> => {
+      const result = await api.post<{ payment: Payment }>(`/api/payments/${paymentId}/confirm`, fields);
       await refresh();
       setActiveReceipt(result.payment);
       return result.payment;
@@ -524,6 +541,7 @@ export default function App() {
             payments={data.payments}
             session={session}
             onRecordPayment={recordPayment}
+            onConfirmPayment={confirmPayment}
             onReversePayment={(id, reason) => mutate(() => api.post(`/api/payments/${id}/reverse`, { reversalReason: reason }))}
             onUpdatePayment={(id, fields) => mutate(() => api.put(`/api/payments/${id}`, fields))}
             onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}

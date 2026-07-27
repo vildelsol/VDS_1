@@ -1291,7 +1291,10 @@ function assertNoOverlap(db: Database, unitId: string, checkIn: string, checkOut
  * receipt with its own number, and the voided one stays voided.
  */
 function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: string, role: UserRole) {
-  const live = db.payments.find(p => p.bookingId === booking.id && p.status === 'completed');
+  // Anything not voided counts as the live deposit receipt — including one that
+  // is still awaiting confirmation. Matching only completed receipts would raise a
+  // second one alongside every pending deposit.
+  const live = db.payments.find(p => p.bookingId === booking.id && p.status !== 'reversed');
 
   if (booking.status === 'cancelled' || booking.depositPaid <= 0) {
     if (live) {
@@ -1323,7 +1326,7 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
 
   const payment: Payment = {
     id: uniqueRecordId(db.payments, `p-booking-${booking.id}`),
-    receiptNo: nextReceiptNo(db),
+    receiptNo: '',
     payerName: booking.guestName,
     unitId: booking.unitId,
     unitNumber: booking.unitNumber,
@@ -1335,12 +1338,12 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     reference: `BOOK-${booking.id.slice(-6).toUpperCase()}`,
     notes: `Deposit for reservation by ${booking.guestName} (${booking.checkIn} to ${booking.checkOut}).`,
     staffMember: staffName,
-    status: 'completed',
+    status: 'pending',
     printCount: 0,
     bookingId: booking.id
   };
   db.payments.push(payment);
-  addAudit(db, staffName, role, 'Raised booking deposit receipt', 'Payment', payment.id, '', payment);
+  addAudit(db, staffName, role, 'Logged an expected booking deposit — awaiting confirmation of receipt', 'Payment', payment.id, '', payment);
 }
 
 function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?: Booking) {
@@ -1498,7 +1501,9 @@ app.post(
       const who = actor(req);
       const created: Payment = {
         id: `p-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        receiptNo: nextReceiptNo(db),
+        // No receipt number yet. A receipt is proof that money was received, so
+        // one is only issued when the money is confirmed as received.
+        receiptNo: '',
         payerName: requireString(body.payerName, 'Payer name', 120),
         unitId: unit.id,
         unitNumber: unit.number,
@@ -1510,11 +1515,20 @@ app.post(
         reference: optionalString(body.reference, 120),
         notes: optionalString(body.notes, 2000),
         staffMember: who.name,
-        status: 'completed',
+        status: 'pending',
         printCount: 0
       };
       db.payments.push(created);
-      addAudit(db, who.name, who.role, `Recorded payment and issued receipt ${created.receiptNo}`, 'Payment', created.id, '', created);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Logged an expected ${created.category.toLowerCase()} payment of ${created.currency} ${created.amount} for ${unit.number} — awaiting confirmation of receipt`,
+        'Payment',
+        created.id,
+        '',
+        created
+      );
       return created;
     });
     res.json({ success: true, payment });
@@ -1575,6 +1589,75 @@ app.put(
   })
 );
 
+/**
+ * Confirm that an expected payment has actually been received.
+ *
+ * This is the moment money becomes real to the system: only now does the entry
+ * get a receipt number, reduce a balance, count as income in the reports, and
+ * settle any utility bill it was raised against. Everything before this is an
+ * expectation, and every figure in the application is derived from confirmed
+ * receipts alone.
+ */
+app.post(
+  '/api/payments/:id/confirm',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'record_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const payment = await transaction(db => {
+      const target = db.payments.find(p => p.id === id);
+      if (!target) throw new ApiError(404, 'Payment not found.');
+      if (target.status === 'reversed') {
+        throw new ApiError(400, 'That entry has been voided. Record a new payment instead.');
+      }
+      if (target.status === 'completed') {
+        throw new ApiError(400, `That payment is already confirmed as received (receipt ${target.receiptNo}).`);
+      }
+
+      // The date money actually arrived may differ from the date it was logged.
+      const receivedOn = requireDay(body.date || target.date, 'Date received');
+      if (receivedOn > today()) bad('A payment cannot be dated in the future.');
+
+      const before = { ...target };
+      const who = actor(req);
+      target.status = 'completed';
+      target.receiptNo = nextReceiptNo(db);
+      target.date = receivedOn;
+      target.receivedBy = who.name;
+      target.receivedAt = new Date().toISOString();
+      if (body.method !== undefined) {
+        target.method = requireEnum(body.method, PAYMENT_METHODS, 'Payment method') as PaymentMethod;
+      }
+      if (body.reference !== undefined) target.reference = optionalString(body.reference, 120);
+
+      // A utility bill is only settled once its payment is confirmed.
+      if (target.utilityId) {
+        const utility = db.utilities.find(u => u.id === target.utilityId);
+        if (utility && utility.status !== 'paid') {
+          utility.status = 'paid';
+          utility.paymentId = target.id;
+          addAudit(db, who.name, who.role, `Utility bill for ${utility.unitNumber} (${utility.billingPeriod}) settled by confirmed receipt ${target.receiptNo}`, 'Utility', utility.id, 'unpaid', 'paid');
+        }
+      }
+
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Confirmed receipt of ${target.currency} ${target.amount} and issued receipt ${target.receiptNo}`,
+        'Payment',
+        id,
+        before,
+        target,
+        who.name
+      );
+      return target;
+    });
+    res.json({ success: true, payment });
+  })
+);
+
 app.post(
   '/api/payments/:id/reverse',
   handler(async (req: AuthedRequest, res) => {
@@ -1586,7 +1669,8 @@ app.post(
     const payment = await transaction(db => {
       const target = db.payments.find(p => p.id === id);
       if (!target) throw new ApiError(404, 'Payment not found.');
-      if (target.status === 'reversed') throw new ApiError(400, 'That receipt has already been voided.');
+      if (target.status === 'reversed') throw new ApiError(400, 'That entry has already been voided.');
+      const wasPending = target.status === 'pending';
 
       const before = { ...target };
       const who = actor(req);
@@ -1608,13 +1692,35 @@ app.post(
       if (target.utilityId) {
         const utility = db.utilities.find(u => u.id === target.utilityId);
         if (utility) {
+          const wasPaid = utility.status === 'paid';
           utility.status = 'unpaid';
           delete utility.paymentId;
-          addAudit(db, who.name, who.role, 'Reopened utility bill after receipt was voided', 'Utility', utility.id, 'paid', 'unpaid');
+          addAudit(
+            db,
+            who.name,
+            who.role,
+            wasPaid ? 'Reopened utility bill after receipt was voided' : 'Cleared the expected payment from the utility bill',
+            'Utility',
+            utility.id,
+            wasPaid ? 'paid' : 'unpaid (payment expected)',
+            'unpaid'
+          );
         }
       }
 
-      addAudit(db, who.name, who.role, `Voided receipt ${target.receiptNo}`, 'Payment', id, before, target, who.name);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        wasPending
+          ? 'Cancelled an expected payment that was never received'
+          : `Voided receipt ${target.receiptNo}`,
+        'Payment',
+        id,
+        before,
+        target,
+        who.name
+      );
       return target;
     });
     res.json({ success: true, payment });
@@ -1759,10 +1865,12 @@ app.post(
 
       const who = actor(req);
       const payment: Payment = {
-        // Settling again after the first receipt was voided issues a fresh
-        // receipt; it must not reuse the voided receipt's id.
+        // Settling again after the first receipt was voided raises a fresh entry;
+        // it must not reuse the voided one's id.
         id: uniqueRecordId(db.payments, `p-utility-${utility.id}`),
-        receiptNo: nextReceiptNo(db),
+        // Issued at confirmation, not here — see the confirm route. Taking a
+        // number now burned one on an entry that had received nothing.
+        receiptNo: '',
         payerName: optionalString(body.payerName, 120) || unit?.ownerName || 'Resident',
         unitId: utility.unitId,
         unitNumber: utility.unitNumber,
@@ -1776,15 +1884,27 @@ app.post(
           optionalString(body.notes, 2000) ||
           `Utility settlement for ${utility.billingPeriod} — ${utility.consumption} units on meter ${utility.meterNumber}.`,
         staffMember: who.name,
-        status: 'completed',
+        status: 'pending',
         printCount: 0,
         utilityId: utility.id
       };
       db.payments.push(payment);
-      utility.status = 'paid';
+      // The bill is NOT settled yet. Recording a settlement used to mark the bill
+      // paid and issue a receipt in one move, which asserted that money had
+      // arrived on the strength of someone opening a form. It stays unpaid, with
+      // the expected receipt attached, until that receipt is confirmed.
       utility.paymentId = payment.id;
 
-      addAudit(db, who.name, who.role, `Settled utility bill for ${utility.unitNumber} (${utility.billingPeriod}) and issued receipt ${payment.receiptNo}`, 'Utility', utility.id, 'unpaid', 'paid');
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Logged an expected utility payment for ${utility.unitNumber} (${utility.billingPeriod}) — awaiting confirmation of receipt`,
+        'Utility',
+        utility.id,
+        'unpaid',
+        'unpaid (payment expected)'
+      );
       return { utility, payment };
     });
     res.json({ success: true, ...result });

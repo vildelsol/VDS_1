@@ -250,7 +250,19 @@ export interface Payment {
   reference: string;
   notes: string;
   staffMember: string;
-  status: 'completed' | 'reversed';
+  /**
+   * `pending` is money that has been *entered* but not yet *received* — a cheque
+   * that has not cleared, a transfer that has been promised. It sits on the
+   * ledger as an expected receipt and deliberately counts for nothing: it does
+   * not reduce a balance, does not appear as income, and carries no receipt
+   * number, because a receipt is proof that money changed hands. Confirming it
+   * turns it into `completed`, which is the only status any figure is derived
+   * from.
+   */
+  status: 'pending' | 'completed' | 'reversed';
+  /** Set when a pending entry was confirmed as actually received. */
+  receivedBy?: string;
+  receivedAt?: string;
   reversedBy?: string;
   reversalReason?: string;
   reversalDate?: string;

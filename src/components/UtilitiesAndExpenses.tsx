@@ -173,7 +173,10 @@ export default function UtilitiesAndExpenses({
           onClose={() => setSettlingUtility(null)}
           onSubmit={async payload => {
             await onSettleUtility(settlingUtility.id, payload);
-            setSuccess('Utility bill settled and a receipt issued, so it now appears in the payments ledger and reports.');
+            setSuccess(
+              'Payment logged against this bill. The bill stays unpaid until you confirm the money was received, ' +
+                'in the HOA & Tenants Ledger under Receipts — only then is a receipt issued and the bill marked settled.'
+            );
             setError('');
             setSettlingUtility(null);
           }}
@@ -222,7 +225,7 @@ function UtilitiesPanel({
   units: Unit[];
   utilities: UtilityReading[];
   canEdit: boolean;
-  /** Settling takes money and issues a receipt, so it needs the payment permission too. */
+  /** Logging a payment against a bill needs the payment permission too. */
   canSettle: boolean;
   onEdit: (u: UtilityReading) => void;
   onSettle: (u: UtilityReading) => void;
@@ -315,7 +318,7 @@ function UtilitiesPanel({
           {[unpaidTotals.JMD > 0 ? `${formatMoney(unpaidTotals.JMD, 'JMD')} JMD` : null, unpaidTotals.USD > 0 ? `${formatMoney(unpaidTotals.USD, 'USD')} USD` : null]
             .filter(Boolean)
             .join(' and ')}
-          . Settling a bill issues a receipt so the money shows up in the ledger and reports.
+          . Recording a payment against a bill logs it as expected; confirming its receipt is what settles the bill and issues a receipt.
         </InfoNote>
       )}
 
