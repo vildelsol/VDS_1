@@ -25,6 +25,7 @@ import Bookings from './components/Bookings';
 import UtilitiesAndExpenses from './components/UtilitiesAndExpenses';
 import Reports from './components/Reports';
 import Projections from './components/Projections';
+import Charts from './components/Charts';
 import Audit from './components/Audit';
 import SystemSettings from './components/SystemSettings';
 import PrintReceipt from './components/PrintReceipt';
@@ -43,6 +44,7 @@ import {
   Loader2,
   LogOut,
   Menu,
+  PieChart,
   RefreshCw,
   Settings,
   TrendingUp,
@@ -58,6 +60,7 @@ export type TabKey =
   | 'bookings'
   | 'utilities'
   | 'reports'
+  | 'charts'
   | 'projections'
   | 'audit'
   | 'settings';
@@ -70,6 +73,7 @@ const TAB_TITLES: Record<TabKey, string> = {
   bookings: 'Short-Term Bookings',
   utilities: 'Utilities & Expenses',
   reports: 'Operational Reports',
+  charts: 'Charts & Visual Snapshots',
   projections: 'Financial Projections',
   audit: 'Audit Trail',
   settings: 'System Settings'
@@ -313,6 +317,7 @@ export default function App() {
     { key: 'bookings', label: 'Short-Term Bookings', icon: <Calendar className="h-4 w-4" />, visible: true },
     { key: 'utilities', label: 'Utilities & Expenses', icon: <Wrench className="h-4 w-4" />, visible: true },
     { key: 'reports', label: 'Operational Reports', icon: <BarChart3 className="h-4 w-4" />, visible: true },
+    { key: 'charts', label: 'Charts & Snapshots', icon: <PieChart className="h-4 w-4" />, visible: true },
     { key: 'projections', label: 'Financial Projections', icon: <TrendingUp className="h-4 w-4" />, visible: true },
     { key: 'audit', label: 'Audit Trail', icon: <ClipboardList className="h-4 w-4" />, visible: true },
     {
@@ -327,11 +332,63 @@ export default function App() {
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 font-sans text-slate-800 md:flex-row">
       <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
-      <aside className="flex w-full shrink-0 flex-col justify-between bg-slate-900 p-6 text-slate-400 print:hidden md:w-64">
+
+      {/*
+        On a phone the sidebar used to stack above the content at full height, so
+        every screen began with ten menu items and the actual page started below
+        the fold. It is a slide-over there instead, and the unchanged fixed
+        sidebar from md upwards.
+      */}
+      <div className="flex items-center justify-between gap-3 bg-slate-900 p-4 text-white print:hidden md:hidden">
+        <div className="min-w-0">
+          <h1 className="truncate font-display text-sm font-semibold tracking-tight">VILLAGGIO DEL SOL</h1>
+          <p className="truncate font-mono text-[10px] uppercase tracking-wider text-teal-400">{TAB_TITLES[activeTab]}</p>
+        </div>
+        <button
+          onClick={() => setNavOpen(true)}
+          aria-label="Open menu"
+          aria-expanded={navOpen}
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200"
+        >
+          <Menu className="h-4 w-4" />
+          Menu
+          {outstandingCount > 0 && (
+            <span className="rounded-full bg-red-500 px-1.5 py-0.5 font-mono text-[9px] font-bold text-white">
+              {outstandingCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {navOpen && (
+        <button
+          type="button"
+          aria-label="Close menu"
+          onClick={() => setNavOpen(false)}
+          className="fixed inset-0 z-30 bg-slate-900/60 backdrop-blur-xs md:hidden"
+        />
+      )}
+
+      <aside
+        className={`z-40 flex shrink-0 flex-col justify-between bg-slate-900 p-6 text-slate-400 print:hidden md:static md:w-64 md:translate-x-0 ${
+          navOpen
+            ? 'fixed inset-y-0 left-0 w-72 max-w-[85vw] overflow-y-auto'
+            : 'hidden md:flex'
+        }`}
+      >
         <div className="space-y-8">
-          <div>
-            <h1 className="font-display text-lg font-semibold tracking-tight text-white">VILLAGGIO DEL SOL</h1>
-            <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-teal-400">Ocho Rios Operations</p>
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h1 className="font-display text-lg font-semibold tracking-tight text-white">VILLAGGIO DEL SOL</h1>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-teal-400">Ocho Rios Operations</p>
+            </div>
+            <button
+              onClick={() => setNavOpen(false)}
+              aria-label="Close menu"
+              className="-mr-1 rounded-lg p-1 text-slate-400 hover:text-white md:hidden"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
 
           <nav className="space-y-1.5 text-xs font-medium" aria-label="Main">
@@ -340,7 +397,10 @@ export default function App() {
               .map(item => (
                 <button
                   key={item.key}
-                  onClick={() => setActiveTab(item.key)}
+                  onClick={() => {
+                    setActiveTab(item.key);
+                    setNavOpen(false);
+                  }}
                   aria-current={activeTab === item.key ? 'page' : undefined}
                   className={`flex w-full items-center justify-between rounded-xl px-4 py-2.5 transition-all ${
                     activeTab === item.key
@@ -507,6 +567,17 @@ export default function App() {
             expenses={data.expenses}
             utilities={data.utilities}
             bookings={data.bookings}
+            settings={settings}
+            session={session}
+          />
+        )}
+
+        {activeTab === 'charts' && (
+          <Charts
+            units={data.units}
+            charges={data.charges}
+            payments={data.payments}
+            expenses={data.expenses}
             settings={settings}
             session={session}
           />
