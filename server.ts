@@ -2271,12 +2271,76 @@ async function startServer() {
  * app on screen reads as "it did not launch". Every other run opens the browser
  * only when explicitly asked (the .bat sets VDS_OPEN_BROWSER=1), so tests and
  * headless/service runs never do. VDS_OPEN_BROWSER=0 forces it off in all cases.
+ *
+ * When a Chromium browser (Chrome, or Edge — always present on Windows 10/11) is
+ * available, it is opened in "app mode": a single clean window with no tabs and
+ * no address bar, so the program looks and behaves like a desktop application
+ * rather than a web page in a browser. If none is found, or app mode is turned
+ * off with VDS_APP_MODE=0, it falls back to the default browser in an ordinary
+ * window. Either way the server underneath is identical.
  */
 function openBrowserIfAsked() {
   const explicit = process.env.VDS_OPEN_BROWSER;
   const shouldOpen = explicit === '1' || (packagedExe && explicit !== '0');
   if (!shouldOpen) return;
   const url = `http://localhost:${PORT}`;
+
+  const chromium = process.env.VDS_APP_MODE === '0' ? null : findChromiumBrowser();
+  if (chromium) {
+    try {
+      const child = spawn(chromium, [`--app=${url}`, '--window-size=1360,900'], { detached: true, stdio: 'ignore' });
+      // If the app-mode launch itself errors, fall back to an ordinary window
+      // rather than leave the user with a running server and nothing on screen.
+      child.on('error', () => openInDefaultBrowser(url));
+      child.unref();
+      return;
+    } catch {
+      /* fall through to the default browser */
+    }
+  }
+  openInDefaultBrowser(url);
+}
+
+/**
+ * The path to an installed Chromium-based browser that supports `--app` windows,
+ * or null if none is found. Chrome is preferred; Edge is the reliable fallback
+ * because it ships with Windows. Paths are checked on disk rather than launched
+ * speculatively, so the caller knows before it spawns anything.
+ */
+function findChromiumBrowser(): string | null {
+  const exists = (p: string) => {
+    try {
+      return !!p && fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  };
+  if (process.platform === 'win32') {
+    const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const localAppData = process.env['LOCALAPPDATA'] || '';
+    const candidates = [
+      path.join(programFiles, 'Google/Chrome/Application/chrome.exe'),
+      path.join(programFilesX86, 'Google/Chrome/Application/chrome.exe'),
+      path.join(localAppData, 'Google/Chrome/Application/chrome.exe'),
+      path.join(programFilesX86, 'Microsoft/Edge/Application/msedge.exe'),
+      path.join(programFiles, 'Microsoft/Edge/Application/msedge.exe')
+    ];
+    return candidates.find(exists) || null;
+  }
+  if (process.platform === 'darwin') {
+    const candidates = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium'
+    ];
+    return candidates.find(exists) || null;
+  }
+  return null;
+}
+
+/** Open a URL in the machine's default browser, in an ordinary window. */
+function openInDefaultBrowser(url: string) {
   try {
     const [command, args] =
       process.platform === 'win32'
