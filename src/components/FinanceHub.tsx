@@ -1585,7 +1585,12 @@ function ChargeHistoryModal({
                 {rows.map(charge => (
                   <React.Fragment key={charge.id}>
                     <tr>
-                      <td className="p-2 font-medium">{formatMonthLabel(charge.periodMonth)}</td>
+                      <td className="p-2 font-medium">
+                        {formatMonthLabel(charge.periodMonth)}
+                        {charge.description && (
+                          <span className="mt-0.5 block text-[10px] font-normal text-slate-500">{charge.description}</span>
+                        )}
+                      </td>
                       <td className="p-2 font-mono text-slate-500">{formatDayLabel(charge.dueDate)}</td>
                       <td className={`p-2 text-right font-mono ${charge.status === 'void' ? 'text-slate-400 line-through' : ''}`}>
                         {formatMoney(charge.amount, charge.currency)}
@@ -1675,7 +1680,14 @@ function AccountStatementDocument({
   const rows = useMemo(() => {
     const debits = chargesForUnit(charges, unit, units)
       .filter(c => c.category === category && c.status === 'open' && c.currency === currency)
-      .map(c => ({ date: c.dueDate, kind: 'charge' as const, label: `${category} charge — ${formatMonthLabel(c.periodMonth)}`, ref: '', debit: c.amount, credit: 0 }));
+      .map(c => ({
+        date: c.dueDate,
+        kind: 'charge' as const,
+        label: c.description || `${category} charge — ${formatMonthLabel(c.periodMonth)}`,
+        ref: '',
+        debit: c.amount,
+        credit: 0
+      }));
     const credits = paymentsForUnit(payments, unit, units)
       .filter(p => p.category === category && p.status === 'completed' && p.currency === currency)
       .map(p => ({ date: p.date, kind: 'payment' as const, label: `Payment received (${p.method})`, ref: p.receiptNo, debit: 0, credit: p.amount }));

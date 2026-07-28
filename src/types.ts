@@ -187,6 +187,14 @@ export interface Tenancy {
   endedOn?: string; // YYYY-MM-DD
   endReason?: string;
   status: 'active' | 'ended';
+  /**
+   * The charge raised at move-in for the tenant's final month ("first and last").
+   * Held on the tenancy so that closing it knows the final month is already paid
+   * for and must not be charged a second time.
+   */
+  advanceRentChargeId?: string;
+  /** When that advance was actually consumed against a final month. */
+  advanceRentAppliedOn?: string;
   /** True when the tenancy was ended by eviction rather than an ordinary move-out. */
   evicted?: boolean;
   /** Rent written off as bad debt at eviction. Retained for the record even though it left the dashboard. */
@@ -235,6 +243,15 @@ export interface Charge {
   currency: Currency;
   status: 'open' | 'void';
   payerName: string;
+  /**
+   * `advance-final-month` is the second month's rent taken at move-in — the
+   * "last" of "first and last". It is a real rent charge that is really owed, but
+   * it pays for the tenant's *final* month rather than this one, so their last
+   * month is not charged again when they leave. Absent means an ordinary month.
+   */
+  kind?: 'advance-final-month';
+  /** Shown on statements and the charge history where the month alone is not enough. */
+  description?: string;
   createdAt: string;
   createdBy: string;
   voidedBy?: string;

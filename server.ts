@@ -41,7 +41,7 @@ import {
   ICalFeed
 } from './src/types';
 import { round2, toMoney } from './src/lib/money';
-import { isValidDay, isValidMonth, today, dueDateForMonth, monthStart, nightsBetween } from './src/lib/dates';
+import { isValidDay, isValidMonth, today, dueDateForMonth, monthOf, monthStart, nightsBetween } from './src/lib/dates';
 import { bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable } from './src/lib/finance';
 import {
   DATA_DIR,
@@ -860,11 +860,161 @@ function activeTenancy(db: Database, unitId: string): Tenancy | undefined {
   return db.tenancies.find(t => t.unitId === unitId && t.status === 'active');
 }
 
-function closeTenancy(db: Database, tenancy: Tenancy, endedOn: string, reason: string, closedBy: string) {
+/**
+ * Raise the move-in rent: this month, plus the tenant's final month in advance.
+ *
+ * "First and last" is how a tenancy starts here — two months' rent up front,
+ * where the second one buys the last month of occupancy rather than this one. Both
+ * are ordinary Rent charges so they land in the ledger, the arrears list, the
+ * dashboard and the notifications hub the moment the move-in date is known,
+ * without waiting for anyone to press Post month. What makes the advance different
+ * is only that closing the tenancy spends it instead of charging that month again.
+ *
+ * Does nothing without a move-in date (the month would be a guess), without a rent
+ * figure, or if this tenancy has already had it — so it is safe to call again when
+ * a date is corrected later.
+ */
+function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string, role: UserRole): boolean {
+  if (!tenancy.startedOn) return false;
+  if (tenancy.advanceRentChargeId) return false;
+  const amount = round2(tenancy.monthlyRent);
+  if (!(amount > 0)) return false;
+
+  const unit = db.units.find(u => u.id === tenancy.unitId);
+  if (!unit) return false;
+
+  const month = monthOf(tenancy.startedOn);
+  const dueDay = tenancy.rentDueDay || unit.rentDueDay || 1;
+  const currency = tenancy.currency || unit.currency;
+
+  // The tenant's first month. Skipped if a charge for it already exists, so a
+  // month posted before the tenant was recorded is not billed twice.
+  const alreadyBilled = db.charges.some(
+    c => c.unitId === unit.id && c.category === 'Rent' && c.periodMonth === month && c.status === 'open'
+  );
+  if (!alreadyBilled) {
+    const first: Charge = {
+      id: uniqueRecordId(db.charges, `chg-${month}-${unit.id}-rent`),
+      unitId: unit.id,
+      unitNumber: unit.number,
+      category: 'Rent',
+      periodMonth: month,
+      dueDate: dueDateForMonth(month, dueDay),
+      amount,
+      currency,
+      status: 'open',
+      payerName: tenancy.tenantName,
+      description: `First month's rent — ${month}`,
+      createdAt: new Date().toISOString(),
+      createdBy: staffName
+    };
+    db.charges.push(first);
+    addAudit(db, staffName, role, `Billed first month's rent for ${tenancy.tenantName} at ${unit.number}`, 'Charge', first.id, '', first);
+  }
+
+  const advance: Charge = {
+    id: uniqueRecordId(db.charges, `chg-${month}-${unit.id}-rent-advance`),
+    unitId: unit.id,
+    unitNumber: unit.number,
+    category: 'Rent',
+    periodMonth: month,
+    dueDate: dueDateForMonth(month, dueDay),
+    amount,
+    currency,
+    status: 'open',
+    payerName: tenancy.tenantName,
+    kind: 'advance-final-month',
+    description: "Last month's rent, held in advance",
+    createdAt: new Date().toISOString(),
+    createdBy: staffName
+  };
+  db.charges.push(advance);
+  tenancy.advanceRentChargeId = advance.id;
+  addAudit(
+    db,
+    staffName,
+    role,
+    `Billed last month's rent in advance for ${tenancy.tenantName} at ${unit.number} — their final month will not be charged again`,
+    'Charge',
+    advance.id,
+    '',
+    advance
+  );
+  return true;
+}
+
+/**
+ * Spend the advance on the month the tenant actually leaves.
+ *
+ * They paid for their last month at move-in, so that month must not be charged a
+ * second time. If a charge for it has already been raised — because the month was
+ * posted before they gave notice — it is voided with the reason recorded, which
+ * removes it from the balance, the arrears list and the hub. If it has not been
+ * raised yet, there is nothing to void and the advance is simply marked as spent.
+ */
+function applyAdvanceRentOnMoveOut(db: Database, tenancy: Tenancy, endedOn: string, staffName: string, role: UserRole) {
+  if (!tenancy.advanceRentChargeId || tenancy.advanceRentAppliedOn) return;
+
+  const finalMonth = monthOf(endedOn);
+  const advance = db.charges.find(c => c.id === tenancy.advanceRentChargeId);
+  // An advance that was voided (a correction, or an eviction write-off) was never
+  // really held, so there is nothing to spend.
+  if (!advance || advance.status !== 'open') return;
+
+  const finalCharge = db.charges.find(
+    c =>
+      c.unitId === tenancy.unitId &&
+      c.category === 'Rent' &&
+      c.periodMonth === finalMonth &&
+      c.status === 'open' &&
+      c.kind !== 'advance-final-month'
+  );
+
+  tenancy.advanceRentAppliedOn = endedOn;
+
+  if (finalCharge) {
+    finalCharge.status = 'void';
+    finalCharge.voidedBy = staffName;
+    finalCharge.voidedAt = new Date().toISOString();
+    finalCharge.voidReason = "Covered by last month's rent paid in advance at move-in.";
+    addAudit(
+      db,
+      staffName,
+      role,
+      `Applied ${tenancy.tenantName}'s advance to their final month (${finalMonth}) at ${tenancy.unitNumber} — that month is not charged again`,
+      'Charge',
+      finalCharge.id,
+      'open',
+      'void — covered by rent paid in advance'
+    );
+  } else {
+    addAudit(
+      db,
+      staffName,
+      role,
+      `${tenancy.tenantName}'s final month (${finalMonth}) at ${tenancy.unitNumber} is covered by rent paid in advance and will not be charged`,
+      'Tenancy',
+      tenancy.id,
+      '',
+      `Advance applied on ${endedOn}`
+    );
+  }
+}
+
+function closeTenancy(
+  db: Database,
+  tenancy: Tenancy,
+  endedOn: string,
+  reason: string,
+  closedBy: string,
+  role: UserRole = 'ADMINISTRATOR'
+) {
   tenancy.status = 'ended';
   tenancy.endedOn = endedOn;
   tenancy.endReason = reason;
   tenancy.closedBy = closedBy;
+  // Their last month was paid for at move-in; do not charge it twice.
+  applyAdvanceRentOnMoveOut(db, tenancy, endedOn, closedBy, role);
 }
 
 /**
@@ -895,7 +1045,7 @@ function syncTenancy(
         unit.status !== 'long-term'
           ? `Unit status changed from ${original.status} to ${unit.status}.`
           : 'Tenant removed from the unit register.';
-      closeTenancy(db, current, stamp, reason, staffName);
+      closeTenancy(db, current, stamp, reason, staffName, role);
       addAudit(
         db,
         staffName,
@@ -930,7 +1080,7 @@ function syncTenancy(
   }
 
   if (current) {
-    closeTenancy(db, current, stamp, `Replaced by ${unit.tenantName.trim()}.`, staffName);
+    closeTenancy(db, current, stamp, `Replaced by ${unit.tenantName.trim()}.`, staffName, role);
     addAudit(
       db,
       staffName,
@@ -970,7 +1120,11 @@ function syncTenancy(
   };
   db.tenancies.push(tenancy);
   addAudit(db, staffName, role, `Opened tenancy for ${tenancy.tenantName} at ${unit.number}`, 'Tenancy', tenancy.id, '', tenancy);
-  return current ? `tenant changed to ${tenancy.tenantName}` : `tenancy opened for ${tenancy.tenantName}`;
+
+  // First and last month's rent, owed from the moment the move-in date is known.
+  const billed = raiseFirstAndLastRent(db, tenancy, staffName, role);
+  const opened = current ? `tenant changed to ${tenancy.tenantName}` : `tenancy opened for ${tenancy.tenantName}`;
+  return billed ? `${opened}; first and last month's rent billed` : opened;
 }
 
 /**
@@ -993,6 +1147,14 @@ app.put(
       if (body.startedOn !== undefined) {
         record.startedOn = body.startedOn === '' ? '' : requireDay(body.startedOn, 'Move-in date');
       }
+
+      // A tenant recorded without a move-in date has no billable month yet. The
+      // moment that date is supplied, the first and last month's rent is owed —
+      // which is the point at which it should appear on the ledger and the hub.
+      if (record.status === 'active' && record.startedOn) {
+        const w = actor(req);
+        raiseFirstAndLastRent(db, record, w.name, w.role);
+      }
       if (body.endedOn !== undefined && body.endedOn !== '') {
         const endedOn = requireDay(body.endedOn, 'Move-out date');
         if (record.startedOn && endedOn < record.startedOn) {
@@ -1002,6 +1164,9 @@ app.put(
         record.status = 'ended';
         record.endReason = optionalString(body.endReason, 500) || record.endReason || 'Tenancy ended.';
         record.closedBy = req.auth!.user.name;
+        // Their final month was bought at move-in — do not charge it again.
+        const closer = actor(req);
+        applyAdvanceRentOnMoveOut(db, record, endedOn, closer.name, closer.role);
 
         // The unit only shows a current tenant while a tenancy is open.
         const unit = db.units.find(u => u.id === record.unitId);
