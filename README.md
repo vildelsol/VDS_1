@@ -106,9 +106,28 @@ Understanding this one rule explains most of the application:
 
 * **Charges** are raised by **HOA & Tenants Ledger → Post month**. Until a month is posted,
   nothing is owed for it. Posting is idempotent — posting the same month twice adds nothing.
-* **Payments** are receipted against a unit and reduce that unit's balance oldest-month-first.
+* **Payments** reduce that unit's balance oldest-month-first — but only once they are
+  *confirmed as received*. See *Received, or only expected?* below.
 * Unpaid months therefore **accumulate**: this is what makes arrears and ageing work.
 * A negative balance is a **credit** (the account paid more than it was billed).
+
+### Received, or only expected?
+
+Entering a payment does not, by itself, assert that money arrived. There are two entry points and
+they mean different things:
+
+| Button | Meaning | Effect |
+| --- | --- | --- |
+| **Receive payment** — on an arrears alert or a ledger row | The money is in hand now | Receipt issued immediately; the balance drops and the alert clears everywhere |
+| **Record payment** — the button at the top of the ledger | Expected but not yet arrived (a cheque, a promised transfer) | Logged as *awaiting funds*; no receipt number, no effect on any balance or report |
+
+An expected payment is confirmed later from **HOA & Tenants Ledger → Receipts ledger**, using
+**Confirm received**. That is the moment a receipt number is issued and the money reaches the
+balances and the reports. **Every figure in the application is derived from confirmed receipts
+alone**, so an entry awaiting funds can never flatter a balance, a collection rate or a projection.
+
+Settling a utility bill and a reservation deposit follow the same rule: the bill stays unpaid, and
+the deposit stays expected, until the receipt is confirmed.
 
 ### Currency
 
@@ -132,8 +151,9 @@ separately and is **append-only**: a tenant is never edited away.
 * Changing the tenant, or moving the villa off a long-term lease, **closes** that
   tenancy with a reason and keeps it — together with the rent they were paying and
   every receipt issued to them.
-* Use **Record move-out** on the unit to set the date the tenant actually left,
-  rather than the day the paperwork was done.
+* Use **Edit tenancy dates** on the unit to set the dates the tenant actually
+  moved in and left, rather than the day the paperwork was done. Closing the
+  tenancy is an optional tick inside that same form.
 * Rent is captured on the tenancy as agreed at the time, so raising the rent for a
   new tenant does not rewrite what the previous one was charged.
 
@@ -177,6 +197,24 @@ calendar and the availability checker both apply this rule.
 
 ---
 
+## Reporting screens
+
+Three screens read the same figures in different shapes — all from `src/lib/finance.ts`, so they
+cannot disagree with the ledger:
+
+* **Operational Reports** — the reconcilable operating statement for any date range: opening and
+  closing receivables, billed against received, expenses by category, and a printable statement
+  plus a CSV export.
+* **Charts & Snapshots** — the same money as pictures, for when the shape matters more than the
+  exact figures: monthly cash movement, expenses by category, and category month-by-month, per
+  currency, with its own date range and a printable chart pack.
+* **Financial Projections** — a forward, straight-line view for the **strata corporation**: HOA
+  maintenance contributions against operating expenditure. Rent and short-term booking income
+  belong to individual proprietors, not the body corporate, so they are deliberately excluded.
+  Exports to a spreadsheet for manual adjustment.
+
+---
+
 ## Data, backup and recovery
 
 Everything lives in a single `db.json`. That is appropriate at this scale, and it is handled
@@ -197,14 +235,18 @@ Backups written only to `db-backups/` sit on the same disk as the database they 
 survives a bad edit; it does not survive a failed disk, a stolen laptop, or the folder being
 deleted. Two ways to fix that:
 
-1. **Automatic** — set `VDS_BACKUP_DIR` to a synced folder or an external drive:
+1. **Automatic, set in the app** — **System Settings → Backup & recovery → Back up to an external
+   drive**. Plug in a USB or external drive, paste its folder (on Windows, e.g.
+   `E:\Villaggio-Backups`), and press **Save and back up now**. The path is tested by actually
+   writing to it, a copy is taken immediately, and one follows every day. No restart, no
+   environment variable.
 
-   ```bash
-   VDS_BACKUP_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/VDS-Backups" npm run dev
-   ```
+   An unplugged drive is handled: the path is remembered so it need not be re-typed, the copy on
+   this machine still succeeds, and the screen says whether the folder could not be written to
+   rather than silently showing no backup.
 
-   A second copy is then written there every day, and **System Settings → Backup & recovery**
-   reports "Off-machine copy: Configured".
+   The `VDS_BACKUP_DIR` environment variable still works and is honoured for a scripted or
+   headless install; a folder saved in the app takes precedence over it.
 
 2. **Manual** — **System Settings → Backup & recovery → Download a snapshot** produces a single
    JSON file of every record. Password hashes and sessions are stripped, so it is safe to email

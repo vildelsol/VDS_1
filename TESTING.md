@@ -19,7 +19,7 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (83 checks)
+### What is covered (160 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
@@ -43,6 +43,19 @@ npm run test:run
 - **Calendar feed SSRF guard** — feed URLs pointing at loopback / private /
   link-local / CGNAT / IPv6-internal addresses are refused; public ones are
   accepted.
+- **Received vs. expected money** — a recorded payment starts as pending, carries
+  no receipt number and moves no balance; confirming it issues exactly one receipt
+  number, records who received it, and only then reduces the balance. A payment
+  entered as *received* (the "Receive payment" button on an arrears alert)
+  completes in one step and clears the alert. Settling a utility leaves the bill
+  unpaid until its receipt is confirmed.
+- **Administrator password recovery** — a restart with no marker file changes
+  nothing; a marker file resets the password, prints it once, forces a change,
+  kills sessions from before the reset, and is recorded in the audit trail; an
+  unmatched username is a safe no-op.
+- **Off-machine backup target** — a folder chosen in the app receives a real,
+  parseable copy with no half-written file left behind; an unplugged drive neither
+  breaks a backup run nor loses the setting.
 
 The one audit finding deliberately **not** enforced is read scope: every signed-in
 user can read the whole database, including the audit log and staff list. This was
@@ -59,8 +72,13 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   83 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   160 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
+
+   Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:
+   the same suite, plus a start-and-serve smoke test of the executable itself and a
+   check that it creates its Desktop shortcut, runs on a real Windows machine before
+   any release is published.
 3. **Start the server** on the HP by double-clicking `Villaggio-Del-Sol.bat`. The first
    run installs, builds, adds a desktop icon and starts; later runs start straight away.
    Confirm the console prints the URL and the one-time admin password.
@@ -90,7 +108,9 @@ HP EliteDesk (server) and Kamrui (client) before going live.
 - `VDS_DATA_DIR` — where `db.json` and `db-backups/` live (defaults to the working
   directory).
 - `VDS_BACKUP_DIR` — a second, off-machine backup location (a synced folder or USB
-  drive). Strongly recommended.
+  drive). Strongly recommended. Usually easier to set in the app instead:
+  **System Settings → Backup & recovery**, which needs no restart and takes
+  precedence over this variable.
 - `VDS_TRUST_PROXY` — leave unset on the direct LAN. Only set it (`true`, a hop
   count, or a trusted address list) if the server genuinely sits behind a reverse
   proxy you control.
