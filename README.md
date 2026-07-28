@@ -7,6 +7,18 @@ metered utilities, property expenses, receipts, and printable statements — in 
 
 ---
 
+## Two ways to run this
+
+**On Windows, the simplest path is the single-file program.** Download `Villaggio-Del-Sol.exe`
+from this repository's [Releases](../../releases) page and double-click it — nothing else to
+install, not even Node.js. See `SETUP-WINDOWS.md` for the full non-technical walkthrough
+(including what to do if the administrator password is ever lost). A new release is built —
+tested end to end on a real Windows machine by GitHub Actions before it publishes — every time a
+version tag is pushed; see `.github/workflows/build-exe.yml`.
+
+Everything below this point describes running it **from source** with Node.js installed — the
+path for development, for macOS/Linux, or if you'd rather not use the packaged `.exe`.
+
 ## Getting it onto a machine
 
 You do **not** need GitHub. Pick whichever is easier:

@@ -462,10 +462,7 @@ export default function Dashboard({
           onSubmit={async payload => {
             try {
               const payment = await onRecordPayment(payload);
-              setSuccess(
-              `${formatMoneyLong(payment.amount, payment.currency)} logged as expected from ${payment.payerName}. ` +
-                'Confirm it as received in the HOA & Tenants Ledger once the money is in hand — until then it does not affect any balance.'
-            );
+              setSuccess(`Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`);
               setError('');
               setPayTarget(null);
             } catch (err) {
@@ -639,6 +636,9 @@ function QuickReceiveModal({
         method,
         reference,
         notes,
+        // This screen's button says "Receive payment": the money is in hand, so
+        // the receipt is issued now and the arrears alert clears immediately.
+        receivedNow: true,
         confirmCurrencyMismatch: confirmMismatch,
         confirmNoOpenCharge: confirmNoCharge
       });

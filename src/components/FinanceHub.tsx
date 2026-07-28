@@ -166,14 +166,16 @@ export default function FinanceHub({
 
   /* ---------------- record payment ---------------- */
 
-  const [payTarget, setPayTarget] = useState<{ unit: Unit; category: PaymentCategory; amount: number; currency: Currency } | null>(null);
+  const [payTarget, setPayTarget] = useState<{ unit: Unit; category: PaymentCategory; amount: number; currency: Currency; receivedNow: boolean } | null>(null);
 
   const openPaymentFor = (account: AccountBalance) => {
     setPayTarget({
       unit: account.unit,
       category: account.category,
       amount: Math.max(0, account.balance),
-      currency: account.currency
+      currency: account.currency,
+      // The row's button says "Receive payment" — the money is being taken now.
+      receivedNow: true
     });
   };
 
@@ -236,7 +238,7 @@ export default function FinanceHub({
           </Field>
           {perms.recordPayments && (
             <button
-              onClick={() => setPayTarget({ unit: units[0], category: 'Rent', amount: 0, currency: units[0]?.currency || 'JMD' })}
+              onClick={() => setPayTarget({ unit: units[0], category: 'Rent', amount: 0, currency: units[0]?.currency || 'JMD', receivedNow: false })}
               disabled={units.length === 0}
               className="flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-medium text-white shadow-xs transition-all hover:bg-teal-700 disabled:opacity-60"
             >
@@ -590,8 +592,10 @@ export default function FinanceHub({
           onSubmit={async payload => {
             const payment = await onRecordPayment(payload);
             setSuccess(
-              `${formatMoneyLong(payment.amount, payment.currency)} logged as expected from ${payment.payerName}. ` +
-                'It does not affect any balance yet — confirm it as received, in the Receipts ledger, once the money is actually in hand.'
+              payment.status === 'completed'
+                ? `Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`
+                : `${formatMoneyLong(payment.amount, payment.currency)} logged as expected from ${payment.payerName}. ` +
+                  'It does not affect any balance yet — confirm it as received, in the Receipts ledger, once the money is actually in hand.'
             );
             setPayTarget(null);
           }}
@@ -859,7 +863,7 @@ function RecordPaymentModal({
 }: {
   units: Unit[];
   charges: Charge[];
-  initial: { unit: Unit; category: PaymentCategory; amount: number; currency: Currency };
+  initial: { unit: Unit; category: PaymentCategory; amount: number; currency: Currency; receivedNow: boolean };
   staffName: string;
   onClose: () => void;
   onSubmit: (payload: Record<string, unknown>) => Promise<void>;
@@ -965,6 +969,7 @@ function RecordPaymentModal({
         method,
         reference,
         notes,
+        receivedNow: initial.receivedNow,
         confirmCurrencyMismatch: confirmMismatch,
         confirmNoOpenCharge: confirmNoCharge
       });
@@ -977,13 +982,22 @@ function RecordPaymentModal({
 
   return (
     <Modal
-      title="Record payment and issue receipt"
-      subtitle={`Receipt will be issued in the name of ${staffName}`}
+      title={initial.receivedNow ? 'Receive payment and issue receipt' : 'Log an expected payment'}
+      subtitle={
+        initial.receivedNow
+          ? `Receipt will be issued in the name of ${staffName}`
+          : 'Nothing is received yet — confirm it from the Receipts ledger when the money arrives'
+      }
       onClose={onClose}
       footer={
         <div className="flex gap-3">
-          <SubmitButton busy={busy} busyLabel="Issuing receipt…" form="vds-payment-form" className="flex-1">
-            Record and issue receipt
+          <SubmitButton
+            busy={busy}
+            busyLabel={initial.receivedNow ? 'Issuing receipt…' : 'Logging…'}
+            form="vds-payment-form"
+            className="flex-1"
+          >
+            {initial.receivedNow ? 'Record and issue receipt' : 'Log as expected'}
           </SubmitButton>
           <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
         </div>

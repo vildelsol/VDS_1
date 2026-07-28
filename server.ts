@@ -1564,11 +1564,24 @@ app.post(
       }
 
       const who = actor(req);
+
+      /**
+       * Two entry points, two different claims about reality.
+       *
+       * "Receive payment" — used on an arrears alert or a ledger row — means the
+       * money is in hand right now, so the receipt is issued immediately and the
+       * account stops being in arrears. "Record payment" logs something expected
+       * but not yet arrived (a cheque, a promised transfer); it counts for
+       * nothing until someone confirms it. The caller says which this is, because
+       * only the person taking the money knows.
+       */
+      const receivedNow = body.receivedNow === true;
+
       const created: Payment = {
         id: `p-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        // No receipt number yet. A receipt is proof that money was received, so
-        // one is only issued when the money is confirmed as received.
-        receiptNo: '',
+        // A receipt number is proof money was received, so it exists only for
+        // money that has been.
+        receiptNo: receivedNow ? nextReceiptNo(db) : '',
         payerName: requireString(body.payerName, 'Payer name', 120),
         unitId: unit.id,
         unitNumber: unit.number,
@@ -1580,15 +1593,18 @@ app.post(
         reference: optionalString(body.reference, 120),
         notes: optionalString(body.notes, 2000),
         staffMember: who.name,
-        status: 'pending',
-        printCount: 0
+        status: receivedNow ? 'completed' : 'pending',
+        printCount: 0,
+        ...(receivedNow ? { receivedBy: who.name, receivedAt: new Date().toISOString() } : {})
       };
       db.payments.push(created);
       addAudit(
         db,
         who.name,
         who.role,
-        `Logged an expected ${created.category.toLowerCase()} payment of ${created.currency} ${created.amount} for ${unit.number} — awaiting confirmation of receipt`,
+        receivedNow
+          ? `Received ${created.currency} ${created.amount} for ${unit.number} and issued receipt ${created.receiptNo}`
+          : `Logged an expected ${created.category.toLowerCase()} payment of ${created.currency} ${created.amount} for ${unit.number} — awaiting confirmation of receipt`,
         'Payment',
         created.id,
         '',

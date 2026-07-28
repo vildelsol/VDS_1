@@ -331,10 +331,7 @@ export default function NotificationsTab({
           onClose={() => setSettleAccount(null)}
           onSubmit={async payload => {
             const payment = await onRecordPayment(payload);
-            setSuccess(
-              `${formatMoneyLong(payment.amount, payment.currency)} logged as expected from ${payment.payerName}. ` +
-                'Confirm it as received in the HOA & Tenants Ledger once the money is in hand — until then it does not affect any balance.'
-            );
+            setSuccess(`Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`);
             setError('');
             setSettleAccount(null);
           }}
@@ -464,7 +461,10 @@ function SettleAccountModal({
         date,
         method,
         reference,
-        notes: notes || `${account.category} settlement recorded from the Notifications Hub.`
+        notes: notes || `${account.category} settlement recorded from the Notifications Hub.`,
+        // Actioning an alert here means the money has been taken, so the receipt
+        // is issued now and the alert clears from here and the dashboard at once.
+        receivedNow: true
       });
     } catch (err) {
       setError(errorMessage(err, 'Could not record the payment.'));

@@ -229,16 +229,18 @@ export default function App() {
   );
 
   /**
-   * Log an expected payment.
+   * Enter a payment — either money taken right now, or one merely expected.
    *
-   * This deliberately does not open a receipt: nothing has been received yet, and
-   * a receipt is proof of receipt. The entry sits on the ledger awaiting
-   * confirmation, and `confirmPayment` below is what turns it into money.
+   * The caller decides which by setting `receivedNow` in the payload: a "Receive
+   * payment" button means the money is in hand, so a receipt exists and is
+   * offered immediately; a "Record payment" logs an expectation that has no
+   * receipt to print until `confirmPayment` below is used.
    */
   const recordPayment = useCallback(
     async (payload: Record<string, unknown>): Promise<Payment> => {
       const result = await api.post<{ payment: Payment }>('/api/payments', payload);
       await refresh();
+      if (result.payment.status === 'completed') setActiveReceipt(result.payment);
       return result.payment;
     },
     [refresh]

@@ -116,6 +116,33 @@ export default async function run({ port, projectRoot }) {
     maint = statusOf(db, 'unit-1', 'Maintenance');
     T.check('and once confirmed it reads as genuinely settled', maint.status === 'settled', `charged=${maint.charged} paid=${maint.paid} status=${maint.status}`);
 
+    // --- "Receive payment" takes money now; "Record payment" only expects it ---
+    // The dashboard and notifications hub raise an arrears alert straight from the
+    // balance, so a payment actioned from one of those has to clear the balance in
+    // the same step or the alert would still be sitting there afterwards.
+    await c.post('/api/charges/post-month', { monthString: '2026-06' });
+    let june = statusOf(db, 'unit-1', 'Maintenance');
+    const received = await c.post('/api/payments', {
+      unitId: 'unit-1',
+      category: 'Maintenance',
+      amount: 10000,
+      currency: 'JMD',
+      payerName: 'Owner',
+      method: 'Cash',
+      receivedNow: true
+    });
+    T.check('a payment marked received completes at once', received.body?.payment?.status === 'completed', `status=${received.body?.payment?.status}`);
+    T.check('and is issued a receipt number in the same step', !!received.body?.payment?.receiptNo, `receiptNo="${received.body?.payment?.receiptNo}"`);
+    T.check('and records who received it', !!received.body?.payment?.receivedBy);
+    db = (await c.get('/api/db')).body;
+    const afterReceive = statusOf(db, 'unit-1', 'Maintenance');
+    T.check(
+      'and it reduces the balance immediately, so the arrears alert clears',
+      afterReceive.paid > june.paid,
+      `paid ${june.paid} -> ${afterReceive.paid}`
+    );
+    T.check('confirming an already-received payment is refused', (await c.post(`/api/payments/${received.body.payment.id}/confirm`, {})).status === 400);
+
     // --- a villa with no rent set is "inactive", not "not-billed" ---
     await c.put('/api/units/unit-5', { number: '5', ownerName: 'Owner Five', status: 'vacant', monthlyRent: 0, monthlyMaintenance: 0, currency: 'JMD', maintCurrency: 'JMD' });
     db = (await c.get('/api/db')).body;
