@@ -77,6 +77,56 @@ const BACKUP_DIR = path.join(DATA_DIR, 'db-backups');
  */
 const EXTERNAL_BACKUP_DIR = process.env.VDS_BACKUP_DIR || '';
 
+/**
+ * The same thing, but chosen from inside the application and saved in settings —
+ * so plugging in an external drive and typing its path is enough, with no
+ * environment variable to set and no restart. It takes precedence over the
+ * environment variable when set. Held here rather than read from settings on
+ * demand, because the backup runs on a timer that must not depend on loading the
+ * database (that is what made backups run exactly once per boot before).
+ */
+let externalBackupOverride = '';
+
+/** Point the second backup at a folder. Empty string turns it off. */
+export function setExternalBackupDir(dir: string) {
+  externalBackupOverride = (dir || '').trim();
+}
+
+/** Where the off-machine copy goes, if anywhere. */
+function externalBackupDir(): string {
+  return externalBackupOverride || EXTERNAL_BACKUP_DIR || '';
+}
+
+/**
+ * Is this folder actually usable as a backup target right now?
+ *
+ * Genuinely writes and deletes a probe file rather than only checking the path
+ * exists: an external drive that has been unplugged, a read-only volume and a
+ * path that was mistyped all look similar otherwise, and the difference matters
+ * when the whole point is getting a copy off this machine.
+ */
+export function checkBackupTarget(dir: string): { ok: boolean; message: string } {
+  const target = (dir || '').trim();
+  if (!target) return { ok: true, message: 'No off-machine backup folder is set.' };
+  try {
+    if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true });
+    const probe = path.join(target, `.vds-write-test-${Date.now()}`);
+    fs.writeFileSync(probe, 'ok');
+    fs.unlinkSync(probe);
+    return { ok: true, message: `Folder is reachable and writable: ${target}` };
+  } catch (err) {
+    return {
+      ok: false,
+      message:
+        `Could not write to ${target} — ${(err as Error).message}. ` +
+        'If this is an external drive, check it is plugged in and that the drive letter is right.'
+    };
+  }
+}
+
+/** The last failure per backup target, so the UI can explain a missing copy. */
+const backupErrors = new Map<string, string>();
+
 const BACKUP_RETENTION_DAYS = 30;
 
 export function fullPermissions(): RolePermissions {
@@ -135,6 +185,7 @@ function defaultSettings(): AppSettings {
   return {
     fxRateJmdPerUsd: DEFAULT_FX_RATE_JMD_PER_USD,
     rolePermissions: defaultRolePermissions(),
+    backupDir: '',
     vendors: [
       'Atlas Security Jamaica',
       'Ocho Rios Garden Services',
@@ -252,7 +303,8 @@ export function runDailyBackup(force = false): BackupRecord[] {
   const stamp = localDayStamp();
 
   const targets: { dir: string; location: 'local' | 'external' }[] = [{ dir: BACKUP_DIR, location: 'local' }];
-  if (EXTERNAL_BACKUP_DIR) targets.push({ dir: EXTERNAL_BACKUP_DIR, location: 'external' });
+  const external = externalBackupDir();
+  if (external) targets.push({ dir: external, location: 'external' });
 
   for (const { dir, location } of targets) {
     try {
@@ -268,9 +320,15 @@ export function runDailyBackup(force = false): BackupRecord[] {
         written.push({ file: `db-${stamp}.json`, date: stamp, sizeBytes: fs.statSync(target).size, location });
       }
       pruneBackups(dir);
+      backupErrors.delete(location);
     } catch (err) {
-      // A failing backup must never take the application down with it.
-      console.error(`[vds] backup to ${dir} failed (continuing):`, (err as Error).message);
+      // A failing backup must never take the application down with it — an
+      // unplugged drive is an ordinary Tuesday, not a crash. The reason is kept
+      // so the Backup screen can say what went wrong instead of silently
+      // showing no copy.
+      const message = (err as Error).message;
+      backupErrors.set(location, message);
+      console.error(`[vds] backup to ${dir} failed (continuing):`, message);
     }
   }
   return written;
@@ -279,7 +337,8 @@ export function runDailyBackup(force = false): BackupRecord[] {
 export function listBackups(): BackupRecord[] {
   const out: BackupRecord[] = [];
   const targets: { dir: string; location: 'local' | 'external' }[] = [{ dir: BACKUP_DIR, location: 'local' }];
-  if (EXTERNAL_BACKUP_DIR) targets.push({ dir: EXTERNAL_BACKUP_DIR, location: 'external' });
+  const external = externalBackupDir();
+  if (external) targets.push({ dir: external, location: 'external' });
 
   for (const { dir, location } of targets) {
     try {
@@ -309,12 +368,20 @@ export function startBackupSchedule() {
 
 export function backupStatus() {
   const backups = listBackups();
+  const external = externalBackupDir();
+  const stamp = localDayStamp();
   return {
     dataFile: DB_FILE,
     localBackupDir: BACKUP_DIR,
-    externalBackupDir: EXTERNAL_BACKUP_DIR || null,
+    externalBackupDir: external || null,
+    /** True when the folder is set by environment variable and cannot be edited in the app. */
+    externalBackupFromEnv: !externalBackupOverride && !!EXTERNAL_BACKUP_DIR,
+    externalBackupError: backupErrors.get('external') || null,
     retentionDays: BACKUP_RETENTION_DAYS,
-    todayBackedUp: backups.some(b => b.date === localDayStamp()),
+    todayBackedUp: backups.some(b => b.date === stamp),
+    /** Separated, because "today's copy exists on this disk" is not the same as
+     *  "a copy of today exists somewhere other than this disk". */
+    todayBackedUpExternally: backups.some(b => b.date === stamp && b.location === 'external'),
     backups: backups.slice(0, 60)
   };
 }

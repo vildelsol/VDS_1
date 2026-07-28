@@ -49,11 +49,13 @@ import {
   Database,
   addAudit,
   backupStatus,
+  checkBackupTarget,
   getDb,
   nextReceiptNo,
   noPermissions,
   read,
   runDailyBackup,
+  setExternalBackupDir,
   startBackupSchedule,
   transaction
 } from './server/db';
@@ -723,6 +725,22 @@ app.get(
   })
 );
 
+/**
+ * Test whether a folder can be used for off-machine backups, without saving it.
+ *
+ * Actually writes and deletes a probe file: an unplugged external drive, a
+ * read-only volume and a mistyped drive letter are indistinguishable from a
+ * path check alone, and the difference is the whole point of the feature.
+ */
+app.post(
+  '/api/backup/check-folder',
+  handler((req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_settings');
+    const dir = optionalString(req.body?.dir, 400);
+    res.json({ success: true, ...checkBackupTarget(dir) });
+  })
+);
+
 /** Take a backup now, on top of the scheduled daily one. */
 app.post(
   '/api/backup/run',
@@ -785,7 +803,7 @@ app.post(
   '/api/settings',
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'manage_settings');
-    const { rolePermissions, vendors, fxRateJmdPerUsd } = req.body || {};
+    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir } = req.body || {};
 
     const settings = await transaction(db => {
       const before = JSON.parse(JSON.stringify(db.settings));
@@ -812,6 +830,16 @@ app.post(
         const rate = Number(fxRateJmdPerUsd);
         if (!(rate > 0) || rate > 100000) bad('The indicative exchange rate must be a positive number.');
         db.settings.fxRateJmdPerUsd = round2(rate);
+      }
+
+      if (backupDir !== undefined) {
+        // Saved even when the folder is not reachable this second: an external
+        // drive is routinely unplugged, and refusing to remember its path would
+        // mean re-typing it every time it comes back. The response reports
+        // reachability so the screen can say so, and each daily attempt records
+        // its own outcome.
+        db.settings.backupDir = optionalString(backupDir, 400);
+        setExternalBackupDir(db.settings.backupDir || '');
       }
 
       const who = actor(req);
@@ -2457,6 +2485,11 @@ async function startServer() {
   if (!bootstrapPassword) {
     await resetAdminPasswordIfRequested();
   }
+  // Apply the backup folder chosen in settings before the schedule starts, so the
+  // very first copy of the day already goes to the external drive rather than
+  // waiting for someone to re-save settings.
+  setExternalBackupDir(read(db => db.settings.backupDir || ''));
+
   // Backups run on a timer, not only at boot, so an always-on server still gets
   // a daily copy.
   startBackupSchedule();

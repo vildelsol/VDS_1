@@ -118,6 +118,12 @@ export interface AppSettings {
   };
   vendors: string[];
   icalFeeds: ICalFeed[];
+  /**
+   * Folder for the off-machine backup copy — an external drive or a synced
+   * folder. Set from System Settings so no environment variable or restart is
+   * needed. Empty or absent means only the on-disk copy is kept.
+   */
+  backupDir?: string;
   /** Legacy fields retained so older databases keep loading. No longer read by the app. */
   juniorHasAdvancedAccess?: boolean;
   juniorPermissions?: RolePermissions;

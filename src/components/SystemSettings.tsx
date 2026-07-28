@@ -32,7 +32,7 @@ import {
   inputClass,
   monoInputClass
 } from './ui';
-import { CalendarClock, Database, Download, KeyRound, Plus, RefreshCw, ShieldCheck, Trash2, UserPlus, Users } from 'lucide-react';
+import { CalendarClock, Database, Download, HardDrive, KeyRound, Plus, RefreshCw, ShieldCheck, Trash2, UserPlus, Users } from 'lucide-react';
 
 interface SystemSettingsProps {
   settings: AppSettings;
@@ -201,7 +201,13 @@ export default function SystemSettings({
         />
       )}
 
-      {tab === 'backup' && <BackupPanel onError={err => fail(err, 'Could not read the backup status.')} onNotify={notify} />}
+      {tab === 'backup' && (
+        <BackupPanel
+          onError={err => fail(err, 'Could not read the backup status.')}
+          onNotify={notify}
+          onSaveBackupDir={dir => onUpdateSettings({ backupDir: dir })}
+        />
+      )}
 
       {tab === 'general' && (
         <GeneralPanel
@@ -766,8 +772,11 @@ interface BackupStatus {
   dataFile: string;
   localBackupDir: string;
   externalBackupDir: string | null;
+  externalBackupFromEnv: boolean;
+  externalBackupError: string | null;
   retentionDays: number;
   todayBackedUp: boolean;
+  todayBackedUpExternally: boolean;
   backups: BackupRecord[];
 }
 
@@ -777,9 +786,20 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function BackupPanel({ onError, onNotify }: { onError: (err: unknown) => void; onNotify: (message: string) => void }) {
+function BackupPanel({
+  onError,
+  onNotify,
+  onSaveBackupDir
+}: {
+  onError: (err: unknown) => void;
+  onNotify: (message: string) => void;
+  onSaveBackupDir: (dir: string) => Promise<unknown>;
+}) {
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [folder, setFolder] = useState('');
+  const [folderBusy, setFolderBusy] = useState(false);
+  const [folderResult, setFolderResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -792,6 +812,51 @@ function BackupPanel({ onError, onNotify }: { onError: (err: unknown) => void; o
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // Mirror the saved folder into the field, but only while it is untouched, so a
+  // reload cannot wipe out something half-typed.
+  React.useEffect(() => {
+    if (status && !folder) setFolder(status.externalBackupDir || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.externalBackupDir]);
+
+  const testFolder = async () => {
+    setFolderBusy(true);
+    setFolderResult(null);
+    try {
+      const res = await api.post<{ ok: boolean; message: string }>('/api/backup/check-folder', { dir: folder });
+      setFolderResult({ ok: res.ok, message: res.message });
+    } catch (err) {
+      onError(err);
+    } finally {
+      setFolderBusy(false);
+    }
+  };
+
+  const saveFolder = async () => {
+    setFolderBusy(true);
+    setFolderResult(null);
+    try {
+      const check = await api.post<{ ok: boolean; message: string }>('/api/backup/check-folder', { dir: folder });
+      await onSaveBackupDir(folder);
+      // Take a copy straight away, so "it works" is proved by a real file on the
+      // drive rather than by the setting having been accepted.
+      if (check.ok && folder.trim()) await api.post('/api/backup/run');
+      await load();
+      setFolderResult({ ok: check.ok, message: check.message });
+      onNotify(
+        !folder.trim()
+          ? 'Off-machine backup turned off. Copies are kept on this disk only.'
+          : check.ok
+            ? `Saved. A copy has been written to ${folder.trim()} and one will follow every day.`
+            : `Saved, but that folder could not be written to right now. ${check.message}`
+      );
+    } catch (err) {
+      onError(err);
+    } finally {
+      setFolderBusy(false);
+    }
+  };
 
   const runBackup = async () => {
     setBusy(true);
@@ -843,12 +908,74 @@ function BackupPanel({ onError, onNotify }: { onError: (err: unknown) => void; o
       {!external && (
         <InfoNote tone="amber">
           <strong>Every copy of your records is on this one machine.</strong> The automatic backups sit on the same disk
-          as the database they protect, so a disk failure, a lost laptop or a deleted folder takes both. Set the{' '}
-          <code className="rounded bg-white px-1 font-mono">VDS_BACKUP_DIR</code> environment variable to a synced folder
-          (Dropbox, iCloud Drive, OneDrive) or an external drive, and a second copy is written there each day. Download
-          a snapshot below in the meantime.
+          as the database they protect, so a disk failure, a theft or a deleted folder takes both. Set a folder below —
+          an external drive is ideal — and a second copy is written there every day, automatically.
         </InfoNote>
       )}
+
+      {external && status.externalBackupError && (
+        <ErrorNote>
+          <strong>Today&apos;s off-machine copy could not be written.</strong> {status.externalBackupError}
+        </ErrorNote>
+      )}
+
+      {external && !status.externalBackupError && !status.todayBackedUpExternally && (
+        <InfoNote tone="amber">
+          No copy has reached <code className="rounded bg-white px-1 font-mono">{external}</code> today yet. If that is an
+          external drive, check it is plugged in — then use <strong>Back up now</strong>.
+        </InfoNote>
+      )}
+
+      <div className="space-y-3 rounded-2xl border border-slate-100 bg-white p-5 shadow-xs">
+        <div>
+          <h3 className="flex items-center gap-1.5 font-display text-sm font-semibold text-slate-900">
+            <HardDrive className="h-4 w-4 text-teal-600" />
+            Back up to an external drive
+          </h3>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">
+            Plug in a USB or external drive, leave it connected, and put its folder here. A dated copy is written there
+            every day on top of the one kept on this machine. A synced folder (OneDrive, Dropbox, iCloud Drive) works
+            just as well.
+          </p>
+        </div>
+
+        {status.externalBackupFromEnv ? (
+          <InfoNote>
+            This is currently set outside the application, by the{' '}
+            <code className="rounded bg-white px-1 font-mono">VDS_BACKUP_DIR</code> environment variable, to{' '}
+            <code className="rounded bg-white px-1 font-mono">{external}</code>. Saving a folder here takes over from it.
+          </InfoNote>
+        ) : null}
+
+        <Field
+          label="Backup folder"
+          htmlFor="bk-folder"
+          hint="On Windows, e.g. E:\Villaggio-Backups — open the drive in File Explorer and copy the address bar. Leave empty to turn this off."
+        >
+          <input
+            id="bk-folder"
+            type="text"
+            value={folder}
+            onChange={e => {
+              setFolder(e.target.value);
+              setFolderResult(null);
+            }}
+            placeholder="E:\Villaggio-Backups"
+            className={monoInputClass}
+          />
+        </Field>
+
+        {folderResult && (folderResult.ok ? <SuccessNote>{folderResult.message}</SuccessNote> : <ErrorNote>{folderResult.message}</ErrorNote>)}
+
+        <div className="flex flex-wrap gap-2">
+          <SubmitButton type="button" busy={folderBusy} busyLabel="Saving…" onClick={() => void saveFolder()}>
+            Save and back up now
+          </SubmitButton>
+          <SecondaryButton onClick={() => void testFolder()} disabled={folderBusy}>
+            Test this folder
+          </SecondaryButton>
+        </div>
+      </div>
 
       <div className="flex flex-wrap gap-2">
         <SubmitButton type="button" busy={busy} busyLabel="Backing up…" onClick={() => void runBackup()}>
