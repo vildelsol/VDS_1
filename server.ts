@@ -32,6 +32,8 @@ import {
   PROPERTY_LOCATIONS,
   Tenancy,
   Unit,
+  ONE_OFF_CHARGE_TYPES,
+  OneOffChargeType,
   UNIT_STATUSES,
   UNIT_STATUS_LABELS,
   UnitActivity,
@@ -1423,8 +1425,18 @@ app.post(
       for (const unit of db.units) {
         for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
           if (!isBillable(unit, category)) continue;
+          // Only an ordinary monthly charge counts as "this month is posted".
+          // A one-off (a late fee, a recharged repair) and the move-in advance
+          // both carry the same period month, and counting them here would make
+          // posting believe the month was already billed and silently skip the
+          // actual rent.
           const exists = db.charges.some(
-            c => c.unitId === unit.id && c.category === category && c.periodMonth === monthString && c.status === 'open'
+            c =>
+              c.unitId === unit.id &&
+              c.category === category &&
+              c.periodMonth === monthString &&
+              c.status === 'open' &&
+              c.kind === undefined
           );
           if (exists) {
             skipped.push(`${unit.number}/${category}`);
@@ -1479,6 +1491,82 @@ app.post(
 );
 
 /** Void a charge that was raised in error. Charges are never deleted. */
+/**
+ * Raise a one-off charge against a villa's account.
+ *
+ * Posting a month covers the rent and the HOA fee. Everything else a property
+ * actually bills — a late fee, a repair recharged to the tenant who caused it, a
+ * breach fine, an amenity fee, legal costs, a special assessment — had no home at
+ * all, so that money was either lost or tracked on paper beside the system.
+ *
+ * These are billed onto an existing account rather than becoming accounts of
+ * their own. A late fee lands on the tenant's rent balance; a special assessment
+ * lands on the owner's maintenance balance. That keeps one balance per villa per
+ * account, which is the rule everything else is built on, and means a one-off
+ * ages into arrears and chases itself exactly like rent does.
+ */
+app.post(
+  '/api/charges',
+  handler(async (req: AuthedRequest, res) => {
+    // Raising an obligation is the same authority as posting a month.
+    requirePermission(req, 'post_charges');
+    const body = req.body || {};
+
+    const charge = await transaction(db => {
+      const unit = resolveUnit(db, body);
+      const category = requireEnum(body.category, ['Rent', 'Maintenance'] as const, 'Account') as ChargeCategory;
+      const oneOffType = requireEnum(body.oneOffType, ONE_OFF_CHARGE_TYPES, 'Charge type') as OneOffChargeType;
+      const amount = requirePositiveAmount(body.amount, 'Charge amount');
+      const dueDate = requireDay(body.dueDate || today(), 'Due date');
+      const description = optionalString(body.description, 300);
+
+      // The account is billed in one currency; a charge in the other would sit on
+      // the balance without ever being settleable by a payment against it.
+      const expected = chargeCurrency(unit, category);
+      const currency = body.currency ? requireCurrency(body.currency) : expected;
+      if (currency !== expected) {
+        bad(
+          `${unit.number} is billed for ${category.toLowerCase()} in ${expected}. ` +
+            `A ${currency} charge could never be settled against that balance, because the two are never combined.`
+        );
+      }
+
+      const who = actor(req);
+      const created: Charge = {
+        id: uniqueRecordId(db.charges, `chg-oneoff-${unit.id}-${Date.now()}`),
+        unitId: unit.id,
+        unitNumber: unit.number,
+        category,
+        // Dated by its due date, so it lands in the right month's reporting.
+        periodMonth: monthOf(dueDate),
+        dueDate,
+        amount,
+        currency,
+        status: 'open',
+        payerName: chargePayer(unit, category),
+        kind: 'one-off',
+        oneOffType,
+        description: description || oneOffType,
+        createdAt: new Date().toISOString(),
+        createdBy: who.name
+      };
+      db.charges.push(created);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Raised a one-off ${oneOffType.toLowerCase()} of ${currency} ${amount} on ${unit.number} ${category.toLowerCase()} account`,
+        'Charge',
+        created.id,
+        '',
+        created
+      );
+      return created;
+    });
+    res.json({ success: true, charge });
+  })
+);
+
 app.post(
   '/api/charges/:id/void',
   handler(async (req: AuthedRequest, res) => {

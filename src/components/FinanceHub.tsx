@@ -13,6 +13,8 @@ import {
   Payment,
   PaymentCategory,
   PaymentMethod,
+  ONE_OFF_CHARGE_TYPES,
+  OneOffChargeType,
   SessionUser,
   UNIT_STATUS_LABELS,
   Unit,
@@ -55,6 +57,7 @@ import {
   CheckCircle,
   Clock,
   Edit,
+  FilePlus,
   FileText,
   Mail,
   Plus,
@@ -75,6 +78,7 @@ interface FinanceHubProps {
   onUpdatePayment: (paymentId: string, fields: Record<string, unknown>) => Promise<unknown>;
   onPostMonth: (month: string) => Promise<{ message: string }>;
   onVoidCharge: (chargeId: string, reason: string) => Promise<unknown>;
+  onAddCharge: (payload: Record<string, unknown>) => Promise<unknown>;
   onOpenReceipt: (payment: Payment) => void;
 }
 
@@ -91,6 +95,7 @@ export default function FinanceHub({
   onUpdatePayment,
   onPostMonth,
   onVoidCharge,
+  onAddCharge,
   onOpenReceipt
 }: FinanceHubProps) {
   const [tab, setTab] = useState<'tenants' | 'owners' | 'transactions'>('tenants');
@@ -166,6 +171,7 @@ export default function FinanceHub({
 
   /* ---------------- record payment ---------------- */
 
+  const [addingCharge, setAddingCharge] = useState(false);
   const [payTarget, setPayTarget] = useState<{ unit: Unit; category: PaymentCategory; amount: number; currency: Currency; receivedNow: boolean } | null>(null);
 
   const openPaymentFor = (account: AccountBalance) => {
@@ -236,6 +242,12 @@ export default function FinanceHub({
           <Field label="Balances as at" htmlFor="vds-asof">
             <input id="vds-asof" type="date" value={asOf} max={today()} onChange={e => setAsOf(e.target.value || today())} className={monoInputClass} />
           </Field>
+          {perms.postCharges && (
+            <SecondaryButton onClick={() => setAddingCharge(true)} disabled={units.length === 0} className="flex items-center gap-1.5">
+              <FilePlus className="h-4 w-4" />
+              Bill a one-off
+            </SecondaryButton>
+          )}
           {perms.recordPayments && (
             <button
               onClick={() => setPayTarget({ unit: units[0], category: 'Rent', amount: 0, currency: units[0]?.currency || 'JMD', receivedNow: false })}
@@ -580,6 +592,21 @@ export default function FinanceHub({
             )}
           </div>
         </div>
+      )}
+
+      {addingCharge && (
+        <OneOffChargeModal
+          units={units}
+          onClose={() => setAddingCharge(false)}
+          onSubmit={async payload => {
+            await onAddCharge(payload);
+            setSuccess(
+              `${payload.oneOffType} of ${formatMoneyLong(Number(payload.amount), payload.currency as Currency)} billed to ` +
+                `${getUnitDisplayName(units.find(u => u.id === payload.unitId)?.number || '')}. It is now owed on that account.`
+            );
+            setAddingCharge(false);
+          }}
+        />
       )}
 
       {payTarget && (
@@ -1805,5 +1832,157 @@ function AccountStatementDocument({
 
       <PrintSignatures left="Prepared by" leftName={generatedBy} right="Received / Acknowledged by" rightName={recipientName} />
     </PrintPortal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Bill something that is not the monthly rent or HOA fee.
+ *
+ * The account matters more than it looks: it decides whose balance this lands on
+ * and therefore who gets chased for it. Rent is the tenant's account, maintenance
+ * is the owner's, so the form names the person rather than the category and the
+ * choice cannot be made by accident.
+ */
+function OneOffChargeModal({
+  units,
+  onClose,
+  onSubmit
+}: {
+  units: Unit[];
+  onClose: () => void;
+  onSubmit: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [unitId, setUnitId] = useState(units[0]?.id || '');
+  const [category, setCategory] = useState<ChargeCategory>('Rent');
+  const [oneOffType, setOneOffType] = useState<OneOffChargeType>('Late fee');
+  const [amount, setAmount] = useState('');
+  const [dueDate, setDueDate] = useState(today());
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const unit = units.find(u => u.id === unitId);
+  const currency = unit ? chargeCurrency(unit, category) : 'JMD';
+  const payer = unit ? (category === 'Maintenance' ? unit.ownerName : unit.tenantName || unit.ownerName) : '';
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    if (!unitId) {
+      setError('Choose the villa this charge belongs to.');
+      return;
+    }
+    if (!(Number(amount) > 0)) {
+      setError('Enter an amount greater than zero.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit({ unitId, category, oneOffType, amount: Number(amount), currency, dueDate, description });
+    } catch (err) {
+      setError(errorMessage(err, 'Could not raise the charge.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Bill a one-off charge"
+      subtitle="A late fee, a recharged repair, a fine, a levy — anything outside the monthly rent and HOA fee"
+      onClose={onClose}
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton busy={busy} busyLabel="Billing…" form="vds-oneoff-form" className="flex-1">
+            Bill this charge
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-oneoff-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <InfoNote>
+          This is money owed, not money received. It joins the villa&apos;s balance, ages into arrears and appears on the
+          statement exactly like rent — record the payment separately when it is settled.
+        </InfoNote>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Villa" htmlFor="oc-unit" required>
+            <select id="oc-unit" value={unitId} onChange={e => setUnitId(e.target.value)} required className={inputClass}>
+              <option value="">Select villa</option>
+              {units.map(u => (
+                <option key={u.id} value={u.id}>
+                  {getUnitDisplayName(u.number)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Charge to" htmlFor="oc-cat" required hint={payer ? `Billed to ${payer}` : undefined}>
+            <select
+              id="oc-cat"
+              value={category}
+              onChange={e => setCategory(e.target.value as ChargeCategory)}
+              className={inputClass}
+            >
+              <option value="Rent">The tenant (rent account)</option>
+              <option value="Maintenance">The owner (HOA maintenance account)</option>
+            </select>
+          </Field>
+        </div>
+
+        <Field label="What is it for" htmlFor="oc-type" required>
+          <select
+            id="oc-type"
+            value={oneOffType}
+            onChange={e => setOneOffType(e.target.value as OneOffChargeType)}
+            className={inputClass}
+          >
+            {ONE_OFF_CHARGE_TYPES.map(t => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label={`Amount (${currency})`} htmlFor="oc-amount" required>
+            <input
+              id="oc-amount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              required
+              className={monoInputClass}
+            />
+          </Field>
+          <Field label="Due date" htmlFor="oc-due" required hint="Sets the month it is reported in.">
+            <input id="oc-due" type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} required className={monoInputClass} />
+          </Field>
+        </div>
+
+        <Field
+          label="Description"
+          htmlFor="oc-desc"
+          hint="Shown on the ledger and the statement. Say what it is for, so it can be explained months later."
+        >
+          <input
+            id="oc-desc"
+            type="text"
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            placeholder="e.g. Replacement of broken window, Villa 3"
+            className={inputClass}
+          />
+        </Field>
+      </form>
+    </Modal>
   );
 }

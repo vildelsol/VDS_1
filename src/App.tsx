@@ -579,6 +579,7 @@ export default function App() {
             onUpdatePayment={(id, fields) => mutate(() => api.put(`/api/payments/${id}`, fields))}
             onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}
             onVoidCharge={(id, reason) => mutate(() => api.post(`/api/charges/${id}/void`, { reason }))}
+            onAddCharge={payload => mutate(() => api.post('/api/charges', payload))}
             onOpenReceipt={setActiveReceipt}
           />
         )}

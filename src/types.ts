@@ -20,6 +20,34 @@ export const PAYMENT_CATEGORIES: PaymentCategory[] = ['Rent', 'Maintenance', 'Bo
 /** Categories that are billed through the recurring charge ledger. */
 export type ChargeCategory = 'Rent' | 'Maintenance';
 
+/**
+ * What a one-off charge is for.
+ *
+ * These are billed to an existing account rather than being accounts of their
+ * own: a late fee or a recharged repair belongs on the tenant's rent account, a
+ * special assessment on the owner's maintenance account. Keeping them there means
+ * one balance per villa per account, which is the rule the whole application is
+ * built on, and it means they age into arrears and chase themselves.
+ */
+export type OneOffChargeType =
+  | 'Late fee'
+  | 'Repair recharge'
+  | 'Fine / breach'
+  | 'Amenity fee'
+  | 'Legal costs'
+  | 'Special assessment'
+  | 'Other';
+
+export const ONE_OFF_CHARGE_TYPES: OneOffChargeType[] = [
+  'Late fee',
+  'Repair recharge',
+  'Fine / breach',
+  'Amenity fee',
+  'Legal costs',
+  'Special assessment',
+  'Other'
+];
+
 export interface User {
   id: string;
   name: string;
@@ -249,7 +277,9 @@ export interface Charge {
    * it pays for the tenant's *final* month rather than this one, so their last
    * month is not charged again when they leave. Absent means an ordinary month.
    */
-  kind?: 'advance-final-month';
+  kind?: 'advance-final-month' | 'one-off';
+  /** For a one-off charge, what it is for. Drives reporting and the ledger label. */
+  oneOffType?: OneOffChargeType;
   /** Shown on statements and the charge history where the month alone is not enough. */
   description?: string;
   createdAt: string;
