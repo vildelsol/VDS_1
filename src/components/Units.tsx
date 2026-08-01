@@ -71,6 +71,8 @@ interface UnitsProps {
   onAddUnitActivity: (payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateUnitActivity: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
   onDeleteUnitActivity: (id: string) => Promise<unknown>;
+  onTakeDeposit: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
+  onSettleDeposit: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
 }
 
 const ordinal = (day: number) => {
@@ -111,7 +113,9 @@ export default function Units({
   onEvictTenancy,
   onAddUnitActivity,
   onUpdateUnitActivity,
-  onDeleteUnitActivity
+  onDeleteUnitActivity,
+  onTakeDeposit,
+  onSettleDeposit
 }: UnitsProps) {
   const [selected, setSelected] = useState<Unit | null>(null);
   const [editing, setEditing] = useState(false);
@@ -121,6 +125,7 @@ export default function Units({
   const [evictTenancy, setEvictTenancy] = useState<Tenancy | null>(null);
   const [printTenancy, setPrintTenancy] = useState<Tenancy | null>(null);
   const [workOrder, setWorkOrder] = useState<UnitActivity | null>(null);
+  const [depositFor, setDepositFor] = useState<Tenancy | null>(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -238,6 +243,7 @@ export default function Units({
           onEditTenancy={setEditTenancy}
           onPrintTenancy={setPrintTenancy}
           onManageWork={setWorkOrder}
+          onManageDeposit={setDepositFor}
           onEvictTenancy={setEvictTenancy}
           onLogActivity={() => setLogActivityFor(live)}
           onDeleteActivity={async id => {
@@ -329,6 +335,25 @@ export default function Units({
         />
       )}
 
+      {depositFor && (
+        <DepositModal
+          tenancy={depositFor}
+          onClose={() => setDepositFor(null)}
+          onTake={async payload => {
+            await onTakeDeposit(depositFor.id, payload);
+            setSuccess('Security deposit recorded. It is held on the tenant\u2019s behalf and affects no balance.');
+            setError('');
+            setDepositFor(null);
+          }}
+          onSettle={async payload => {
+            await onSettleDeposit(depositFor.id, payload);
+            setSuccess('Deposit reconciled and closed.');
+            setError('');
+            setDepositFor(null);
+          }}
+        />
+      )}
+
       {workOrder && (
         <WorkOrderModal
           activity={workOrder}
@@ -379,7 +404,8 @@ function UnitDetail({
   onPrintTenancy,
   onLogActivity,
   onDeleteActivity,
-  onManageWork
+  onManageWork,
+  onManageDeposit
 }: {
   unit: Unit;
   charges: Charge[];
@@ -400,6 +426,7 @@ function UnitDetail({
   onLogActivity: () => void;
   onDeleteActivity: (id: string) => Promise<void>;
   onManageWork: (activity: UnitActivity) => void;
+  onManageDeposit: (tenancy: Tenancy) => void;
 }) {
   const maintCurrency = unit.maintCurrency || unit.currency;
   const rentAccount = accountBalance(unit, 'Rent', charges, payments, undefined, units);
@@ -507,6 +534,20 @@ function UnitDetail({
                             one-way action people were wary of opening.
                           */}
                           {tenancy.status === 'active' ? 'Edit tenancy dates' : 'Correct dates'}
+                        </button>
+                      )}
+                      {canEdit && (
+                        <button
+                          type="button"
+                          onClick={() => onManageDeposit(tenancy)}
+                          title="Security deposit held for this tenant"
+                          className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          {tenancy.depositReturnedOn
+                            ? 'Deposit returned'
+                            : tenancy.depositAmount
+                              ? `Deposit ${formatMoney(tenancy.depositAmount, tenancy.depositCurrency || tenancy.currency)}`
+                              : 'Record deposit'}
                         </button>
                       )}
                       <button
@@ -2037,6 +2078,187 @@ function WorkOrderModal({
           </label>
         ) : (
           <PermissionNote>Recording the cost as a property expense requires the expense permission.</PermissionNote>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Take a deposit, or give it back.
+ *
+ * One screen for both ends of the same instrument, because they are the same
+ * conversation months apart. When reconciling, the two amounts are kept in step
+ * as one is typed — a deposit that does not add up is exactly the dispute this is
+ * meant to prevent, so the arithmetic is done here rather than left to the person
+ * at the desk.
+ */
+function DepositModal({
+  tenancy,
+  onClose,
+  onTake,
+  onSettle
+}: {
+  tenancy: Tenancy;
+  onClose: () => void;
+  onTake: (payload: Record<string, unknown>) => Promise<void>;
+  onSettle: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const held = tenancy.depositAmount || 0;
+  const settled = !!tenancy.depositReturnedOn;
+  const currency = tenancy.depositCurrency || tenancy.currency || 'JMD';
+
+  const [amount, setAmount] = useState(held ? String(held) : '');
+  const [receivedOn, setReceivedOn] = useState(tenancy.depositReceivedOn || today());
+  const [withheld, setWithheld] = useState('0');
+  const [withheldReason, setWithheldReason] = useState('');
+  const [settledOn, setSettledOn] = useState(today());
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const withheldNum = Math.max(0, Number(withheld) || 0);
+  const returnedNum = round2(Math.max(0, held - withheldNum));
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (held && !settled) {
+        await onSettle({ returnedAmount: returnedNum, withheldAmount: withheldNum, withheldReason, settledOn });
+      } else {
+        await onTake({ amount: Number(amount), currency, receivedOn });
+      }
+    } catch (err) {
+      setError(errorMessage(err, 'Could not update the deposit.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (settled) {
+    return (
+      <Modal title="Security deposit" subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`} onClose={onClose}>
+        <div className="space-y-3 p-6 text-xs">
+          <InfoNote>This deposit has been reconciled and closed. It is kept here as a permanent record.</InfoNote>
+          <dl className="space-y-1 rounded-xl bg-slate-50 p-3 font-mono text-[11px]">
+            {[
+              ['Held', formatMoneyLong(held, currency)],
+              ['Returned', formatMoneyLong(tenancy.depositReturnedAmount || 0, currency)],
+              ['Withheld', formatMoneyLong(tenancy.depositWithheldAmount || 0, currency)],
+              ['Settled on', formatDayLabel(tenancy.depositReturnedOn || '')]
+            ].map(([label, value]) => (
+              <div key={label} className="flex justify-between gap-3">
+                <dt className="text-slate-500">{label}</dt>
+                <dd className="font-semibold">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          {tenancy.depositWithheldReason && (
+            <p className="rounded-xl border border-slate-200 bg-white p-3 italic leading-relaxed text-slate-700">
+              “{tenancy.depositWithheldReason}”
+            </p>
+          )}
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal
+      title={held ? 'Return the security deposit' : 'Record a security deposit'}
+      subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
+      onClose={onClose}
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton busy={busy} busyLabel="Saving…" form="vds-deposit-form" className="flex-1">
+            {held ? 'Reconcile and close' : 'Record the deposit'}
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-deposit-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <InfoNote>
+          A deposit is the tenant&apos;s money held on their behalf, not income. It never appears in the balance, the
+          arrears or the reports — and it has to be given back, less anything fairly deducted.
+        </InfoNote>
+
+        {!held ? (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label={`Amount held (${currency})`} htmlFor="dp-amount" required>
+              <input
+                id="dp-amount"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={amount}
+                onChange={e => setAmount(e.target.value)}
+                required
+                className={monoInputClass}
+              />
+            </Field>
+            <Field label="Date received" htmlFor="dp-received" required>
+              <input id="dp-received" type="date" value={receivedOn} max={today()} onChange={e => setReceivedOn(e.target.value)} required className={monoInputClass} />
+            </Field>
+          </div>
+        ) : (
+          <>
+            <dl className="space-y-1 rounded-xl bg-slate-50 p-3 font-mono text-[11px]">
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">Held since {formatDayLabel(tenancy.depositReceivedOn || '')}</dt>
+                <dd className="font-semibold">{formatMoneyLong(held, currency)}</dd>
+              </div>
+            </dl>
+
+            <Field label={`Amount withheld (${currency})`} htmlFor="dp-withheld" hint="Leave at zero to return the deposit in full.">
+              <input
+                id="dp-withheld"
+                type="number"
+                min="0"
+                max={held}
+                step="0.01"
+                value={withheld}
+                onChange={e => setWithheld(e.target.value)}
+                className={monoInputClass}
+              />
+            </Field>
+
+            <div className="rounded-xl border border-teal-100 bg-teal-50 p-3 text-xs text-teal-900">
+              Returning <strong>{formatMoneyLong(returnedNum, currency)}</strong> to {tenancy.tenantName}
+              {withheldNum > 0 ? <> and keeping <strong>{formatMoneyLong(withheldNum, currency)}</strong></> : null}.
+            </div>
+
+            {withheldNum > 0 && (
+              <Field label="Why is money being withheld" htmlFor="dp-reason" required hint="Kept permanently. This is what justifies the deduction if it is ever challenged.">
+                <textarea
+                  id="dp-reason"
+                  rows={3}
+                  value={withheldReason}
+                  onChange={e => setWithheldReason(e.target.value)}
+                  required
+                  placeholder="e.g. Broken interior door and deep clean — quotes attached to the file"
+                  className={inputClass}
+                />
+              </Field>
+            )}
+
+            <Field label="Date settled" htmlFor="dp-settled" required>
+              <input id="dp-settled" type="date" value={settledOn} max={today()} onChange={e => setSettledOn(e.target.value)} required className={monoInputClass} />
+            </Field>
+
+            {withheldNum > 0 && (
+              <InfoNote tone="amber">
+                Withholding money is not income. If the property is recovering a real cost, bill it as a one-off charge
+                on the ledger as well, so it shows up in the accounts as the cost it is.
+              </InfoNote>
+            )}
+          </>
         )}
       </form>
     </Modal>

@@ -232,6 +232,26 @@ export interface Tenancy {
   advanceRentChargeId?: string;
   /** When that advance was actually consumed against a final month. */
   advanceRentAppliedOn?: string;
+
+  /**
+   * A refundable security / damage deposit held on the tenant's behalf.
+   *
+   * Deliberately not a rent charge and not a payment: it is neither owed to the
+   * property nor income of it. It is the tenant's money the property holds and
+   * must give back, less any deductions for damage, so it stays off the balance,
+   * off the operating statement and out of every collection figure. Its whole
+   * lifecycle lives here.
+   */
+  depositAmount?: number;
+  depositCurrency?: Currency;
+  depositReceivedOn?: string;
+  /** Set once the deposit has been reconciled at move-out. */
+  depositReturnedOn?: string;
+  /** Given back to the tenant. */
+  depositReturnedAmount?: number;
+  /** Kept — for damage, cleaning, unpaid charges. Its reason is recorded. */
+  depositWithheldAmount?: number;
+  depositWithheldReason?: string;
   /** True when the tenancy was ended by eviction rather than an ordinary move-out. */
   evicted?: boolean;
   /** Rent written off as bad debt at eviction. Retained for the record even though it left the dashboard. */

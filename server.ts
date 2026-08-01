@@ -1218,6 +1218,119 @@ app.put(
  * trail. Nothing is deleted — the debt is retained as history, it simply stops
  * counting as collectable.
  */
+/**
+ * Record a refundable security deposit taken from a tenant.
+ *
+ * A deposit is not rent and not income. It is the tenant's money the property
+ * holds and is obliged to give back, less whatever is fairly deducted at the end.
+ * So it is kept on the tenancy rather than raised as a charge or booked as a
+ * payment: it must never reduce arrears, never appear in collections, and never
+ * flatter an operating statement or a projection.
+ */
+app.post(
+  '/api/tenancies/:id/deposit',
+  handler(async (req: AuthedRequest, res) => {
+    // Taking money from a tenant is the payment permission.
+    requirePermission(req, 'record_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const tenancy = await transaction(db => {
+      const record = db.tenancies.find(t => t.id === id);
+      if (!record) throw new ApiError(404, 'Tenancy record not found.');
+      if (record.depositReturnedOn) {
+        throw new ApiError(400, 'This deposit has already been reconciled and returned. Record a new tenancy for a new deposit.');
+      }
+
+      const before = { ...record };
+      const amount = requirePositiveAmount(body.amount, 'Deposit amount');
+      const receivedOn = requireDay(body.receivedOn || today(), 'Date received');
+      if (receivedOn > today()) bad('A deposit cannot be dated in the future.');
+
+      record.depositAmount = amount;
+      record.depositCurrency = requireCurrency(body.currency ?? record.currency ?? 'JMD');
+      record.depositReceivedOn = receivedOn;
+
+      const who = actor(req);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Recorded a ${record.depositCurrency} ${amount} security deposit held for ${record.tenantName} at ${record.unitNumber}`,
+        'Tenancy',
+        record.id,
+        before,
+        record
+      );
+      return record;
+    });
+    res.json({ success: true, tenancy });
+  })
+);
+
+/**
+ * Reconcile the deposit when the tenant leaves: what goes back, what is kept.
+ *
+ * The two must add up to what was held — a deposit that half disappears is the
+ * thing tenants take to a tribunal — and anything withheld needs a reason on the
+ * record, because "we kept some of it" is not a defence. Withholding money does
+ * not create income here either: if the property is recovering a real cost, that
+ * cost is billed as a one-off charge and settled, which is where it belongs.
+ */
+app.post(
+  '/api/tenancies/:id/deposit/settle',
+  handler(async (req: AuthedRequest, res) => {
+    // Deciding to keep someone's money is a veto-level act, like a write-off.
+    requirePermission(req, 'reverse_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const tenancy = await transaction(db => {
+      const record = db.tenancies.find(t => t.id === id);
+      if (!record) throw new ApiError(404, 'Tenancy record not found.');
+      if (!record.depositAmount) throw new ApiError(400, 'No deposit is held for this tenancy.');
+      if (record.depositReturnedOn) throw new ApiError(400, 'This deposit has already been reconciled.');
+
+      const before = { ...record };
+      const withheld = Math.max(0, toMoney(body.withheldAmount ?? 0));
+      const returned = Math.max(0, toMoney(body.returnedAmount ?? round2(record.depositAmount - withheld)));
+      const settledOn = requireDay(body.settledOn || today(), 'Date settled');
+      if (settledOn > today()) bad('A deposit cannot be settled in the future.');
+
+      if (round2(withheld + returned) !== round2(record.depositAmount)) {
+        bad(
+          `Returned and withheld must add up to the ${record.depositCurrency} ${record.depositAmount} held. ` +
+            `That is ${record.depositCurrency} ${round2(withheld + returned)}.`
+        );
+      }
+      const reason = optionalString(body.withheldReason, 1000);
+      if (withheld > 0 && reason.length < 5) {
+        bad('Give a reason for the amount withheld. It is kept permanently and is what justifies the deduction.');
+      }
+
+      record.depositReturnedOn = settledOn;
+      record.depositReturnedAmount = returned;
+      record.depositWithheldAmount = withheld;
+      record.depositWithheldReason = reason;
+
+      const who = actor(req);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Reconciled the deposit for ${record.tenantName} at ${record.unitNumber}: ` +
+          `${record.depositCurrency} ${returned} returned, ${record.depositCurrency} ${withheld} withheld`,
+        'Tenancy',
+        record.id,
+        before,
+        record
+      );
+      return record;
+    });
+    res.json({ success: true, tenancy });
+  })
+);
+
 app.post(
   '/api/tenancies/:id/evict',
   handler(async (req: AuthedRequest, res) => {
