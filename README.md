@@ -129,6 +129,25 @@ alone**, so an entry awaiting funds can never flatter a balance, a collection ra
 Settling a utility bill and a reservation deposit follow the same rule: the bill stays unpaid, and
 the deposit stays expected, until the receipt is confirmed.
 
+If the server is unreachable when something is entered, the entry is written to this computer
+before it is sent and replayed in order when the server returns — surviving a reboot or a closed
+tab. Until it lands it is described as held here, never as saved, because the HP has not seen it.
+
+### Charges beyond the monthly bill
+
+**Post month** raises the rent and the HOA fee. Anything else a property bills — a **late fee**, a
+**repair recharged** to the tenant who caused it, a **fine**, an **amenity fee**, **legal costs**, a
+**special assessment** — is raised with **Bill a one-off** on the ledger. A one-off is billed onto an
+existing account (the tenant's rent, or the owner's maintenance), so it ages into arrears, shows on
+the statement and is settled by an ordinary payment, exactly like rent.
+
+### First and last month's rent
+
+Recording a tenant's move-in date bills **two** months at once: their first month, and their last
+month held in advance. The advance is not a deposit and is not refunded — it pays for their final
+month, so when the tenancy is closed that month is **not charged again**. A tenant who stays N
+months is charged exactly N months' rent.
+
 ### Currency
 
 USD and JMD are **never** added together, anywhere. Each unit is billed in its own currency
@@ -156,9 +175,24 @@ separately and is **append-only**: a tenant is never edited away.
   tenancy is an optional tick inside that same form.
 * Rent is captured on the tenancy as agreed at the time, so raising the rent for a
   new tenant does not rewrite what the previous one was charged.
+* A tenancy can carry a **lease end date** — the date the agreement runs to, which is
+  not the same as the date the tenant left. Leases within 60 days of expiry, and any
+  already lapsed, are flagged on the dashboard and in the Notifications Hub. An
+  expired term does not end a tenancy; it continues month to month at the old rent
+  until it is renewed or notice is served. Leave the date empty for a
+  month-to-month tenancy.
 
 Occupancy history appears in the unit detail view and as section I of the printed
 unit ledger.
+
+## Maintenance requests
+
+A maintenance request logged against a villa is tracked as work rather than kept as a note. It opens
+as **Reported** and can be assigned to a contractor, scheduled, progressed, and closed as
+**Completed** or **Cancelled** with the date, the outcome and what it cost. The cost can be raised as
+a property expense against that villa in the same step — once only, so it never reaches the accounts
+twice. Other kinds of activity (a pool booking, a noise notice) are a record of something that
+happened and are not tracked as work.
 
 ## Things that are deliberately one-way
 

@@ -19,7 +19,7 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (160 checks)
+### What is covered (233 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
@@ -56,6 +56,19 @@ npm run test:run
 - **Off-machine backup target** — a folder chosen in the app receives a real,
   parseable copy with no half-written file left behind; an unplugged drive neither
   breaks a backup run nor loses the setting.
+- **First and last month's rent** — move-in bills two months; the tenant's final
+  month is not charged again, so a tenancy of N months is charged exactly N months'
+  rent. A backdated move-in is dated to the month they actually moved in, and the
+  occupied months nobody billed are surfaced rather than left silent.
+- **One-off charges** — late fees, recharged repairs and levies land on the right
+  account, age into arrears, settle with an ordinary payment, and never make
+  posting believe the month was already billed.
+- **Lease terms** — only leases inside the warning window or already lapsed
+  surface, most overdue first; renewing clears the warning without inventing a
+  move-out date.
+- **Maintenance work orders** — a request is assigned, progressed and closed with a
+  cost; the cost reaches the expense register exactly once; other kinds of activity
+  cannot be progressed as work.
 
 The one audit finding deliberately **not** enforced is read scope: every signed-in
 user can read the whole database, including the audit log and staff list. This was
@@ -72,7 +85,7 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   160 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   233 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
 
    Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:
