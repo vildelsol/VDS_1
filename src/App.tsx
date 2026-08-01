@@ -31,9 +31,21 @@ import SystemSettings from './components/SystemSettings';
 import PrintReceipt from './components/PrintReceipt';
 import NotificationsTab from './components/NotificationsTab';
 import Login, { ChangePasswordGate } from './components/Login';
-import { ApiError, ConnectionState, api, errorMessage, setUnauthenticatedHandler, subscribeConnection } from './lib/api';
+import {
+  ApiError,
+  ConnectionState,
+  SyncState,
+  api,
+  errorMessage,
+  flushQueue,
+  setUnauthenticatedHandler,
+  startQueueWatcher,
+  subscribeConnection,
+  subscribeSync
+} from './lib/api';
 import { countBookingOverlaps, delinquentAccounts } from './lib/finance';
 import {
+  AlertTriangle,
   BarChart3,
   Bell,
   Calendar,
@@ -120,11 +132,25 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [connection, setConnectionState] = useState<ConnectionState>('online');
   const [pendingWrites, setPendingWrites] = useState(0);
+  const [sync, setSync] = useState<SyncState>({ phase: 'idle', pending: 0 });
 
   useEffect(() => subscribeConnection((state, pending) => {
     setConnectionState(state);
     setPendingWrites(pending);
   }), []);
+
+  // Anything entered while the server was away is sent as soon as it is back,
+  // including work queued before this page was even loaded.
+  useEffect(() => subscribeSync(setSync), []);
+  useEffect(() => {
+    startQueueWatcher();
+  }, []);
+
+  // A completed sync means the server now holds work this screen does not show.
+  useEffect(() => {
+    if (sync.phase === 'done') void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sync.phase]);
 
   /* ---------------- session ---------------- */
 
@@ -288,6 +314,7 @@ export default function App() {
     return (
       <>
         <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
+        <SyncBanner sync={sync} onRetry={() => void flushQueue()} />
         <Login onSignedIn={user => setSession(user)} />
       </>
     );
@@ -308,6 +335,7 @@ export default function App() {
         {/* Loading the first snapshot is also a moment the link can drop, so the
             reconnect banner has to be reachable from here too. */}
         <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
+        <SyncBanner sync={sync} onRetry={() => void flushQueue()} />
         {apiError ? (
           <>
             <p className="max-w-md text-center text-sm text-red-700">{apiError}</p>
@@ -351,6 +379,7 @@ export default function App() {
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 font-sans text-slate-800 md:flex-row">
       <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
+        <SyncBanner sync={sync} onRetry={() => void flushQueue()} />
 
       {/*
         On a phone the sidebar used to stack above the content at full height, so
@@ -717,6 +746,66 @@ function ConnectionBanner({ connection, pendingWrites }: { connection: Connectio
           ? ` ${pendingWrites} entr${pendingWrites === 1 ? 'y is' : 'ies are'} being saved and will complete automatically when the connection returns.`
           : ' The application will resume automatically.'}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Work entered while the server was away, and its journey to the server.
+ *
+ * Deliberately loud and specific. An entry sitting in this queue is *not* banked
+ * — the receptionist has typed it and this machine has kept it, but the HP has
+ * never seen it. Saying "saved" without qualification there would be the single
+ * most dangerous sentence in the application, so it says what is actually true:
+ * held here, not yet sent.
+ */
+function SyncBanner({ sync, onRetry }: { sync: SyncState; onRetry: () => void }) {
+  if (sync.phase === 'idle' && sync.pending === 0) return null;
+
+  if (sync.phase === 'syncing') {
+    return (
+      <div
+        role="status"
+        className="fixed inset-x-0 top-0 z-[201] flex items-center justify-center gap-2 bg-sky-600 px-4 py-2 text-center text-xs font-medium text-white shadow-md print:hidden"
+      >
+        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+        <span>
+          Synchronising… sending {sync.current.toLowerCase()} ({sync.done + 1} of {sync.total})
+        </span>
+      </div>
+    );
+  }
+
+  if (sync.phase === 'done') {
+    return (
+      <div
+        role="status"
+        className="fixed inset-x-0 top-0 z-[201] flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-emerald-600 px-4 py-2 text-center text-xs font-medium text-white shadow-md print:hidden"
+      >
+        <span className="font-semibold">Synchronised.</span>
+        {sync.uploaded.map((label, i) => (
+          <span key={i}>✓ {label}</span>
+        ))}
+      </div>
+    );
+  }
+
+  const pending = sync.phase === 'failed' ? sync.pending : sync.pending;
+  return (
+    <div
+      role="status"
+      className="fixed inset-x-0 top-0 z-[201] flex flex-wrap items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-center text-xs font-medium text-amber-950 shadow-md print:hidden"
+    >
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+      <span>
+        <strong>
+          {pending} entr{pending === 1 ? 'y is' : 'ies are'} held on this computer and not yet sent to the server.
+        </strong>{' '}
+        Nothing is lost — they will be sent automatically when it is reachable.
+      </span>
+      <button onClick={onRetry} className="rounded-lg bg-amber-950/20 px-2 py-0.5 font-semibold underline-offset-2 hover:bg-amber-950/30">
+        Try now
+      </button>
     </div>
   );
 }

@@ -21,6 +21,8 @@
  * form keeps what was typed, so nothing is lost — the user simply retries.
  */
 
+import { describeAction, enqueue, markAttempt, pendingActions, removeQueued } from './queue';
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -35,6 +37,13 @@ export class ApiError extends Error {
   get isNetwork() {
     return this.status === 0;
   }
+  /**
+   * Set when the action could not be sent but has been written down and will be
+   * sent automatically when the server returns. The caller has not lost the work
+   * — but it is emphatically not done yet, and must never be reported as if it
+   * were.
+   */
+  queued = false;
 }
 
 let onUnauthenticated: (() => void) | null = null;
@@ -163,14 +172,32 @@ interface RequestOptions {
    * application being broken.
    */
   failFast?: boolean;
+  /** Internal: this call is a replay of an already-queued action. */
+  replayOf?: string;
+  /** Internal: reuse the queued action's original idempotency key. */
+  replayKey?: string;
 }
 
 async function request<T>(method: string, path: string, body?: unknown, opts: RequestOptions = {}): Promise<T> {
   const isMutation = MUTATING.has(method);
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  // One key per logical action, reused for every retry of it.
-  if (isMutation) headers['Idempotency-Key'] = newIdempotencyKey();
+
+  // One key per logical action, reused for every attempt of it — including a
+  // replay hours later, after a restart. That is what makes replaying safe.
+  const idempotencyKey = opts.replayKey || newIdempotencyKey();
+  if (isMutation) headers['Idempotency-Key'] = idempotencyKey;
+
+  /**
+   * Write the action down before trying to send it, so it survives the tab or
+   * the machine dying mid-request. A replay is already in the queue and must not
+   * be added to it twice.
+   */
+  const queued =
+    isMutation && !opts.replayOf
+      ? enqueue({ method, path, body, idempotencyKey, label: describeAction(method, path) })
+      : null;
+  const queueId = opts.replayOf || queued?.id || null;
 
   const deadline = Date.now() + MAX_WAIT_MS;
   if (isMutation) {
@@ -198,9 +225,22 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
           setConnection('reconnecting');
           throw new ApiError(0, 'The server is not responding yet.');
         }
-        // Wait for it to return, then retry the identical request — safe because
-        // of the idempotency key.
-        await waitForServer(deadline);
+        if (queueId) markAttempt(queueId);
+        try {
+          // Wait for it to return, then retry the identical request — safe
+          // because of the idempotency key.
+          await waitForServer(deadline);
+        } catch (waitErr) {
+          // The server did not come back inside the window. For a mutation the
+          // action stays in the queue and is sent when it does; the caller is
+          // told it is kept, not that it is done.
+          if (queueId) {
+            const err = new ApiError(0, 'Saved on this computer. It will be sent automatically when the server is back.');
+            err.queued = true;
+            throw err;
+          }
+          throw waitErr;
+        }
         continue;
       } finally {
         clearTimeout(timer);
@@ -220,8 +260,13 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
           await sleep(RETRY_EVERY_MS);
           if (Date.now() < deadline) continue;
         }
+        // The server answered. Whether it accepted or refused, this action is
+        // settled and must not be replayed: a rejected request will be rejected
+        // again, and replaying it forever would block everything behind it.
+        if (queueId) removeQueued(queueId);
         throw new ApiError(res.status, message);
       }
+      if (queueId) removeQueued(queueId);
       return payload as T;
     }
   } finally {
@@ -229,6 +274,126 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
       pendingWrites = Math.max(0, pendingWrites - 1);
       publish();
     }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Replaying work that was entered while the server was away
+ * ------------------------------------------------------------------ */
+
+export type SyncState =
+  | { phase: 'idle'; pending: number }
+  | { phase: 'syncing'; pending: number; done: number; total: number; current: string }
+  | { phase: 'done'; uploaded: string[] }
+  | { phase: 'failed'; pending: number; message: string };
+
+let syncState: SyncState = { phase: 'idle', pending: 0 };
+const syncListeners = new Set<(s: SyncState) => void>();
+
+function publishSync(next: SyncState) {
+  syncState = next;
+  for (const fn of syncListeners) fn(next);
+}
+
+export function subscribeSync(fn: (state: SyncState) => void): () => void {
+  syncListeners.add(fn);
+  fn(syncState);
+  return () => syncListeners.delete(fn);
+}
+
+export function getPendingCount(): number {
+  return pendingActions().length;
+}
+
+let flushing = false;
+
+/**
+ * Send everything that was entered while the server was unreachable.
+ *
+ * Strictly in the order it was entered, and strictly one at a time: a payment
+ * confirmation entered after the payment it confirms has to arrive after it, and
+ * firing the queue off in parallel would race them. Each carries the idempotency
+ * key it was first given, so anything that actually did reach the server before
+ * the connection dropped is recognised and not recorded twice.
+ *
+ * Stops at the first item that still cannot be sent, leaving it and everything
+ * behind it queued for the next attempt.
+ */
+export async function flushQueue(): Promise<void> {
+  if (flushing) return;
+  const queue = pendingActions();
+  if (queue.length === 0) {
+    publishSync({ phase: 'idle', pending: 0 });
+    return;
+  }
+  flushing = true;
+  const uploaded: string[] = [];
+
+  try {
+    for (let i = 0; i < queue.length; i++) {
+      const action = queue[i];
+      publishSync({
+        phase: 'syncing',
+        pending: queue.length - i,
+        done: i,
+        total: queue.length,
+        current: action.label
+      });
+      try {
+        await request(action.method, action.path, action.body, {
+          replayOf: action.id,
+          replayKey: action.idempotencyKey
+        });
+        uploaded.push(action.label);
+      } catch (err) {
+        if (err instanceof ApiError && (err.isNetwork || err.queued)) {
+          // Still unreachable. Leave this and the rest for next time.
+          publishSync({
+            phase: 'failed',
+            pending: pendingActions().length,
+            message: 'Still waiting for the server. Your entries are safe and will be sent automatically.'
+          });
+          return;
+        }
+        // The server refused it. `request` has already dropped it from the
+        // queue, because replaying a rejected action would block the queue
+        // forever. Carry on with the rest and report it.
+        uploaded.push(`${action.label} — refused by the server`);
+      }
+    }
+    publishSync({ phase: 'done', uploaded });
+    // Let the operator read the result, then fall back to quiet.
+    setTimeout(() => {
+      if (syncState.phase === 'done') publishSync({ phase: 'idle', pending: pendingActions().length });
+    }, 6000);
+  } finally {
+    flushing = false;
+  }
+}
+
+/**
+ * Watch for the server coming back and send anything outstanding.
+ *
+ * Polls only while there is something to send, so an idle application does no
+ * background work at all.
+ */
+let watchTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startQueueWatcher() {
+  if (watchTimer) return;
+  const tick = async () => {
+    const queue = pendingActions();
+    if (queue.length === 0) return;
+    if (flushing) return;
+    if (await serverReachable()) {
+      setConnection('online');
+      await flushQueue();
+    }
+  };
+  void tick();
+  watchTimer = setInterval(() => void tick(), RETRY_EVERY_MS * 2);
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', () => void tick());
   }
 }
 
