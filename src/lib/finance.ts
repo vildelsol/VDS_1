@@ -21,13 +21,14 @@ import {
   ChargeCategory,
   Currency,
   Payment,
+  Tenancy,
   Unit,
   UtilityReading,
   Expense,
   Booking
 } from '../types';
 import { round2, sumMoney, subtractMoney } from './money';
-import { daysSince, isWithin, monthOf, addDays } from './dates';
+import { currentMonth, daysSince, isWithin, monthOf, monthsBetween, addDays, today } from './dates';
 
 /** A record that points at a unit. */
 interface UnitLinked {
@@ -549,4 +550,68 @@ export function groupByMonth<T>(rows: T[], dateOf: (row: T) => string): Map<stri
     map.get(key)!.push(row);
   }
   return map;
+}
+
+/**
+ * Months a tenant has occupied that have never been billed.
+ *
+ * Move-in raises the first month and the advance. Every month after that is
+ * raised by posting it — and posting is deliberate, so a tenant recorded late,
+ * or a month nobody got to, leaves rent that is genuinely owed and completely
+ * invisible: the account looks settled because nothing was ever charged for it.
+ *
+ * This is the case a backdated move-in creates. Someone enters a tenant in
+ * September who moved in during July: July is billed at move-in, August is not,
+ * and nothing anywhere says so. Surfacing it turns silence into a task.
+ *
+ * Counts from the move-in month up to the current month, or to the move-out
+ * month for a tenancy that has ended.
+ */
+export interface UnbilledOccupancy {
+  unit: Unit;
+  tenancy: Tenancy;
+  currency: Currency;
+  /** YYYY-MM values with no open rent charge against them. */
+  months: string[];
+  /** What those months would come to at the tenancy's agreed rent. */
+  amount: number;
+}
+
+export function unbilledOccupancy(
+  units: Unit[],
+  tenancies: Tenancy[],
+  charges: Charge[],
+  asOf: string = today()
+): UnbilledOccupancy[] {
+  const out: UnbilledOccupancy[] = [];
+  const thisMonth = monthOf(asOf);
+
+  for (const tenancy of tenancies) {
+    if (!tenancy.startedOn) continue;
+    const rent = round2(tenancy.monthlyRent);
+    if (!(rent > 0)) continue;
+
+    const unit = units.find(u => u.id === tenancy.unitId);
+    if (!unit) continue;
+
+    // A closed tenancy stops at its final month; that month is covered by the
+    // advance and is deliberately not billed, so it is not "missing".
+    const lastMonth = tenancy.status === 'ended' && tenancy.endedOn ? monthOf(tenancy.endedOn) : thisMonth;
+    if (lastMonth < monthOf(tenancy.startedOn)) continue;
+
+    const finalMonthCoveredByAdvance = tenancy.status === 'ended' ? lastMonth : null;
+    const currency = tenancy.currency || unit.currency;
+
+    const months = monthsBetween(tenancy.startedOn, `${lastMonth}-01`).filter(month => {
+      if (month === finalMonthCoveredByAdvance) return false;
+      return !charges.some(
+        c => c.unitId === unit.id && c.category === 'Rent' && c.periodMonth === month && c.status === 'open'
+      );
+    });
+
+    if (months.length > 0) {
+      out.push({ unit, tenancy, currency, months, amount: round2(rent * months.length) });
+    }
+  }
+  return out.sort((a, b) => b.months.length - a.months.length);
 }

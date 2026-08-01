@@ -15,7 +15,8 @@ import {
   PaymentMethod,
   SessionUser,
   Unit,
-  getUnitDisplayName
+  getUnitDisplayName,
+  Tenancy
 } from '../types';
 import {
   AccountBalance,
@@ -27,7 +28,8 @@ import {
   expensesInPeriod,
   isOccupied,
   ownerBilledUnitIds,
-  unbilledAccounts
+  unbilledAccounts,
+  unbilledOccupancy
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { addDays, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
@@ -52,6 +54,7 @@ import type { TabKey } from '../App';
 interface DashboardProps {
   units: Unit[];
   bookings: Booking[];
+  tenancies: Tenancy[];
   charges: Charge[];
   payments: Payment[];
   expenses: Expense[];
@@ -67,6 +70,7 @@ const ARRIVAL_WINDOW_DAYS = 14;
 export default function Dashboard({
   units,
   bookings,
+  tenancies,
   charges,
   payments,
   expenses,
@@ -101,6 +105,12 @@ export default function Dashboard({
    * villa could sit here looking fine while its rent was never collected.
    */
   const unbilled = useMemo(() => unbilledAccounts(units, charges, payments), [units, charges, payments]);
+
+  /**
+   * Occupied months that were never billed — the same list the notifications hub
+   * shows, from the same function, so the two screens cannot disagree about it.
+   */
+  const unbilledMonths = useMemo(() => unbilledOccupancy(units, tenancies, charges), [units, tenancies, charges]);
   const arrearsByCurrency = useMemo(() => {
     const out: Record<Currency, number> = { USD: 0, JMD: 0 };
     for (const account of arrears) {
@@ -287,6 +297,29 @@ export default function Dashboard({
             and use <strong>Post month</strong> to raise rent and maintenance charges for a billing month.
           </InfoNote>
         )
+      )}
+
+      {unbilledMonths.length > 0 && (
+        <InfoNote tone="amber">
+          <strong>
+            {unbilledMonths.length} tenanc{unbilledMonths.length === 1 ? 'y has' : 'ies have'} occupied months that were
+            never billed.
+          </strong>{' '}
+          {unbilledMonths
+            .slice(0, 3)
+            .map(row => `${getUnitDisplayName(row.unit.number)} (${row.months.length})`)
+            .join(', ')}
+          {unbilledMonths.length > 3 ? ` and ${unbilledMonths.length - 3} more` : ''}. Rent is owed for those months but
+          nothing has been charged, so they are invisible in the arrears above. Open the{' '}
+          <button onClick={() => onNavigateToTab('finance')} className="font-semibold underline">
+            HOA &amp; Tenants Ledger
+          </button>{' '}
+          and use <strong>Post month</strong> for each, or the{' '}
+          <button onClick={() => onNavigateToTab('notifications')} className="font-semibold underline">
+            Notifications Hub
+          </button>{' '}
+          to see the detail.
+        </InfoNote>
       )}
 
       {/* Period ledger */}

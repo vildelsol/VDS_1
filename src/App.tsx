@@ -521,6 +521,7 @@ export default function App() {
             charges={data.charges}
             payments={data.payments}
             expenses={data.expenses}
+            tenancies={data.tenancies}
             settings={settings}
             session={session}
             onRefresh={refresh}
@@ -537,6 +538,7 @@ export default function App() {
             utilities={data.utilities}
             expenses={data.expenses}
             bookings={data.bookings}
+            tenancies={data.tenancies}
             session={session}
             onNavigateToTab={setActiveTab}
             onRecordPayment={recordPayment}

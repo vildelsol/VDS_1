@@ -16,9 +16,10 @@ import {
   Unit,
   UtilityReading,
   getAllocationLabel,
-  getUnitDisplayName
+  getUnitDisplayName,
+  Tenancy
 } from '../types';
-import { AccountBalance, bookingOverlaps, delinquentAccounts } from '../lib/finance';
+import { AccountBalance, bookingOverlaps, delinquentAccounts, unbilledOccupancy } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
@@ -43,6 +44,7 @@ interface NotificationsTabProps {
   charges: Charge[];
   payments: Payment[];
   utilities: UtilityReading[];
+  tenancies: Tenancy[];
   expenses: Expense[];
   bookings: Booking[];
   session: SessionUser;
@@ -52,7 +54,7 @@ interface NotificationsTabProps {
   onUpdateExpense: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
 }
 
-type Filter = 'all' | 'rent' | 'maintenance' | 'utility' | 'expense' | 'booking';
+type Filter = 'all' | 'rent' | 'maintenance' | 'unbilled' | 'utility' | 'expense' | 'booking';
 
 interface Item {
   id: string;
@@ -66,6 +68,8 @@ interface Item {
   account?: AccountBalance;
   utility?: UtilityReading;
   expense?: Expense;
+  /** Months a tenant has occupied that were never billed. */
+  unbilledMonths?: string[];
   isBooking?: boolean;
 }
 
@@ -74,6 +78,7 @@ export default function NotificationsTab({
   charges,
   payments,
   utilities,
+  tenancies,
   expenses,
   bookings,
   session,
@@ -106,6 +111,24 @@ export default function NotificationsTab({
       severity: account.oldestUnpaidDays > 30 ? 'high' : 'medium',
       ageDays: account.oldestUnpaidDays,
       account
+    }));
+
+    // Occupied months that were never billed — most often a tenant recorded
+    // weeks after they moved in. Nothing else surfaces these, because an unbilled
+    // month looks identical to a month with nothing owed.
+    const unbilledItems = unbilledOccupancy(units, tenancies, charges).map<Item>(row => ({
+      id: `unbilled-${row.tenancy.id}`,
+      type: 'unbilled',
+      title: `Rent not yet billed — ${getUnitDisplayName(row.unit.number)}`,
+      description:
+        `${row.tenancy.tenantName} has occupied ${row.months.length} month${row.months.length === 1 ? '' : 's'} ` +
+        `that ${row.months.length === 1 ? 'has' : 'have'} never been billed (${row.months.map(formatMonthLabel).join(', ')}). ` +
+        'Post those months so the rent is owed and can be collected.',
+      amount: row.amount,
+      currency: row.currency,
+      severity: row.months.length > 1 ? 'high' : 'medium',
+      ageDays: 0,
+      unbilledMonths: row.months
     }));
 
     const utilityItems = utilities
@@ -157,8 +180,8 @@ export default function NotificationsTab({
       isBooking: true
     }));
 
-    return [...overlapItems, ...accounts, ...utilityItems, ...expenseItems].sort((a, b) => b.ageDays - a.ageDays);
-  }, [units, charges, payments, utilities, expenses, bookings]);
+    return [...overlapItems, ...unbilledItems, ...accounts, ...utilityItems, ...expenseItems].sort((a, b) => b.ageDays - a.ageDays);
+  }, [units, charges, payments, utilities, expenses, bookings, tenancies]);
 
   const visible = items.filter(i => filter === 'all' || i.type === filter);
   const highCount = items.filter(i => i.severity === 'high').length;
@@ -174,6 +197,7 @@ export default function NotificationsTab({
     booking: items.filter(i => i.type === 'booking').length,
     rent: items.filter(i => i.type === 'rent').length,
     maintenance: items.filter(i => i.type === 'maintenance').length,
+    unbilled: items.filter(i => i.type === 'unbilled').length,
     utility: items.filter(i => i.type === 'utility').length,
     expense: items.filter(i => i.type === 'expense').length
   };
@@ -227,6 +251,7 @@ export default function NotificationsTab({
           ['booking', 'Double-bookings'],
           ['rent', 'Rent'],
           ['maintenance', 'Maintenance'],
+          ['unbilled', 'Not yet billed'],
           ['utility', 'Utilities'],
           ['expense', 'Expenses']
         ] as const).map(([key, label]) => (

@@ -89,6 +89,97 @@ export default async function run({ port, projectRoot }) {
     db = (await c.get('/api/db')).body;
     T.check('re-saving the move-out does not void a second month', openRent(db, 'unit-1').length === 3, `${openRent(db, 'unit-1').length} charges`);
 
+    // --- a move-in date entered after the fact must raise an overdue alert ---
+    // Someone forgets to record a tenant, then enters them weeks later. The rent
+    // was owed from the day they moved in, so it has to land as *overdue* and be
+    // visible for actioning, not as something that quietly starts from today.
+    const backdated = new Date();
+    backdated.setDate(backdated.getDate() - 45);
+    const backMonth = `${backdated.getFullYear()}-${String(backdated.getMonth() + 1).padStart(2, '0')}`;
+    const backDay = `${backMonth}-${String(backdated.getDate()).padStart(2, '0')}`;
+
+    await c.put('/api/units/unit-3', villa({ number: '3', ownerName: 'Owner Three', tenantName: 'Late Entry Tenant' }));
+    db = (await c.get('/api/db')).body;
+    const ten3 = db.tenancies.find(t => t.unitId === 'unit-3' && t.status === 'active');
+    await c.put(`/api/tenancies/${ten3.id}`, { startedOn: backDay });
+    db = (await c.get('/api/db')).body;
+
+    const back = openRent(db, 'unit-3');
+    T.check('a backdated move-in still bills first and last', back.length === 2, `${back.length} charges`);
+    T.check('dated to the month they actually moved in, not today', back.every(x => x.periodMonth === backMonth), back.map(x => x.periodMonth).join(','));
+    T.check(
+      'and dated due in the past, so it reads as overdue rather than upcoming',
+      back.every(x => x.dueDate < new Date().toISOString().slice(0, 10)),
+      back.map(x => x.dueDate).join(',')
+    );
+
+    // --- the dashboard and the hub read the same arrears, so they cannot disagree ---
+    // Both screens call delinquentAccounts() over the same server data. Asserting
+    // on that shared source is asserting on both screens at once.
+    const owingBefore = db.charges
+      .filter(x => x.unitId === 'unit-3' && x.category === 'Rent' && x.status === 'open')
+      .reduce((a, x) => a + x.amount, 0);
+    const paidBefore = db.payments
+      .filter(x => x.unitId === 'unit-3' && x.category === 'Rent' && x.status === 'completed')
+      .reduce((a, x) => a + x.amount, 0);
+    T.check('the backdated tenant appears as owing money', owingBefore - paidBefore === RENT * 2, `${owingBefore - paidBefore}`);
+
+    // Action it once, the way either screen does.
+    await c.post('/api/payments', {
+      unitId: 'unit-3',
+      category: 'Rent',
+      amount: RENT * 2,
+      currency: 'JMD',
+      payerName: 'Late Entry Tenant',
+      method: 'Cash',
+      receivedNow: true
+    });
+    db = (await c.get('/api/db')).body;
+    const owingAfter = db.charges
+      .filter(x => x.unitId === 'unit-3' && x.category === 'Rent' && x.status === 'open')
+      .reduce((a, x) => a + x.amount, 0);
+    const paidAfter = db.payments
+      .filter(x => x.unitId === 'unit-3' && x.category === 'Rent' && x.status === 'completed')
+      .reduce((a, x) => a + x.amount, 0);
+    T.check(
+      'actioning it once clears it from the shared source both screens read',
+      owingAfter - paidAfter === 0,
+      `balance ${owingAfter - paidAfter}`
+    );
+
+    // --- the months since a backdated move-in must be flagged, not silent ---
+    // Villa 3's tenant moved in 45 days ago. Move-in billed that month; the month
+    // since has never been billed at all, so it is owed and invisible — an
+    // unbilled month looks exactly like a month with nothing owed.
+    db = (await c.get('/api/db')).body;
+    const t3 = db.tenancies.find(t => t.unitId === 'unit-3' && t.status === 'active');
+    const monthsSince = [];
+    {
+      const cur = new Date(`${t3.startedOn}T12:00:00`);
+      const now = new Date();
+      while (cur <= now) {
+        monthsSince.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
+        cur.setMonth(cur.getMonth() + 1);
+      }
+    }
+    const billedMonths = new Set(
+      db.charges.filter(x => x.unitId === 'unit-3' && x.category === 'Rent' && x.status === 'open').map(x => x.periodMonth)
+    );
+    const missing = monthsSince.filter(m => !billedMonths.has(m));
+    T.check(
+      'a backdated move-in leaves at least one occupied month unbilled',
+      missing.length >= 1,
+      `occupied ${monthsSince.join(',')} — billed ${[...billedMonths].join(',')}`
+    );
+
+    // Posting the missing month closes the gap, which is the action the alert asks for.
+    for (const m of missing) await c.post('/api/charges/post-month', { monthString: m });
+    db = (await c.get('/api/db')).body;
+    const billedAfter = new Set(
+      db.charges.filter(x => x.unitId === 'unit-3' && x.category === 'Rent' && x.status === 'open').map(x => x.periodMonth)
+    );
+    T.check('posting those months closes the gap', monthsSince.every(m => billedAfter.has(m)), [...billedAfter].join(','));
+
     // --- a villa with no rent set is never given a two-month charge ---
     await c.put('/api/units/unit-2', villa({ number: '2', monthlyRent: 0, tenantName: 'Rent Free', ownerName: 'Owner Two' }));
     db = (await c.get('/api/db')).body;
