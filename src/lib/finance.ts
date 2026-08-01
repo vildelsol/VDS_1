@@ -28,7 +28,7 @@ import {
   Booking
 } from '../types';
 import { round2, sumMoney, subtractMoney } from './money';
-import { currentMonth, daysSince, isWithin, monthOf, monthsBetween, addDays, today } from './dates';
+import { currentMonth, daysSince, daysSinceOn, isWithin, monthOf, monthsBetween, addDays, today } from './dates';
 
 /** A record that points at a unit. */
 interface UnitLinked {
@@ -614,4 +614,47 @@ export function unbilledOccupancy(
     }
   }
   return out.sort((a, b) => b.months.length - a.months.length);
+}
+
+/**
+ * Leases running out, and leases that already have.
+ *
+ * A fixed term that lapses unnoticed does not end the tenancy — it rolls the
+ * tenant onto statutory month-to-month terms nobody chose, on the old rent, with
+ * the notice period that implies. The only way to negotiate a renewal on purpose
+ * is to see it coming, so this reports the window before expiry as well as the
+ * ones already past.
+ *
+ * Only open tenancies with a fixed term are considered; a tenancy with no lease
+ * end date is month-to-month by intention and is not a problem to solve.
+ */
+export interface LeaseExpiry {
+  unit: Unit;
+  tenancy: Tenancy;
+  leaseEndsOn: string;
+  /** Negative once the term has already run out. */
+  daysRemaining: number;
+  expired: boolean;
+}
+
+export function leasesNeedingAttention(
+  units: Unit[],
+  tenancies: Tenancy[],
+  withinDays = 60,
+  asOf: string = today()
+): LeaseExpiry[] {
+  const out: LeaseExpiry[] = [];
+  for (const tenancy of tenancies) {
+    if (tenancy.status !== 'active') continue;
+    if (!tenancy.leaseEndsOn) continue;
+    const unit = units.find(u => u.id === tenancy.unitId);
+    if (!unit) continue;
+
+    // Positive while the term still has time to run, negative once it is past.
+    const daysRemaining = -daysSinceOn(tenancy.leaseEndsOn, asOf);
+    if (daysRemaining > withinDays) continue;
+    out.push({ unit, tenancy, leaseEndsOn: tenancy.leaseEndsOn, daysRemaining, expired: daysRemaining < 0 });
+  }
+  // Most urgent first: the ones already expired, then the soonest to.
+  return out.sort((a, b) => a.daysRemaining - b.daysRemaining);
 }

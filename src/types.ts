@@ -212,6 +212,15 @@ export interface Tenancy {
   currency: Currency;
   rentDueDay: number;
   startedOn: string; // YYYY-MM-DD
+  /**
+   * When the fixed term ends, if there is one.
+   *
+   * Distinct from `endedOn`, which is when the tenant actually left. This is the
+   * date the agreement runs to — the thing you need to see *before* it happens,
+   * so a renewal is negotiated deliberately rather than discovered afterwards. A
+   * tenancy with no lease end date is treated as running month to month.
+   */
+  leaseEndsOn?: string; // YYYY-MM-DD
   endedOn?: string; // YYYY-MM-DD
   endReason?: string;
   status: 'active' | 'ended';

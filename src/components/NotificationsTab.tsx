@@ -19,7 +19,7 @@ import {
   getUnitDisplayName,
   Tenancy
 } from '../types';
-import { AccountBalance, bookingOverlaps, delinquentAccounts, unbilledOccupancy } from '../lib/finance';
+import { AccountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, unbilledOccupancy } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
@@ -54,7 +54,7 @@ interface NotificationsTabProps {
   onUpdateExpense: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
 }
 
-type Filter = 'all' | 'rent' | 'maintenance' | 'unbilled' | 'utility' | 'expense' | 'booking';
+type Filter = 'all' | 'rent' | 'maintenance' | 'unbilled' | 'lease' | 'utility' | 'expense' | 'booking';
 
 interface Item {
   id: string;
@@ -131,6 +131,24 @@ export default function NotificationsTab({
       unbilledMonths: row.months
     }));
 
+    // Leases running out. A fixed term that lapses unnoticed rolls the tenant
+    // onto month-to-month terms nobody chose, at the old rent — so this has to be
+    // visible before the date, not after it.
+    const leaseItems = leasesNeedingAttention(units, tenancies).map<Item>(row => ({
+      id: `lease-${row.tenancy.id}`,
+      type: 'lease',
+      title: `${row.expired ? 'Lease expired' : 'Lease ending soon'} — ${getUnitDisplayName(row.unit.number)}`,
+      description: row.expired
+        ? `${row.tenancy.tenantName}'s lease ended ${formatDayLabel(row.leaseEndsOn)}, ${Math.abs(row.daysRemaining)} day${Math.abs(row.daysRemaining) === 1 ? '' : 's'} ago. ` +
+          'Until it is renewed they are on month-to-month terms at the old rent. Agree a renewal or serve notice.'
+        : `${row.tenancy.tenantName}'s lease ends ${formatDayLabel(row.leaseEndsOn)}, in ${row.daysRemaining} day${row.daysRemaining === 1 ? '' : 's'}. ` +
+          'Decide now whether to renew, change the rent, or give notice.',
+      amount: 0,
+      currency: row.tenancy.currency,
+      severity: row.expired || row.daysRemaining <= 30 ? 'high' : 'medium',
+      ageDays: row.expired ? Math.abs(row.daysRemaining) : 0
+    }));
+
     const utilityItems = utilities
       .filter(u => u.status === 'unpaid')
       .map<Item>(u => ({
@@ -180,7 +198,7 @@ export default function NotificationsTab({
       isBooking: true
     }));
 
-    return [...overlapItems, ...unbilledItems, ...accounts, ...utilityItems, ...expenseItems].sort((a, b) => b.ageDays - a.ageDays);
+    return [...overlapItems, ...leaseItems, ...unbilledItems, ...accounts, ...utilityItems, ...expenseItems].sort((a, b) => b.ageDays - a.ageDays);
   }, [units, charges, payments, utilities, expenses, bookings, tenancies]);
 
   const visible = items.filter(i => filter === 'all' || i.type === filter);
@@ -198,6 +216,7 @@ export default function NotificationsTab({
     rent: items.filter(i => i.type === 'rent').length,
     maintenance: items.filter(i => i.type === 'maintenance').length,
     unbilled: items.filter(i => i.type === 'unbilled').length,
+    lease: items.filter(i => i.type === 'lease').length,
     utility: items.filter(i => i.type === 'utility').length,
     expense: items.filter(i => i.type === 'expense').length
   };
@@ -252,6 +271,7 @@ export default function NotificationsTab({
           ['rent', 'Rent'],
           ['maintenance', 'Maintenance'],
           ['unbilled', 'Not yet billed'],
+          ['lease', 'Leases'],
           ['utility', 'Utilities'],
           ['expense', 'Expenses']
         ] as const).map(([key, label]) => (
@@ -324,7 +344,7 @@ export default function NotificationsTab({
               </div>
 
               <div className="flex shrink-0 items-center gap-4 sm:flex-col sm:items-end">
-                {item.type !== 'booking' && (
+                {item.type !== 'booking' && item.amount > 0 && (
                   <div className="text-right">
                     <span className="block font-mono text-[9px] uppercase text-slate-400">
                       {item.type === 'expense' ? 'To pay' : 'Outstanding'}
@@ -342,6 +362,8 @@ export default function NotificationsTab({
                   onSettleUtility={() => item.utility && setSettleUtility(item.utility)}
                   onSettleExpense={() => item.expense && setSettleExpense(item.expense)}
                   onOpenBookings={() => onNavigateToTab('bookings')}
+                  onOpenUnits={() => onNavigateToTab('units')}
+                  onOpenLedger={() => onNavigateToTab('finance')}
                 />
               </div>
             </li>
@@ -401,7 +423,9 @@ function ItemAction({
   onSettleAccount,
   onSettleUtility,
   onSettleExpense,
-  onOpenBookings
+  onOpenBookings,
+  onOpenUnits,
+  onOpenLedger
 }: {
   item: Item;
   perms: SessionUser['permissions'];
@@ -409,6 +433,8 @@ function ItemAction({
   onSettleUtility: () => void;
   onSettleExpense: () => void;
   onOpenBookings: () => void;
+  onOpenUnits: () => void;
+  onOpenLedger: () => void;
 }) {
   if (item.type === 'booking') {
     return (
@@ -437,6 +463,24 @@ function ItemAction({
       <SubmitButton type="button" onClick={onSettleExpense} className="whitespace-nowrap px-3 py-2 text-[11px]">
         Record as paid
       </SubmitButton>
+    );
+  }
+  // A lease warning and an unbilled month are not debts to collect — offering
+  // "Receive payment" on them was a button that called a handler with no account
+  // and did nothing at all. Send people where the work actually is.
+  if (item.type === 'lease') {
+    return (
+      <SecondaryButton onClick={onOpenUnits} className="whitespace-nowrap px-3 py-2 text-[11px]">
+        Open the tenancy
+      </SecondaryButton>
+    );
+  }
+  if (item.type === 'unbilled') {
+    if (!perms.postCharges) return <span className="text-[10px] text-slate-400">Requires the post-charges permission</span>;
+    return (
+      <SecondaryButton onClick={onOpenLedger} className="whitespace-nowrap px-3 py-2 text-[11px]">
+        Post the missing months
+      </SecondaryButton>
     );
   }
   if (!perms.recordPayments) return <span className="text-[10px] text-slate-400">Requires payment permission</span>;

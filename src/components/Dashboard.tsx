@@ -28,6 +28,7 @@ import {
   expensesInPeriod,
   isOccupied,
   ownerBilledUnitIds,
+  leasesNeedingAttention,
   unbilledAccounts,
   unbilledOccupancy
 } from '../lib/finance';
@@ -111,6 +112,9 @@ export default function Dashboard({
    * shows, from the same function, so the two screens cannot disagree about it.
    */
   const unbilledMonths = useMemo(() => unbilledOccupancy(units, tenancies, charges), [units, tenancies, charges]);
+
+  /** Leases ending or already lapsed — same function the hub uses. */
+  const leases = useMemo(() => leasesNeedingAttention(units, tenancies), [units, tenancies]);
   const arrearsByCurrency = useMemo(() => {
     const out: Record<Currency, number> = { USD: 0, JMD: 0 };
     for (const account of arrears) {
@@ -297,6 +301,29 @@ export default function Dashboard({
             and use <strong>Post month</strong> to raise rent and maintenance charges for a billing month.
           </InfoNote>
         )
+      )}
+
+      {leases.length > 0 && (
+        <InfoNote tone="amber">
+          <strong>
+            {leases.filter(l => l.expired).length > 0
+              ? `${leases.filter(l => l.expired).length} lease${leases.filter(l => l.expired).length === 1 ? ' has' : 's have'} already expired`
+              : `${leases.length} lease${leases.length === 1 ? '' : 's'} ending soon`}
+            .
+          </strong>{' '}
+          {leases
+            .slice(0, 3)
+            .map(l =>
+              `${getUnitDisplayName(l.unit.number)} — ${l.tenancy.tenantName} (${l.expired ? `expired ${Math.abs(l.daysRemaining)}d ago` : `${l.daysRemaining}d left`})`
+            )
+            .join('; ')}
+          {leases.length > 3 ? ` and ${leases.length - 3} more` : ''}. An expired term does not end the tenancy — it
+          continues month to month at the old rent until it is renewed or notice is served. See the{' '}
+          <button onClick={() => onNavigateToTab('notifications')} className="font-semibold underline">
+            Notifications Hub
+          </button>
+          .
+        </InfoNote>
       )}
 
       {unbilledMonths.length > 0 && (

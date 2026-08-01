@@ -112,12 +112,22 @@ export function nightsBetween(checkIn: string, checkOut: string): number {
   return Math.max(0, Math.round((b.getTime() - a.getTime()) / 86400000));
 }
 
+/**
+ * Whole days from `day` until `asOf`. Negative when `day` falls after `asOf`.
+ *
+ * Taking the reference date as an argument is what makes anything that ages —
+ * arrears, lease expiry — testable without waiting for the calendar.
+ */
+export function daysSinceOn(day: string, asOf: string): number {
+  const d = parseDay(day);
+  const ref = parseDay(asOf);
+  if (isNaN(d.getTime()) || isNaN(ref.getTime())) return 0;
+  return Math.round((ref.getTime() - d.getTime()) / 86400000);
+}
+
 /** Whole days from `day` until today. Negative when the day is in the future. */
 export function daysSince(day: string): number {
-  const d = parseDay(day);
-  if (isNaN(d.getTime())) return 0;
-  const now = parseDay(today());
-  return Math.round((now.getTime() - d.getTime()) / 86400000);
+  return daysSinceOn(day, today());
 }
 
 /** Inclusive string range test for plain calendar days. */

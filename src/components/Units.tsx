@@ -1179,6 +1179,7 @@ function TenancyEditor({
 }) {
   const closing = tenancy.status === 'active';
   const [startedOn, setStartedOn] = useState(tenancy.startedOn || '');
+  const [leaseEndsOn, setLeaseEndsOn] = useState(tenancy.leaseEndsOn || '');
   const [endedOn, setEndedOn] = useState(tenancy.endedOn || (closing ? today() : ''));
   const [endReason, setEndReason] = useState(tenancy.endReason || '');
   const [recordEnd, setRecordEnd] = useState(!closing);
@@ -1197,6 +1198,7 @@ function TenancyEditor({
     try {
       await onSave({
         startedOn,
+        leaseEndsOn,
         ...(recordEnd ? { endedOn, endReason } : {})
       });
     } catch (err) {
@@ -1234,6 +1236,20 @@ function TenancyEditor({
           hint={tenancy.startedOn ? undefined : 'Not recorded — this tenancy predates occupancy tracking.'}
         >
           <input id="tn-start" type="date" value={startedOn} max={today()} onChange={e => setStartedOn(e.target.value)} className={monoInputClass} />
+        </Field>
+
+        <Field
+          label="Lease ends on"
+          htmlFor="tn-lease-end"
+          hint="The date the agreement runs to. You are warned 60 days before. Leave empty for a month-to-month tenancy."
+        >
+          <input
+            id="tn-lease-end"
+            type="date"
+            value={leaseEndsOn}
+            onChange={e => setLeaseEndsOn(e.target.value)}
+            className={monoInputClass}
+          />
         </Field>
 
         {closing && (

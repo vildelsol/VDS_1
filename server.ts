@@ -1149,6 +1149,17 @@ app.put(
       if (body.startedOn !== undefined) {
         record.startedOn = body.startedOn === '' ? '' : requireDay(body.startedOn, 'Move-in date');
       }
+      if (body.leaseEndsOn !== undefined) {
+        if (body.leaseEndsOn === '') {
+          delete record.leaseEndsOn;
+        } else {
+          const leaseEndsOn = requireDay(body.leaseEndsOn, 'Lease end date');
+          if (record.startedOn && leaseEndsOn < record.startedOn) {
+            bad('The lease cannot end before the tenant moved in.');
+          }
+          record.leaseEndsOn = leaseEndsOn;
+        }
+      }
 
       // A tenant recorded without a move-in date has no billable month yet. The
       // moment that date is supplied, the first and last month's rent is owed —
