@@ -563,6 +563,7 @@ export default function App() {
             onUpdateTenancy={(id, fields) => mutate(() => api.put(`/api/tenancies/${id}`, fields))}
             onEvictTenancy={(id, payload) => mutate(() => api.post<{ writtenOff: number; currency: string; chargesVoided: number }>(`/api/tenancies/${id}/evict`, payload))}
             onAddUnitActivity={payload => mutate(() => api.post('/api/unit-activities', payload))}
+            onUpdateUnitActivity={(id, fields) => mutate(() => api.put(`/api/unit-activities/${id}`, fields))}
             onDeleteUnitActivity={id => mutate(() => api.del(`/api/unit-activities/${id}`))}
           />
         )}

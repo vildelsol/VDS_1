@@ -420,6 +420,19 @@ export interface AuditLog {
   approvedBy?: string;
 }
 
+/**
+ * Where a maintenance request has got to.
+ *
+ * Deliberately short. A longer list looks thorough and then goes unused, because
+ * nobody updates a status they have to think about.
+ */
+export type WorkStatus = 'Reported' | 'Scheduled' | 'In progress' | 'Completed' | 'Cancelled';
+
+export const WORK_STATUSES: WorkStatus[] = ['Reported', 'Scheduled', 'In progress', 'Completed', 'Cancelled'];
+
+/** Statuses that still need someone to do something. */
+export const OPEN_WORK_STATUSES: WorkStatus[] = ['Reported', 'Scheduled', 'In progress'];
+
 export interface UnitActivity {
   id: string;
   unitId: string;
@@ -437,6 +450,30 @@ export interface UnitActivity {
   notes: string;
   loggedBy: string;
   loggedAt: string;
+
+  /**
+   * Work-order fields.
+   *
+   * A "Maintenance Request" used to be a note and nothing else: no state, no
+   * owner, no cost, no end. It was logged and then lived in somebody's memory,
+   * which is how a reported leak becomes a repair bill nobody expected. These
+   * turn it into something that can be chased, closed and costed.
+   *
+   * Absent on every other kind of activity — a pool booking or a noise notice is
+   * a record of something that happened, not work to be done — and absent on the
+   * requests logged before this existed, which are treated as open.
+   */
+  workStatus?: WorkStatus;
+  /** Who is doing it: a contractor, a caretaker, a member of staff. */
+  assignedTo?: string;
+  /** What it actually cost, once known. Recorded against the villa for reporting. */
+  costAmount?: number;
+  costCurrency?: Currency;
+  completedOn?: string;
+  /** How it was resolved, or why it was closed without work. */
+  outcome?: string;
+  /** Set when a linked expense was raised for the cost, so it is not double-entered. */
+  expenseId?: string;
 }
 
 /** Human label for an expense allocation: a villa, the office, or common property. */

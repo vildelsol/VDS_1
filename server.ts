@@ -35,6 +35,8 @@ import {
   ONE_OFF_CHARGE_TYPES,
   OneOffChargeType,
   UNIT_STATUSES,
+  WORK_STATUSES,
+  WorkStatus,
   UNIT_STATUS_LABELS,
   UnitActivity,
   UtilityReading,
@@ -2384,13 +2386,124 @@ app.post(
         dateCaptured: requireDay(body.dateCaptured, 'Date captured'),
         notes: requireString(body.notes, 'Activity notes', 4000),
         loggedBy: who.name,
-        loggedAt: new Date().toISOString()
+        loggedAt: new Date().toISOString(),
+        // Only a maintenance request is work to be tracked; everything else is a
+        // record of something that already happened.
+        ...(body.activityType === 'Maintenance Request'
+          ? { workStatus: 'Reported' as WorkStatus, assignedTo: optionalString(body.assignedTo, 160) }
+          : {})
       };
       db.unitActivities.unshift(created);
       addAudit(db, who.name, who.role, `Logged resident activity (${created.activityType}) for ${unit.number}`, 'UnitActivity', created.id, '', created);
       return created;
     });
     res.json({ success: true, activity });
+  })
+);
+
+/**
+ * Move a maintenance request along, and close it out.
+ *
+ * A request that can only be logged and deleted is a note. This is what turns it
+ * into work: who has it, where it has got to, what it cost, and how it ended.
+ * Recording a cost optionally raises the property expense at the same time, so
+ * the money appears in the accounts without being typed twice — and the link is
+ * kept so it cannot be raised again.
+ */
+app.put(
+  '/api/unit-activities/:id',
+  handler(async (req: AuthedRequest, res) => {
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const result = await transaction(db => {
+      const activity = db.unitActivities.find(a => a.id === id);
+      if (!activity) throw new ApiError(404, 'Activity entry not found.');
+      if (activity.activityType !== 'Maintenance Request') {
+        throw new ApiError(400, 'Only a maintenance request is tracked as work. Other activity entries are a record of something that happened.');
+      }
+      // The same rule as deleting one: your own, or the unit-register permission.
+      if (activity.loggedBy !== req.auth!.user.name && !can(req.auth!, 'edit_unit')) {
+        throw new ApiError(403, 'You can only update maintenance requests that you logged.');
+      }
+
+      const before = { ...activity };
+      const who = actor(req);
+
+      if (body.workStatus !== undefined) {
+        activity.workStatus = requireEnum(body.workStatus, WORK_STATUSES, 'Work status') as WorkStatus;
+      }
+      if (body.assignedTo !== undefined) activity.assignedTo = optionalString(body.assignedTo, 160);
+      if (body.outcome !== undefined) activity.outcome = optionalString(body.outcome, 2000);
+      if (body.notes !== undefined) activity.notes = requireString(body.notes, 'Activity notes', 4000);
+
+      if (body.costAmount !== undefined && body.costAmount !== '' && body.costAmount !== null) {
+        activity.costAmount = requirePositiveAmount(body.costAmount, 'Cost');
+        activity.costCurrency = requireCurrency(body.costCurrency ?? activity.costCurrency ?? 'JMD');
+      }
+
+      // Closing it needs a date; an open one must not carry a completion date.
+      const closed = activity.workStatus === 'Completed' || activity.workStatus === 'Cancelled';
+      if (closed) {
+        activity.completedOn = requireDay(body.completedOn || activity.completedOn || today(), 'Completion date');
+      } else {
+        delete activity.completedOn;
+      }
+
+      /**
+       * Raise the expense for the work, once.
+       *
+       * The cost of a repair is a property expense; without this it is recorded
+       * on the request and then typed again into the expense register, or worse,
+       * not at all. `expenseId` makes it idempotent — asking twice does nothing.
+       */
+      let expense: Expense | null = null;
+      if (body.raiseExpense && !activity.expenseId) {
+        if (!can(req.auth!, 'record_expense')) {
+          throw new ApiError(403, 'Recording property expenses requires additional permission.');
+        }
+        // Thrown directly rather than through bad(), so the type narrows and the
+        // amount below is known to exist.
+        if (!activity.costAmount) {
+          throw new ApiError(400, 'Enter what the work cost before raising the expense for it.');
+        }
+        const spentOn = activity.completedOn || today();
+        const raised: Expense = {
+          id: uniqueRecordId(db.expenses, `ex-work-${activity.id}`),
+          category: 'Maintenance',
+          vendor: activity.assignedTo || 'Maintenance',
+          description: `Maintenance request at ${activity.unitNumber}: ${activity.notes}`.slice(0, 1000),
+          unitId: activity.unitId,
+          unitNumber: activity.unitNumber,
+          amount: activity.costAmount,
+          currency: activity.costCurrency || 'JMD',
+          date: spentOn,
+          dueDate: spentOn,
+          datePaid: spentOn,
+          paymentMethod: 'Bank Transfer',
+          status: 'paid',
+          reference: '',
+          notes: activity.outcome || ''
+        };
+        db.expenses.push(raised);
+        activity.expenseId = raised.id;
+        expense = raised;
+        addAudit(db, who.name, who.role, `Raised the property expense for maintenance work at ${activity.unitNumber}`, 'Expense', raised.id, '', raised);
+      }
+
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Updated the maintenance request for ${activity.unitNumber} (${activity.workStatus || 'Reported'})`,
+        'UnitActivity',
+        activity.id,
+        before,
+        activity
+      );
+      return { activity, expense };
+    });
+    res.json({ success: true, ...result });
   })
 );
 

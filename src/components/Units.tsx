@@ -18,6 +18,8 @@ import {
   Unit,
   UnitActivity,
   UnitStatus,
+  WORK_STATUSES,
+  WorkStatus,
   UtilityReading,
   getUnitDisplayName
 } from '../types';
@@ -67,6 +69,7 @@ interface UnitsProps {
   onUpdateTenancy: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
   onEvictTenancy: (id: string, payload: Record<string, unknown>) => Promise<{ writtenOff: number; currency: string; chargesVoided: number }>;
   onAddUnitActivity: (payload: Record<string, unknown>) => Promise<unknown>;
+  onUpdateUnitActivity: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
   onDeleteUnitActivity: (id: string) => Promise<unknown>;
 }
 
@@ -107,6 +110,7 @@ export default function Units({
   onUpdateTenancy,
   onEvictTenancy,
   onAddUnitActivity,
+  onUpdateUnitActivity,
   onDeleteUnitActivity
 }: UnitsProps) {
   const [selected, setSelected] = useState<Unit | null>(null);
@@ -116,6 +120,7 @@ export default function Units({
   const [editTenancy, setEditTenancy] = useState<Tenancy | null>(null);
   const [evictTenancy, setEvictTenancy] = useState<Tenancy | null>(null);
   const [printTenancy, setPrintTenancy] = useState<Tenancy | null>(null);
+  const [workOrder, setWorkOrder] = useState<UnitActivity | null>(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -232,6 +237,7 @@ export default function Units({
           onPrint={() => setPrintUnit(live)}
           onEditTenancy={setEditTenancy}
           onPrintTenancy={setPrintTenancy}
+          onManageWork={setWorkOrder}
           onEvictTenancy={setEvictTenancy}
           onLogActivity={() => setLogActivityFor(live)}
           onDeleteActivity={async id => {
@@ -323,6 +329,20 @@ export default function Units({
         />
       )}
 
+      {workOrder && (
+        <WorkOrderModal
+          activity={workOrder}
+          canRecordExpense={!!session.permissions.recordExpenses}
+          onClose={() => setWorkOrder(null)}
+          onSubmit={async fields => {
+            await onUpdateUnitActivity(workOrder.id, fields);
+            setSuccess('Maintenance request updated.');
+            setError('');
+            setWorkOrder(null);
+          }}
+        />
+      )}
+
       {printTenancy && (
         <TenancyRecordDocument
           tenancy={printTenancy}
@@ -358,7 +378,8 @@ function UnitDetail({
   onEvictTenancy,
   onPrintTenancy,
   onLogActivity,
-  onDeleteActivity
+  onDeleteActivity,
+  onManageWork
 }: {
   unit: Unit;
   charges: Charge[];
@@ -378,6 +399,7 @@ function UnitDetail({
   onPrintTenancy: (t: Tenancy) => void;
   onLogActivity: () => void;
   onDeleteActivity: (id: string) => Promise<void>;
+  onManageWork: (activity: UnitActivity) => void;
 }) {
   const maintCurrency = unit.maintCurrency || unit.currency;
   const rentAccount = accountBalance(unit, 'Rent', charges, payments, undefined, units);
@@ -577,6 +599,21 @@ function UnitDetail({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Badge tone="teal">{activity.activityType}</Badge>
+                      {activity.workStatus && (
+                        <Badge
+                          tone={
+                            activity.workStatus === 'Completed'
+                              ? 'green'
+                              : activity.workStatus === 'Cancelled'
+                                ? 'slate'
+                                : activity.workStatus === 'In progress'
+                                  ? 'blue'
+                                  : 'amber'
+                          }
+                        >
+                          {activity.workStatus}
+                        </Badge>
+                      )}
                       <span className="font-semibold text-slate-800">
                         {activity.residentName} ({activity.residentRole})
                       </span>
@@ -603,6 +640,34 @@ function UnitDetail({
                     </div>
                   </div>
                   <p className="rounded-lg border border-slate-100 bg-white p-2.5 leading-relaxed text-slate-700">{activity.notes}</p>
+
+                  {activity.activityType === 'Maintenance Request' && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-white p-2.5">
+                      <div className="min-w-0 space-y-0.5 font-mono text-[10px] text-slate-500">
+                        <p>
+                          {activity.assignedTo ? `Assigned to ${activity.assignedTo}` : 'Not assigned to anyone yet'}
+                          {activity.completedOn ? ` · closed ${formatDayLabel(activity.completedOn)}` : ''}
+                        </p>
+                        {activity.costAmount ? (
+                          <p className="text-slate-700">
+                            Cost {formatMoney(activity.costAmount, activity.costCurrency || 'JMD')}
+                            {activity.expenseId ? ' · raised as an expense' : ' · not yet in the expense register'}
+                          </p>
+                        ) : null}
+                        {activity.outcome ? <p className="italic text-slate-600">{activity.outcome}</p> : null}
+                      </div>
+                      {canEdit && (
+                        <button
+                          type="button"
+                          onClick={() => onManageWork(activity)}
+                          className="shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          Update work
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   <p className="font-mono text-[9px] text-slate-400">
                     Logged by {activity.loggedBy} on {formatDayLabel(activity.loggedAt.substring(0, 10))}
                   </p>
@@ -1839,5 +1904,141 @@ function TenancyRecordDocument({
 
       <PrintSignatures left="Prepared by" leftName={generatedBy} right="Tenant acknowledgement" rightName={tenancy.tenantName} />
     </PrintPortal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Move a maintenance request along.
+ *
+ * The cost is captured here and raised as a property expense on request rather
+ * than automatically: the person closing a job knows what it cost, but not always
+ * whether it has been entered in the accounts already. Making it a deliberate tick
+ * — which can only be done once — keeps the money out of the books twice.
+ */
+function WorkOrderModal({
+  activity,
+  canRecordExpense,
+  onClose,
+  onSubmit
+}: {
+  activity: UnitActivity;
+  canRecordExpense: boolean;
+  onClose: () => void;
+  onSubmit: (fields: Record<string, unknown>) => Promise<void>;
+}) {
+  const [workStatus, setWorkStatus] = useState<WorkStatus>(activity.workStatus || 'Reported');
+  const [assignedTo, setAssignedTo] = useState(activity.assignedTo || '');
+  const [costAmount, setCostAmount] = useState(activity.costAmount ? String(activity.costAmount) : '');
+  const [costCurrency, setCostCurrency] = useState<Currency>(activity.costCurrency || 'JMD');
+  const [completedOn, setCompletedOn] = useState(activity.completedOn || today());
+  const [outcome, setOutcome] = useState(activity.outcome || '');
+  const [raiseExpense, setRaiseExpense] = useState(false);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const closing = workStatus === 'Completed' || workStatus === 'Cancelled';
+  const alreadyRaised = !!activity.expenseId;
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    if (raiseExpense && !(Number(costAmount) > 0)) {
+      setError('Enter what the work cost before raising the expense for it.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit({
+        workStatus,
+        assignedTo,
+        outcome,
+        ...(costAmount ? { costAmount: Number(costAmount), costCurrency } : {}),
+        ...(closing ? { completedOn } : {}),
+        ...(raiseExpense ? { raiseExpense: true } : {})
+      });
+    } catch (err) {
+      setError(errorMessage(err, 'Could not update the maintenance request.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Update maintenance request"
+      subtitle={`${getUnitDisplayName(activity.unitNumber)} — reported ${formatDayLabel(activity.dateCaptured)}`}
+      onClose={onClose}
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton busy={busy} busyLabel="Saving…" form="vds-work-form" className="flex-1">
+            Save
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-work-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <p className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+          {activity.notes}
+        </p>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Status" htmlFor="wo-status" required>
+            <select id="wo-status" value={workStatus} onChange={e => setWorkStatus(e.target.value as WorkStatus)} className={inputClass}>
+              {WORK_STATUSES.map(w => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Assigned to" htmlFor="wo-assigned" hint="Contractor, caretaker or staff member.">
+            <input id="wo-assigned" type="text" value={assignedTo} onChange={e => setAssignedTo(e.target.value)} className={inputClass} />
+          </Field>
+        </div>
+
+        {closing && (
+          <Field label="Closed on" htmlFor="wo-done" required>
+            <input id="wo-done" type="date" value={completedOn} max={today()} onChange={e => setCompletedOn(e.target.value)} required className={monoInputClass} />
+          </Field>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Cost" htmlFor="wo-cost" hint="Leave empty until it is known.">
+            <input id="wo-cost" type="number" min="0.01" step="0.01" value={costAmount} onChange={e => setCostAmount(e.target.value)} className={monoInputClass} />
+          </Field>
+          <Field label="Currency" htmlFor="wo-cur">
+            <select id="wo-cur" value={costCurrency} onChange={e => setCostCurrency(e.target.value as Currency)} className={inputClass}>
+              <option value="JMD">Jamaican Dollar (JMD)</option>
+              <option value="USD">US Dollar (USD)</option>
+            </select>
+          </Field>
+        </div>
+
+        <Field label="Outcome" htmlFor="wo-outcome" hint="What was done, or why it was closed without work.">
+          <textarea id="wo-outcome" rows={2} value={outcome} onChange={e => setOutcome(e.target.value)} className={inputClass} />
+        </Field>
+
+        {alreadyRaised ? (
+          <InfoNote>The cost of this work is already in the expense register. It cannot be raised twice.</InfoNote>
+        ) : canRecordExpense ? (
+          <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+            <input type="checkbox" checked={raiseExpense} onChange={e => setRaiseExpense(e.target.checked)} className="mt-0.5" />
+            <span>
+              <strong>Also record this cost as a property expense</strong>, allocated to{' '}
+              {getUnitDisplayName(activity.unitNumber)}. Tick this only if it is not already in the expense register —
+              it can only be done once.
+            </span>
+          </label>
+        ) : (
+          <PermissionNote>Recording the cost as a property expense requires the expense permission.</PermissionNote>
+        )}
+      </form>
+    </Modal>
   );
 }
