@@ -21,6 +21,7 @@ import {
   ChargeCategory,
   Currency,
   Payment,
+  PaymentCategory,
   Tenancy,
   Unit,
   UtilityReading,
@@ -657,4 +658,196 @@ export function leasesNeedingAttention(
   }
   // Most urgent first: the ones already expired, then the soonest to.
   return out.sort((a, b) => a.daysRemaining - b.daysRemaining);
+}
+
+
+/**
+ * What a proprietor is owed, and what they owe, for one villa over one period.
+ *
+ * The corporation's income is HOA maintenance. Rent and short-let booking income
+ * belong to the individual proprietor — the agent merely collects it on their
+ * behalf — and the costs of their villa are theirs too. An owner statement is the
+ * one document that puts those three facts on the same page, and it is the thing
+ * an owner actually judges a managing agent by.
+ *
+ * Computed per currency, never across them, so a villa let in USD with a JMD
+ * maintenance fee produces two honest statements rather than one meaningless
+ * total.
+ */
+export interface OwnerStatement {
+  unit: Unit;
+  currency: Currency;
+  from: string;
+  to: string;
+  /** Long-term rent collected for the owner in the period. */
+  rentCollected: number;
+  /** Short-let booking income collected for the owner in the period. */
+  bookingCollected: number;
+  /** Utility recoveries collected against the villa. */
+  utilityCollected: number;
+  /** Total collected on the owner's behalf. */
+  collected: number;
+  /** HOA maintenance billed to the owner for the period. */
+  maintenanceBilled: number;
+  /**
+   * Maintenance contributions actually received in the period.
+   *
+   * Not part of the arithmetic — the deduction above is what was *billed*, which
+   * is what the owner is liable for whether or not they have paid it yet. It is
+   * carried so the statement can say so out loud: an owner who settled their
+   * maintenance by their own bank transfer, and whose agent then also withheld it
+   * from their rent, has been charged twice, and nothing else on the page would
+   * show that.
+   */
+  maintenancePaid: number;
+  /** Property expenses charged to this villa in the period. */
+  expenses: number;
+  /** collected − maintenanceBilled − expenses. Negative means the owner owes. */
+  net: number;
+  /** Maintenance still outstanding at the end of the period, across all time. */
+  maintenanceOutstanding: number;
+  /**
+   * The records behind every figure above.
+   *
+   * An owner statement is queried line by line — "what is this expense?" — and a
+   * document that can only answer with a total is not one an owner will accept.
+   * They are resolved here rather than in the screen so the printed page and the
+   * summary can never disagree about what makes up a number.
+   */
+  collectedItems: Payment[];
+  maintenanceCharges: Charge[];
+  expenseItems: Expense[];
+  /** Whether anything at all happened, so empty villas can be dropped. */
+  active: boolean;
+}
+
+export function ownerStatement(
+  unit: Unit,
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  expenses: Expense[],
+  currency: Currency,
+  from: string,
+  to: string
+): OwnerStatement {
+  const inPeriod = <T,>(rows: T[], dateOf: (row: T) => string) => rows.filter(r => isWithin(dateOf(r), from, to));
+
+  const unitPayments = paymentsForUnit(payments, unit, units).filter(p => p.status === 'completed' && p.currency === currency);
+  const paidIn = (category: PaymentCategory) => inPeriod(unitPayments.filter(p => p.category === category), p => p.date);
+  const total = (rows: { amount: number }[]) => sumMoney(rows.map(r => r.amount));
+
+  // Money collected on the proprietor's behalf. Utility recoveries are here
+  // because the villa's utility bill is itself charged to the villa below — the
+  // recovery offsets that cost rather than being income in its own right, and
+  // dropping it would leave the owner carrying a bill somebody else repaid.
+  const rentItems = paidIn('Rent');
+  const bookingItems = paidIn('Booking');
+  const utilityItems = paidIn('Utility');
+  const rentCollected = total(rentItems);
+  const bookingCollected = total(bookingItems);
+  const utilityCollected = total(utilityItems);
+  const collected = sumMoney([rentCollected, bookingCollected, utilityCollected]);
+  const maintenancePaid = total(paidIn('Maintenance'));
+
+  const maintenanceCharges = inPeriod(
+    chargesForUnit(charges, unit, units).filter(c => c.category === 'Maintenance' && c.status === 'open' && c.currency === currency),
+    c => c.dueDate
+  ).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const maintenanceBilled = total(maintenanceCharges);
+
+  const expenseItems = inPeriod(
+    expensesForUnit(expenses, unit, units).filter(e => e.status === 'paid' && e.currency === currency),
+    e => e.datePaid || e.date
+  ).sort((a, b) => (a.datePaid || a.date).localeCompare(b.datePaid || b.date));
+  const unitExpenses = total(expenseItems);
+
+  // What they still owe the corporation, as at the end of the period — all time,
+  // not just this period, because that is the figure an owner needs to see.
+  const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, to, units);
+  const maintenanceOutstanding = maintAccount.currency === currency ? maintAccount.balance : 0;
+
+  const net = round2(collected - maintenanceBilled - unitExpenses);
+
+  return {
+    unit,
+    currency,
+    from,
+    to,
+    rentCollected,
+    bookingCollected,
+    utilityCollected,
+    collected,
+    maintenanceBilled,
+    maintenancePaid,
+    expenses: unitExpenses,
+    net,
+    maintenanceOutstanding,
+    collectedItems: [...rentItems, ...bookingItems, ...utilityItems].sort((a, b) => a.date.localeCompare(b.date)),
+    maintenanceCharges,
+    expenseItems,
+    active:
+      collected !== 0 ||
+      maintenanceBilled !== 0 ||
+      maintenancePaid !== 0 ||
+      unitExpenses !== 0 ||
+      maintenanceOutstanding !== 0
+  };
+}
+
+/** Every owner statement worth producing for a period, one per villa per currency. */
+export function ownerStatements(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  expenses: Expense[],
+  from: string,
+  to: string
+): OwnerStatement[] {
+  const out: OwnerStatement[] = [];
+  for (const unit of units) {
+    for (const currency of ['JMD', 'USD'] as Currency[]) {
+      const statement = ownerStatement(unit, units, charges, payments, expenses, currency, from, to);
+      if (statement.active) out.push(statement);
+    }
+  }
+  return out.sort((a, b) => a.unit.number.localeCompare(b.unit.number, undefined, { numeric: true }) || a.currency.localeCompare(b.currency));
+}
+
+/**
+ * The statements one proprietor receives, gathered under their name.
+ *
+ * A statement is per villa and per currency, but the person it is sent to is
+ * neither — an owner of two villas is owed one document, not two envelopes that
+ * each tell half the story. Villas whose owner is not recorded are grouped under
+ * a blank name rather than dropped, because an unnamed owner is a record to fix,
+ * not money to lose.
+ */
+export interface OwnerStatementGroup {
+  owner: string;
+  statements: OwnerStatement[];
+  /** Net position per currency across every villa in the group. */
+  netByCurrency: { currency: Currency; net: number }[];
+}
+
+export function groupStatementsByOwner(statements: OwnerStatement[]): OwnerStatementGroup[] {
+  const byOwner = new Map<string, OwnerStatement[]>();
+  for (const statement of statements) {
+    const owner = statement.unit.ownerName || '';
+    if (!byOwner.has(owner)) byOwner.set(owner, []);
+    byOwner.get(owner)!.push(statement);
+  }
+
+  return Array.from(byOwner.entries())
+    .map(([owner, rows]) => ({
+      owner,
+      statements: rows,
+      netByCurrency: (['JMD', 'USD'] as Currency[])
+        .map(currency => ({
+          currency,
+          net: sumMoney(rows.filter(r => r.currency === currency).map(r => r.net))
+        }))
+        .filter(row => rows.some(r => r.currency === row.currency))
+    }))
+    .sort((a, b) => a.owner.localeCompare(b.owner));
 }

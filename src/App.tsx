@@ -24,6 +24,7 @@ import FinanceHub from './components/FinanceHub';
 import Bookings from './components/Bookings';
 import UtilitiesAndExpenses from './components/UtilitiesAndExpenses';
 import Reports from './components/Reports';
+import OwnerStatements from './components/OwnerStatements';
 import Projections from './components/Projections';
 import Charts from './components/Charts';
 import Audit from './components/Audit';
@@ -60,6 +61,7 @@ import {
   RefreshCw,
   Settings,
   TrendingUp,
+  Users,
   Wrench,
   X
 } from 'lucide-react';
@@ -72,6 +74,7 @@ export type TabKey =
   | 'bookings'
   | 'utilities'
   | 'reports'
+  | 'owner-statements'
   | 'charts'
   | 'projections'
   | 'audit'
@@ -85,6 +88,7 @@ const TAB_TITLES: Record<TabKey, string> = {
   bookings: 'Short-Term Bookings',
   utilities: 'Utilities & Expenses',
   reports: 'Operational Reports',
+  'owner-statements': 'Proprietor Statements',
   charts: 'Charts & Visual Snapshots',
   projections: 'Financial Projections',
   audit: 'Audit Trail',
@@ -364,6 +368,7 @@ export default function App() {
     { key: 'bookings', label: 'Short-Term Bookings', icon: <Calendar className="h-4 w-4" />, visible: true },
     { key: 'utilities', label: 'Utilities & Expenses', icon: <Wrench className="h-4 w-4" />, visible: true },
     { key: 'reports', label: 'Operational Reports', icon: <BarChart3 className="h-4 w-4" />, visible: true },
+    { key: 'owner-statements', label: 'Proprietor Statements', icon: <Users className="h-4 w-4" />, visible: true },
     { key: 'charts', label: 'Charts & Snapshots', icon: <PieChart className="h-4 w-4" />, visible: true },
     { key: 'projections', label: 'Financial Projections', icon: <TrendingUp className="h-4 w-4" />, visible: true },
     { key: 'audit', label: 'Audit Trail', icon: <ClipboardList className="h-4 w-4" />, visible: true },
@@ -622,6 +627,17 @@ export default function App() {
             expenses={data.expenses}
             utilities={data.utilities}
             bookings={data.bookings}
+            settings={settings}
+            session={session}
+          />
+        )}
+
+        {activeTab === 'owner-statements' && (
+          <OwnerStatements
+            units={data.units}
+            charges={data.charges}
+            payments={data.payments}
+            expenses={data.expenses}
             settings={settings}
             session={session}
           />
