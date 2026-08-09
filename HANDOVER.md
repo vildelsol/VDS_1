@@ -26,10 +26,10 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **281 automated tests pass.** Typecheck clean, build clean.
+- **338 automated tests pass.** Typecheck clean, build clean.
 - Working tree is clean.
-- Latest release: **v1.5.0** (does *not* include security deposits or owner statements, both of
-  which landed after it).
+- Latest release: **v1.6.0** (security deposits and owner statements). The double-record guard and
+  recurring expenses both landed *after* it and are not in a tagged release yet.
 
 ### Owner statements — finished
 
@@ -62,7 +62,7 @@ Two things worth knowing about the implementation:
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (281 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (338 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
@@ -148,17 +148,48 @@ Watch it with `gh run watch <id> --exit-status`.
   File-based only; nothing over the network can trigger it.
 - **Single-file `.exe`** via Node SEA, built and smoke-tested on Windows by CI.
 
+### Recurring expenses — finished
+
+Payroll, electricity, water and the security contract were re-typed by hand every month — about
+twenty entries, slow and quietly lossy, because a bill nobody remembered was simply never recorded.
+Under **Utilities & Expenses → Monthly costs** there is now a list of templates and a run that posts
+a month from them.
+
+**The design decision, and why it is not one click:** the run does *not* post templates blindly. It
+lays them out as a table with the usual figure filled in, and the person posting corrects each line
+before anything is written. Electricity is never the same twice; a blind "post the month" would
+either be wrong or would need correcting afterwards on twenty records. Lines can be unticked for a
+month (a skip is "not this month", not "already done" — the line stays available), and anything that
+only came up this month is added at the bottom of the same table and posted with the rest **without
+becoming a template**.
+
+**The invariant that matters:** everything posts as `pending`, never `paid`. A posted line is a bill
+raised, not money gone. `finance.ts` counts only `status === 'paid'` expenses — see
+`expensesInPeriod` and `ownerStatement` — so marking a run's lines paid would assert payments nobody
+made and would flow straight into a proprietor's statement as a deduction from their rent. A line
+becomes `paid` through the ordinary expense form, when it is actually settled. Do not change this.
+
+Re-posting a month tops up only what is missing, exactly like posting charges: templates dedupe on
+`recurringId + periodMonth`, and an added one-off dedupes on what it actually is (month, vendor,
+category, allocation, currency, amount), so a double-submitted run cannot double the property's
+costs. Each posted line is dated to the month it belongs to rather than the day it was typed, so a
+run posted late still falls in the right period on every report.
+
+**Deliberately monthly-only.** The annual insurance premium is split across the villas — different
+arithmetic, different operation — and stays a hand-entered expense. Template due days are capped at
+1–28 so every month has the day.
+
+28 tests in `test/recurring-expenses.test.mjs`; verified in the browser against seeded data.
+
 ---
 
 ## The audit — what's left
 
 I audited the app as a property manager. Remaining gaps, in the order I'd do them:
 
-**Tier 2 (in progress)**
+**Tier 2 — done**
 1. ~~**Owner statements**~~ — done, see above.
-2. **Recurring expenses** — security, landscaping and common-area utilities recur monthly and must
-   be re-typed every month. Seeding seven months took 21 manual entries. This *will* be missed or
-   double-entered.
+2. ~~**Recurring expenses**~~ — done, see below.
 
 **Tier 3 — risk and defensibility**
 3. **Document storage** — leases, IDs, insurance certificates, inspection photos, contractor

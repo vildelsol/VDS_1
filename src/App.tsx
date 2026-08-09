@@ -11,6 +11,7 @@ import {
   Charge,
   Expense,
   Payment,
+  RecurringExpense,
   SessionUser,
   Tenancy,
   Unit,
@@ -102,6 +103,7 @@ interface DbSnapshot {
   payments: Payment[];
   utilities: UtilityReading[];
   expenses: Expense[];
+  recurringExpenses: RecurringExpense[];
   tenancies: Tenancy[];
   auditLogs: AuditLog[];
   unitActivities: UnitActivity[];
@@ -117,6 +119,7 @@ const EMPTY: Omit<DbSnapshot, 'settings' | 'currentUser'> = {
   payments: [],
   utilities: [],
   expenses: [],
+  recurringExpenses: [],
   tenancies: [],
   auditLogs: [],
   unitActivities: [],
@@ -211,6 +214,7 @@ export default function App() {
         payments: snapshot.payments || [],
         utilities: snapshot.utilities || [],
         expenses: snapshot.expenses || [],
+        recurringExpenses: snapshot.recurringExpenses || [],
         tenancies: snapshot.tenancies || [],
         auditLogs: snapshot.auditLogs || [],
         unitActivities: snapshot.unitActivities || [],
@@ -609,6 +613,7 @@ export default function App() {
             units={data.units}
             utilities={data.utilities}
             expenses={data.expenses}
+            recurringExpenses={data.recurringExpenses}
             settings={settings}
             session={session}
             onAddUtilityReading={payload => mutate(() => api.post('/api/utilities', payload))}
@@ -616,6 +621,11 @@ export default function App() {
             onSettleUtility={(id, payload) => mutate(() => api.post(`/api/utilities/${id}/settle`, payload))}
             onAddExpense={payload => mutate(() => api.post('/api/expenses', payload))}
             onUpdateExpense={(id, fields) => mutate(() => api.put(`/api/expenses/${id}`, fields))}
+            onAddRecurring={payload => mutate(() => api.post('/api/recurring-expenses', payload))}
+            onUpdateRecurring={(id, fields) => mutate(() => api.put(`/api/recurring-expenses/${id}`, fields))}
+            onPostMonthlyExpenses={payload =>
+              mutate(() => api.post<{ message: string; created: number; skipped: number }>('/api/expenses/post-month', payload))
+            }
           />
         )}
 

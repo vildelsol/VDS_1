@@ -22,6 +22,7 @@ import {
   Charge,
   Expense,
   Payment,
+  RecurringExpense,
   Tenancy,
   Unit,
   UnitActivity,
@@ -54,6 +55,7 @@ export interface Database {
   payments: Payment[];
   utilities: UtilityReading[];
   expenses: Expense[];
+  recurringExpenses: RecurringExpense[];
   auditLogs: AuditLog[];
   unitActivities: UnitActivity[];
   users: StoredUser[];
@@ -243,6 +245,7 @@ function emptyDb(): Database {
     payments: [],
     utilities: [],
     expenses: [],
+    recurringExpenses: [],
     auditLogs: [],
     unitActivities: [],
     users: [],
@@ -547,6 +550,10 @@ function migrate(db: Database): boolean {
   }
   if (!Array.isArray(db.unitActivities)) {
     db.unitActivities = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.recurringExpenses)) {
+    db.recurringExpenses = [];
     changed = true;
   }
   if (!db.counters) {

@@ -12,6 +12,7 @@ import {
   ExpenseCategory,
   PAYMENT_METHODS,
   PaymentMethod,
+  RecurringExpense,
   SessionUser,
   Unit,
   UtilityReading,
@@ -23,6 +24,7 @@ import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
+import MonthlyExpenses from './MonthlyExpenses';
 import {
   Badge,
   EmptyState,
@@ -45,6 +47,7 @@ interface UtilitiesAndExpensesProps {
   units: Unit[];
   utilities: UtilityReading[];
   expenses: Expense[];
+  recurringExpenses: RecurringExpense[];
   settings: AppSettings;
   session: SessionUser;
   onAddUtilityReading: (payload: Record<string, unknown>) => Promise<unknown>;
@@ -52,21 +55,28 @@ interface UtilitiesAndExpensesProps {
   onSettleUtility: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
   onAddExpense: (payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateExpense: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
+  onAddRecurring: (payload: Record<string, unknown>) => Promise<unknown>;
+  onUpdateRecurring: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
+  onPostMonthlyExpenses: (payload: Record<string, unknown>) => Promise<{ message: string; created: number; skipped: number }>;
 }
 
 export default function UtilitiesAndExpenses({
   units,
   utilities,
   expenses,
+  recurringExpenses,
   settings,
   session,
   onAddUtilityReading,
   onUpdateUtilityReading,
   onSettleUtility,
   onAddExpense,
-  onUpdateExpense
+  onUpdateExpense,
+  onAddRecurring,
+  onUpdateRecurring,
+  onPostMonthlyExpenses
 }: UtilitiesAndExpensesProps) {
-  const [tab, setTab] = useState<'utilities' | 'expenses'>('utilities');
+  const [tab, setTab] = useState<'utilities' | 'expenses' | 'monthly'>('utilities');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -86,7 +96,8 @@ export default function UtilitiesAndExpenses({
         <div className="flex gap-4">
           {([
             ['utilities', 'Metered utilities'],
-            ['expenses', 'Expense register']
+            ['expenses', 'Expense register'],
+            ['monthly', 'Monthly costs']
           ] as const).map(([key, label]) => (
             <button
               key={key}
@@ -104,23 +115,22 @@ export default function UtilitiesAndExpenses({
           ))}
         </div>
 
-        {tab === 'utilities'
-          ? canUtilities && (
-              <SubmitButton type="button" onClick={() => setAddingUtility(true)}>
-                <Plus className="h-4 w-4" /> Log meter reading
-              </SubmitButton>
-            )
-          : canExpenses && (
-              <SubmitButton type="button" onClick={() => setAddingExpense(true)}>
-                <Plus className="h-4 w-4" /> Log expense
-              </SubmitButton>
-            )}
+        {tab === 'utilities' && canUtilities && (
+          <SubmitButton type="button" onClick={() => setAddingUtility(true)}>
+            <Plus className="h-4 w-4" /> Log meter reading
+          </SubmitButton>
+        )}
+        {tab === 'expenses' && canExpenses && (
+          <SubmitButton type="button" onClick={() => setAddingExpense(true)}>
+            <Plus className="h-4 w-4" /> Log expense
+          </SubmitButton>
+        )}
       </div>
 
       {error && <ErrorNote>{error}</ErrorNote>}
       {success && <SuccessNote>{success}</SuccessNote>}
       {tab === 'utilities' && !canUtilities && <PermissionNote>Recording utility readings requires additional permission.</PermissionNote>}
-      {tab === 'expenses' && !canExpenses && <PermissionNote>Recording expenses requires additional permission.</PermissionNote>}
+      {tab !== 'utilities' && !canExpenses && <PermissionNote>Recording expenses requires additional permission.</PermissionNote>}
 
       {tab === 'utilities' ? (
         <UtilitiesPanel
@@ -132,8 +142,19 @@ export default function UtilitiesAndExpenses({
           onSettle={setSettlingUtility}
           generatedBy={session.name}
         />
-      ) : (
+      ) : tab === 'expenses' ? (
         <ExpensesPanel expenses={expenses} canEdit={canExpenses} onEdit={setEditingExpense} generatedBy={session.name} />
+      ) : (
+        <MonthlyExpenses
+          units={units}
+          expenses={expenses}
+          templates={recurringExpenses}
+          vendors={settings.vendors}
+          canEdit={canExpenses}
+          onAddRecurring={onAddRecurring}
+          onUpdateRecurring={onUpdateRecurring}
+          onPostMonth={onPostMonthlyExpenses}
+        />
       )}
 
       {addingUtility && (

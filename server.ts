@@ -30,6 +30,7 @@ import {
   PaymentCategory,
   PaymentMethod,
   PROPERTY_LOCATIONS,
+  RecurringExpense,
   Tenancy,
   Unit,
   ONE_OFF_CHARGE_TYPES,
@@ -307,6 +308,17 @@ function uniqueRecordId(rows: { id: string }[], baseId: string): string {
   let revision = 2;
   while (rows.some(r => r.id === `${baseId}-r${revision}`)) revision++;
   return `${baseId}-r${revision}`;
+}
+
+/** A short, readable, id-safe stub of a name, for building record ids. */
+function slugForId(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 24) || 'item'
+  );
 }
 
 function findUnitOrFail(db: Database, unitId: unknown): Unit {
@@ -597,6 +609,7 @@ app.get(
       payments: db.payments,
       utilities: db.utilities,
       expenses: db.expenses,
+      recurringExpenses: db.recurringExpenses,
       tenancies: db.tenancies,
       auditLogs: db.auditLogs.slice(0, 2000),
       unitActivities: db.unitActivities,
@@ -2601,6 +2614,233 @@ app.put(
       return updated;
     });
     res.json({ success: true, expense });
+  })
+);
+
+/* ------------------------------------------------------------------ *
+ * Recurring expenses (the monthly run)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Read the fields of a recurring template. Shares the location rules with
+ * readExpenseFields so a template and the expense it raises agree about where a
+ * cost belongs.
+ */
+function readRecurringFields(db: Database, body: Record<string, unknown>, existing?: RecurringExpense) {
+  const rawLocation = String(body.unitNumber ?? existing?.unitNumber ?? '').trim();
+  const isNamedLocation = !body.unitId && (PROPERTY_LOCATIONS as readonly string[]).includes(rawLocation);
+  const isUnspecified = !body.unitId && !rawLocation;
+  const unit = isNamedLocation || isUnspecified ? undefined : resolveUnit(db, body);
+
+  const dueDayRaw = Number(body.dueDay ?? existing?.dueDay ?? 1);
+  // Capped at 28 so every month has the day. A template due on the 31st would
+  // silently move for four months of the year, which reads as a data error.
+  if (!Number.isInteger(dueDayRaw) || dueDayRaw < 1 || dueDayRaw > 28) {
+    bad('Due day must be a whole number between 1 and 28.');
+  }
+
+  return {
+    category: requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'),
+    vendor: requireString(body.vendor ?? existing?.vendor, 'Vendor or payee', 160),
+    description: optionalString(body.description ?? existing?.description, 1000),
+    unitId: unit?.id ?? '',
+    unitNumber: unit ? unit.number : isNamedLocation ? rawLocation : 'General',
+    amount: requirePositiveAmount(body.amount ?? existing?.amount, 'Usual amount'),
+    currency: requireCurrency(body.currency ?? existing?.currency),
+    paymentMethod: requireEnum(
+      body.paymentMethod ?? existing?.paymentMethod ?? 'Bank Transfer',
+      PAYMENT_METHODS,
+      'Payment method'
+    ) as PaymentMethod,
+    dueDay: dueDayRaw,
+    active: body.active === undefined ? (existing?.active ?? true) : body.active === true,
+    notes: optionalString(body.notes ?? existing?.notes, 2000)
+  };
+}
+
+app.post(
+  '/api/recurring-expenses',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'record_expense');
+    const template = await transaction(db => {
+      const fields = readRecurringFields(db, req.body || {});
+      const who = actor(req);
+      const created: RecurringExpense = {
+        id: `rex-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        ...fields,
+        createdAt: new Date().toISOString(),
+        createdBy: who.name
+      };
+      db.recurringExpenses.push(created);
+      addAudit(db, who.name, who.role, `Added a monthly cost: ${created.vendor}`, 'RecurringExpense', created.id, '', created);
+      return created;
+    });
+    res.json({ success: true, template });
+  })
+);
+
+app.put(
+  '/api/recurring-expenses/:id',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'record_expense');
+    const { id } = req.params;
+    const template = await transaction(db => {
+      const idx = db.recurringExpenses.findIndex(t => t.id === id);
+      if (idx === -1) throw new ApiError(404, 'That monthly cost could not be found.');
+      const original = db.recurringExpenses[idx];
+      const updated: RecurringExpense = { ...original, ...readRecurringFields(db, req.body || {}, original) };
+      db.recurringExpenses[idx] = updated;
+      const who = actor(req);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        updated.active === original.active
+          ? `Updated the monthly cost for ${updated.vendor}`
+          : updated.active
+            ? `Resumed the monthly cost for ${updated.vendor}`
+            : `Stopped the monthly cost for ${updated.vendor}`,
+        'RecurringExpense',
+        id,
+        original,
+        updated
+      );
+      return updated;
+    });
+    res.json({ success: true, template });
+  })
+);
+
+/**
+ * Post a month's recurring costs.
+ *
+ * Unlike posting charges, this is not a fixed calculation the server can make on
+ * its own. Electricity and water are different every month and payroll changes
+ * when someone works overtime, so the amounts arrive from a screen where a person
+ * has looked at each line and corrected it. The server's job is to write what was
+ * reviewed, refuse to write it twice, and record who posted it.
+ *
+ * Everything lands as `pending`. A posted line is a bill raised, not money gone:
+ * marking it paid here would assert a payment nobody made, and would flow
+ * straight into the proprietors' statements as a deduction. It becomes `paid`
+ * through the ordinary expense form, when it is actually settled.
+ *
+ * Re-posting a month tops up only what is missing, exactly like posting charges.
+ */
+app.post(
+  '/api/expenses/post-month',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'record_expense');
+    const body = req.body || {};
+    const monthString = String(body.monthString ?? '').trim();
+    if (!isValidMonth(monthString)) bad('Billing month is required in YYYY-MM format.');
+    if (monthString > today().substring(0, 7)) bad('You cannot post costs for a future month.');
+    if (body.items !== undefined && !Array.isArray(body.items)) bad('The list of costs to post is not in the expected form.');
+
+    const result = await transaction(db => {
+      const who = actor(req);
+      const created: Expense[] = [];
+      const skipped: string[] = [];
+
+      // No list at all means "post every active template at its usual amount".
+      // The screen always sends a reviewed list; this is for a scripted run.
+      const items: Record<string, unknown>[] = Array.isArray(body.items)
+        ? (body.items as Record<string, unknown>[])
+        : db.recurringExpenses.filter(t => t.active).map(t => ({ recurringId: t.id }));
+
+      for (const item of items) {
+        if (item.skip === true) continue;
+        const recurringId = String(item.recurringId ?? '').trim();
+        const template = recurringId ? db.recurringExpenses.find(t => t.id === recurringId) : undefined;
+        if (recurringId && !template) bad('One of the costs being posted no longer exists. Reload and try again.');
+
+        // A template posts once per month. An added item is matched on what it
+        // actually is, so submitting the same run twice cannot double it either.
+        const fields = template
+          ? {
+              category: template.category,
+              vendor: template.vendor,
+              description: optionalString(item.description ?? template.description, 1000),
+              unitId: template.unitId,
+              unitNumber: template.unitNumber,
+              amount: requirePositiveAmount(item.amount ?? template.amount, `Amount for ${template.vendor}`),
+              currency: requireCurrency(item.currency ?? template.currency),
+              paymentMethod: template.paymentMethod,
+              dueDay: template.dueDay,
+              notes: optionalString(item.notes ?? template.notes, 2000)
+            }
+          : (() => {
+              const one = readRecurringFields(db, item);
+              return { ...one, notes: one.notes };
+            })();
+
+        const already = template
+          ? db.expenses.find(e => e.recurringId === template.id && e.periodMonth === monthString)
+          : db.expenses.find(
+              e =>
+                e.periodMonth === monthString &&
+                !e.recurringId &&
+                e.vendor.toLowerCase() === fields.vendor.toLowerCase() &&
+                e.category === fields.category &&
+                e.unitNumber === fields.unitNumber &&
+                e.currency === fields.currency &&
+                e.amount === fields.amount
+            );
+        if (already) {
+          skipped.push(`${fields.vendor} (${fields.unitNumber})`);
+          continue;
+        }
+
+        const dueDate = dueDateForMonth(monthString, fields.dueDay);
+        const expense: Expense = {
+          id: uniqueRecordId(db.expenses, `ex-${monthString}-${template ? template.id : slugForId(fields.vendor)}`),
+          category: fields.category,
+          vendor: fields.vendor,
+          description: fields.description,
+          unitId: fields.unitId,
+          unitNumber: fields.unitNumber,
+          amount: fields.amount,
+          currency: fields.currency,
+          // Dated to the month it belongs to, not the day it was typed, so a run
+          // posted late still falls in the right period on every report.
+          date: dueDate,
+          dueDate,
+          paymentMethod: fields.paymentMethod,
+          status: 'pending',
+          reference: '',
+          notes: fields.notes,
+          periodMonth: monthString,
+          ...(template ? { recurringId: template.id } : {})
+        };
+        db.expenses.push(expense);
+        created.push(expense);
+      }
+
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Posted the monthly costs for ${monthString}`,
+        'Expense',
+        monthString,
+        `${skipped.length} already posted`,
+        `${created.length} cost(s) raised: ${created.map(e => `${e.vendor} ${e.currency} ${e.amount}`).join(', ') || 'none'}`
+      );
+
+      return { created: created.length, skipped: skipped.length, skippedNames: skipped };
+    });
+
+    res.json({
+      success: true,
+      ...result,
+      message:
+        result.created > 0
+          ? `Raised ${result.created} cost(s) for ${monthString}, awaiting payment.` +
+            (result.skipped > 0 ? ` ${result.skipped} were already posted and were left untouched.` : '')
+          : result.skipped > 0
+            ? `Nothing to post — all ${result.skipped} cost(s) for ${monthString} were already raised.`
+            : `Nothing was selected to post for ${monthString}.`
+    });
   })
 );
 

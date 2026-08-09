@@ -425,6 +425,47 @@ export interface Expense {
   status: 'paid' | 'pending';
   reference: string;
   notes: string;
+  /** Set when this expense came out of a monthly run; the template it came from. */
+  recurringId?: string;
+  /** The month a posted run raised this for, YYYY-MM. Set on run-posted rows only. */
+  periodMonth?: string;
+}
+
+/**
+ * A cost that comes round every month: payroll, electricity, water, the security
+ * contract. The property was re-typing about twenty of these by hand every month,
+ * which is slow and, worse, silently lossy — a bill nobody remembered was simply
+ * never recorded.
+ *
+ * This is a template, not a bill. `amount` is the figure to start from, not a
+ * fact: electricity is never the same twice, so a run pre-fills from here and the
+ * person posting it corrects each line before anything is written. Nothing is
+ * raised from a template without someone looking at it.
+ *
+ * Deliberately monthly-only. The annual insurance premium is split across the
+ * villas, which is a different operation with different arithmetic, and it stays
+ * a hand-entered expense rather than being forced through this.
+ */
+export interface RecurringExpense {
+  id: string;
+  category: ExpenseCategory;
+  vendor: string;
+  description: string;
+  /** '' when the cost is not tied to a specific villa; see `unitNumber`. */
+  unitId: string;
+  /** Villa number, or a PropertyLocation ("General" / "Office") when unitId is ''. */
+  unitNumber: string;
+  /** The usual figure. A run pre-fills with it and the poster may change it. */
+  amount: number;
+  currency: Currency;
+  paymentMethod: PaymentMethod;
+  /** Day of the month the bill falls due, 1–28. */
+  dueDay: number;
+  /** A retired template stays on file so old expenses keep their lineage. */
+  active: boolean;
+  notes: string;
+  createdAt: string;
+  createdBy: string;
 }
 
 export interface AuditLog {
