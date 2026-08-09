@@ -1939,6 +1939,129 @@ app.put(
   })
 );
 
+/**
+ * Hold a refundable damage deposit against a stay.
+ *
+ * Optional, and meant to stay that way: a stay that takes no deposit is the
+ * ordinary case, and nothing here is reachable unless someone chooses to record
+ * one. No booking, check-out or receipt is blocked by its absence.
+ *
+ * It is not the reservation deposit. `depositPaid` is a part-payment toward the
+ * stay — the guest's money becoming the property's, and it raises a receipt. This
+ * is the guest's money staying the guest's: held against damage, owed back less
+ * whatever is fairly deducted. So it raises no payment, appears in no collection
+ * figure, and cannot reach an owner statement or a projection. It sits on the
+ * booking exactly as a tenant's deposit sits on the tenancy.
+ */
+app.post(
+  '/api/bookings/:id/damage-deposit',
+  handler(async (req: AuthedRequest, res) => {
+    // Taking money from a guest is the payment permission.
+    requirePermission(req, 'record_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const booking = await transaction(db => {
+      const record = db.bookings.find(b => b.id === id);
+      if (!record) throw new ApiError(404, 'Reservation not found.');
+      if (record.damageDepositReturnedOn) {
+        throw new ApiError(400, 'This damage deposit has already been reconciled and returned.');
+      }
+
+      const before = { ...record };
+      const amount = requirePositiveAmount(body.amount, 'Damage deposit amount');
+      const receivedOn = requireDay(body.receivedOn || today(), 'Date received');
+      if (receivedOn > today()) bad('A damage deposit cannot be dated in the future.');
+
+      record.damageDepositAmount = amount;
+      record.damageDepositCurrency = requireCurrency(body.currency ?? record.currency ?? 'JMD');
+      record.damageDepositReceivedOn = receivedOn;
+
+      const who = actor(req);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Holding a ${record.damageDepositCurrency} ${amount} damage deposit for ${record.guestName} at ${record.unitNumber}`,
+        'Booking',
+        record.id,
+        before,
+        record
+      );
+      return record;
+    });
+    res.json({ success: true, booking });
+  })
+);
+
+/**
+ * Reconcile the damage deposit after the stay: what goes back, what is kept.
+ *
+ * The two must add up to what was held — a deposit that half disappears is what a
+ * guest disputes, and a chargeback follows the guest, not the property's
+ * paperwork. Anything withheld carries a reason on the record permanently,
+ * because "we kept some of it" is not a defence.
+ *
+ * Withholding does not create income here. If the property is recovering a real
+ * cost — a broken door, a replaced mattress — that cost is an expense against the
+ * villa, recorded where expenses go.
+ */
+app.post(
+  '/api/bookings/:id/damage-deposit/settle',
+  handler(async (req: AuthedRequest, res) => {
+    // Deciding to keep a guest's money is a veto-level act, as with a tenancy.
+    requirePermission(req, 'reverse_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const booking = await transaction(db => {
+      const record = db.bookings.find(b => b.id === id);
+      if (!record) throw new ApiError(404, 'Reservation not found.');
+      if (!record.damageDepositAmount) throw new ApiError(400, 'No damage deposit is held against this reservation.');
+      if (record.damageDepositReturnedOn) throw new ApiError(400, 'This damage deposit has already been reconciled.');
+
+      const before = { ...record };
+      const held = record.damageDepositAmount;
+      const currency = record.damageDepositCurrency ?? record.currency;
+      const withheld = Math.max(0, toMoney(body.withheldAmount ?? 0));
+      const returned = Math.max(0, toMoney(body.returnedAmount ?? round2(held - withheld)));
+      const settledOn = requireDay(body.settledOn || today(), 'Date settled');
+      if (settledOn > today()) bad('A damage deposit cannot be settled in the future.');
+
+      if (round2(withheld + returned) !== round2(held)) {
+        bad(
+          `Returned and withheld must add up to the ${currency} ${held} held. ` +
+            `That is ${currency} ${round2(withheld + returned)}.`
+        );
+      }
+      const reason = optionalString(body.withheldReason, 1000);
+      if (withheld > 0 && reason.length < 5) {
+        bad('Give a reason for the amount withheld. It is kept permanently and is what justifies the deduction.');
+      }
+
+      record.damageDepositReturnedOn = settledOn;
+      record.damageDepositReturnedAmount = returned;
+      record.damageDepositWithheldAmount = withheld;
+      record.damageDepositWithheldReason = reason;
+
+      const who = actor(req);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Reconciled the damage deposit for ${record.guestName} at ${record.unitNumber}: ` +
+          `${currency} ${returned} returned, ${currency} ${withheld} withheld`,
+        'Booking',
+        record.id,
+        before,
+        record
+      );
+      return record;
+    });
+    res.json({ success: true, booking });
+  })
+);
+
 /* ------------------------------------------------------------------ *
  * Payments and receipts
  * ------------------------------------------------------------------ */

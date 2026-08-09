@@ -605,6 +605,8 @@ export default function App() {
             onAddBooking={payload => mutate(() => api.post<{ booking: Booking }>('/api/bookings', payload).then(r => r.booking))}
             onUpdateBooking={(id, fields) => mutate(() => api.put(`/api/bookings/${id}`, fields))}
             onSyncCalendars={feedId => mutate(() => api.post<{ results: unknown[] }>('/api/ical/sync', feedId ? { feedId } : {}))}
+            onHoldDamageDeposit={(id, payload) => mutate(() => api.post(`/api/bookings/${id}/damage-deposit`, payload))}
+            onSettleDamageDeposit={(id, payload) => mutate(() => api.post(`/api/bookings/${id}/damage-deposit/settle`, payload))}
           />
         )}
 

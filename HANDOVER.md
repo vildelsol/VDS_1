@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **338 automated tests pass.** Typecheck clean, build clean.
+- **364 automated tests pass.** Typecheck clean, build clean.
 - Working tree is clean.
 - Latest release: **v1.6.0** (security deposits and owner statements). The double-record guard and
   recurring expenses both landed *after* it and are not in a tagged release yet.
@@ -62,7 +62,7 @@ Two things worth knowing about the implementation:
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (338 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (364 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
@@ -181,6 +181,32 @@ arithmetic, different operation — and stays a hand-entered expense. Template d
 
 28 tests in `test/recurring-expenses.test.mjs`; verified in the browser against seeded data.
 
+### Guest damage deposits — finished, and optional
+
+Short-Term Bookings gains a **Damage held** column. Blank for a stay with no deposit, which is most
+of them; "Hold one" where it makes sense; the amount held once one is taken; and what went back once
+it is reconciled.
+
+**Optional is the requirement, not a nicety** (Ro, 2026-08-09: "do not make it mandatory, make it
+optional for us"). A booking, a check-out and a guest receipt all behave exactly as they did when no
+deposit is held. Nothing prompts for one and nothing blocks on its absence — there is a test for
+each of those, because this is the kind of thing that quietly becomes mandatory later.
+
+**It is not `depositPaid`.** That field beside it is a part-payment toward the stay: the guest's
+money becoming the property's, and it raises a receipt. This is the opposite — the guest's money
+staying the guest's, held against damage and owed back. So `damageDeposit*` raises **no payment
+row**, appears in no collection figure, and cannot reach an owner statement or a projection. It
+lives on the booking exactly as a tenant's deposit lives on the tenancy, and for the same reason.
+Do not "fix" this by booking it as income.
+
+Reconciling insists returned + withheld equals what was held, and anything withheld carries a reason
+kept permanently — a deposit that half disappears is what a guest disputes, and a chargeback follows
+the guest, not the paperwork. Withholding is still not income: a real cost recovered that way is
+recorded as an expense against the villa. Holding needs `recordPayments`; reconciling needs
+`reversePayments`, the same veto level as a tenancy deposit.
+
+26 tests in `test/damage-deposit.test.mjs`; verified in the browser.
+
 ### Double-recorded payments — fixed
 
 Two officers working the same arrears list, or one person with the hub open in two tabs, both saw
@@ -221,8 +247,7 @@ I audited the app as a property manager. Remaining gaps, in the order I'd do the
    defended with.
 
 **Tier 4 — short lets**
-7. **Guest damage deposit** — there is no instrument for one. A short let takes no security against
-   damage, and nothing records one being held or returned. This is the only real short-let gap.
+7. ~~**Guest damage deposit**~~ — done, see below.
 
 **Tier 5 — finance hygiene**
 8. **Bank reconciliation** — nothing ties receipts to a bank statement.

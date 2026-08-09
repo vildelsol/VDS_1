@@ -275,9 +275,32 @@ export interface Booking {
   amount: number;
   nightlyRate?: number;
   currency: Currency;
+  /** Part-payment toward the stay. This IS income — see `damageDepositAmount` for the other kind. */
   depositPaid: number;
   balanceDue: number;
   status: 'confirmed' | 'checked-in' | 'checked-out' | 'cancelled';
+
+  /**
+   * A refundable damage deposit held against the stay. **Entirely optional** —
+   * most stays will not have one, and nothing about a booking, a check-out or a
+   * receipt requires it.
+   *
+   * Not to be confused with `depositPaid`, which is a part-payment toward the
+   * stay and is the guest's money becoming the property's. This is the opposite:
+   * the guest's money that stays the guest's, held against damage and owed back
+   * less whatever is fairly deducted. So it is never a payment row, never
+   * collections, never income, and never touches an owner statement or a
+   * projection. It lives here on the booking, as the tenancy deposit lives on the
+   * tenancy.
+   */
+  damageDepositAmount?: number;
+  damageDepositCurrency?: Currency;
+  damageDepositReceivedOn?: string;
+  /** Set once the deposit has been reconciled after the stay. */
+  damageDepositReturnedOn?: string;
+  damageDepositReturnedAmount?: number;
+  damageDepositWithheldAmount?: number;
+  damageDepositWithheldReason?: string;
   notes?: string;
   /** Set for reservations imported from an external iCalendar feed. Used for idempotent re-import. */
   externalUid?: string;

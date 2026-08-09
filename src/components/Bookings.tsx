@@ -27,7 +27,7 @@ import {
   monoInputClass,
   tableHeadRowClass
 } from './ui';
-import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Mail, Plus, Printer, RefreshCw, Search, ShieldCheck } from 'lucide-react';
+import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Lock, Mail, Plus, Printer, RefreshCw, Search, ShieldCheck } from 'lucide-react';
 
 interface BookingsProps {
   units: Unit[];
@@ -37,6 +37,8 @@ interface BookingsProps {
   onAddBooking: (payload: Record<string, unknown>) => Promise<Booking>;
   onUpdateBooking: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
   onSyncCalendars: (feedId?: string) => Promise<{ results: unknown[] }>;
+  onHoldDamageDeposit: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
+  onSettleDamageDeposit: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
 }
 
 interface SyncOutcome {
@@ -50,13 +52,24 @@ interface SyncOutcome {
   error?: string;
 }
 
-export default function Bookings({ units, bookings, settings, session, onAddBooking, onUpdateBooking, onSyncCalendars }: BookingsProps) {
+export default function Bookings({
+  units,
+  bookings,
+  settings,
+  session,
+  onAddBooking,
+  onUpdateBooking,
+  onSyncCalendars,
+  onHoldDamageDeposit,
+  onSettleDamageDeposit
+}: BookingsProps) {
   const [view, setView] = useState<'calendar' | 'list'>('calendar');
   const [month, setMonth] = useState(currentMonth());
   const [adding, setAdding] = useState<{ unitId?: string; checkIn?: string } | null>(null);
   const [editing, setEditing] = useState<Booking | null>(null);
   const [printing, setPrinting] = useState<{ from: string; to: string } | null>(null);
   const [receiptBooking, setReceiptBooking] = useState<Booking | null>(null);
+  const [depositBooking, setDepositBooking] = useState<Booking | null>(null);
   const [showPrintOptions, setShowPrintOptions] = useState(false);
   const [printFrom, setPrintFrom] = useState(monthStart(currentMonth()));
   const [printTo, setPrintTo] = useState(monthEnd(currentMonth()));
@@ -67,6 +80,8 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
   const perms = session.permissions;
   const canAdd = !!perms.addBookings;
   const canEdit = !!perms.editBookings;
+  const canHoldDeposit = !!perms.recordPayments;
+  const canSettleDeposit = !!perms.reversePayments;
 
   const sortedUnits = useMemo(
     () => [...units].sort((a, b) => (parseInt(a.number, 10) || 0) - (parseInt(b.number, 10) || 0) || a.number.localeCompare(b.number)),
@@ -508,6 +523,7 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
                     <th scope="col" className="p-3 text-right">Deposit</th>
                     <th scope="col" className="p-3 text-right">Balance</th>
                     <th scope="col" className="p-3">Status</th>
+                    <th scope="col" className="p-3">Damage held</th>
                     <th scope="col" className="p-3 text-right">Receipt</th>
                   </tr>
                 </thead>
@@ -538,6 +554,16 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
                       <td className="p-3 text-right font-mono font-semibold text-amber-600">{formatMoney(b.balanceDue, b.currency)}</td>
                       <td className="p-3">
                         <Badge tone={b.status === 'checked-in' ? 'green' : b.status === 'confirmed' ? 'blue' : b.status === 'cancelled' ? 'red' : 'slate'}>{b.status}</Badge>
+                      </td>
+                      {/* Optional throughout. Most stays take no damage deposit,
+                          so this column is blank for them and nothing asks. */}
+                      <td className="p-3" onClick={e => e.stopPropagation()}>
+                        <DamageDepositCell
+                          booking={b}
+                          canHold={canHoldDeposit}
+                          canSettle={canSettleDeposit}
+                          onOpen={() => setDepositBooking(b)}
+                        />
                       </td>
                       <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
                         {b.status !== 'cancelled' && (
@@ -589,6 +615,27 @@ export default function Bookings({ units, bookings, settings, session, onAddBook
             setSuccess('Reservation updated.');
             setError('');
             setEditing(null);
+          }}
+        />
+      )}
+
+      {depositBooking && (
+        <DamageDepositModal
+          booking={depositBooking}
+          canHold={canHoldDeposit}
+          canSettle={canSettleDeposit}
+          onClose={() => setDepositBooking(null)}
+          onHold={async payload => {
+            await onHoldDamageDeposit(depositBooking.id, payload);
+            setSuccess(`Damage deposit recorded as held for ${depositBooking.guestName}. It is the guest's money, not income.`);
+            setError('');
+            setDepositBooking(null);
+          }}
+          onSettle={async payload => {
+            await onSettleDamageDeposit(depositBooking.id, payload);
+            setSuccess(`Damage deposit reconciled for ${depositBooking.guestName}.`);
+            setError('');
+            setDepositBooking(null);
           }}
         />
       )}
@@ -970,6 +1017,238 @@ function BookingForm({
         <Field label="Notes" htmlFor="bf-notes">
           <textarea id="bf-notes" rows={2} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} />
         </Field>
+      </form>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * The damage deposit at a glance.
+ *
+ * Blank when there is none, which is most stays — a deposit is optional and this
+ * column must not nag for one. It offers to take one only where taking one is
+ * still meaningful.
+ */
+function DamageDepositCell({
+  booking,
+  canHold,
+  canSettle,
+  onOpen
+}: {
+  booking: Booking;
+  canHold: boolean;
+  canSettle: boolean;
+  onOpen: () => void;
+}) {
+  const currency = booking.damageDepositCurrency ?? booking.currency;
+
+  if (booking.damageDepositReturnedOn) {
+    const withheld = booking.damageDepositWithheldAmount || 0;
+    return (
+      <span className="text-[10px] text-slate-500">
+        <Badge tone={withheld > 0 ? 'amber' : 'slate'}>{withheld > 0 ? 'Part withheld' : 'Returned'}</Badge>
+        <span className="mt-0.5 block font-mono">{formatMoney(booking.damageDepositReturnedAmount || 0, currency)} back</span>
+      </span>
+    );
+  }
+
+  if (booking.damageDepositAmount) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        disabled={!canSettle}
+        title={canSettle ? 'Reconcile this deposit' : 'Reconciling a deposit requires additional permission'}
+        className="text-left disabled:cursor-default"
+      >
+        <Badge tone="blue">Held</Badge>
+        <span className="mt-0.5 block font-mono text-[10px] text-slate-600">{formatMoney(booking.damageDepositAmount, currency)}</span>
+      </button>
+    );
+  }
+
+  if (!canHold || booking.status === 'cancelled') return <span className="text-[10px] text-slate-300">—</span>;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700"
+    >
+      <Lock className="h-3 w-3" /> Hold one
+    </button>
+  );
+}
+
+/**
+ * Take a damage deposit, or reconcile the one being held.
+ *
+ * Reconciling insists the two figures add up to what was held and that anything
+ * withheld carries a reason. A deposit that half disappears is the thing a guest
+ * disputes, and a chargeback follows the guest rather than the property's
+ * paperwork.
+ */
+function DamageDepositModal({
+  booking,
+  canHold,
+  canSettle,
+  onClose,
+  onHold,
+  onSettle
+}: {
+  booking: Booking;
+  canHold: boolean;
+  canSettle: boolean;
+  onClose: () => void;
+  onHold: (payload: Record<string, unknown>) => Promise<void>;
+  onSettle: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const held = booking.damageDepositAmount || 0;
+  const reconciling = held > 0;
+  const currency = booking.damageDepositCurrency ?? booking.currency;
+
+  const [amount, setAmount] = useState('');
+  const [receivedOn, setReceivedOn] = useState(today());
+  const [depositCurrency, setDepositCurrency] = useState<Currency>(booking.currency);
+  const [withheld, setWithheld] = useState('0');
+  const [withheldReason, setWithheldReason] = useState('');
+  const [settledOn, setSettledOn] = useState(today());
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const withheldNum = Math.max(0, Number(withheld) || 0);
+  const returning = round2(held - withheldNum);
+  const overWithheld = withheldNum > held;
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (reconciling) {
+        await onSettle({ withheldAmount: withheldNum, returnedAmount: returning, withheldReason, settledOn });
+      } else {
+        await onHold({ amount: Number(amount), currency: depositCurrency, receivedOn });
+      }
+    } catch (err) {
+      setError(errorMessage(err, 'Could not save the damage deposit.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const blocked = reconciling ? !canSettle : !canHold;
+
+  return (
+    <Modal
+      title={reconciling ? 'Reconcile the damage deposit' : 'Hold a damage deposit'}
+      onClose={onClose}
+      maxWidthClass="max-w-md"
+      footer={
+        <div className="flex gap-3">
+          <SubmitButton
+            busy={busy}
+            busyLabel="Saving…"
+            form="vds-damage-deposit-form"
+            disabled={blocked || (reconciling && overWithheld)}
+            className="flex-1"
+          >
+            {reconciling ? 'Reconcile' : 'Record as held'}
+          </SubmitButton>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-damage-deposit-form" onSubmit={handleSubmit} className="space-y-4 p-6">
+        {error && <ErrorNote>{error}</ErrorNote>}
+        {blocked && (
+          <PermissionNote>
+            {reconciling
+              ? 'Deciding what to keep from a guest requires additional permission.'
+              : 'Taking money from a guest requires additional permission.'}
+          </PermissionNote>
+        )}
+
+        <div className="rounded-xl bg-slate-50 p-3 text-[11px] text-slate-600">
+          <p className="font-medium text-slate-800">
+            {getUnitDisplayName(booking.unitNumber)} — {booking.guestName}
+          </p>
+          <p className="font-mono">
+            {formatDayLabel(booking.checkIn)} → {formatDayLabel(booking.checkOut)}
+          </p>
+        </div>
+
+        {reconciling ? (
+          <>
+            <InfoNote>
+              {formatMoneyLong(held, currency)} is held, taken on {formatDayLabel(booking.damageDepositReceivedOn || '')}. What is returned
+              and what is kept must add up to it.
+            </InfoNote>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Withheld" htmlFor="dd-withheld" hint="Leave at zero to return it all.">
+                <input
+                  id="dd-withheld"
+                  type="number"
+                  min="0"
+                  max={held}
+                  step="0.01"
+                  value={withheld}
+                  onChange={e => setWithheld(e.target.value)}
+                  className={monoInputClass}
+                />
+              </Field>
+              <Field label="Returned to the guest" htmlFor="dd-returned">
+                <input id="dd-returned" type="text" readOnly value={formatMoney(Math.max(0, returning), currency)} className={`${monoInputClass} bg-slate-50`} />
+              </Field>
+            </div>
+
+            {overWithheld && <ErrorNote>You cannot withhold more than the {formatMoneyLong(held, currency)} being held.</ErrorNote>}
+
+            {withheldNum > 0 && (
+              <Field label="Reason for withholding" htmlFor="dd-reason" required hint="Kept permanently. It is what justifies the deduction.">
+                <textarea id="dd-reason" rows={3} value={withheldReason} onChange={e => setWithheldReason(e.target.value)} required className={inputClass} />
+              </Field>
+            )}
+
+            <Field label="Date settled" htmlFor="dd-settled" required>
+              <input id="dd-settled" type="date" max={today()} value={settledOn} onChange={e => setSettledOn(e.target.value)} required className={monoInputClass} />
+            </Field>
+
+            {withheldNum > 0 && (
+              <InfoNote tone="amber">
+                Keeping this money is not income. If it is covering a real cost — a broken door, a replaced mattress — record that cost as an
+                expense against the villa.
+              </InfoNote>
+            )}
+          </>
+        ) : (
+          <>
+            <InfoNote>
+              This is the guest&rsquo;s money, held against damage and owed back. It raises no receipt, counts in no collection figure, and
+              never reaches a proprietor&rsquo;s statement. It is separate from any deposit paid toward the stay itself.
+            </InfoNote>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Amount held" htmlFor="dd-amount" required>
+                <input id="dd-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
+              </Field>
+              <Field label="Currency" htmlFor="dd-cur" required>
+                <select id="dd-cur" value={depositCurrency} onChange={e => setDepositCurrency(e.target.value as Currency)} className={inputClass}>
+                  <option value="JMD">JMD (J$)</option>
+                  <option value="USD">USD ($)</option>
+                </select>
+              </Field>
+            </div>
+
+            <Field label="Date received" htmlFor="dd-received" required>
+              <input id="dd-received" type="date" max={today()} value={receivedOn} onChange={e => setReceivedOn(e.target.value)} required className={monoInputClass} />
+            </Field>
+          </>
+        )}
       </form>
     </Modal>
   );
