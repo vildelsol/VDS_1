@@ -32,10 +32,11 @@ import {
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
 import { currentMonth, formatDayLabel, formatMonthLabel, today } from '../lib/dates';
-import { errorMessage } from '../lib/api';
+import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
 import { openMailDraft } from '../lib/email';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import {
+  AlreadySettledNote,
   Badge,
   EmptyState,
   ErrorNote,
@@ -906,6 +907,15 @@ function RecordPaymentModal({
   const [notes, setNotes] = useState('');
   const [confirmMismatch, setConfirmMismatch] = useState(false);
   const [confirmNoCharge, setConfirmNoCharge] = useState(false);
+  /**
+   * The server refused because the debt had already been settled — usually by
+   * somebody else, seconds ago, on another machine. This cannot be predicted from
+   * what this browser holds: its copy of the ledger was fetched before the other
+   * person saved. So it is revealed by the refusal itself, and the refusal text is
+   * kept on screen beside it, because the sensible answer is very often "stop".
+   */
+  const [alreadySettled, setAlreadySettled] = useState('');
+  const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -998,10 +1008,18 @@ function RecordPaymentModal({
         notes,
         receivedNow: initial.receivedNow,
         confirmCurrencyMismatch: confirmMismatch,
-        confirmNoOpenCharge: confirmNoCharge
+        confirmNoOpenCharge: confirmNoCharge,
+        confirmAlreadySettled
       });
     } catch (err) {
-      setError(errorMessage(err, 'Could not record the payment.'));
+      if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
+        // Not an error to dismiss and retry — a fact about the account that the
+        // person now has to make a decision about.
+        setAlreadySettled(err.message);
+        setError('');
+      } else {
+        setError(errorMessage(err, 'Could not record the payment.'));
+      }
     } finally {
       setBusy(false);
     }
@@ -1032,6 +1050,8 @@ function RecordPaymentModal({
     >
       <form id="vds-payment-form" onSubmit={handleSubmit} className="space-y-4 p-6">
         {error && <ErrorNote>{error}</ErrorNote>}
+
+        <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Villa unit" htmlFor="pm-unit" required>

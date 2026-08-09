@@ -216,6 +216,41 @@ export function TableScroller({ children }: { children: React.ReactNode }) {
   return <div className="w-full overflow-x-auto">{children}</div>;
 }
 
+/**
+ * The server refused a receipt because the account has already been settled.
+ *
+ * Every screen that takes money shows this identically, because it is the same
+ * fact wherever it happens and the answer to it is usually "stop". It is red
+ * rather than amber, and it leads with what did *not* happen: the natural reading
+ * of a form that comes back with a message is that the thing worked and there is a
+ * note about it. Here nothing was recorded, and the person is standing in front of
+ * someone holding money.
+ *
+ * The acknowledgement is deliberately narrow — it claims the money is *separate*,
+ * not that the warning is a nuisance.
+ */
+export function AlreadySettledNote({
+  message,
+  confirmed,
+  onConfirm
+}: {
+  message: string;
+  confirmed: boolean;
+  onConfirm: (value: boolean) => void;
+}) {
+  if (!message) return null;
+  return (
+    <div role="alert" className="space-y-2 rounded-xl border border-red-200 bg-red-50 p-3 text-[11px] text-red-900">
+      <p className="font-semibold">This has not been recorded.</p>
+      <p className="leading-relaxed">{message}</p>
+      <label className="flex items-start gap-2">
+        <input type="checkbox" checked={confirmed} onChange={e => onConfirm(e.target.checked)} className="mt-0.5" />
+        <span>This is separate money, not the payment already taken. Record it as a credit on the account.</span>
+      </label>
+    </div>
+  );
+}
+
 /** Shown in place of a control the current role may not use. */
 export function PermissionNote({ children }: { children: React.ReactNode }) {
   return (

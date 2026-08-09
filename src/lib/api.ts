@@ -26,7 +26,14 @@ import { describeAction, enqueue, markAttempt, pendingActions, removeQueued } fr
 export class ApiError extends Error {
   constructor(
     public status: number,
-    message: string
+    message: string,
+    /**
+     * A machine-readable marker for refusals the screen must react to rather than
+     * merely display — offering the acknowledgement that turns a refusal into a
+     * deliberate act. Matching on the message text would break the first time
+     * anyone rewords it.
+     */
+    public code?: string
   ) {
     super(message);
     this.name = 'ApiError';
@@ -45,6 +52,14 @@ export class ApiError extends Error {
    */
   queued = false;
 }
+
+/**
+ * The server refused a receipt because the account it names has already been
+ * settled — most often because somebody else banked the same money while this
+ * form was open. The screen turns this into an explicit acknowledgement rather
+ * than a dead end. Kept in step with `ALREADY_SETTLED` in server.ts.
+ */
+export const ALREADY_SETTLED = 'account-already-settled';
 
 let onUnauthenticated: (() => void) | null = null;
 
@@ -254,6 +269,8 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
         const serverMessage =
           payload && typeof payload === 'object' && 'error' in payload ? String((payload as { error: unknown }).error) : '';
         const message = serverMessage || `Request failed (HTTP ${res.status}).`;
+        const code =
+          payload && typeof payload === 'object' && 'code' in payload ? String((payload as { code: unknown }).code) : undefined;
         if (res.status === 401 && onUnauthenticated) onUnauthenticated();
         // A "still processing" duplicate (idempotent in-flight) — wait and retry.
         if (res.status === 409 && res.headers.get('Idempotent-Replayed') === null && /still being processed/i.test(message)) {
@@ -264,7 +281,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
         // settled and must not be replayed: a rejected request will be rejected
         // again, and replaying it forever would block everything behind it.
         if (queueId) removeQueued(queueId);
-        throw new ApiError(res.status, message);
+        throw new ApiError(res.status, message, code);
       }
       if (queueId) removeQueued(queueId);
       return payload as T;

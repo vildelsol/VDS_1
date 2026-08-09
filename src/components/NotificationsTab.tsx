@@ -22,9 +22,10 @@ import {
 import { AccountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, unbilledOccupancy } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
-import { errorMessage } from '../lib/api';
+import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
 import type { TabKey } from '../App';
 import {
+  AlreadySettledNote,
   Badge,
   EmptyState,
   ErrorNote,
@@ -510,6 +511,11 @@ function SettleAccountModal({
   const [method, setMethod] = useState<PaymentMethod>('Bank Transfer');
   const [reference, setReference] = useState('');
   const [notes, setNotes] = useState('');
+  // This is the screen the race actually happens on: two people working the same
+  // arrears list. The balance above was fetched before whoever else banked the
+  // money saved it, so only the server can tell us, and only at submit.
+  const [alreadySettled, setAlreadySettled] = useState('');
+  const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -533,10 +539,16 @@ function SettleAccountModal({
         notes: notes || `${account.category} settlement recorded from the Notifications Hub.`,
         // Actioning an alert here means the money has been taken, so the receipt
         // is issued now and the alert clears from here and the dashboard at once.
-        receivedNow: true
+        receivedNow: true,
+        confirmAlreadySettled
       });
     } catch (err) {
-      setError(errorMessage(err, 'Could not record the payment.'));
+      if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
+        setAlreadySettled(err.message);
+        setError('');
+      } else {
+        setError(errorMessage(err, 'Could not record the payment.'));
+      }
     } finally {
       setBusy(false);
     }
@@ -558,6 +570,8 @@ function SettleAccountModal({
     >
       <form id="vds-settle-account" onSubmit={handleSubmit} className="space-y-4 p-6">
         {error && <ErrorNote>{error}</ErrorNote>}
+
+        <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
 
         <InfoNote>
           Unpaid months on this account:{' '}

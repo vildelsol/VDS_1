@@ -42,11 +42,12 @@ import {
   UtilityReading,
   UserRole,
   RolePermissions,
-  ICalFeed
+  ICalFeed,
+  getUnitDisplayName
 } from './src/types';
-import { round2, toMoney } from './src/lib/money';
-import { isValidDay, isValidMonth, today, dueDateForMonth, monthOf, monthStart, nightsBetween } from './src/lib/dates';
-import { bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable } from './src/lib/finance';
+import { formatMoneyLong, round2, toMoney } from './src/lib/money';
+import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, monthStart, nightsBetween } from './src/lib/dates';
+import { accountBalance, bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable } from './src/lib/finance';
 import {
   DATA_DIR,
   DB_FILE,
@@ -195,7 +196,16 @@ function idempotency(req: express.Request, res: express.Response, next: express.
  * ------------------------------------------------------------------ */
 
 class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  /**
+   * `code` marks a refusal the browser has to do something about beyond showing
+   * the text — offering the override that turns it into a deliberate act. Matching
+   * on the wording instead would break the moment anyone rephrased the sentence.
+   */
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string
+  ) {
     super(message);
   }
 }
@@ -235,7 +245,7 @@ function handler(fn: (req: AuthedRequest, res: express.Response) => Promise<unkn
       await fn(req, res);
     } catch (err) {
       if (err instanceof ApiError) {
-        return res.status(err.status).json({ error: err.message });
+        return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
       }
       console.error('[vds] unhandled error:', err);
       return res.status(500).json({ error: 'An unexpected server error occurred. Nothing was saved.' });
@@ -1920,6 +1930,90 @@ app.put(
  * Payments and receipts
  * ------------------------------------------------------------------ */
 
+/**
+ * Refuse money the account does not owe, judged at the moment it is banked.
+ *
+ * Two people working the same arrears list — or one person with the page open in
+ * two tabs — both saw the same debt, both pressed "Receive payment", and both
+ * were accepted: each request was checked against a world where the other had not
+ * happened yet. The villa then read as being in credit for money that was only
+ * ever collected once, which is the most expensive kind of wrong this application
+ * can be. The idempotency key does not help, because these are two genuinely
+ * different actions with two different keys, not one action retried.
+ *
+ * The check has to happen *here*, inside the transaction, against what the ledger
+ * says right now. Anything the browser knew was fetched before the other person
+ * saved.
+ *
+ * It is a refusal with an override rather than a hard block: paying two months up
+ * front, or settling a debt the office knows about but has not posted yet, are
+ * real things. What must not happen is either of them occurring by accident.
+ *
+ * Only Rent and Maintenance are covered — they are the only categories the charge
+ * ledger models. A booking or utility receipt has its own record to answer to.
+ */
+const ALREADY_SETTLED = 'account-already-settled';
+
+function assertAccountStillOwes(
+  db: Database,
+  unit: Unit,
+  category: PaymentCategory,
+  currency: Currency,
+  amount: number,
+  confirmed: boolean,
+  { excludePaymentId, verb = 'This receipt is' }: { excludePaymentId?: string; verb?: string } = {}
+) {
+  if (confirmed) return;
+  if (category !== 'Rent' && category !== 'Maintenance') return;
+  // A payment in the wrong currency does not reduce this balance at all; the
+  // currency-mismatch check owns that case and gives better advice than this one.
+  if (currency !== chargeCurrency(unit, category)) return;
+
+  // The same helper every screen derives from, so the refusal and the balance the
+  // user is looking at can never disagree. The entry being confirmed is excluded
+  // so it is not weighed against itself.
+  const payments = excludePaymentId ? db.payments.filter(p => p.id !== excludePaymentId) : db.payments;
+  const account = accountBalance(unit, category, db.charges, payments, undefined, db.units);
+
+  // Nothing has ever been billed here, so this is not a debt paid twice — it is
+  // money arriving on an account that owes nothing, which the check above already
+  // stops and already has its own acknowledgement. Asking a second time for the
+  // same fact is how a warning becomes something people tick without reading.
+  if (account.charged <= 0) return;
+
+  const outstanding = account.balance;
+  if (amount <= outstanding) return;
+
+  const villa = getUnitDisplayName(unit.number);
+  const money = (value: number) => formatMoneyLong(value, currency);
+
+  // Name who banked it and when. "Someone already took this" is only actionable
+  // if you can go and ask them.
+  const lastReceipt = payments
+    .filter(p => p.unitId === unit.id && p.category === category && p.status === 'completed' && p.currency === currency)
+    .sort((a, b) => (b.receivedAt || b.date).localeCompare(a.receivedAt || a.date))[0];
+  const alreadyTaken = lastReceipt
+    ? ` The most recent was ${money(lastReceipt.amount)} on ${formatDayLabel(lastReceipt.date)}` +
+      `${lastReceipt.receiptNo ? `, receipt ${lastReceipt.receiptNo}` : ''}` +
+      `${lastReceipt.receivedBy ? `, taken by ${lastReceipt.receivedBy}` : ''}.`
+    : '';
+
+  const position =
+    outstanding <= 0
+      ? `${villa}'s ${category.toLowerCase()} account owes nothing — ${money(account.charged)} has been billed and ` +
+        `${money(account.paid)} received.${alreadyTaken}`
+      : `${villa}'s ${category.toLowerCase()} account only owes ${money(outstanding)}, but ${verb.toLowerCase()} for ` +
+        `${money(amount)}.${alreadyTaken}`;
+
+  throw new ApiError(
+    400,
+    `${position} Recording it would leave the account ${money(round2(amount - outstanding))} in credit. ` +
+      `If somebody else has just taken this payment, do not record it again. ` +
+      `If it is genuinely separate money — rent paid in advance, or a debt not yet posted — confirm to record it as a credit.`,
+    ALREADY_SETTLED
+  );
+}
+
 app.post(
   '/api/payments',
   handler(async (req: AuthedRequest, res) => {
@@ -1968,6 +2062,10 @@ app.post(
               `rather than settling anything. Post the month's charges first, or confirm to record it as a credit on the account.`;
           throw new ApiError(400, message);
         }
+
+        // And, last, the one the browser cannot possibly know: has this debt
+        // already been settled while this form was open?
+        assertAccountStillOwes(db, unit, category, currency, amount, body.confirmAlreadySettled === true);
       }
 
       const who = actor(req);
@@ -2106,6 +2204,19 @@ app.post(
       // The date money actually arrived may differ from the date it was logged.
       const receivedOn = requireDay(body.date || target.date, 'Date received');
       if (receivedOn > today()) bad('A payment cannot be dated in the future.');
+
+      // Confirming is the moment an expectation becomes money on the ledger, so
+      // it is also a moment the debt can already have been settled by someone
+      // else — two expected cheques logged for one month, both then confirmed.
+      // The entry being confirmed is excluded from the balance it is judged
+      // against, or it would be counted as its own reason for refusal.
+      const payee = db.units.find(u => u.id === target.unitId);
+      if (payee) {
+        assertAccountStillOwes(db, payee, target.category, target.currency, target.amount, body.confirmAlreadySettled === true, {
+          excludePaymentId: target.id,
+          verb: 'This entry is'
+        });
+      }
 
       const before = { ...target };
       const who = actor(req);
@@ -2345,6 +2456,25 @@ app.post(
       const utility = db.utilities.find(u => u.id === id);
       if (!utility) throw new ApiError(404, 'Utility record not found.');
       if (utility.status === 'paid') throw new ApiError(400, 'That utility bill is already settled.');
+
+      /**
+       * The bill deliberately stays "unpaid" until its receipt is confirmed, so
+       * the status check above does not catch a second person settling it in the
+       * meantime — both would raise their own receipt for the same bill, and both
+       * would then be confirmable. The live entry is what has to be checked.
+       */
+      const existing = db.payments.find(p => p.utilityId === utility.id && p.status !== 'reversed');
+      if (existing) {
+        throw new ApiError(
+          400,
+          existing.status === 'completed'
+            ? `That utility bill has already been settled by receipt ${existing.receiptNo}` +
+              `${existing.receivedBy ? `, taken by ${existing.receivedBy}` : ''}.`
+            : `A payment for that utility bill has already been logged by ${existing.staffMember} and is awaiting ` +
+              `confirmation that the money arrived. Confirm that entry from the receipts ledger rather than raising a second one.`,
+          ALREADY_SETTLED
+        );
+      }
 
       const unit = db.units.find(u => u.id === utility.unitId);
       const date = requireDay(body.date || today(), 'Payment date');

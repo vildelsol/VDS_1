@@ -34,8 +34,9 @@ import {
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { addDays, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
-import { errorMessage } from '../lib/api';
+import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
 import {
+  AlreadySettledNote,
   Badge,
   EmptyState,
   ErrorNote,
@@ -520,14 +521,15 @@ export default function Dashboard({
           account={payTarget === 'blank' ? null : payTarget}
           onClose={() => setPayTarget(null)}
           onSubmit={async payload => {
-            try {
-              const payment = await onRecordPayment(payload);
-              setSuccess(`Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`);
-              setError('');
-              setPayTarget(null);
-            } catch (err) {
-              throw new Error(errorMessage(err, 'Could not record the payment.'));
-            }
+            // A failure is deliberately not caught here. Re-wrapping it as a plain
+            // Error threw away the typed ApiError, and with it the code the form
+            // needs to tell "the server is unhappy" from "this money has already
+            // been banked by someone else" — which is the difference between a
+            // message to read and a decision to make. The form does the reporting.
+            const payment = await onRecordPayment(payload);
+            setSuccess(`Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`);
+            setError('');
+            setPayTarget(null);
           }}
         />
       )}
@@ -641,6 +643,10 @@ function QuickReceiveModal({
   const [notes, setNotes] = useState('');
   const [confirmMismatch, setConfirmMismatch] = useState(false);
   const [confirmNoCharge, setConfirmNoCharge] = useState(false);
+  // Revealed by the server's refusal: this browser's ledger was fetched before
+  // whoever else banked the money saved it, so it cannot know in advance.
+  const [alreadySettled, setAlreadySettled] = useState('');
+  const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -700,10 +706,16 @@ function QuickReceiveModal({
         // the receipt is issued now and the arrears alert clears immediately.
         receivedNow: true,
         confirmCurrencyMismatch: confirmMismatch,
-        confirmNoOpenCharge: confirmNoCharge
+        confirmNoOpenCharge: confirmNoCharge,
+        confirmAlreadySettled
       });
     } catch (err) {
-      setError(errorMessage(err, 'Could not record the payment.'));
+      if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
+        setAlreadySettled(err.message);
+        setError('');
+      } else {
+        setError(errorMessage(err, 'Could not record the payment.'));
+      }
     } finally {
       setBusy(false);
     }
@@ -725,6 +737,8 @@ function QuickReceiveModal({
     >
       <form id="vds-quick-receive" onSubmit={handleSubmit} className="space-y-4 p-6">
         {error && <ErrorNote>{error}</ErrorNote>}
+
+        <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Villa unit" htmlFor="qr-unit" required>
