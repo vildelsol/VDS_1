@@ -181,6 +181,25 @@ arithmetic, different operation — and stays a hand-entered expense. Template d
 
 28 tests in `test/recurring-expenses.test.mjs`; verified in the browser against seeded data.
 
+### Double-recorded payments — fixed
+
+Two officers working the same arrears list, or one person with the hub open in two tabs, both saw
+"Villa 1 owes J$50,000", both pressed Receive payment, and the money was only ever handed over once.
+Each request was validated against a world in which the other had not happened, so both were
+accepted and the villa showed a credit for money nobody received. The idempotency key does not help
+— two people acting independently generate two different keys, so there is nothing to deduplicate.
+
+`assertAccountStillOwes` in `server.ts` checks the balance **inside the transaction**, against the
+committed ledger at the moment of the write, using the same `accountBalance()` the screens use. The
+refusal names who banked it and which receipt, carries the code `account-already-settled`, and the
+screen offers a checkbox to record it deliberately as a credit if it really is separate money. The
+same guard covers confirming an expected cheque and settling a utility bill twice.
+
+**If you touch the payment forms:** do not wrap `onSubmit` in a `try/catch` that rethrows as a plain
+`Error`. That strips `ApiError.code`, the refusal message still shows but the override checkbox
+never appears, and the officer is walled out with no way through. That exact bug was in
+`Dashboard.tsx` and was only caught in the browser — the tests all passed.
+
 ---
 
 ## The audit — what's left
@@ -201,10 +220,9 @@ I audited the app as a property manager. Remaining gaps, in the order I'd do the
 6. **Inspection records** — move-in/move-out condition, which is what a deposit deduction is
    defended with.
 
-**Tier 4 — short lets are financially overstated**
-7. Bookings have **no cleaning fee, no channel commission, no guest damage deposit**. Airbnb and
-   Booking.com take ~3–15%, so short-let villas look more profitable than they are — and the
-   Projections tab inherits that optimism.
+**Tier 4 — short lets**
+7. **Guest damage deposit** — there is no instrument for one. A short let takes no security against
+   damage, and nothing records one being held or returned. This is the only real short-let gap.
 
 **Tier 5 — finance hygiene**
 8. **Bank reconciliation** — nothing ties receipts to a bank statement.
@@ -212,9 +230,22 @@ I audited the app as a property manager. Remaining gaps, in the order I'd do the
    going out.
 10. **No rent proration** — a mid-month move-in bills a whole month, and now also a whole advance.
 
-**Also open, flagged but not built:** two people (or two tabs) actioning the same arrears
-simultaneously can still double-record — both work from data fetched before either saved. Closing
-that needs a server-side check that the charge is still outstanding at the moment of payment.
+**Closed, and do not reopen it:** short lets are *not* financially overstated, whatever an earlier
+reading of this file said. Confirmed with Ro, 2026-08-09:
+
+- **Direct bookings are priced all-inclusive** — the quoted figure already accounts for the costs of
+  the stay, so the recorded amount is what the property keeps.
+- **Airbnb and Booking.com remit net** — their commission is taken before the money arrives, so the
+  receipt is the real deposit. There is no gross figure to deduct anything from.
+- **No management commission exists.** The corporation provides no management service to an owner
+  who rents their own villa, so booking income passes to the proprietor in full — exactly as owner
+  statements already treat it.
+- **There is no separate cleaning fee.** Cleaning is covered by the nightly rate and by the monthly
+  grounds/housekeeping payroll.
+
+So there is no commission model to build and nothing to net off. Do not add one: recording a
+commission that is not charged, or a gross figure that is never received, would make the ledger
+*less* true than it is now.
 
 ---
 
