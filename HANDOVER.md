@@ -28,8 +28,15 @@ next session from inside `pm-app`.
 
 - **364 automated tests pass.** Typecheck clean, build clean.
 - Working tree is clean.
-- Latest release: **v1.6.0** (security deposits and owner statements). The double-record guard and
-  recurring expenses both landed *after* it and are not in a tagged release yet.
+- **Three commits on `main` are not pushed** — `430ed19` recurring expenses, `1bdfa7b` the audit
+  correction, `b03b732` damage deposits. Push them first thing.
+- Latest release: **v1.6.0** (security deposits and owner statements). The double-record guard,
+  recurring expenses and damage deposits all landed *after* it, so **nothing built since v1.6.0 is
+  on the HP EliteDesk yet.** Tagging is what builds and publishes the `.exe`:
+
+  ```bash
+  git push && git tag -a v1.7.0 -m "Double-record guard, recurring expenses, damage deposits" && git push origin v1.7.0
+  ```
 
 ### Owner statements — finished
 
@@ -85,7 +92,7 @@ will spend twenty minutes debugging a fix that already works.
 Push a tag; GitHub Actions builds the `.exe` on a real Windows runner and publishes it.
 
 ```bash
-git tag -a v1.6.0 -m "…" && git push origin v1.6.0
+git tag -a v1.7.0 -m "…" && git push origin v1.7.0
 ```
 
 The workflow (`.github/workflows/build-exe.yml`) gates the release on: full test suite → assemble
@@ -130,6 +137,13 @@ Watch it with `gh run watch <id> --exit-status`.
   assessment — billed onto the tenant's rent or the owner's maintenance account.
 - **Security deposits** — held on the tenancy, refundable, reconciled at move-out. Raises no
   charge, records no payment, moves no balance. Withholding requires a reason and is veto-gated.
+- **Guest damage deposits** — the same instrument on a short stay, and **entirely optional**. See
+  *Guest damage deposits* above; do not let it become required.
+- **Monthly costs** — templates for what recurs (payroll, electricity, water, security), posted a
+  month at a time through a review table. Everything posts *pending*, never paid. See *Recurring
+  expenses* above.
+- **Double-recorded payments are refused** at the moment of the write, with a deliberate override.
+  See *Double-recorded payments* above, including the trap that hid the override in the UI.
 - Utility settling and booking deposits are *expected* until confirmed.
 
 **Operations**
@@ -234,7 +248,7 @@ I audited the app as a property manager. Remaining gaps, in the order I'd do the
 
 **Tier 2 — done**
 1. ~~**Owner statements**~~ — done, see above.
-2. ~~**Recurring expenses**~~ — done, see below.
+2. ~~**Recurring expenses**~~ — done, see above.
 
 **Tier 3 — risk and defensibility**
 3. **Document storage** — leases, IDs, insurance certificates, inspection photos, contractor
@@ -246,8 +260,9 @@ I audited the app as a property manager. Remaining gaps, in the order I'd do the
 6. **Inspection records** — move-in/move-out condition, which is what a deposit deduction is
    defended with.
 
-**Tier 4 — short lets**
-7. ~~**Guest damage deposit**~~ — done, see below.
+**Tier 4 — short lets: nothing left**
+7. ~~**Guest damage deposit**~~ — done, see above. Channel commission and cleaning fees were
+   examined and ruled out as non-issues — see the closed note below before reopening either.
 
 **Tier 5 — finance hygiene**
 8. **Bank reconciliation** — nothing ties receipts to a bank statement.
@@ -271,6 +286,24 @@ reading of this file said. Confirmed with Ro, 2026-08-09:
 So there is no commission model to build and nothing to net off. Do not add one: recording a
 commission that is not charged, or a gross figure that is never received, would make the ledger
 *less* true than it is now.
+
+### Where to pick up
+
+Tiers 2 and 4 are closed. What remains is Tier 3 and Tier 5, and they are different in kind:
+
+**Tier 3 is one feature wearing four hats.** Document storage, the communication log, formal notices
+and inspection records are all the same need — *evidence, dated, attached to a villa or a person, in
+the order it happened*. Building them as four separate screens would be four half-answers. Ask Ro
+what an actual dispute has looked like before designing it; that shapes it more than any of this
+file does.
+
+**Tier 5 is three unrelated small jobs.** Bank reconciliation is the largest and the only one with a
+real design question (what a statement import looks like, if anything). The refund instrument is
+mostly modelling — money genuinely going out is not a voided receipt, and today it is recorded as
+one. Rent proration is arithmetic plus a decision from Ro about whether a mid-month move-in is
+prorated at all, or billed whole by policy.
+
+**Do not start any of them without asking.** None is urgent, and the order above is mine, not Ro's.
 
 ---
 
