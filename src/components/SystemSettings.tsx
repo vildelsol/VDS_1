@@ -780,6 +780,15 @@ interface BackupStatus {
   backups: BackupRecord[];
 }
 
+/** A drive attached to the machine running the server, as reported by it. */
+interface DetectedDrive {
+  path: string;
+  label: string;
+  writable: boolean;
+  isCurrentTarget: boolean;
+  removable: boolean;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -800,14 +809,37 @@ function BackupPanel({
   const [folder, setFolder] = useState('');
   const [folderBusy, setFolderBusy] = useState(false);
   const [folderResult, setFolderResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [drives, setDrives] = useState<DetectedDrive[] | null>(null);
+  const [drivesBusy, setDrivesBusy] = useState(false);
+
+  /**
+   * The drives attached to the office server.
+   *
+   * Not the machine you are sitting at: the backup is written by the server, so a
+   * stick pushed into this computer is no use unless this computer *is* the
+   * server. The wording on screen says so, because plugging it into the wrong
+   * machine and seeing nothing appear is otherwise baffling.
+   */
+  const findDrives = React.useCallback(async () => {
+    setDrivesBusy(true);
+    try {
+      const res = await api.get<{ drives: DetectedDrive[] }>('/api/backup/drives');
+      setDrives(res.drives);
+    } catch (err) {
+      onError(err);
+    } finally {
+      setDrivesBusy(false);
+    }
+  }, [onError]);
 
   const load = React.useCallback(async () => {
     try {
       setStatus(await api.get<BackupStatus>('/api/backup/status'));
+      await findDrives();
     } catch (err) {
       onError(err);
     }
-  }, [onError]);
+  }, [onError, findDrives]);
 
   React.useEffect(() => {
     void load();
@@ -964,6 +996,57 @@ function BackupPanel({
             className={monoInputClass}
           />
         </Field>
+
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-900">Drives plugged into the office server</p>
+            <SecondaryButton onClick={() => void findDrives()} disabled={drivesBusy}>
+              {drivesBusy ? 'Looking…' : 'Look again'}
+            </SecondaryButton>
+          </div>
+          <p className="mt-1 text-xs text-slate-600">
+            Plug a USB drive into the computer running this system, then choose it below. A drive plugged into any other
+            computer cannot be used — the backup is written by the server itself.
+          </p>
+
+          {drives && drives.length > 0 ? (
+            <ul className="mt-2 space-y-1">
+              {drives.map(d => (
+                <li key={d.path}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFolder(d.path);
+                      setFolderResult(null);
+                    }}
+                    disabled={!d.writable}
+                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <span>
+                      <span className="font-medium text-slate-900">{d.label}</span>
+                      <span className="ml-2 font-mono text-xs text-slate-500">{d.path}</span>
+                    </span>
+                    <span className="shrink-0 text-xs">
+                      {d.isCurrentTarget ? (
+                        <span className="font-semibold text-emerald-700">in use</span>
+                      ) : !d.writable ? (
+                        <span className="text-rose-600">not writable</span>
+                      ) : d.removable ? (
+                        <span className="text-slate-500">removable</span>
+                      ) : (
+                        <span className="text-amber-600">this machine's own disk</span>
+                      )}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-xs text-slate-500">
+              {drives ? 'No drives found. Plug one into the office server and choose “Look again”.' : 'Looking for drives…'}
+            </p>
+          )}
+        </div>
 
         {folderResult && (folderResult.ok ? <SuccessNote>{folderResult.message}</SuccessNote> : <ErrorNote>{folderResult.message}</ErrorNote>)}
 

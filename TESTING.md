@@ -19,7 +19,7 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (715 checks)
+### What is covered (735 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
@@ -81,6 +81,15 @@ npm run test:run
 - **Off-machine backup target** — a folder chosen in the app receives a real,
   parseable copy with no half-written file left behind; an unplugged drive neither
   breaks a backup run nor loses the setting.
+- **Finding and following the backup drive** — the drives attached to the server
+  are listed with what each would be used for and whether it can be written to
+  right now; the machine's own disk is identified by device rather than by name,
+  so it is never offered as an "off-machine" copy, and hidden system volumes are
+  not offered at all. Choosing a drive marks its folder with an id, so when the
+  saved path stops answering — Windows hands a stick a different letter depending
+  on what was plugged in first — the drive is found again wherever it turns up,
+  the copy still lands on it, and the new location is written down and audited.
+  Only settings-holders may enumerate the server's drives.
 - **Restoring from a backup** — the whole disaster, end to end: `db.json` is
   deleted, the backup put in its place, and the server started on it. The villas,
   charges, payments, receipt numbers, audit trail, staff and settings all come
@@ -190,7 +199,7 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   715 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   735 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
 
    Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:
@@ -229,6 +238,10 @@ HP EliteDesk (server) and Kamrui (client) before going live.
   drive). Strongly recommended. Usually easier to set in the app instead:
   **System Settings → Backup & recovery**, which needs no restart and takes
   precedence over this variable.
+- `VDS_DRIVE_ROOTS` — extra mount points to search for a backup drive, separated
+  by the platform's path separator. Rarely needed: Windows drive letters, macOS
+  `/Volumes` and the usual Linux mount points are searched already. Set it only if
+  removable media mounts somewhere unusual on your machine.
 - `VDS_TRUST_PROXY` — leave unset on the direct LAN. Only set it (`true`, a hop
   count, or a trusted address list) if the server genuinely sits behind a reverse
   proxy you control.

@@ -56,6 +56,9 @@ import {
   addAudit,
   backupStatus,
   checkBackupTarget,
+  detectDrives,
+  markBackupFolder,
+  setBackupRelocationHandler,
   getDb,
   nextReceiptNo,
   noPermissions,
@@ -890,6 +893,22 @@ app.get(
 );
 
 /**
+ * The drives plugged into this machine, and where a backup would go on each.
+ *
+ * This is the server's own hardware — the HP. A stick pushed into the client is
+ * invisible here, and correctly so: the server writes the backups, so it is the
+ * server's drives that can hold one.
+ */
+app.get(
+  '/api/backup/drives',
+  handler((req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_settings');
+    const current = getDb().settings.backupDir || '';
+    res.json({ success: true, drives: detectDrives(current), current });
+  })
+);
+
+/**
  * Test whether a folder can be used for off-machine backups, without saving it.
  *
  * Actually writes and deletes a probe file: an unplugged external drive, a
@@ -1009,7 +1028,20 @@ app.post(
         // reachability so the screen can say so, and each daily attempt records
         // its own outcome.
         db.settings.backupDir = optionalString(backupDir, 400);
-        setExternalBackupDir(db.settings.backupDir || '');
+
+        /**
+         * Mark the folder so the drive can be found again on another letter.
+         *
+         * Written on the way in rather than at backup time: if the stick is here
+         * now, this is the moment it is certainly reachable. If it is not — the
+         * path was typed ahead of plugging it in — the marker is written on the
+         * first successful backup instead, and nothing is lost.
+         */
+        if (db.settings.backupDir) {
+          if (!db.settings.backupMarkerId) db.settings.backupMarkerId = `vds-${crypto.randomUUID()}`;
+          markBackupFolder(db.settings.backupDir, db.settings.backupMarkerId);
+        }
+        setExternalBackupDir(db.settings.backupDir || '', db.settings.backupMarkerId || '');
       }
 
       const who = actor(req);
@@ -3993,7 +4025,27 @@ async function startServer() {
   // Apply the backup folder chosen in settings before the schedule starts, so the
   // very first copy of the day already goes to the external drive rather than
   // waiting for someone to re-save settings.
-  setExternalBackupDir(read(db => db.settings.backupDir || ''));
+  setExternalBackupDir(
+    read(db => db.settings.backupDir || ''),
+    read(db => db.settings.backupMarkerId || '')
+  );
+
+  /**
+   * When the drive turns up on a different letter, save where it went.
+   *
+   * The backup itself has already followed it by this point — this only writes
+   * the new path down so the Backup screen shows the truth and the next restart
+   * starts in the right place. Deliberately best-effort: a failure to record it
+   * must never be the reason a backup does not happen.
+   */
+  setBackupRelocationHandler(dir => {
+    auditInBackground('a backup drive that moved', db => {
+      const before = db.settings.backupDir || '';
+      if (before === dir) return;
+      db.settings.backupDir = dir;
+      addAudit(db, 'System', 'ADMINISTRATOR', 'Followed the backup drive to a new location', 'Backup', 'relocate', before, dir);
+    });
+  });
 
   // Backups run on a timer, not only at boot, so an always-on server still gets
   // a daily copy.

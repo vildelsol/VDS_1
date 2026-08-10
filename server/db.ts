@@ -89,14 +89,238 @@ const EXTERNAL_BACKUP_DIR = process.env.VDS_BACKUP_DIR || '';
  */
 let externalBackupOverride = '';
 
+/** The id written into the chosen folder, so the same drive is recognised again. */
+let externalBackupMarkerId = '';
+
+/** Told when a drive turns up on a different letter, so the new path can be saved. */
+let onBackupRelocated: ((dir: string) => void) | null = null;
+
 /** Point the second backup at a folder. Empty string turns it off. */
-export function setExternalBackupDir(dir: string) {
+export function setExternalBackupDir(dir: string, markerId?: string) {
   externalBackupOverride = (dir || '').trim();
+  if (markerId !== undefined) externalBackupMarkerId = markerId;
+}
+
+export function setBackupRelocationHandler(fn: ((dir: string) => void) | null) {
+  onBackupRelocated = fn;
 }
 
 /** Where the off-machine copy goes, if anywhere. */
 function externalBackupDir(): string {
   return externalBackupOverride || EXTERNAL_BACKUP_DIR || '';
+}
+
+/* ------------------------------------------------------------------ *
+ * Finding the drive somebody plugged in
+ *
+ * Backups used to be a folder path typed in by hand, which works right up to the
+ * moment Windows hands the stick a different letter. It comes up as E: today and
+ * F: next week because something else was plugged in first, the saved path stops
+ * matching, and the off-machine copy quietly stops happening — recorded as a
+ * failure, but only noticed by somebody who goes looking.
+ *
+ * So the drives attached to this machine are listed, and the chosen folder is
+ * marked with a small file carrying an id. When the saved path no longer answers,
+ * the marker is searched for across the attached drives: the same stick is
+ * recognised whatever letter it arrives as, and the path repairs itself.
+ *
+ * All of this happens on the machine running the server — the HP. A stick pushed
+ * into the client is invisible here, which is correct: the backup is written by
+ * the server, so it is the server's drives that matter.
+ * ------------------------------------------------------------------ */
+
+const BACKUP_MARKER = '.villaggio-backup.json';
+
+export interface DetectedDrive {
+  /** The folder a backup would be written into if this drive were chosen. */
+  path: string;
+  /** What to call it on screen. */
+  label: string;
+  /** Is it writable right now? */
+  writable: boolean;
+  /** Does it already hold this property's backups? */
+  isCurrentTarget: boolean;
+  /** Roughly, is this a removable volume rather than the machine's own disk? */
+  removable: boolean;
+}
+
+/** Every place a removable drive plausibly mounts on this platform. */
+function driveRoots(): { root: string; label: string; removable: boolean }[] {
+  const found: { root: string; label: string; removable: boolean }[] = [];
+
+  /**
+   * Extra mount points to consider, separated by the platform's path separator.
+   * Linux distributions mount removable media in more places than can sensibly be
+   * guessed, and it gives the tests somewhere real to stand a drive up. It only
+   * widens where this machine's *own* filesystem is searched for our own marker —
+   * it grants no access that the server process did not already have.
+   */
+  for (const extra of (process.env.VDS_DRIVE_ROOTS || '').split(path.delimiter)) {
+    const root = extra.trim();
+    if (!root) continue;
+    try {
+      if (fs.existsSync(root) && fs.statSync(root).isDirectory()) {
+        found.push({ root, label: path.basename(root) || root, removable: true });
+      }
+    } catch {
+      /* not a directory we can read */
+    }
+  }
+
+  if (process.platform === 'win32') {
+    // Checking the letters is dependency-free and fast. C: is the machine's own
+    // disk and is listed last, since a backup that never leaves the machine is
+    // the thing this feature exists to avoid.
+    for (const letter of 'DEFGHIJKLMNOPQRSTUVWXYZC'.split('')) {
+      const root = `${letter}:\\`;
+      try {
+        if (fs.existsSync(root)) found.push({ root, label: `${letter}:`, removable: letter !== 'C' });
+      } catch {
+        /* a card reader with no card throws rather than answering */
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Which volume is the machine's own disk?
+   *
+   * Compared by device id rather than by name. The boot volume shows up in
+   * /Volumes alongside the removable ones and looks identical from the path
+   * alone, and offering it as an "off-machine" backup target would defeat the
+   * entire purpose — a copy on the same disk does not survive that disk failing.
+   */
+  let bootDevice: number | null = null;
+  try {
+    bootDevice = fs.statSync('/').dev;
+  } catch {
+    bootDevice = null;
+  }
+
+  // macOS mounts under /Volumes; Linux under /media/<user> or /mnt.
+  const mountPoints = ['/Volumes', '/media', '/mnt', `/media/${process.env.USER || ''}`, `/run/media/${process.env.USER || ''}`];
+  for (const base of mountPoints) {
+    try {
+      if (!fs.existsSync(base)) continue;
+      for (const name of fs.readdirSync(base)) {
+        // Hidden entries are the system's own (/Volumes/.timemachine and friends),
+        // never something a person plugged in.
+        if (name.startsWith('.')) continue;
+        const root = path.join(base, name);
+        try {
+          const stat = fs.statSync(root);
+          if (!stat.isDirectory()) continue;
+          if (found.some(f => f.root === root)) continue;
+          found.push({ root, label: name, removable: bootDevice === null ? true : stat.dev !== bootDevice });
+        } catch {
+          /* unreadable mount */
+        }
+      }
+    } catch {
+      /* not a directory we can list */
+    }
+  }
+  return found;
+}
+
+/** Read the marker in a folder, if it has one. */
+function readMarker(dir: string): { id?: string; property?: string } | null {
+  try {
+    const raw = fs.readFileSync(path.join(dir, BACKUP_MARKER), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stamp a folder so the same drive can be recognised on a different letter.
+ *
+ * Creates the folder if it is not there yet: the target is usually named before
+ * it exists — somebody picks a drive and the `Villaggio-Backups` folder on it has
+ * never been made. Failing quietly at that point left the drive unmarked and
+ * unfindable later, which is the one thing this is for.
+ */
+export function markBackupFolder(dir: string, id: string): boolean {
+  const target = (dir || '').trim();
+  if (!target || !id) return false;
+  try {
+    if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(
+      path.join(target, BACKUP_MARKER),
+      JSON.stringify({ id, property: 'Villaggio Del Sol', markedAt: new Date().toISOString() }, null, 2)
+    );
+    return true;
+  } catch {
+    // An unplugged or read-only drive: reported by checkBackupTarget, and tried
+    // again after the next successful backup.
+    return false;
+  }
+}
+
+/**
+ * The drives attached right now, and the folder a backup would go in on each.
+ *
+ * The suggested folder is named rather than the bare root, so a backup never
+ * scatters dated files across the top level of somebody's stick.
+ */
+export function detectDrives(currentTarget: string): DetectedDrive[] {
+  const current = (currentTarget || '').trim();
+  const drives: DetectedDrive[] = [];
+
+  for (const { root, label, removable } of driveRoots()) {
+    const folder = path.join(root, 'Villaggio-Backups');
+    let writable = false;
+    try {
+      const probe = path.join(root, `.vds-detect-${Date.now()}`);
+      fs.writeFileSync(probe, 'ok');
+      fs.unlinkSync(probe);
+      writable = true;
+    } catch {
+      writable = false;
+    }
+    drives.push({
+      path: folder,
+      label,
+      writable,
+      removable,
+      isCurrentTarget: !!current && (current === folder || current === root || current.startsWith(root))
+    });
+  }
+
+  return drives;
+}
+
+/**
+ * Find where the marked backup folder has got to, when the saved path has stopped
+ * answering. Returns the new path, or null if that drive is genuinely not here.
+ */
+export function relocateBackupFolder(id: string): string | null {
+  if (!id) return null;
+  for (const { root } of driveRoots()) {
+    const candidates = [path.join(root, 'Villaggio-Backups'), root];
+    for (const dir of candidates) {
+      const marker = readMarker(dir);
+      if (marker && marker.id === id) return dir;
+    }
+    // One level down, for a stick organised into folders.
+    try {
+      for (const name of fs.readdirSync(root)) {
+        const dir = path.join(root, name);
+        try {
+          if (!fs.statSync(dir).isDirectory()) continue;
+        } catch {
+          continue;
+        }
+        const marker = readMarker(dir);
+        if (marker && marker.id === id) return dir;
+      }
+    } catch {
+      /* unreadable root */
+    }
+  }
+  return null;
 }
 
 /**
@@ -328,7 +552,30 @@ export function runDailyBackup(force = false): BackupRecord[] {
   const stamp = localDayStamp();
 
   const targets: { dir: string; location: 'local' | 'external' }[] = [{ dir: BACKUP_DIR, location: 'local' }];
-  const external = externalBackupDir();
+  let external = externalBackupDir();
+
+  /**
+   * The stick is here, just not where it was.
+   *
+   * Before giving up on a target that has stopped answering, look for the folder
+   * by the marker written into it. Windows reassigns letters freely, and a copy
+   * that silently stops being made is worse than one that never started, because
+   * nobody is expecting to have to check.
+   */
+  if (external && !fs.existsSync(external) && externalBackupMarkerId) {
+    const moved = relocateBackupFolder(externalBackupMarkerId);
+    if (moved && moved !== external) {
+      console.log(`[vds] the backup drive is now at ${moved} (was ${external}); following it.`);
+      externalBackupOverride = moved;
+      external = moved;
+      try {
+        onBackupRelocated?.(moved);
+      } catch {
+        /* persisting the new path must never break the backup itself */
+      }
+    }
+  }
+
   if (external) targets.push({ dir: external, location: 'external' });
 
   if (!fs.existsSync(DB_FILE)) return written;
@@ -356,6 +603,11 @@ export function runDailyBackup(force = false): BackupRecord[] {
         fs.writeFileSync(tmp, payload, 'utf-8');
         fs.renameSync(tmp, target);
         written.push({ file: `db-${stamp}.json`, date: stamp, sizeBytes: fs.statSync(target).size, location });
+      }
+      // The drive is demonstrably here and writable right now, so make sure it
+      // carries its marker — the folder may not have existed when it was chosen.
+      if (location === 'external' && externalBackupMarkerId && !fs.existsSync(path.join(dir, BACKUP_MARKER))) {
+        markBackupFolder(dir, externalBackupMarkerId);
       }
       pruneBackups(dir);
       backupErrors.delete(location);

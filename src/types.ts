@@ -152,6 +152,14 @@ export interface AppSettings {
    * needed. Empty or absent means only the on-disk copy is kept.
    */
   backupDir?: string;
+  /**
+   * Identifies the chosen backup drive by a marker file written into the folder,
+   * rather than by where it happened to be mounted. Windows hands a stick a
+   * different letter depending on what else was plugged in first, and a path that
+   * silently stops matching means the off-machine copy silently stops being made.
+   * With this, the same drive is recognised wherever it turns up.
+   */
+  backupMarkerId?: string;
   /** Legacy fields retained so older databases keep loading. No longer read by the app. */
   juniorHasAdvancedAccess?: boolean;
   juniorPermissions?: RolePermissions;

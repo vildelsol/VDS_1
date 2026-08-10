@@ -23,7 +23,7 @@ import path from 'node:path';
  * caller-supplied dataDir is the caller's responsibility, since the harness did
  * not create it and does not know when the caller is really done with it.
  */
-export async function startServer({ port, adminPassword, projectRoot, dataDir: reuseDataDir }) {
+export async function startServer({ port, adminPassword, projectRoot, dataDir: reuseDataDir, env: extraEnv }) {
   const ownsDataDir = !reuseDataDir;
   const dataDir = reuseDataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'vds-test-'));
   const child = spawn(process.execPath, ['dist/server.cjs'], {
@@ -36,7 +36,9 @@ export async function startServer({ port, adminPassword, projectRoot, dataDir: r
       VDS_ADMIN_PASSWORD: adminPassword,
       VDS_BACKUP_DIR: '',
       VDS_TRUST_PROXY: '',
-      VDS_FORCE_SECURE_COOKIE: ''
+      VDS_FORCE_SECURE_COOKIE: '',
+      VDS_DRIVE_ROOTS: '',
+      ...(extraEnv || {})
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
