@@ -123,6 +123,29 @@ export default async function run({ port, projectRoot }) {
     // --- settled-record rules ---
     T.check('a voided receipt cannot be edited', (await c.put(`/api/payments/${dep1.id}`, { amount: 999 })).status === 400);
     T.check('a receipt cannot be voided twice', (await c.post(`/api/payments/${dep1.id}/reverse`, { reversalReason: 'double void attempt' })).status === 400);
+
+    // --- reprints are counted and named as copies ---
+    // Handing someone a second receipt is how the same money gets claimed twice,
+    // so a reprint is not silent: the count is on the record and copy #2 onwards
+    // reaches the audit trail.
+    const liveReceipt = deps.find(p => p.status !== 'reversed');
+    const first = await c.post(`/api/payments/${liveReceipt.id}/mark-printed`, {});
+    T.check('the first print is counted', first.status === 200 && first.body.printCount === 1);
+    T.check(
+      'the first print is not called a reprint',
+      !(await c.get('/api/db')).body.auditLogs.some(a => /Reprinted receipt/.test(a.action))
+    );
+    const second = await c.post(`/api/payments/${liveReceipt.id}/mark-printed`, {});
+    T.check('a second print is counted separately', second.body.printCount === 2);
+    T.check(
+      'and the copy is named on the audit trail',
+      (await c.get('/api/db')).body.auditLogs.some(a => /Reprinted receipt .* \(copy #2\)/.test(a.action))
+    );
+    T.check('the count is stored on the receipt', (await c.get('/api/db')).body.payments.find(p => p.id === liveReceipt.id).printCount === 2);
+    T.check(
+      'printing a receipt that does not exist is a 404, not a 500',
+      (await c.post('/api/payments/payment-nonexistent/mark-printed', {})).status === 404
+    );
   } finally {
     await srv.stop();
   }

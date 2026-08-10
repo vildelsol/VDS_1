@@ -19,7 +19,7 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (233 checks)
+### What is covered (529 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
@@ -56,6 +56,12 @@ npm run test:run
 - **Off-machine backup target** — a folder chosen in the app receives a real,
   parseable copy with no half-written file left behind; an unplugged drive neither
   breaks a backup run nor loses the setting.
+- **Restoring from a backup** — the whole disaster, end to end: `db.json` is
+  deleted, the backup put in its place, and the server started on it. The villas,
+  charges, payments, receipt numbers, audit trail, staff and settings all come
+  back; everyone's password still works; the receipt counter carries on rather
+  than reissuing a used number; and the already-billed month is not billed twice.
+  A backup nobody has ever restored is not yet a backup.
 - **First and last month's rent** — move-in bills two months; the tenant's final
   month is not charged again, so a tenancy of N months is charged exactly N months'
   rent. A backdated move-in is dated to the month they actually moved in, and the
@@ -69,10 +75,53 @@ npm run test:run
 - **Maintenance work orders** — a request is assigned, progressed and closed with a
   cost; the cost reaches the expense register exactly once; other kinds of activity
   cannot be progressed as work.
+- **Staff accounts** — creating an account, changing a role and resetting a
+  password are Administrator-only: a Manager cannot promote themselves, cannot
+  seize the administrator account by resetting its password, and cannot
+  deactivate it. The last active Administrator can be neither demoted nor
+  switched off. Weak passwords, duplicate usernames (in any case), illegal
+  username characters and invented roles are refused, and fields a client is not
+  entitled to set — its own id, its own forced password change, a password hash —
+  are ignored rather than trusted.
+- **Session integrity** — a made-up token neither reads nor writes, an expired
+  session is refused after a restart, a password reset revokes the sessions
+  already issued and forces a fresh choice before anything can be recorded, and no
+  password hash or salt appears in `/api/db` or `/api/auth/me`.
+- **The records export** — the snapshot that deliberately leaves the machine is
+  gated to settings-holders, is audited, and carries no password hash, no salt and
+  no session. Its staff list is limited to who people are, never how they sign in.
+- **Receipt reprints** — a reprint is counted on the record, and copy #2 onwards is
+  named on the audit trail, so the same money cannot quietly be receipted twice.
+- **Calendar sync** — the internal-network guard runs against the address actually
+  being dialled at *sync* time, not only when a feed is added: a feed written
+  straight into `db.json` is still refused, is reported as an error rather than
+  silently swallowed, and imports nothing. A deactivated feed is left alone. (The
+  redirect hop is re-checked in `server/ical.ts` but is not integration-tested —
+  proving it needs a public host that redirects inward, and the suite does not
+  reach the internet.)
 
 The one audit finding deliberately **not** enforced is read scope: every signed-in
 user can read the whole database, including the audit log and staff list. This was
 a conscious decision — only Administrators and Managers can *change* anything.
+
+## What a backup file contains
+
+A backup used to be a byte-for-byte copy of `db.json`, which meant it carried the
+live `sessions` array. A session token is a working credential for twelve hours,
+so anyone who could read a recent backup — off the USB stick, out of the synced
+folder — could paste a token into a cookie and be signed in as its owner. Backups
+are now written with sessions stripped, and the restore test fails if one ever
+gets back in.
+
+**Password hashes are still in the file, deliberately.** They have to be, or a
+restore would lock every account out of the system. They are scrypt with a
+per-user random salt, which is strong, but it does mean the backup folder holds
+credential material: keep it somewhere you would be willing to keep the ledger
+itself, not in a widely-shared drive.
+
+The separate **records snapshot** (System Settings → download) is the one to hand
+to an accountant or an owner: it carries no hashes, no salts and no sessions, and
+cannot be used to sign in as anyone. It is not a restore file.
 
 ## Windows / two-PC dry run (do this before trusting it with real money)
 
@@ -85,7 +134,7 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   233 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   529 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
 
    Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:
