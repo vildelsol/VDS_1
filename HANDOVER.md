@@ -26,9 +26,15 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **435 automated tests pass.** Typecheck clean, build clean.
+- **735 automated tests pass.** Typecheck clean, build clean, `npm audit` clean.
 - Working tree is clean, everything pushed.
-- Latest release: **v1.7.2**.
+- Latest release: **v1.8.0**.
+  - `v1.8.0` — a hardening and confidence release. Backups no longer carry working logins; the
+    restore path is tested end to end; a figure is read or refused rather than silently reshaped;
+    sign-in no longer leaks which usernames exist; a stay cancelled on Airbnb is now cancelled here;
+    and a USB backup drive is detected and followed when Windows moves its letter. 300 simulated
+    scenarios across the whole application found no integrity violation. Details in *Hardening —
+    2026-08-10* below.
   - `v1.7.0` — double-record guard, recurring expenses, damage deposits, and Tier 5 (bank
     reconciliation, refunds, the proration decision).
   - `v1.7.1` — three bugs the robustness audit found in that Tier 5 code. **Do not deploy v1.7.0**;
@@ -69,7 +75,7 @@ Two things worth knowing about the implementation:
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (435 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (735 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
@@ -92,7 +98,7 @@ will spend twenty minutes debugging a fix that already works.
 Push a tag; GitHub Actions builds the `.exe` on a real Windows runner and publishes it.
 
 ```bash
-git tag -a v1.7.0 -m "…" && git push origin v1.7.0
+git tag -a v1.8.0 -m "…" && git push origin v1.8.0
 ```
 
 The workflow (`.github/workflows/build-exe.yml`) gates the release on: full test suite → assemble
@@ -117,8 +123,10 @@ Watch it with `gh run watch <id> --exit-status`.
   suppresses that month's rent. This was a real, near-invisible bug.
 - **Editing `server.ts` via python heredocs**: quoting bites. Write the block to a file in the
   scratchpad and insert it, rather than embedding triple-quoted TS inside triple-quoted Python.
-- **`bad()` is not typed `never`**, so it does not narrow types. Throw `new ApiError(...)` directly
-  when you need narrowing afterwards.
+- **`bad()` now returns `never`** and is a function declaration, so it *does* narrow types — code
+  after a `bad()` call is understood to be unreachable. It was an arrow function returning `void`,
+  which meant a value it had just rejected still looked possibly-null to everything downstream. If
+  you add another refusal helper, declare it the same way or you lose the narrowing.
 - **Verify by driving the real UI**, not by calling `fetch` in the console — raw `fetch` bypasses
   `src/lib/api.ts` entirely and therefore bypasses the offline queue. I made that mistake once.
 - **Voiding and refunding are opposites, and the codebase now says so.** Void = it never happened.
@@ -180,6 +188,14 @@ Watch it with `gh run watch <id> --exit-status`.
   tokens off the machine, and a token is a valid login for twelve hours. Password hashes stay in the
   file (a restore needs them), so the backup folder is still credential-bearing. Restoring one is
   tested end to end: delete `db.json`, drop the backup in its place, start the server.
+- **The backup drive is detected, and followed when it moves.** System Settings lists the drives
+  attached *to the server* with the folder each would use and whether it is writable now, so the
+  drive is picked rather than typed. The machine's own disk is identified by device id, not by name —
+  on macOS the boot volume sits in `/Volumes` looking exactly like a USB stick, and a copy on the
+  same disk is not an off-machine copy at all. Choosing a folder marks it with an id; when the saved
+  path stops answering (Windows hands a stick whatever letter is free), the marker is searched for
+  across the attached drives, the copy still lands, and the new path is saved and audited. Without
+  that, a moved drive letter meant the off-machine copy silently stopped happening.
 - **Admin password recovery** — drop `RESET-ADMIN-PASSWORD.txt` next to `db.json`, restart.
   File-based only; nothing over the network can trigger it.
 - **Adversarial pass** — a running server was attacked rather than read. What held: 20-way races on
@@ -291,6 +307,87 @@ moment the dropdown changes, so an accidental change is caught before submit rat
 
 Note the layering: even a *wrongly confirmed* change is still caught by the mismatched-currency
 banner on the ledger. Verified end to end in the browser.
+
+### Hardening — 2026-08-10
+
+Not a feature tier. A pass over the parts nobody had attacked, plus the sums nobody had tested.
+
+**Found by attacking a running server** (three rounds, all fixed, each with a regression test):
+
+- **Backups carried working logins.** A backup was a byte-for-byte copy of `db.json`, so every copy
+  on a USB stick or in a synced folder contained the live `sessions` array. A token is valid for
+  twelve hours: read a recent backup, paste a token into a cookie, and you are signed in as whoever
+  it belonged to. Sessions are now stripped as the backup is written.
+- **Sign-in timing leaked which usernames exist.** A wrong password against a real account took
+  ~33ms of scrypt; against an account that did not exist, under 6ms. A decoy check now burns the same
+  work, and the two are indistinguishable.
+- **Figures were silently reshaped rather than refused.** The parser stripped everything but digits,
+  dots and minus signs, so `1.500.000` became `1.5` and `50000abc` became `50000`. A wrong figure
+  that looks deliberate is worse than a refused one — it is receipted and reconciled before anyone
+  notices. The grammar is explicit now, and the same rule holds where a figure is optional.
+- **Idempotency keys were global.** A key was answered from whoever used it first, so the same key
+  from another member of staff returned *their* receipt with your payment never recorded. Keys are
+  scoped to the account now.
+- **The exchange rate accepted 0.0001.** Bounded to 50–1000, on the input as well as the server.
+
+**Held up under attack, and worth not re-litigating:** 20-way races on the same record (confirm,
+refund, void, post-month) settle to exactly one action; refunds cannot exceed, repeat, or apply to a
+voided or unconfirmed receipt; receipt numbers, ids and `receivedBy` cannot be set by a client; no
+prototype pollution, path traversal, session fixation, or escalation through the settings matrix;
+session tokens are 256-bit.
+
+**The sums are now tested directly.** The figures the business acts on are computed in `src/lib/`
+and most of that runs in the browser, where no test had reached it — `money.ts` had none at all.
+Money does not drift through cents, USD and JMD never combine, and a statement closes where the next
+one opens. All 52 checks passed first time: the arithmetic was right, it just had nothing holding it
+there. Dates were checked too and needed no change — they are built from local calendar parts, so a
+payment taken at 8pm in Jamaica is dated that day rather than pushed into the next month by UTC.
+
+**300 simulated scenarios, no integrity violation.** Two suites, both on databases that are never
+reset. `scenarios` runs 200 through the ledger; `scenarios-full` runs 100 across the whole
+application from a fully populated property. After *each* scenario the entire database is audited: no
+shared receipt numbers, nothing unreceived holding one, no NaN or impossible negative, nothing
+refunded beyond its worth, no month billed twice, no villa sold twice on one night, a work order's
+cost raised exactly once. Seeded, so a failure names a seed that reproduces it.
+
+**Airbnb.** There is no open Airbnb API for individual hosts — access is for approved software
+partners under a formal application. iCal is the supported route and is what this uses. The feed
+carries dates and availability only: no guest name (Airbnb sends `Reserved`), no rate, no payout, so
+stay values are entered by hand and platform payouts can never be reconciled from the feed. The
+reader now handles `DURATION` in place of an end date, `STATUS:CANCELLED`, owner blocks, and folded
+or escaped text. **A stay that disappears from the feed is cancelled** — that is how Airbnb signals a
+cancellation, and without it a cancelled guest blocked a villa for ever. Stays with money against
+them are raised as conflicts instead of being cancelled silently.
+
+**Still not run by anyone:** the Windows `.exe` path beyond CI, the PWA, the offline queue under real
+network loss, a live Airbnb feed against a real listing, and the two-PC dry run.
+
+---
+
+## Reaching the app from outside the property
+
+The HP stays on and serves; everything else connects to it. The server binds `0.0.0.0:3000`, so it
+answers on every interface including a VPN one — no code change is needed for remote access.
+
+**Use Tailscale.** It builds a private encrypted network between your own devices; the HP becomes
+reachable at a fixed `100.x` address that only your devices can see. No port forwarding, nothing
+published. Do **not** forward port 3000 on the router, and do **not** use Tailscale *Funnel* — both
+put a system holding tenants' financial records on the public internet in plain HTTP.
+
+On the HP: install Tailscale, sign in, then **tray icon → Preferences → Run unattended**. Without
+that it disconnects at logout and remote access dies at the first reboot. Allow the app through the
+firewall (`netsh advfirewall firewall add rule name="Villaggio Del Sol" dir=in action=allow
+protocol=TCP localport=3000`), and set sleep to **Never** — a sleeping HP is an unreachable one.
+
+On the other device: same Tailscale account, then `http://<machine-name>:3000`.
+
+Worth knowing: Tailscale encrypts the traffic even though the app speaks plain HTTP, so the browser's
+"Not secure" warning is about the missing certificate rather than an exposed connection. Leave
+`VDS_FORCE_SECURE_COOKIE` unset — forcing `Secure` cookies breaks sign-in over plain HTTP, which is
+how the LAN clients connect. And note the access boundary has moved: anyone signed into that
+Tailscale account can reach the app, so it needs a strong password and two-factor.
+
+---
 
 ### Bank reconciliation — finished, and it is a tick
 
