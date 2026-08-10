@@ -1089,9 +1089,9 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
       <Field
         label="Indicative exchange rate (JMD per 1 USD)"
         htmlFor="gp-fx"
-        hint="Shows an approximate second figure alongside an amount. No stored amount is ever converted with it, and no total mixes the two currencies."
+        hint="Between 50 and 1000 JMD per USD. Shows an approximate second figure alongside an amount. No stored amount is ever converted with it, and no total mixes the two currencies."
       >
-        <input id="gp-fx" type="number" min="0.0001" step="0.01" value={fxRate} onChange={e => setFxRate(e.target.value)} className={`${monoInputClass} max-w-[200px]`} />
+        <input id="gp-fx" type="number" min="50" max="1000" step="0.01" value={fxRate} onChange={e => setFxRate(e.target.value)} className={`${monoInputClass} max-w-[200px]`} />
       </Field>
 
       <Field label="Vendor list" htmlFor="gp-vendors" hint="One vendor per line. These appear as suggestions when recording an expense.">

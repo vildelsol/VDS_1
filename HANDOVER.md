@@ -190,6 +190,13 @@ Watch it with `gh run watch <id> --exit-status`.
   usernames existed (a missing account answered 6x faster); figures like `1.500.000` were silently
   read as `1.5`; the exchange rate accepted `0.0001`; an idempotency key was answered from whoever
   used it first, regardless of account. Each has a regression test.
+- **The sums are tested directly.** The server was well covered; the arithmetic behind the owner
+  statements and reports runs in the browser and had never been reached. It is now: money does not
+  drift through cents, USD and JMD never combine, and a statement closes where the next one opens.
+  Dates are built from local calendar parts, so a payment taken at 8pm in Jamaica lands on the day
+  it was taken rather than being pushed into the next month by UTC.
+- **Dependencies carry no known advisories** (`npm audit` clean). `vite` was declared as both a
+  runtime and a build dependency; it is build-only, imported dynamically in the dev branch alone.
 - **Single-file `.exe`** via Node SEA, built and smoke-tested on Windows by CI.
 
 ### Recurring expenses — finished

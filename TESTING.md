@@ -19,7 +19,7 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (574 checks)
+### What is covered (626 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
@@ -56,6 +56,15 @@ npm run test:run
   someone else does its own work, while a genuine replay by the same account is
   still exactly one action. The exchange rate is held to a band a real rate could
   occupy.
+- **Money arithmetic & currency separation** — the sums themselves, tested
+  directly rather than through the API, because the figures the business acts on
+  are computed in `src/lib/` and most of that runs in the browser where no test
+  had reached it. Money does not drift: a hundred cents make exactly one dollar,
+  and a total is the same whichever order the rows are added. USD and JMD never
+  meet — a USD receipt does not pay down a JMD account (it is surfaced as a
+  mismatch instead), and no total is ever the sum of both. A statement closes at
+  opening + charged - paid, the next month opens where the last one closed, and a
+  July receipt refunded in August moves August without restating July.
 - **Calendar feed SSRF guard** — feed URLs pointing at loopback / private /
   link-local / CGNAT / IPv6-internal addresses are refused; public ones are
   accepted.
@@ -150,7 +159,7 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   574 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   626 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
 
    Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:
