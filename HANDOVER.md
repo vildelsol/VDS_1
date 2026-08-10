@@ -197,6 +197,26 @@ Watch it with `gh run watch <id> --exit-status`.
   it was taken rather than being pushed into the next month by UTC.
 - **Dependencies carry no known advisories** (`npm audit` clean). `vite` was declared as both a
   runtime and a build dependency; it is build-only, imported dynamically in the dev branch alone.
+
+**Booking platforms — what is and is not possible**
+
+Airbnb has no open API for individual hosts; API access is granted to approved software partners
+under a formal application, and is not something this property can simply switch on. The supported
+route is the **iCal export link** each listing provides, which is what this app consumes. Booking.com
+and VRBO are the same.
+
+That sets a hard boundary worth knowing before anyone asks for more: an iCal feed carries *dates and
+availability only*. It does not carry the guest's name (Airbnb sends `Reserved`), the nightly rate,
+the payout, or the fees. So stays import with their dates and must have their value entered by hand,
+and platform payouts can never be reconciled automatically from the feed. Nothing in the code can
+change that; it is what the feed contains.
+
+What the reader now handles: exclusive checkout dates, folded lines, escaped text, `DURATION` instead
+of an end date, `STATUS:CANCELLED`, owner blocks (`Airbnb (Not available)`, `CLOSED - Not available`),
+and UTC times converted to the property's own day. **A stay that disappears from the feed is
+cancelled** — Airbnb signals a cancellation by dropping the entry rather than marking it, so without
+this a cancelled guest went on blocking a villa for ever. Stays with money against them are raised as
+conflicts instead of being cancelled silently.
 - **Single-file `.exe`** via Node SEA, built and smoke-tested on Windows by CI.
 
 ### Recurring expenses — finished

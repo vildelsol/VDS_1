@@ -19,7 +19,7 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (626 checks)
+### What is covered (682 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
@@ -117,6 +117,24 @@ npm run test:run
   no session. Its staff list is limited to who people are, never how they sign in.
 - **Receipt reprints** — a reprint is counted on the record, and copy #2 onwards is
   named on the audit trail, so the same money cannot quietly be receipted twice.
+- **Two hundred scenarios on one database** — a property run for a simulated
+  stretch of time on a database that is never reset: tenants moving in and out,
+  months posted, rent part-paid, receipts voided and re-issued, guests booking and
+  cancelling, deposits held and returned, meters read, costs paid, mistyped
+  figures, wrong currencies, and two people at the desk at once. After *each* one,
+  the whole database is audited: no two receipts share a number, nothing
+  unreceived holds one, no figure is NaN or negative where it cannot be, nothing
+  is refunded for more than it was worth, no month is billed twice, two confirmed
+  stays never occupy one villa on the same night, and every balance still totals
+  to whole cents. Scenarios come from a seeded generator, so a failure names a
+  seed that reproduces it.
+- **Reading a platform calendar** — payloads shaped like real Airbnb, Booking.com
+  and VRBO exports: folded description lines, escaped commas, `Reserved` with no
+  guest name, `Airbnb (Not available)` blocks, `DURATION` in place of an end date,
+  and `STATUS:CANCELLED`. A checkout date is exclusive, so five nights are five
+  nights. A stay that has *gone* from the feed is cancelled — that is how Airbnb
+  reports a cancellation — unless money is attached to it, in which case it is
+  raised for a person rather than silently edited.
 - **Calendar sync** — the internal-network guard runs against the address actually
   being dialled at *sync* time, not only when a feed is added: a feed written
   straight into `db.json` is still refused, is reported as an error rather than
@@ -159,7 +177,7 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   626 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   682 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
 
    Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:

@@ -88,7 +88,7 @@ import {
   verifyPassword,
   burnPasswordCheck
 } from './server/auth';
-import { assertFetchableFeedUrl, classifyEvent, fetchICal, parseICal } from './server/ical';
+import { assertFetchableFeedUrl, classifyEvent, fetchICal, parseICal, planWithdrawals } from './server/ical';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -3678,6 +3678,7 @@ interface SyncOutcome {
   ok: boolean;
   imported: number;
   updated: number;
+  cancelled: number;
   unchanged: number;
   conflicts: string[];
   error?: string;
@@ -3700,6 +3701,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
       ok: false,
       imported: 0,
       updated: 0,
+      cancelled: 0,
       unchanged: 0,
       conflicts: [],
       error: fetched.error
@@ -3726,6 +3728,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
     let imported = 0;
     let updated = 0;
     let unchanged = 0;
+    let cancelled = 0;
     const conflicts: string[] = [];
 
     for (const event of events) {
@@ -3733,6 +3736,17 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
       const { isReservation, guestName } = classifyEvent(event);
 
       const existing = db.bookings.find(b => b.externalUid === event.uid && b.unitId === unit.id);
+
+      // Cancelled in place: the platform still lists the entry but the stay is off.
+      if (event.cancelled) {
+        if (existing && existing.status !== 'cancelled') {
+          const before = { ...existing };
+          existing.status = 'cancelled';
+          cancelled++;
+          addAudit(db, staffName, role, `Reservation cancelled on ${live.source} for ${unit.number}`, 'Booking', existing.id, before, existing);
+        }
+        continue;
+      }
 
       // Does it clash with something that did not come from this feed?
       const clash = db.bookings.find(
@@ -3774,7 +3788,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
           currency: unit.currency,
           depositPaid: 0,
           balanceDue: 0,
-          status: isReservation ? 'confirmed' : 'confirmed',
+          status: 'confirmed',
           notes:
             (isReservation
               ? `Imported from the ${live.source} calendar. The platform feed does not carry pricing — enter the stay value manually.`
@@ -3789,9 +3803,35 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
       }
     }
 
+    /**
+     * A reservation that has disappeared from the feed has been cancelled.
+     *
+     * Airbnb does not mark a cancellation, it simply stops listing the stay. So a
+     * guest could cancel and the villa would go on looking sold here for ever —
+     * blocked against a walk-in, counted as an arrival, and quietly costing the
+     * nights it should have been re-let for.
+     *
+     * Only entries this feed created are touched, and only when no money is
+     * attached to them. A stay someone has taken a deposit against is a
+     * conversation, not a silent edit: those are reported as conflicts so a person
+     * decides what happens to the money.
+     */
+    const seen = new Set(events.filter(e => !e.cancelled).map(e => e.uid));
+    const paidBookingIds = new Set(db.payments.filter(p => p.bookingId && p.status !== 'reversed').map(p => p.bookingId as string));
+    const plan = planWithdrawals(db.bookings, paidBookingIds, seen, live.id, unit.id, live.source);
+    for (const message of plan.conflicts) conflicts.push(message);
+    for (const id of plan.cancelIds) {
+      const booking = db.bookings.find(b => b.id === id);
+      if (!booking) continue;
+      const before = { ...booking };
+      booking.status = 'cancelled';
+      cancelled++;
+      addAudit(db, staffName, role, `Reservation withdrawn from the ${live.source} calendar for ${unit.number}`, 'Booking', booking.id, before, booking);
+    }
+
     live.lastSyncAt = new Date().toISOString();
     live.lastStatus = 'ok';
-    live.lastResult = `${imported} imported, ${updated} updated, ${unchanged} unchanged, ${conflicts.length} conflict(s).`;
+    live.lastResult = `${imported} imported, ${updated} updated, ${cancelled} cancelled, ${unchanged} unchanged, ${conflicts.length} conflict(s).`;
 
     addAudit(db, staffName, role, `Synchronised the ${live.source} calendar for ${unit.number}`, 'ICalFeed', feedId, '', live.lastResult);
 
@@ -3802,6 +3842,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
       ok: true,
       imported,
       updated,
+      cancelled,
       unchanged,
       conflicts
     };

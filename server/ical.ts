@@ -21,6 +21,39 @@ export interface ICalEvent {
   end: string; // YYYY-MM-DD, exclusive (checkout day)
   summary: string;
   description: string;
+  /** STATUS:CANCELLED — the stay is off, but the platform still lists the entry. */
+  cancelled: boolean;
+}
+
+/**
+ * Add whole days to a YYYY-MM-DD day, without going near a timezone.
+ *
+ * Used for DURATION, which some exports send instead of DTEND. Built from
+ * calendar parts at UTC noon so no offset can push the result onto the day
+ * before or after.
+ */
+function addDaysToDay(day: string, days: number): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!m) return null;
+  const at = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12));
+  at.setUTCDate(at.getUTCDate() + days);
+  return `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, '0')}-${String(at.getUTCDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Read an RFC 5545 DURATION as a whole number of days, rounding a part-day up.
+ *
+ * A feed that sends `DURATION:P3D` instead of DTEND is describing the same stay;
+ * dropping the event because one optional property was missing loses a real
+ * reservation, and the villa then looks free on a night that is sold.
+ */
+function durationInDays(value: string): number | null {
+  const m = /^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/i.exec(value.trim());
+  if (!m) return null;
+  const [, sign, w, d, h, mi, s] = m;
+  const days = (Number(w || 0) * 7 + Number(d || 0)) + (Number(h || 0) * 3600 + Number(mi || 0) * 60 + Number(s || 0)) / 86400;
+  if (!Number.isFinite(days) || days <= 0) return null;
+  return (sign === '-' ? -1 : 1) * Math.ceil(days);
 }
 
 /** Unfold RFC 5545 continuation lines (a leading space or tab continues the previous line). */
@@ -70,7 +103,7 @@ function toDay(value: string, tzOffsetMinutes: number): string | null {
 export function parseICal(text: string, tzOffsetMinutes = -5 * 60): ICalEvent[] {
   const lines = unfold(text);
   const events: ICalEvent[] = [];
-  let current: Partial<ICalEvent> | null = null;
+  let current: (Partial<ICalEvent> & { durationDays?: number }) | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -79,13 +112,19 @@ export function parseICal(text: string, tzOffsetMinutes = -5 * 60): ICalEvent[] 
       continue;
     }
     if (trimmed === 'END:VEVENT') {
+      // DTEND is optional when DURATION is given; the two describe the same stay.
+      if (current && current.start && !current.end && current.durationDays) {
+        const derived = addDaysToDay(current.start, current.durationDays);
+        if (derived) current.end = derived;
+      }
       if (current && current.uid && current.start && current.end) {
         events.push({
           uid: current.uid,
           start: current.start,
           end: current.end,
           summary: current.summary || '',
-          description: current.description || ''
+          description: current.description || '',
+          cancelled: !!current.cancelled
         });
       }
       current = null;
@@ -119,6 +158,15 @@ export function parseICal(text: string, tzOffsetMinutes = -5 * 60): ICalEvent[] 
       case 'DESCRIPTION':
         current.description = unescapeText(value);
         break;
+      case 'DURATION': {
+        const days = durationInDays(value);
+        if (days) current.durationDays = days;
+        break;
+      }
+      case 'STATUS':
+        // A platform that cancels in place rather than dropping the entry.
+        current.cancelled = value.trim().toUpperCase() === 'CANCELLED';
+        break;
       default:
         break;
     }
@@ -147,6 +195,63 @@ export function classifyEvent(event: ICalEvent): { isReservation: boolean; guest
   if (reserved) return { isReservation: true, guestName: reserved[1].trim() };
   if (lower === 'reserved') return { isReservation: true, guestName: 'External guest' };
   return { isReservation: true, guestName: summary };
+}
+
+/** The minimum a booking has to look like for a withdrawal to be judged. */
+export interface FeedBooking {
+  id: string;
+  unitId: string;
+  status: string;
+  guestName: string;
+  checkIn: string;
+  checkOut: string;
+  amount: number;
+  depositPaid: number;
+  externalUid?: string;
+  externalFeedId?: string;
+}
+
+/**
+ * Decide what to do about reservations the feed has stopped listing.
+ *
+ * Airbnb does not mark a cancellation — the stay simply stops appearing. Without
+ * acting on that, a guest could cancel and the villa would go on looking sold
+ * here for ever: blocked against a walk-in, counted as an arrival, and quietly
+ * costing the nights it should have been re-let for.
+ *
+ * Only entries this feed created are considered, and only ones with no money
+ * against them are cancelled outright. A stay someone has taken a deposit for is
+ * a conversation rather than a silent edit, so those are handed back as conflicts
+ * for a person to settle. Kept pure, and separate from the fetching, so it can be
+ * tested without a live calendar to pull from.
+ */
+export function planWithdrawals(
+  bookings: FeedBooking[],
+  paidBookingIds: Set<string>,
+  seenUids: Set<string>,
+  feedId: string,
+  unitId: string,
+  source: string
+): { cancelIds: string[]; conflicts: string[] } {
+  const cancelIds: string[] = [];
+  const conflicts: string[] = [];
+
+  for (const booking of bookings) {
+    if (booking.externalFeedId !== feedId || booking.unitId !== unitId) continue;
+    if (booking.status === 'cancelled' || !booking.externalUid) continue;
+    if (seenUids.has(booking.externalUid)) continue;
+
+    const carriesMoney = paidBookingIds.has(booking.id) || booking.depositPaid > 0 || booking.amount > 0;
+    if (carriesMoney) {
+      conflicts.push(
+        `${booking.guestName} (${booking.checkIn} to ${booking.checkOut}) has gone from the ${source} calendar but has money recorded against it — cancel it by hand and settle the deposit.`
+      );
+      continue;
+    }
+    cancelIds.push(booking.id);
+  }
+
+  return { cancelIds, conflicts };
 }
 
 export interface FetchResult {
