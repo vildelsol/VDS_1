@@ -19,14 +19,18 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (529 checks)
+### What is covered (537 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
   over plain HTTP so LAN sign-in works), a forced password change is enforced by
   the server, the sign-in throttle cannot be bypassed with a spoofed
   `X-Forwarded-For`, deactivating a user kills their live session, and logout
-  invalidates it.
+  invalidates it. A failed sign-in is recorded on the audit trail — never with
+  the password that was tried — but recording it can never become a way to
+  *erase* the trail: a run of guesses is one line rather than one line each, and
+  a flood from many usernames is capped, says plainly that it stopped listing
+  them, and leaves the genuine history underneath intact.
 - **Ledger, receipts & void integrity** — negative / future / oversized /
   wrong-currency payments are refused, receipt numbers are unique, and the
   duplicate-ID bugs stay fixed (voiding then re-posting a charge, re-settling a
@@ -134,7 +138,7 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   529 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   537 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
 
    Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:

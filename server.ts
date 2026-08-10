@@ -485,13 +485,89 @@ function clearLoginAttempts(ip: string, username: string) {
   loginAttempts.delete(`user:${username}`);
 }
 
+/**
+ * Record failed sign-ins, without handing anyone a way to erase the audit trail.
+ *
+ * A successful sign-in has always been recorded. A failed one left no trace at
+ * all, so an evening spent guessing passwords against the server was invisible:
+ * there was nothing to notice afterwards, and nothing to look back at.
+ *
+ * The obvious version of this — one audit entry per failed attempt — would be
+ * worse than nothing. The audit trail keeps the newest 20,000 entries and drops
+ * the rest, and the throttle counts (address, username) pairs, so someone
+ * varying the username gets a fresh allowance each time. They could hold down
+ * the login screen until every genuine entry had been pushed off the end, and
+ * destroying the record of who did what is a far better prize than the guessing
+ * ever was.
+ *
+ * So what is recorded is the *shape* of the failure rather than every instance:
+ * the first failure against a bucket, and the moment sustained guessing trips
+ * the lockout. Both are capped per window, and once the cap is reached a single
+ * line says so. Ordinary life — one person mistyping their own password twice —
+ * produces one line, which is what you want to see.
+ */
+const FAILED_LOGIN_AUDIT_CAP = 20;
+let failedAuditWindow = { start: 0, written: 0, capNoted: false };
+
+function claimFailedLoginAudit(): 'write' | 'note-cap' | 'silent' {
+  const now = Date.now();
+  if (now - failedAuditWindow.start > THROTTLE_WINDOW_MS) {
+    failedAuditWindow = { start: now, written: 0, capNoted: false };
+  }
+  if (failedAuditWindow.written < FAILED_LOGIN_AUDIT_CAP) {
+    failedAuditWindow.written += 1;
+    return 'write';
+  }
+  if (!failedAuditWindow.capNoted) {
+    failedAuditWindow.capNoted = true;
+    return 'note-cap';
+  }
+  return 'silent';
+}
+
+/**
+ * Note a failed sign-in. Never records what was typed as the password — the near
+ * misses of a real password are as good as the password itself.
+ */
+function noteFailedLogin(ip: string, username: string, kind: 'refused' | 'locked-out') {
+  const claim = claimFailedLoginAudit();
+  if (claim === 'silent') return;
+
+  const who = username || '(no username given)';
+  const action =
+    claim === 'note-cap'
+      ? 'Further failed sign-ins in this period are not being listed individually'
+      : kind === 'locked-out'
+        ? `Sign-in blocked after too many failed attempts for "${who}"`
+        : `Failed sign-in attempt for "${who}"`;
+
+  auditInBackground('a failed sign-in', db => {
+    addAudit(db, who, 'UNKNOWN', action, 'Session', who, '', `from ${ip}`);
+  });
+}
+
+/** True when this is the opening failure of a bucket, rather than one of a run. */
+function isFirstFailure(ip: string, username: string): boolean {
+  return (loginAttempts.get(`ip:${ip}:${username}`)?.count ?? 0) <= 1;
+}
+
 app.post(
   '/api/auth/login',
   handler(async (req, res) => {
     const username = String(req.body?.username ?? '').trim().toLowerCase();
     const password = String(req.body?.password ?? '');
     if (!username || !password) bad('Username and password are required.');
-    throttleLogin(req.ip || 'unknown', username);
+    const ip = req.ip || 'unknown';
+    try {
+      throttleLogin(ip, username);
+    } catch (err) {
+      // The lockout tripping is the entry worth having: it is the difference
+      // between somebody fumbling their own password and somebody working
+      // through a list.
+      noteFailedLogin(ip, username, 'locked-out');
+      throw err;
+    }
+    const firstOfRun = isFirstFailure(ip, username);
 
     const result = await transaction(db => {
       const user = db.users.find(u => u.username.toLowerCase() === username);
@@ -506,8 +582,11 @@ app.post(
       return { token: session.token, user: toSessionUser(db, user) };
     });
 
-    if (!result) throw new ApiError(401, 'Incorrect username or password.');
-    clearLoginAttempts(req.ip || 'unknown', username);
+    if (!result) {
+      if (firstOfRun) noteFailedLogin(ip, username, 'refused');
+      throw new ApiError(401, 'Incorrect username or password.');
+    }
+    clearLoginAttempts(ip, username);
     setSessionCookie(res, result.token, isRequestSecure(req));
     res.json({ user: result.user });
   })

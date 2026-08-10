@@ -61,6 +61,51 @@ export default async function run({ port, projectRoot }) {
     }
     T.check('the sign-in throttle fires despite spoofed X-Forwarded-For headers', got429);
 
+    // --- a failed sign-in leaves a trace, without becoming a way to erase one ---
+    // The audit trail keeps the newest 20,000 entries and drops the rest, so an
+    // entry per attempt would let anyone at the login screen push every genuine
+    // entry off the end. What is recorded is the shape of the failure, capped.
+    const auditNow = async () => (await c.get('/api/db')).body.auditLogs;
+    const failuresIn = logs => logs.filter(a => /Failed sign-in attempt|Sign-in blocked after/.test(a.action));
+
+    await c.post('/api/auth/login', { username: 'admin', password: 'WrongOnce-11!' }, { noCookie: true });
+    let logs = await auditNow();
+    T.check('a failed sign-in is recorded', failuresIn(logs).some(a => /Failed sign-in attempt for "admin"/.test(a.action)));
+    T.check(
+      'the password that was tried is never written down',
+      !JSON.stringify(logs).includes('WrongOnce-11!')
+    );
+    T.check('the attempt is attributed to nobody, not to a role', failuresIn(logs)[0]?.role === 'UNKNOWN');
+    T.check(
+      'a successful sign-in is still recorded as such',
+      logs.some(a => a.action === 'Signed in')
+    );
+
+    // A run of guesses against one account is one line, not one line each.
+    const beforeRun = failuresIn(await auditNow()).length;
+    for (let i = 0; i < 6; i++) {
+      await c.post('/api/auth/login', { username: 'admin', password: `Guess-${i}-11!` }, { noCookie: true });
+    }
+    const afterRun = failuresIn(await auditNow()).length;
+    T.check('a run of guesses does not write a line per guess', afterRun - beforeRun <= 1, `added ${afterRun - beforeRun}`);
+
+    // The flood: many usernames, which is how the throttle's own buckets are dodged.
+    const beforeFlood = (await auditNow()).length;
+    for (let i = 0; i < 120; i++) {
+      await c.post('/api/auth/login', { username: `ghost${i}`, password: 'bad' }, { noCookie: true });
+    }
+    logs = await auditNow();
+    const added = logs.length - beforeFlood;
+    T.check('a flood of failed sign-ins cannot fill the audit trail', added <= 25, `added ${added} entries`);
+    T.check(
+      'and it says plainly that it stopped listing them',
+      logs.some(a => /Further failed sign-ins in this period are not being listed/.test(a.action))
+    );
+    T.check(
+      'the genuine history is still there underneath',
+      logs.some(a => a.action === 'Signed in')
+    );
+
     // --- deactivating a user kills their live session ---
     await c.post('/api/users', { name: 'Temp Staff', username: 'temp', role: 'JUNIOR_OFFICER', password: 'TempPass-11!' });
     const other = makeClient(srv.baseUrl);
