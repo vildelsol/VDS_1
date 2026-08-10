@@ -175,7 +175,7 @@ export default function SystemSettings({
           units={units}
           onAdd={async payload => {
             await onAddFeed(payload);
-            notify('Calendar feed linked. Use “Sync now” to import reservations.');
+            notify('Calendar feed linked. Use "Sync now" to import reservations.');
           }}
           onRemove={async id => {
             await onRemoveFeed(id);
@@ -812,21 +812,53 @@ function BackupPanel({
   const [drives, setDrives] = useState<DetectedDrive[] | null>(null);
   const [drivesBusy, setDrivesBusy] = useState(false);
 
+  const refreshStatus = async () => {
+    const s = await api.get<BackupStatus>('/api/backup/status');
+    setStatus(s);
+    return s;
+  };
+
+  const refreshDrives = async () => {
+    const res = await api.get<{ drives: DetectedDrive[] }>('/api/backup/drives');
+    setDrives(res.drives);
+    return res.drives;
+  };
+
   /**
-   * The drives attached to the office server.
+   * Select a drive folder and immediately save + run a backup — one tap, done.
    *
-   * Not the machine you are sitting at: the backup is written by the server, so a
-   * stick pushed into this computer is no use unless this computer *is* the
-   * server. The wording on screen says so, because plugging it into the wrong
-   * machine and seeing nothing appear is otherwise baffling.
+   * The old flow was: click a drive → path fills a text box → click Save. Two
+   * steps, and the second was easy to miss. This collapses them into one.
    */
+  const useDrive = async (dir: string) => {
+    setFolder(dir);
+    setFolderBusy(true);
+    setFolderResult(null);
+    try {
+      const check = await api.post<{ ok: boolean; message: string }>('/api/backup/check-folder', { dir });
+      await onSaveBackupDir(dir);
+      if (check.ok && dir.trim()) await api.post('/api/backup/run');
+      await Promise.all([refreshStatus(), refreshDrives()]);
+      setFolderResult({ ok: check.ok, message: check.message });
+      onNotify(
+        check.ok
+          ? `Drive selected. A copy has been written to ${dir.trim()} and one will follow every day.`
+          : `Drive saved, but could not write to it right now. ${check.message}`
+      );
+    } catch (err) {
+      onError(err);
+    } finally {
+      setFolderBusy(false);
+    }
+  };
+
   const findDrives = React.useCallback(async () => {
     setDrivesBusy(true);
     try {
-      const res = await api.get<{ drives: DetectedDrive[] }>('/api/backup/drives');
-      setDrives(res.drives);
+      return await refreshDrives();
     } catch (err) {
       onError(err);
+      return null;
     } finally {
       setDrivesBusy(false);
     }
@@ -834,23 +866,35 @@ function BackupPanel({
 
   const load = React.useCallback(async () => {
     try {
-      setStatus(await api.get<BackupStatus>('/api/backup/status'));
-      await findDrives();
+      const [s, detectedDrives] = await Promise.all([
+        api.get<BackupStatus>('/api/backup/status'),
+        api.get<{ drives: DetectedDrive[] }>('/api/backup/drives').then(r => r.drives).catch(() => [] as DetectedDrive[])
+      ]);
+      setStatus(s);
+      setDrives(detectedDrives);
+      if (!s.externalBackupDir) {
+        setFolder('');
+        // Auto-configure: if exactly one removable writable drive is found and no
+        // backup is set, select and save it without any further interaction.
+        const removable = detectedDrives.filter(d => d.writable && d.removable);
+        if (removable.length === 1) {
+          void useDrive(removable[0].path);
+          return;
+        }
+      } else {
+        setFolder(s.externalBackupDir);
+      }
     } catch (err) {
       onError(err);
     }
-  }, [onError, findDrives]);
+    // useDrive is intentionally excluded — it is stable and including it would
+    // cause the effect to re-run after every save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onError]);
 
   React.useEffect(() => {
     void load();
   }, [load]);
-
-  // Mirror the saved folder into the field, but only while it is untouched, so a
-  // reload cannot wipe out something half-typed.
-  React.useEffect(() => {
-    if (status && !folder) setFolder(status.externalBackupDir || '');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.externalBackupDir]);
 
   const testFolder = async () => {
     setFolderBusy(true);
@@ -871,10 +915,8 @@ function BackupPanel({
     try {
       const check = await api.post<{ ok: boolean; message: string }>('/api/backup/check-folder', { dir: folder });
       await onSaveBackupDir(folder);
-      // Take a copy straight away, so "it works" is proved by a real file on the
-      // drive rather than by the setting having been accepted.
       if (check.ok && folder.trim()) await api.post('/api/backup/run');
-      await load();
+      await Promise.all([refreshStatus(), refreshDrives()]);
       setFolderResult({ ok: check.ok, message: check.message });
       onNotify(
         !folder.trim()
@@ -1013,37 +1055,37 @@ function BackupPanel({
             <ul className="mt-2 space-y-1">
               {drives.map(d => (
                 <li key={d.path}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFolder(d.path);
-                      setFolderResult(null);
-                    }}
-                    disabled={!d.writable}
-                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <span>
+                  <div className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
+                    <span className="min-w-0">
                       <span className="font-medium text-slate-900">{d.label}</span>
-                      <span className="ml-2 font-mono text-xs text-slate-500">{d.path}</span>
+                      <span className="ml-2 block font-mono text-[11px] text-slate-400 sm:inline">{d.path}</span>
                     </span>
-                    <span className="shrink-0 text-xs">
+                    <span className="shrink-0">
                       {d.isCurrentTarget ? (
-                        <span className="font-semibold text-emerald-700">in use</span>
+                        <span className="font-semibold text-emerald-700">✓ in use</span>
                       ) : !d.writable ? (
-                        <span className="text-rose-600">not writable</span>
-                      ) : d.removable ? (
-                        <span className="text-slate-500">removable</span>
+                        <span className="text-xs text-rose-600">not writable</span>
                       ) : (
-                        <span className="text-amber-600">this machine's own disk</span>
+                        <button
+                          type="button"
+                          onClick={() => void useDrive(d.path)}
+                          disabled={folderBusy}
+                          className="rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
+                        >
+                          Use this drive
+                        </button>
                       )}
                     </span>
-                  </button>
+                  </div>
+                  {!d.removable && !d.isCurrentTarget && d.writable && (
+                    <p className="ml-1 mt-0.5 text-[10px] text-amber-600">This is the machine's own disk — an external drive is safer.</p>
+                  )}
                 </li>
               ))}
             </ul>
           ) : (
             <p className="mt-2 text-xs text-slate-500">
-              {drives ? 'No drives found. Plug one into the office server and choose “Look again”.' : 'Looking for drives…'}
+              {drives ? 'No drives found. Plug one into the office server and choose "Look again".' : 'Looking for drives…'}
             </p>
           )}
         </div>
@@ -1105,7 +1147,7 @@ function BackupPanel({
         </div>
         {status.backups.length === 0 ? (
           <div className="p-6">
-            <EmptyState title="No backups yet" hint="The first one is taken the day after the application starts, or immediately with “Back up now”." />
+            <EmptyState title="No backups yet" hint={'The first one is taken the day after the application starts, or immediately with “Back up now”.'} />
           </div>
         ) : (
           <TableScroller>
