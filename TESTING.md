@@ -19,7 +19,7 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (682 checks)
+### What is covered (715 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
@@ -128,6 +128,19 @@ npm run test:run
   stays never occupy one villa on the same night, and every balance still totals
   to whole cents. Scenarios come from a seeded generator, so a failure names a
   seed that reproduces it.
+- **A hundred scenarios across the whole application** — the same idea run over
+  the parts the ledger simulation never reaches, starting from a property that
+  looks real on day one: sixteen villas as long lets, short lets, one
+  owner-occupied and one out of service, rates in both currencies, staff in every
+  role, and the standing monthly costs on file. It then drives monthly cost
+  templates and posting them, maintenance work orders through to the expense they
+  raise, resident activity records, damage deposits, security deposits held and
+  settled, lease terms, bank reconciliation, receipt reprints, staff
+  administration, permission changes mid-shift, calendar feeds, backups and the
+  records export. The invariants are the cross-cutting ones: a work order raises
+  its cost exactly once, a month's costs are never posted twice, no deposit is
+  settled for more than was held, no meter runs backwards, and no villa is sold
+  twice on one night.
 - **Reading a platform calendar** — payloads shaped like real Airbnb, Booking.com
   and VRBO exports: folded description lines, escaped commas, `Reserved` with no
   guest name, `Airbnb (Not available)` blocks, `DURATION` in place of an end date,
@@ -177,7 +190,7 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   682 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   715 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
 
    Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:
