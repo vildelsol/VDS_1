@@ -28,8 +28,12 @@ next session from inside `pm-app`.
 
 - **435 automated tests pass.** Typecheck clean, build clean.
 - Working tree is clean, everything pushed.
-- Latest release: **v1.7.0** — the double-record guard, recurring expenses, damage deposits, and
-  Tier 5 (bank reconciliation, refunds, the proration decision).
+- Latest release: **v1.7.2**.
+  - `v1.7.0` — double-record guard, recurring expenses, damage deposits, and Tier 5 (bank
+    reconciliation, refunds, the proration decision).
+  - `v1.7.1` — three bugs the robustness audit found in that Tier 5 code. **Do not deploy v1.7.0**;
+    it can leave a receipt worth a negative amount. See *Robustness audit* below.
+  - `v1.7.2` — changing a settled receipt's currency now takes an explicit confirmation.
 
 **The audit is finished.** Every tier is closed. There is no backlog: the next thing to build is
 whatever Ro asks for, not something on a list in this file.
