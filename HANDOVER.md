@@ -28,7 +28,12 @@ next session from inside `pm-app`.
 
 - **735 automated tests pass.** Typecheck clean, build clean, `npm audit` clean.
 - Working tree is clean, everything pushed.
-- Latest release: **v1.8.0**.
+- Latest release: **v1.8.1**.
+  - `v1.8.1` — USB backup drive detection is now fully automatic. When the Backup & recovery tab
+    opens the server enumerates attached drives. If exactly one removable writable drive is found
+    and no backup folder is configured, it is selected and saved without any user input. When
+    multiple drives are present each shows a single-tap "Use this drive" button that selects, saves,
+    and writes the first copy immediately. Previously the user had to type the path by hand.
   - `v1.8.0` — a hardening and confidence release. Backups no longer carry working logins; the
     restore path is tested end to end; a figure is read or refused rather than silently reshaped;
     sign-in no longer leaks which usernames exist; a stay cancelled on Airbnb is now cancelled here;
@@ -43,6 +48,9 @@ next session from inside `pm-app`.
 
 **The audit is finished.** Every tier is closed. There is no backlog: the next thing to build is
 whatever Ro asks for, not something on a list in this file.
+
+**The system is live.** As of 2026-08-10 the HP is running v1.8.1, Tailscale is installed and
+confirmed working, and remote access from a phone over Tailscale has been tested successfully.
 
 ### Owner statements — finished
 
@@ -98,7 +106,7 @@ will spend twenty minutes debugging a fix that already works.
 Push a tag; GitHub Actions builds the `.exe` on a real Windows runner and publishes it.
 
 ```bash
-git tag -a v1.8.0 -m "…" && git push origin v1.8.0
+git tag -a v1.8.2 -m "…" && git push origin v1.8.2
 ```
 
 The workflow (`.github/workflows/build-exe.yml`) gates the release on: full test suite → assemble
@@ -366,26 +374,29 @@ network loss, a live Airbnb feed against a real listing, and the two-PC dry run.
 
 ## Reaching the app from outside the property
 
+**Tailscale is installed and confirmed working as of 2026-08-10.** Remote access from a phone to
+the HP was tested and succeeded on first attempt. This section describes the setup for reference and
+for any new device that needs to be added.
+
 The HP stays on and serves; everything else connects to it. The server binds `0.0.0.0:3000`, so it
 answers on every interface including a VPN one — no code change is needed for remote access.
 
-**Use Tailscale.** It builds a private encrypted network between your own devices; the HP becomes
-reachable at a fixed `100.x` address that only your devices can see. No port forwarding, nothing
-published. Do **not** forward port 3000 on the router, and do **not** use Tailscale *Funnel* — both
-put a system holding tenants' financial records on the public internet in plain HTTP.
+**Tailscale** builds a private encrypted network between your own devices; the HP is reachable at a
+fixed `100.x` address that only your devices can see. No port forwarding, nothing published. Do
+**not** forward port 3000 on the router, and do **not** use Tailscale *Funnel* — both put a system
+holding tenants' financial records on the public internet in plain HTTP.
 
-On the HP: install Tailscale, sign in, then **tray icon → Preferences → Run unattended**. Without
-that it disconnects at logout and remote access dies at the first reboot. Allow the app through the
-firewall (`netsh advfirewall firewall add rule name="Villaggio Del Sol" dir=in action=allow
-protocol=TCP localport=3000`), and set sleep to **Never** — a sleeping HP is an unreachable one.
+On the HP: Tailscale is installed. Confirm **tray icon → Preferences → Run unattended** is on —
+without it, Tailscale disconnects at logout and remote access dies at the first reboot. Sleep is set
+to **Never** (a sleeping HP is an unreachable one).
 
-On the other device: same Tailscale account, then `http://<machine-name>:3000`.
+To add a new device: install Tailscale, sign in with the same account, then `http://<HP-machine-name>:3000`.
 
 Worth knowing: Tailscale encrypts the traffic even though the app speaks plain HTTP, so the browser's
 "Not secure" warning is about the missing certificate rather than an exposed connection. Leave
 `VDS_FORCE_SECURE_COOKIE` unset — forcing `Secure` cookies breaks sign-in over plain HTTP, which is
-how the LAN clients connect. And note the access boundary has moved: anyone signed into that
-Tailscale account can reach the app, so it needs a strong password and two-factor.
+how the LAN clients connect. Anyone signed into that Tailscale account can reach the app, so keep it
+to staff devices only and use strong passwords.
 
 ---
 
