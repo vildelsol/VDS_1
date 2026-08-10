@@ -37,6 +37,32 @@ export function verifyPassword(password: string, hash: string, salt: string): bo
   return crypto.timingSafeEqual(candidate, expected);
 }
 
+/**
+ * Do the work of checking a password against an account that does not exist.
+ *
+ * Sign-in deliberately gives the same answer whether or not the username is
+ * real, but saying the same thing is not enough if it is said faster. Checking a
+ * password is expensive on purpose — scrypt takes ~30ms — while failing to find
+ * the account at all took under 6ms, so the clock answered the question the
+ * message was refusing to: a six-fold difference, easily measured over the
+ * network, that let anyone map which of the staff usernames were real before
+ * starting on the passwords.
+ *
+ * Burning the same work on a decoy closes the gap. The comparison can never
+ * succeed — the decoy salt and hash are generated fresh at start-up and belong
+ * to no account.
+ */
+const DECOY_SALT = crypto.randomBytes(16).toString('hex');
+const DECOY_HASH = crypto.scryptSync(crypto.randomBytes(32).toString('hex'), DECOY_SALT, SCRYPT_KEYLEN).toString('hex');
+
+export function burnPasswordCheck(password: string): void {
+  try {
+    verifyPassword(password, DECOY_HASH, DECOY_SALT);
+  } catch {
+    /* the decoy comparison can fail on nothing that matters */
+  }
+}
+
 /** At least 10 characters with some variety. Returns null when acceptable. */
 export function passwordComplaint(password: string): string | null {
   const value = String(password || '');

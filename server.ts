@@ -46,7 +46,7 @@ import {
   ICalFeed,
   getUnitDisplayName
 } from './src/types';
-import { formatMoneyLong, round2, toMoney } from './src/lib/money';
+import { formatMoneyLong, parseMoneyInput, round2, toMoney } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, monthStart, nightsBetween } from './src/lib/dates';
 import { accountBalance, bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable } from './src/lib/finance';
 import {
@@ -85,7 +85,8 @@ import {
   resolveAuth,
   setSessionCookie,
   toSessionUser,
-  verifyPassword
+  verifyPassword,
+  burnPasswordCheck
 } from './server/auth';
 import { assertFetchableFeedUrl, classifyEvent, fetchICal, parseICal } from './server/ical';
 
@@ -163,9 +164,18 @@ function pruneIdempotency() {
 
 const MUTATING = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
 
-function idempotency(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const key = req.header('Idempotency-Key');
-  if (!key || !MUTATING.has(req.method)) return next();
+function idempotency(req: AuthedRequest, res: express.Response, next: express.NextFunction) {
+  const header = req.header('Idempotency-Key');
+  if (!header || !MUTATING.has(req.method)) return next();
+
+  // Scoped to the account that sent it. The cache used to be keyed on the header
+  // alone, which meant a key was answered from whoever had used it first: send a
+  // payment with a key another member of staff had already used and the reply was
+  // *their* receipt, with the payment never recorded and a success reported for
+  // it. Clients generate random keys so it took deliberate effort to collide, but
+  // "your entry silently became somebody else's" is not a failure to leave to
+  // chance in a ledger.
+  const key = `${req.auth?.user.id ?? 'anonymous'}:${header}`;
 
   const cached = idempotencyCache.get(key);
   if (cached) {
@@ -211,9 +221,14 @@ class ApiError extends Error {
   }
 }
 
-const bad = (message: string) => {
+/**
+ * Refuse the request. Declared as returning `never` so the compiler knows the
+ * code after a call to it is unreachable — without that, a value checked by
+ * `bad()` still looks possibly-null to everything downstream.
+ */
+function bad(message: string): never {
   throw new ApiError(400, message);
-};
+}
 
 function requirePermission(req: AuthedRequest, action: GatedAction) {
   if (!req.auth) throw new ApiError(401, 'Not signed in.');
@@ -276,9 +291,31 @@ function requireCurrency(value: unknown, field = 'Currency'): Currency {
   return requireEnum(value, ['USD', 'JMD'] as const, field);
 }
 
+/** The complaint made when a figure cannot be read, wherever that happens. */
+const UNREADABLE_AMOUNT = 'is not a figure I can read. Enter it plainly, such as 50000, 50,000 or 50000.50.';
+
 function requirePositiveAmount(value: unknown, field: string): number {
-  const amount = toMoney(value);
+  const amount = parseMoneyInput(value);
+  if (amount === null) bad(`${field} ${UNREADABLE_AMOUNT}`);
   if (!(amount > 0)) bad(`${field} must be greater than zero.`);
+  if (amount > 1_000_000_000) bad(`${field} is implausibly large. Please check the figure.`);
+  return amount;
+}
+
+/**
+ * Read a figure that may legitimately be absent, refusing one that is present
+ * but unreadable.
+ *
+ * The difference matters. A missing rent means "leave it as it was"; a rent of
+ * "1.500.000" means somebody pasted a figure this application cannot interpret,
+ * and quietly storing zero — or one and a half — is how a villa ends up billing
+ * the wrong amount every month with nobody the wiser.
+ */
+function optionalAmount(value: unknown, field: string, fallback: number): number {
+  if (value === undefined || value === null || value === '') return round2(fallback);
+  const amount = parseMoneyInput(value);
+  if (amount === null) bad(`${field} ${UNREADABLE_AMOUNT}`);
+  if (amount < 0) bad(`${field} cannot be negative.`);
   if (amount > 1_000_000_000) bad(`${field} is implausibly large. Please check the figure.`);
   return amount;
 }
@@ -441,7 +478,7 @@ async function resetAdminPasswordIfRequested() {
  * Auth routes (unauthenticated)
  * ------------------------------------------------------------------ */
 
-const loginAttempts = new Map<string, { count: number; first: number }>();
+const loginAttempts = new Map<string, { count: number; first: number; noted?: boolean }>();
 const THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 
 /**
@@ -551,6 +588,21 @@ function isFirstFailure(ip: string, username: string): boolean {
   return (loginAttempts.get(`ip:${ip}:${username}`)?.count ?? 0) <= 1;
 }
 
+/**
+ * True the first time a bucket is refused, and false for every attempt after.
+ *
+ * The lockout is worth one line — the moment it trips. Somebody who keeps
+ * hammering after that is still being refused, and writing a line for each of
+ * those attempts turns the one entry that matters into a wall of identical ones.
+ */
+function claimLockoutNotice(ip: string, username: string): boolean {
+  const entry = loginAttempts.get(`ip:${ip}:${username}`) || loginAttempts.get(`user:${username}`);
+  if (!entry) return true;
+  if (entry.noted) return false;
+  entry.noted = true;
+  return true;
+}
+
 app.post(
   '/api/auth/login',
   handler(async (req, res) => {
@@ -564,16 +616,22 @@ app.post(
       // The lockout tripping is the entry worth having: it is the difference
       // between somebody fumbling their own password and somebody working
       // through a list.
-      noteFailedLogin(ip, username, 'locked-out');
+      if (claimLockoutNotice(ip, username)) noteFailedLogin(ip, username, 'locked-out');
       throw err;
     }
     const firstOfRun = isFirstFailure(ip, username);
 
     const result = await transaction(db => {
       const user = db.users.find(u => u.username.toLowerCase() === username);
-      // Same message and comparable work either way, so the response does not
-      // reveal whether the username exists.
-      if (!user || !user.active || !verifyPassword(password, user.passwordHash, user.passwordSalt)) {
+      // Same message and the same work either way, so neither the response nor
+      // the time it took reveals whether the username exists. The decoy check is
+      // not decoration: without it, a missing account answered five times faster
+      // than a real one and the clock gave the game away.
+      if (!user || !user.active) {
+        burnPasswordCheck(password);
+        return null;
+      }
+      if (!verifyPassword(password, user.passwordHash, user.passwordSalt)) {
         return null;
       }
       const session = createSession(db, user);
@@ -934,7 +992,13 @@ app.post(
 
       if (fxRateJmdPerUsd !== undefined) {
         const rate = Number(fxRateJmdPerUsd);
-        if (!(rate > 0) || rate > 100000) bad('The indicative exchange rate must be a positive number.');
+        // Bounded to a band a real rate could plausibly sit in. "Positive and
+        // under a hundred thousand" let 0.0001 through, and the rate is not
+        // decoration — it converts every USD figure in the owner statements and
+        // the projections, so a slipped decimal quietly restates the accounts.
+        if (!Number.isFinite(rate) || rate < 50 || rate > 1000) {
+          bad('The indicative exchange rate must be between 50 and 1000 JMD per USD. Check the figure.');
+        }
         db.settings.fxRateJmdPerUsd = round2(rate);
       }
 
@@ -1413,8 +1477,8 @@ app.post(
       if (record.depositReturnedOn) throw new ApiError(400, 'This deposit has already been reconciled.');
 
       const before = { ...record };
-      const withheld = Math.max(0, toMoney(body.withheldAmount ?? 0));
-      const returned = Math.max(0, toMoney(body.returnedAmount ?? round2(record.depositAmount - withheld)));
+      const withheld = optionalAmount(body.withheldAmount, 'The amount withheld', 0);
+      const returned = optionalAmount(body.returnedAmount, 'The amount returned', round2(record.depositAmount - withheld));
       const settledOn = requireDay(body.settledOn || today(), 'Date settled');
       if (settledOn > today()) bad('A deposit cannot be settled in the future.');
 
@@ -1548,8 +1612,9 @@ app.put(
       const maintCurrency = requireCurrency(body.maintCurrency ?? original.maintCurrency ?? currency, 'Maintenance currency');
 
       const rentApplies = status === 'long-term' || status === 'short-term';
-      const monthlyRent = rentApplies ? Math.max(0, toMoney(body.monthlyRent ?? original.monthlyRent)) : 0;
-      const monthlyMaintenance = status === 'unavailable' ? 0 : Math.max(0, toMoney(body.monthlyMaintenance ?? original.monthlyMaintenance));
+      const monthlyRent = rentApplies ? optionalAmount(body.monthlyRent, 'The monthly rent', original.monthlyRent) : 0;
+      const monthlyMaintenance =
+        status === 'unavailable' ? 0 : optionalAmount(body.monthlyMaintenance, 'The monthly maintenance', original.monthlyMaintenance);
 
       const clampDay = (v: unknown, fallback: number) => {
         const n = Math.round(Number(v ?? fallback));
@@ -1946,13 +2011,16 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
   if (nightsBetween(checkIn, checkOut) > 365) bad('A single reservation cannot exceed 365 nights.');
 
   const currency = requireCurrency(body.currency ?? existing?.currency ?? unit.currency, 'Currency');
-  const amount = Math.max(0, toMoney(body.amount ?? existing?.amount ?? 0));
-  const depositPaid = Math.max(0, toMoney(body.depositPaid ?? existing?.depositPaid ?? 0));
+  const amount = optionalAmount(body.amount, 'The booking total', existing?.amount ?? 0);
+  const depositPaid = optionalAmount(body.depositPaid, 'The deposit paid', existing?.depositPaid ?? 0);
   if (depositPaid > amount) {
     bad('The deposit cannot exceed the total stay cost. Record the surplus as a separate payment if it is an overpayment.');
   }
   const nightlyRateRaw = body.nightlyRate ?? existing?.nightlyRate;
-  const nightlyRate = nightlyRateRaw === undefined || nightlyRateRaw === null || nightlyRateRaw === '' ? undefined : Math.max(0, toMoney(nightlyRateRaw));
+  const nightlyRate =
+    nightlyRateRaw === undefined || nightlyRateRaw === null || nightlyRateRaw === ''
+      ? undefined
+      : optionalAmount(nightlyRateRaw, 'The nightly rate', 0);
 
   return {
     checkIn,
@@ -2121,8 +2189,8 @@ app.post(
       const before = { ...record };
       const held = record.damageDepositAmount;
       const currency = record.damageDepositCurrency ?? record.currency;
-      const withheld = Math.max(0, toMoney(body.withheldAmount ?? 0));
-      const returned = Math.max(0, toMoney(body.returnedAmount ?? round2(held - withheld)));
+      const withheld = optionalAmount(body.withheldAmount, 'The amount withheld', 0);
+      const returned = optionalAmount(body.returnedAmount, 'The amount returned', round2(held - withheld));
       const settledOn = requireDay(body.settledOn || today(), 'Date settled');
       if (settledOn > today()) bad('A damage deposit cannot be settled in the future.');
 

@@ -21,7 +21,7 @@ if (!fs.existsSync(path.join(projectRoot, 'dist', 'server.cjs'))) {
   process.exit(1);
 }
 
-const modules = ['auth', 'account-recovery', 'backup-target', 'restore', 'ledger', 'billing-state', 'tenancy', 'first-and-last-rent', 'one-off-charges', 'lease-expiry', 'work-orders', 'deposits', 'damage-deposit', 'owner-statements', 'double-record', 'recurring-expenses', 'refunds', 'reconciliation', 'permissions', 'staff-accounts', 'integrity', 'ssrf', 'calendar-sync'];
+const modules = ['auth', 'account-recovery', 'backup-target', 'restore', 'ledger', 'billing-state', 'tenancy', 'first-and-last-rent', 'one-off-charges', 'lease-expiry', 'work-orders', 'deposits', 'damage-deposit', 'owner-statements', 'double-record', 'recurring-expenses', 'refunds', 'reconciliation', 'permissions', 'staff-accounts', 'input-hardening', 'integrity', 'ssrf', 'calendar-sync'];
 let port = 3971;
 let totalPass = 0;
 let totalFail = 0;

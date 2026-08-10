@@ -182,6 +182,14 @@ Watch it with `gh run watch <id> --exit-status`.
   tested end to end: delete `db.json`, drop the backup in its place, start the server.
 - **Admin password recovery** — drop `RESET-ADMIN-PASSWORD.txt` next to `db.json`, restart.
   File-based only; nothing over the network can trigger it.
+- **Adversarial pass** — a running server was attacked rather than read. What held: 20-way races on
+  the same record (confirm, refund, void, post-month) settle to exactly one action; refunds cannot
+  exceed, repeat, or apply to a voided or unconfirmed receipt; receipt numbers, ids and `receivedBy`
+  cannot be set by a client; no prototype pollution, path traversal, session fixation, or escalation
+  through the settings matrix. What did not, and is now fixed: sign-in timing revealed which
+  usernames existed (a missing account answered 6x faster); figures like `1.500.000` were silently
+  read as `1.5`; the exchange rate accepted `0.0001`; an idempotency key was answered from whoever
+  used it first, regardless of account. Each has a regression test.
 - **Single-file `.exe`** via Node SEA, built and smoke-tested on Windows by CI.
 
 ### Recurring expenses — finished

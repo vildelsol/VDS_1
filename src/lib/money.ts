@@ -16,11 +16,63 @@ export function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-/** Coerce arbitrary form input to a safe monetary number. Rejects NaN/Infinity. */
+/**
+ * Read a figure someone typed or pasted, or refuse it.
+ *
+ * This used to strip out every character that was not a digit, a dot or a minus
+ * and then hand what was left to parseFloat. That is wonderfully forgiving of
+ * "$50,000", and quietly catastrophic with anything else, because it always
+ * produced *a* number and never an objection:
+ *
+ *     "1.500.000"  ->  1.5          a million and a half becomes one and a half
+ *     "50000abc"   ->  50000        junk silently accepted
+ *     "1e999"      ->  1999         a figure nobody typed
+ *     "5-0-0"      ->  5
+ *
+ * A wrong figure that looks deliberate is worse than a refused one: it lands in
+ * the ledger, gets receipted, and reconciles against nothing. So the grammar is
+ * now explicit — a plain figure, or one grouped in threes by commas or spaces,
+ * with an optional currency symbol — and anything else returns null for the
+ * caller to reject.
+ *
+ * "50.000" is still read as fifty, because it is a valid plain decimal and there
+ * is no way to tell it apart from fifty-point-zero. Multiple dots are the
+ * unambiguous case, and those are now refused.
+ */
+export function parseMoneyInput(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? round2(value) : null;
+  if (value === null || value === undefined) return null;
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  // A currency marker on either end is ordinary and harmless.
+  const bare = raw
+    .replace(/^(US\$|J\$|\$|USD|JMD)\s*/i, '')
+    .replace(/\s*(USD|JMD)$/i, '')
+    .trim();
+  if (!bare) return null;
+
+  const grouped = /^-?\d{1,3}(?:[ ,]\d{3})+(?:\.\d+)?$/;
+  const plain = /^-?\d+(?:\.\d+)?$/;
+
+  let normalised: string;
+  if (grouped.test(bare)) normalised = bare.replace(/[ ,]/g, '');
+  else if (plain.test(bare)) normalised = bare;
+  else return null;
+
+  const n = Number(normalised);
+  return Number.isFinite(n) ? round2(n) : null;
+}
+
+/**
+ * Coerce form input to a safe monetary number, treating anything unreadable as
+ * zero. Kept for display and for the places where a missing figure genuinely
+ * means nothing rather than an error; anywhere a figure is *required*, use
+ * parseMoneyInput and refuse null rather than booking a silent zero.
+ */
 export function toMoney(value: unknown): number {
-  const n = typeof value === 'number' ? value : parseFloat(String(value ?? '').replace(/[^0-9.-]/g, ''));
-  if (!Number.isFinite(n)) return 0;
-  return round2(n);
+  return parseMoneyInput(value) ?? 0;
 }
 
 /** Sum monetary values without accumulating float error. */

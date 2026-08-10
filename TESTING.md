@@ -19,14 +19,16 @@ To run the tests without rebuilding first (when you have already built):
 npm run test:run
 ```
 
-### What is covered (537 checks)
+### What is covered (574 checks)
 
 - **Authentication & sessions** — unauthenticated access is refused, passwords are
   checked, the session cookie is `HttpOnly; SameSite=Strict` (and not `Secure`
   over plain HTTP so LAN sign-in works), a forced password change is enforced by
   the server, the sign-in throttle cannot be bypassed with a spoofed
   `X-Forwarded-For`, deactivating a user kills their live session, and logout
-  invalidates it. A failed sign-in is recorded on the audit trail — never with
+  invalidates it. A wrong password takes the same time whether or not the account
+  exists, so the clock cannot be used to map which usernames are real. A failed
+  sign-in is recorded on the audit trail — never with
   the password that was tried — but recording it can never become a way to
   *erase* the trail: a run of guesses is one line rather than one line each, and
   a flood from many usernames is capped, says plainly that it stopped listing
@@ -44,6 +46,16 @@ npm run test:run
   memory or on disk), 20 concurrent writes all persist with unique receipts/ids,
   `db.json` is never observed half-written, impossible dates are refused, and
   basic input hardening holds.
+- **Unreadable figures, replayed keys & impossible rates** — a figure is either
+  understood or refused, never quietly reshaped: `50,000`, `$50,000`, `12 000`
+  and `1,234.56` are read as written, while `1.500.000`, `1e999`, `50000abc` and
+  `5-0-0` are refused with a message saying how to write it. The same grammar
+  holds where a figure is optional, so an unreadable rent is refused rather than
+  stored as `1.5`, and an omitted one still means "leave it as it was". An
+  idempotency key is scoped to the account that sent it — the same key from
+  someone else does its own work, while a genuine replay by the same account is
+  still exactly one action. The exchange rate is held to a band a real rate could
+  occupy.
 - **Calendar feed SSRF guard** — feed URLs pointing at loopback / private /
   link-local / CGNAT / IPv6-internal addresses are refused; public ones are
   accepted.
@@ -138,7 +150,7 @@ HP EliteDesk (server) and Kamrui (client) before going live.
    `recordPayments` permission, grants it to every role). It has been verified on a
    copy of the live data, but keep the backup regardless.
 2. **Build and self-test on the server PC:** `npm install`, then `npm test`. All
-   537 checks should pass on Windows exactly as on macOS. If any fail, stop and note
+   574 checks should pass on Windows exactly as on macOS. If any fail, stop and note
    which — that is a real cross-platform difference worth looking at.
 
    Not needed if you are using the packaged `Villaggio-Del-Sol.exe` from Releases:

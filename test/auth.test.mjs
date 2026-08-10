@@ -61,6 +61,29 @@ export default async function run({ port, projectRoot }) {
     }
     T.check('the sign-in throttle fires despite spoofed X-Forwarded-For headers', got429);
 
+    // --- the clock must not answer what the message refuses to ---
+    // Sign-in says the same thing whether or not the username exists. It also has
+    // to take the same time saying it: checking a password costs ~30ms of scrypt,
+    // and skipping that for an account that does not exist answered five times
+    // faster, which mapped the real staff usernames for anybody with a stopwatch.
+    const medianLoginMs = async username => {
+      const runs = [];
+      for (let i = 0; i < 9; i++) {
+        const started = process.hrtime.bigint();
+        await c.post('/api/auth/login', { username, password: 'DefinitelyWrong-11!' }, { noCookie: true });
+        runs.push(Number(process.hrtime.bigint() - started) / 1e6);
+      }
+      runs.sort((a, b) => a - b);
+      return runs[Math.floor(runs.length / 2)];
+    };
+    const realMs = await medianLoginMs('admin');
+    const missingMs = await medianLoginMs('nosuchpersonhere');
+    T.check(
+      'a wrong password takes the same time whether or not the account exists',
+      realMs < missingMs * 3,
+      `real ${realMs.toFixed(1)}ms vs missing ${missingMs.toFixed(1)}ms`
+    );
+
     // --- a failed sign-in leaves a trace, without becoming a way to erase one ---
     // The audit trail keeps the newest 20,000 entries and drops the rest, so an
     // entry per attempt would let anyone at the login screen push every genuine
