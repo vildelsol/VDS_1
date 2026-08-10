@@ -61,6 +61,14 @@ export class ApiError extends Error {
  */
 export const ALREADY_SETTLED = 'account-already-settled';
 
+/**
+ * The server refused a correction because it would change the receipt's
+ * currency. Nothing converts the amount and the receipt moves to the other
+ * currency's account, so it is refused once and has to be confirmed. Kept in
+ * step with `CURRENCY_CHANGE` in server.ts.
+ */
+export const CURRENCY_CHANGE = 'currency-change-not-confirmed';
+
 let onUnauthenticated: (() => void) | null = null;
 
 /** Registered by App so an expired session bounces the user to the sign-in screen. */

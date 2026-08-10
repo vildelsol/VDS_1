@@ -240,6 +240,42 @@ export default async function run({ port, projectRoot }) {
     const datePush = await c.put(`/api/payments/${editTarget.body.payment.id}`, { date: '2026-07-25' });
     T.check('and cannot be re-dated to after its own refund', datePush.status === 400);
 
+    /* ---------------- changing a receipt's currency is a deliberate act ---------------- */
+
+    /**
+     * Nothing converts the amount. J$50,000 becomes US$50,000 — about a hundred
+     * and fifty times the money — and the receipt leaves the JMD account for the
+     * USD one. It has to stay possible, because an officer who received US$500 and
+     * typed J$500 needs a way to fix it, and it is why `accountBalance` surfaces
+     * mismatched-currency receipts instead of hiding them. So it is refused once,
+     * with the consequence spelled out, and allowed on a second, explicit ask.
+     */
+    const curTarget = await recordAndConfirmPayment(c, {
+      unitId: 'unit-1', payerName: 'Tenant', category: 'Maintenance', amount: 400,
+      currency: 'JMD', date: '2026-07-13', method: 'Cash'
+    });
+
+    const firstAsk = await c.put(`/api/payments/${curTarget.body.payment.id}`, { currency: 'USD' });
+    T.check('changing the currency is refused the first time', firstAsk.status === 400, `status ${firstAsk.status}`);
+    T.check('and the refusal carries a code the screen can act on',
+      firstAsk.body?.code === 'currency-change-not-confirmed', `code ${firstAsk.body?.code}`);
+    T.check('the refusal says what it would actually do',
+      /does not convert/i.test(String(firstAsk.body?.error || '')), String(firstAsk.body?.error || ''));
+
+    const unchanged = (await c.get('/api/db')).body.payments.find(p => p.id === curTarget.body.payment.id);
+    T.check('and nothing was changed by the refused attempt', unchanged.currency === 'JMD');
+
+    const confirmed = await c.put(`/api/payments/${curTarget.body.payment.id}`, {
+      currency: 'USD', confirmCurrencyChange: true
+    });
+    T.check('confirming it explicitly is allowed', confirmed.status === 200, String(confirmed.body?.error || ''));
+    T.check('and the figure is deliberately not converted', confirmed.body?.payment?.amount === 400);
+    T.check('the currency really moved', confirmed.body?.payment?.currency === 'USD');
+
+    const otherEdit = await c.put(`/api/payments/${curTarget.body.payment.id}`, { payerName: 'Renamed Payer' });
+    T.check('an ordinary correction that leaves the currency alone still needs no confirmation',
+      otherEdit.status === 200, String(otherEdit.body?.error || ''));
+
     /* ---------------- permission ---------------- */
 
     await c.post('/api/users', {

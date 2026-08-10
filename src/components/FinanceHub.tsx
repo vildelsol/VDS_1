@@ -32,7 +32,7 @@ import {
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
 import { currentMonth, formatDayLabel, formatMonthLabel, today } from '../lib/dates';
-import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
+import { ALREADY_SETTLED, ApiError, CURRENCY_CHANGE, errorMessage } from '../lib/api';
 import { openMailDraft } from '../lib/email';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import {
@@ -1584,17 +1584,44 @@ function PaymentDetailModal({
   const [notes, setNotes] = useState(payment.notes || '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /**
+   * The server refuses a currency change once and asks for it again.
+   *
+   * Held as its own state rather than folded into `error`, because it is not a
+   * failure to report — it is a question to answer. `ApiError.code` is what
+   * distinguishes the two; matching on the wording would break the first time
+   * anyone rephrased it.
+   */
+  const [currencyWarning, setCurrencyWarning] = useState('');
+  const [confirmCurrency, setConfirmCurrency] = useState(false);
 
   const locked = payment.status === 'reversed' || !!payment.bookingId || !!payment.utilityId;
+  const currencyChanged = currency !== payment.currency;
+  React.useEffect(() => {
+    if (!currencyChanged) {
+      setCurrencyWarning('');
+      setConfirmCurrency(false);
+    }
+  }, [currencyChanged]);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError('');
     try {
-      await onSave({ payerName, unitId, category, amount: Number(amount), currency, date, method, reference, notes });
+      await onSave({
+        payerName, unitId, category, amount: Number(amount), currency, date, method, reference, notes,
+        ...(confirmCurrency ? { confirmCurrencyChange: true } : {})
+      });
     } catch (err) {
-      setError(errorMessage(err, 'Could not save the correction.'));
+      // Do NOT collapse this to errorMessage() alone: that discards the code and
+      // the officer is left with a refusal and no way through it.
+      if (err instanceof ApiError && err.code === CURRENCY_CHANGE) {
+        setCurrencyWarning(err.message);
+        setError('');
+      } else {
+        setError(errorMessage(err, 'Could not save the correction.'));
+      }
     } finally {
       setBusy(false);
     }
@@ -1684,6 +1711,33 @@ function PaymentDetailModal({
       ) : (
         <form id="vds-payment-edit" onSubmit={handleSubmit} className="space-y-4 p-6 text-xs">
           {error && <ErrorNote>{error}</ErrorNote>}
+
+          {/*
+            A refused currency change. Red rather than amber, and it leads with what
+            did NOT happen: a form that comes back with a message reads as "saved,
+            with a note", and nothing has been saved here. The acknowledgement is
+            deliberately narrow — it claims the money really was that currency, not
+            that the warning is a nuisance.
+          */}
+          {currencyWarning && (
+            <div role="alert" className="space-y-2 rounded-xl border border-red-200 bg-red-50 p-3 text-[11px] text-red-900">
+              <p className="font-semibold">This correction has not been saved.</p>
+              <p className="leading-relaxed">{currencyWarning}</p>
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={confirmCurrency}
+                  onChange={e => setConfirmCurrency(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  The money really was received in {currency}. Move this receipt onto the {currency} account without
+                  converting the figure.
+                </span>
+              </label>
+            </div>
+          )}
+
           <InfoNote tone="amber">
             Corrections are recorded in the audit trail with the previous and new values. The receipt number and its
             void status cannot be changed here — void the receipt and re-enter it if the payment itself was wrong.
@@ -1720,8 +1774,20 @@ function PaymentDetailModal({
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Currency" htmlFor="pe-cur" required>
-              <select id="pe-cur" value={currency} onChange={e => setCurrency(e.target.value as Currency)} className={inputClass}>
+            <Field
+              label="Currency"
+              htmlFor="pe-cur"
+              required
+              // Said at the field, not only after the refusal: the point is to stop
+              // an accidental change, and by then it has already been made.
+              hint={currencyChanged ? 'The figure is not converted — it moves to the other account as it stands.' : undefined}
+            >
+              <select
+                id="pe-cur"
+                value={currency}
+                onChange={e => setCurrency(e.target.value as Currency)}
+                className={`${inputClass} ${currencyChanged ? 'border-red-300 bg-red-50' : ''}`}
+              >
                 <option value="JMD">JMD (J$)</option>
                 <option value="USD">USD ($)</option>
               </select>

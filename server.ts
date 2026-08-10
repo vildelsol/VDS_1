@@ -2109,6 +2109,20 @@ app.post(
  */
 const ALREADY_SETTLED = 'account-already-settled';
 
+/**
+ * Changing the currency of a settled receipt is refused unless it is deliberate.
+ *
+ * It has to remain possible: an officer who received US$500 and typed it as
+ * J$500 needs a way to correct that, and it is the reason `accountBalance`
+ * surfaces `mismatchedCurrencyPayments` instead of hiding them. But nothing
+ * converts the amount — J$50,000 becomes US$50,000, roughly a hundred and fifty
+ * times the money — and the whole receipt moves to the other currency's account,
+ * out of one balance and into another. A stray dropdown should not be able to do
+ * that, so the request is refused once and has to be repeated with the
+ * consequence stated.
+ */
+const CURRENCY_CHANGE = 'currency-change-not-confirmed';
+
 function assertAccountStillOwes(
   db: Database,
   unit: Unit,
@@ -2345,6 +2359,22 @@ app.put(
         if (original.refundedOn && updated.date > original.refundedOn) {
           throw new ApiError(400, 'That date is after the refund was paid out. A refund cannot precede the payment it refunds.');
         }
+      }
+
+      /**
+       * A currency change is a different act from a correction, and is refused
+       * until it is asked for twice. See CURRENCY_CHANGE above for why it stays
+       * possible at all.
+       */
+      if (updated.currency !== original.currency && body.confirmCurrencyChange !== true) {
+        throw new ApiError(
+          400,
+          `Receipt ${original.receiptNo} was recorded as ${original.currency} ${original.amount}. ` +
+            `Changing it to ${updated.currency} does not convert the figure — it becomes ${updated.currency} ${updated.amount}, ` +
+            `and the receipt moves off the ${original.currency} account onto the ${updated.currency} one. ` +
+            'Confirm only if the money really was received in that currency.',
+          CURRENCY_CHANGE
+        );
       }
 
       /**

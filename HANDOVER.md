@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **427 automated tests pass.** Typecheck clean, build clean.
+- **435 automated tests pass.** Typecheck clean, build clean.
 - Working tree is clean, everything pushed.
 - Latest release: **v1.7.0** — the double-record guard, recurring expenses, damage deposits, and
   Tier 5 (bank reconciliation, refunds, the proration decision).
@@ -65,7 +65,7 @@ Two things worth knowing about the implementation:
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (427 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (435 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
@@ -234,11 +234,20 @@ nets refunds) but summed `paid` gross, so its closing balance contradicted the l
 code** — exported and never called — which is why nothing surfaced it. Worth deleting if it stays
 unused; it is a trap sitting in the source-of-truth module.
 
-**Deliberately not changed:** a settled receipt's *currency* can be edited (with `modifySettledRecords`).
-It looks alarming — J$1,000 becomes US$1,000 with no conversion — but it is the intended correction
-path for money recorded in the wrong currency, which is why `accountBalance` surfaces
-`mismatchedCurrencyPayments` rather than hiding them. It is permission-gated and fully audited.
-Reconsider only with a real case in hand.
+**Currency changes on a settled receipt — now a deliberate act.** Editing a receipt's currency was
+raised in the audit and then locked down on Ro's instruction. It could not simply be blocked: it is
+the intended correction path for money recorded in the wrong currency, which is why `accountBalance`
+surfaces `mismatchedCurrencyPayments` rather than hiding them. So it follows the house pattern
+instead — refused once with the machine-readable code `currency-change-not-confirmed`, and allowed
+on a second, explicit ask.
+
+The refusal states the actual consequence in figures ("recorded as JMD 95,000 … becomes USD 95,000,
+and the receipt moves off the JMD account"), because nothing converts the amount — a JMD receipt
+flipped to USD is roughly a hundred and fifty times the money. The field itself also turns red the
+moment the dropdown changes, so an accidental change is caught before submit rather than after.
+
+Note the layering: even a *wrongly confirmed* change is still caught by the mismatched-currency
+banner on the ledger. Verified end to end in the browser.
 
 ### Bank reconciliation — finished, and it is a tick
 
