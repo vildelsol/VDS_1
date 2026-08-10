@@ -175,7 +175,11 @@ Watch it with `gh run watch <id> --exit-status`.
 - **Offline action queue** — work entered while the HP is down is written to `localStorage` before
   being attempted, survives a reboot or closed tab, and replays in order with the original
   idempotency keys. Never described as "saved" until the server has it.
-- **External-drive backup**, settable in the app (no environment variable, no restart).
+- **External-drive backup**, settable in the app (no environment variable, no restart). Backups are
+  written with live sessions stripped — a byte-for-byte copy of `db.json` carried working session
+  tokens off the machine, and a token is a valid login for twelve hours. Password hashes stay in the
+  file (a restore needs them), so the backup folder is still credential-bearing. Restoring one is
+  tested end to end: delete `db.json`, drop the backup in its place, start the server.
 - **Admin password recovery** — drop `RESET-ADMIN-PASSWORD.txt` next to `db.json`, restart.
   File-based only; nothing over the network can trigger it.
 - **Single-file `.exe`** via Node SEA, built and smoke-tested on Windows by CI.

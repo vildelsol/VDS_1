@@ -293,7 +293,29 @@ function pruneBackups(dir: string) {
 }
 
 /**
- * Copy the database into the backup folder(s) for today, if not already done.
+ * The bytes to write into a backup: the database, minus anyone's live session.
+ *
+ * A backup is the copy that leaves the machine — onto a USB stick, into a synced
+ * folder. It used to be a byte-for-byte copy of db.json, which meant every one of
+ * those copies carried the `sessions` array, and a session token is a working
+ * credential for twelve hours: paste one into a cookie and you are signed in as
+ * whoever it belonged to. Anyone who could read yesterday's backup could sign in
+ * as anyone.
+ *
+ * Sessions are dropped rather than kept because they have no restore value at
+ * all — restoring a three-day-old file should never bring anybody's login back
+ * from the dead. Password hashes stay: without them a restore loses every
+ * account's password, and they are scrypt with a per-user salt. That does still
+ * make the backup folder credential-bearing, so treat it as such.
+ */
+function backupPayload(): string {
+  const snapshot = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+  snapshot.sessions = [];
+  return JSON.stringify(snapshot, null, 2);
+}
+
+/**
+ * Write the database into the backup folder(s) for today, if not already done.
  *
  * This used to be called only from getDb(), which caches after the first call —
  * so it ran once when the server started and never again. A server left running
@@ -309,16 +331,29 @@ export function runDailyBackup(force = false): BackupRecord[] {
   const external = externalBackupDir();
   if (external) targets.push({ dir: external, location: 'external' });
 
+  if (!fs.existsSync(DB_FILE)) return written;
+
+  // Prepared once: every target gets the same bytes, and a database that cannot
+  // be read is a failure of the whole run rather than of one folder.
+  let payload: string;
+  try {
+    payload = backupPayload();
+  } catch (err) {
+    const message = (err as Error).message;
+    for (const { location } of targets) backupErrors.set(location, message);
+    console.error('[vds] backup could not read the database (continuing):', message);
+    return written;
+  }
+
   for (const { dir, location } of targets) {
     try {
-      if (!fs.existsSync(DB_FILE)) continue;
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const target = path.join(dir, `db-${stamp}.json`);
       if (force || !fs.existsSync(target)) {
-        // Copy through a temp name so a half-written backup is never mistaken
-        // for a good one if the process dies mid-copy.
+        // Written through a temp name so a half-written backup is never mistaken
+        // for a good one if the process dies mid-write.
         const tmp = `${target}.partial`;
-        fs.copyFileSync(DB_FILE, tmp);
+        fs.writeFileSync(tmp, payload, 'utf-8');
         fs.renameSync(tmp, target);
         written.push({ file: `db-${stamp}.json`, date: stamp, sizeBytes: fs.statSync(target).size, location });
       }
