@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **415 automated tests pass.** Typecheck clean, build clean.
+- **427 automated tests pass.** Typecheck clean, build clean.
 - Working tree is clean, everything pushed.
 - Latest release: **v1.7.0** — the double-record guard, recurring expenses, damage deposits, and
   Tier 5 (bank reconciliation, refunds, the proration decision).
@@ -65,7 +65,7 @@ Two things worth knowing about the implementation:
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (415 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (427 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
@@ -119,6 +119,10 @@ Watch it with `gh run watch <id> --exit-status`.
   `src/lib/api.ts` entirely and therefore bypasses the offline queue. I made that mistake once.
 - **Voiding and refunding are opposites, and the codebase now says so.** Void = it never happened.
   Refund = it happened and the money went back. A receipt can be one or the other, never both.
+- **Editing a settled receipt rebuilds it with `{...original}`.** That spread carries
+  `refundedAmount` and the bank-match fields forward silently, so any new field on `Payment` has to
+  be considered there or it will survive an edit that invalidates it. Two live bugs came from
+  exactly this — see *Robustness audit* below.
 - **A refund nets off by `refundedOn`, not by the payment date.** `netPaidAsOf`/`refundedAsOf` in
   `finance.ts` are the only place that arithmetic lives — never read `refundedAmount` directly, or a
   month that has already been reported on will quietly restate itself.
@@ -204,6 +208,37 @@ arithmetic, different operation — and stays a hand-entered expense. Template d
 1–28 so every month has the day.
 
 28 tests in `test/recurring-expenses.test.mjs`; verified in the browser against seeded data.
+
+### Robustness audit — 2026-08-09
+
+Ran an adversarial probe over the whole app (~90 assertions: money invariants, lifecycle cycles,
+unit-id mapping, concurrency, input hardening, sessions, precision, backups, and whether the finance
+helpers agree with each other). **Three live bugs found, all in the Tier 5 code, all fixed with
+regression tests.** Everything older held.
+
+1. **A refunded receipt could be corrected below what had already been handed back.** The settled-
+   receipt edit route rebuilds the payment with `{...original}`, carrying `refundedAmount` forward
+   while letting the amount be rewritten freely. J$50,000 taken, J$40,000 refunded, receipt corrected
+   to J$1,000 left the receipt worth **minus J$39,000** and the account grew a debt out of nothing.
+   Now the amount cannot go below the refund, the currency is frozen, and it cannot be re-dated past
+   its own refund.
+2. **A bank match outlived the receipt it checked.** Correcting a ticked receipt's amount, date,
+   currency or method left the tick standing, so the month still read as reconciled against a figure
+   nobody had matched. The tick is now dropped on those edits (and only those — a note or a payer
+   spelling keeps it) and the audit says so.
+3. **A voided receipt kept its bank tick** — one record claiming both that the money never arrived
+   and that the bank had shown it arriving. Voiding now clears it.
+
+Also fixed: `periodStatement` in `finance.ts` took its opening balance from `accountBalance` (which
+nets refunds) but summed `paid` gross, so its closing balance contradicted the ledger. It is **dead
+code** — exported and never called — which is why nothing surfaced it. Worth deleting if it stays
+unused; it is a trap sitting in the source-of-truth module.
+
+**Deliberately not changed:** a settled receipt's *currency* can be edited (with `modifySettledRecords`).
+It looks alarming — J$1,000 becomes US$1,000 with no conversion — but it is the intended correction
+path for money recorded in the wrong currency, which is why `accountBalance` surfaces
+`mismatchedCurrencyPayments` rather than hiding them. It is permission-gated and fully audited.
+Reconsider only with a real case in hand.
 
 ### Bank reconciliation — finished, and it is a tick
 

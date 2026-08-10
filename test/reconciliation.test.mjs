@@ -140,6 +140,55 @@ export default async function run({ port, projectRoot }) {
     const usdUnmatched = july.filter(p => p.currency === 'USD' && !p.reconciledOn);
     T.check('the JMD and USD positions are separate', usdUnmatched.length === 0 && jmdUnmatched.length >= 0);
 
+    /* ---------------- a tick must not outlive what it checked ---------------- */
+
+    /**
+     * Both found by adversarial probe, 2026-08-09, and both were live.
+     *
+     * A tick asserts "this money was found on the statement". Nothing re-tested
+     * that claim when the receipt underneath it changed, so a receipt ticked at
+     * J$50,000 could be corrected to J$999 and stay ticked — the reconciliation
+     * would still read as complete while checking a figure nobody had matched.
+     * Worse, a *voided* receipt kept its tick: one record simultaneously claiming
+     * the money never arrived and that the bank had shown it arriving.
+     */
+    const editable = await recordAndConfirmPayment(c, {
+      unitId: 'unit-1', payerName: 'Owner', category: 'Maintenance', amount: 3000,
+      currency: 'JMD', date: '2026-07-14', method: 'Bank Transfer'
+    });
+    await c.post(`/api/payments/${editable.body.payment.id}/reconcile`, { reconciledOn: '2026-07-15', reference: 'NCB 991' });
+
+    const amountChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { amount: 2000 });
+    T.check('a reconciled receipt can still be corrected', amountChanged.status === 200, String(amountChanged.body?.error || ''));
+    T.check('but changing its amount drops the bank match, so it is checked again',
+      amountChanged.body?.payment?.reconciledOn === undefined,
+      `still ticked for ${amountChanged.body?.payment?.reconciledOn}`);
+
+    await c.post(`/api/payments/${editable.body.payment.id}/reconcile`, { reconciledOn: '2026-07-16' });
+    const noteChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { notes: 'Just a note' });
+    T.check('changing something the bank cannot see keeps the match',
+      noteChanged.body?.payment?.reconciledOn === '2026-07-16', `tick now ${noteChanged.body?.payment?.reconciledOn}`);
+
+    const dateChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { date: '2026-07-13' });
+    T.check('changing the date the money arrived drops the match',
+      dateChanged.body?.payment?.reconciledOn === undefined);
+
+    const toVoidReconciled = await recordAndConfirmPayment(c, {
+      unitId: 'unit-1', payerName: 'Owner', category: 'Maintenance', amount: 1500,
+      currency: 'JMD', date: '2026-07-17', method: 'Bank Transfer'
+    });
+    await c.post(`/api/payments/${toVoidReconciled.body.payment.id}/reconcile`, { reconciledOn: '2026-07-18' });
+    const voidedIt = await c.post(`/api/payments/${toVoidReconciled.body.payment.id}/reverse`, {
+      reversalReason: 'The transfer was reversed by the bank'
+    });
+    T.check('voiding a matched receipt is allowed', voidedIt.status === 200, String(voidedIt.body?.error || ''));
+    T.check('and clears the bank match — a voided receipt was never seen on a statement',
+      voidedIt.body?.payment?.reconciledOn === undefined,
+      `still ticked for ${voidedIt.body?.payment?.reconciledOn}`);
+
+    const voidAudit = (await c.get('/api/db')).body.auditLogs.find(a => /bank-statement match was cleared/.test(a.action));
+    T.check('and says so on the audit trail', !!voidAudit);
+
     /* ---------------- permission ---------------- */
 
     await c.post('/api/users', {

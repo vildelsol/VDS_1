@@ -200,6 +200,46 @@ export default async function run({ port, projectRoot }) {
       T.check('a booking deposit raises a receipt to refund', false, 'no linked receipt found');
     }
 
+    /* ---------------- a correction must not contradict the refund ---------------- */
+
+    /**
+     * Found by adversarial probe, 2026-08-09, and it was live.
+     *
+     * The settled-receipt edit route rebuilds the payment with `{...original}`,
+     * which carried `refundedAmount` forward untouched while letting the amount be
+     * rewritten to anything. Taking J$50,000, refunding J$40,000 and then
+     * correcting the receipt down to J$1,000 left a receipt worth **minus**
+     * J$39,000 — an account growing a debt out of nothing, on the one screen
+     * everybody trusts.
+     */
+    const editTarget = await recordAndConfirmPayment(c, {
+      unitId: 'unit-1', payerName: 'Tenant', category: 'Maintenance', amount: 9000,
+      currency: 'JMD', date: '2026-07-12', method: 'Cash'
+    });
+    await c.post(`/api/payments/${editTarget.body.payment.id}/refund`, {
+      amount: 6000, refundedOn: '2026-07-20', reason: 'Overpaid maintenance; part returned.'
+    });
+
+    const shrunkBelow = await c.put(`/api/payments/${editTarget.body.payment.id}`, { amount: 1000 });
+    T.check('a refunded receipt cannot be corrected below what was handed back', shrunkBelow.status === 400,
+      `status ${shrunkBelow.status}`);
+
+    const stillSane = await c.get('/api/db');
+    const edited = stillSane.body.payments.find(p => p.id === editTarget.body.payment.id);
+    T.check('so what a receipt is worth can never go negative', edited.amount - (edited.refundedAmount || 0) >= 0,
+      `amount ${edited.amount}, refunded ${edited.refundedAmount}`);
+
+    const shrunkToRefund = await c.put(`/api/payments/${editTarget.body.payment.id}`, { amount: 6000 });
+    T.check('but it can be corrected down as far as the refunded amount', shrunkToRefund.status === 200,
+      String(shrunkToRefund.body?.error || ''));
+
+    const currencyFlip = await c.put(`/api/payments/${editTarget.body.payment.id}`, { currency: 'USD' });
+    T.check('a refunded receipt cannot change currency — the refund was paid in the original',
+      currencyFlip.status === 400);
+
+    const datePush = await c.put(`/api/payments/${editTarget.body.payment.id}`, { date: '2026-07-25' });
+    T.check('and cannot be re-dated to after its own refund', datePush.status === 400);
+
     /* ---------------- permission ---------------- */
 
     await c.post('/api/users', {

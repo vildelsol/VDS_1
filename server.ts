@@ -2321,9 +2321,68 @@ app.put(
       };
       if (updated.date > today()) bad('A payment cannot be dated in the future.');
 
+      /**
+       * A correction must not contradict a refund already paid out against it.
+       *
+       * The spread above carries `refundedAmount` forward untouched, so without
+       * this an edit could leave a receipt of J$1,000 carrying a J$40,000 refund.
+       * `netPaidAsOf` would then return **minus** J$39,000 and the account would
+       * grow a debt out of nothing. Correcting a receipt downward is legitimate;
+       * correcting it below money that has already gone back out is not.
+       */
+      const refunded = original.refundedAmount || 0;
+      if (refunded > 0) {
+        if (updated.amount < refunded) {
+          throw new ApiError(
+            400,
+            `${original.currency} ${refunded} has already been refunded against receipt ${original.receiptNo}. ` +
+              `The receipt cannot be corrected to less than that.`
+          );
+        }
+        if (updated.currency !== original.currency) {
+          throw new ApiError(400, 'This receipt has been refunded. Its currency cannot be changed — the refund was paid in the original currency.');
+        }
+        if (original.refundedOn && updated.date > original.refundedOn) {
+          throw new ApiError(400, 'That date is after the refund was paid out. A refund cannot precede the payment it refunds.');
+        }
+      }
+
+      /**
+       * A bank match asserts *this* money was found on the statement. Change what
+       * the money was, when it arrived, or how it came in, and the assertion no
+       * longer holds — so the tick is dropped rather than quietly left standing
+       * against figures it was never checked against. The edit is allowed; it just
+       * has to be re-ticked.
+       */
+      let unmatched = false;
+      if (
+        original.reconciledOn &&
+        (updated.amount !== original.amount ||
+          updated.currency !== original.currency ||
+          updated.date !== original.date ||
+          updated.method !== original.method)
+      ) {
+        delete updated.reconciledOn;
+        delete updated.reconciledBy;
+        delete updated.reconciledAt;
+        delete updated.reconciledReference;
+        unmatched = true;
+      }
+
       db.payments[idx] = updated;
       const who = actor(req);
-      addAudit(db, who.name, who.role, `Corrected settled receipt ${original.receiptNo}`, 'Payment', id, original, updated, who.name);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Corrected settled receipt ${original.receiptNo}` +
+          (unmatched ? ' — its bank-statement match was cleared and needs checking again' : ''),
+        'Payment',
+        id,
+        original,
+        updated,
+        who.name
+      );
       return updated;
     });
     res.json({ success: true, payment });
@@ -2443,6 +2502,23 @@ app.post(
       target.reversalReason = reversalReason;
       target.reversalDate = today();
 
+      /**
+       * A voided receipt cannot also be "seen on the bank statement".
+       *
+       * Voiding asserts the money never arrived; the tick asserts it was found in
+       * the bank. Left standing, the pair is a contradiction that reads as a
+       * completed check — and the reconciliation screen only ever counts completed
+       * receipts, so the tick would sit on the record making a claim nothing
+       * displays or re-tests. Cleared here, with the fact recorded.
+       */
+      const wasReconciled = !!target.reconciledOn;
+      if (wasReconciled) {
+        delete target.reconciledOn;
+        delete target.reconciledBy;
+        delete target.reconciledAt;
+        delete target.reconciledReference;
+      }
+
       // Keep linked records honest.
       if (target.bookingId) {
         const booking = db.bookings.find(b => b.id === target.bookingId);
@@ -2476,9 +2552,10 @@ app.post(
         db,
         who.name,
         who.role,
-        wasPending
+        (wasPending
           ? 'Cancelled an expected payment that was never received'
-          : `Voided receipt ${target.receiptNo}`,
+          : `Voided receipt ${target.receiptNo}`) +
+          (wasReconciled ? ' — its bank-statement match was cleared' : ''),
         'Payment',
         id,
         before,

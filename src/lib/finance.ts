@@ -344,7 +344,10 @@ export interface PeriodStatement {
   opening: number;
   chargesInPeriod: Charge[];
   paymentsInPeriod: Payment[];
+  /** Receipts refunded during the period. Already deducted from `paid`. */
+  refundsInPeriod: Payment[];
   charged: number;
+  /** Received in the period, net of anything refunded back out in it. */
   paid: number;
   /** opening + charged - paid */
   closing: number;
@@ -376,8 +379,25 @@ export function periodStatement(
     .filter(p => isWithin(p.date, start, end))
     .sort((a, b) => a.date.localeCompare(b.date));
 
+  /**
+   * Refunds paid out during the period, whichever period their receipt was in.
+   *
+   * `opening` comes from `accountBalance`, which nets refunds off. Summing `paid`
+   * gross here would have made `closing` disagree with the very balance every
+   * screen shows — the exact "screens disagree with each other" failure this
+   * module exists to prevent, and it would have surfaced on a document handed to
+   * a tenant.
+   */
+  const refundsInPeriod = paymentsForUnit(payments, unit, allUnits)
+    .filter(p => p.category === category && p.status === 'completed' && p.currency === currency)
+    .filter(p => p.refundedOn && isWithin(p.refundedOn, start, end))
+    .sort((a, b) => (a.refundedOn || '').localeCompare(b.refundedOn || ''));
+
   const charged = sumMoney(chargesInPeriod.map(c => c.amount));
-  const paid = sumMoney(paymentsInPeriod.map(p => p.amount));
+  const paid = subtractMoney(
+    sumMoney(paymentsInPeriod.map(p => p.amount)),
+    sumMoney(refundsInPeriod.map(p => refundedAsOf(p)))
+  );
 
   return {
     unit,
@@ -388,6 +408,7 @@ export function periodStatement(
     opening,
     chargesInPeriod,
     paymentsInPeriod,
+    refundsInPeriod,
     charged,
     paid,
     closing: round2(opening + charged - paid)
