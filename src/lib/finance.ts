@@ -56,6 +56,94 @@ export function paymentsForUnit(payments: Payment[], unit: Unit, allUnits?: Unit
   return payments.filter(p => belongsToUnit(p, unit, allUnits));
 }
 
+/* ------------------------------------------------------------------ *
+ * Refunds
+ *
+ * A refund is money the property really received and really gave back. The
+ * receipt stays valid — see the note on `Payment.refundedAmount` for why that is
+ * not the same as voiding one — so every figure derived from completed payments
+ * has to net the refund off, or the property goes on appearing to hold money that
+ * is back in someone else's hands.
+ *
+ * These two helpers are the only place that arithmetic is written. Nothing should
+ * read `refundedAmount` directly.
+ * ------------------------------------------------------------------ */
+
+/** How much of a receipt has been handed back as at a date (default: all time). */
+export function refundedAsOf(payment: Payment, asOf?: string): number {
+  if (!payment.refundedAmount || !payment.refundedOn) return 0;
+  if (asOf && payment.refundedOn > asOf) return 0;
+  return round2(payment.refundedAmount);
+}
+
+/**
+ * What a receipt is actually worth to the property as at a date.
+ *
+ * The date matters and is not a detail. A refund paid out in August against a
+ * July receipt belongs in August: netting it into July would rewrite a month that
+ * has already been reported on, and would make last month's collection figure
+ * change retrospectively depending on when someone happened to ask.
+ */
+export function netPaidAsOf(payment: Payment, asOf?: string): number {
+  return round2(payment.amount - refundedAsOf(payment, asOf));
+}
+
+/* ------------------------------------------------------------------ *
+ * Bank reconciliation
+ * ------------------------------------------------------------------ */
+
+export interface Reconciliation {
+  currency: Currency;
+  /** Completed receipts dated in the period. */
+  receipts: Payment[];
+  matched: Payment[];
+  unmatched: Payment[];
+  /** What the ledger says was taken in the period. */
+  total: number;
+  /** The part of it that has been found on a statement. */
+  matchedTotal: number;
+  /** The part that has not — the figure the whole screen exists to drive to zero. */
+  unmatchedTotal: number;
+}
+
+/**
+ * What the ledger claims for a period, split by whether the bank agrees.
+ *
+ * Every figure elsewhere in this application is derived from the property's own
+ * records, which means they can all agree with each other and still be wrong
+ * together — a transfer that was promised and never sent looks identical to one
+ * that arrived. This is the only view that compares the ledger against something
+ * outside it.
+ *
+ * Cash is included rather than filtered out. It is tempting to exclude it as
+ * "never going to appear on a statement", but cash that was received and never
+ * banked is precisely the thing worth being able to see, and hiding it would make
+ * the one figure that matters — what is unmatched — quietly incomplete.
+ */
+export function reconciliation(payments: Payment[], currency: Currency, start: string, end: string): Reconciliation {
+  const receipts = payments
+    .filter(p => p.status === 'completed' && p.currency === currency && isWithin(p.date, start, end))
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.receiptNo || '').localeCompare(b.receiptNo || ''));
+
+  const matched = receipts.filter(p => !!p.reconciledOn);
+  const unmatched = receipts.filter(p => !p.reconciledOn);
+
+  // Gross, not net of refunds: a refund is its own movement out of the account
+  // and appears on the statement as a separate line. Netting it here would ask
+  // the person ticking to find a deposit that never had that value.
+  const sum = (rows: Payment[]) => sumMoney(rows.map(p => p.amount));
+
+  return {
+    currency,
+    receipts,
+    matched,
+    unmatched,
+    total: sum(receipts),
+    matchedTotal: sum(matched),
+    unmatchedTotal: sum(unmatched)
+  };
+}
+
 export function chargesForUnit(charges: Charge[], unit: Unit, allUnits?: Unit[]): Charge[] {
   return charges.filter(c => belongsToUnit(c, unit, allUnits));
 }
@@ -171,7 +259,9 @@ export function accountBalance(
   const mismatched = unitPayments.filter(p => p.currency !== currency);
 
   const charged = sumMoney(unitCharges.map(c => c.amount));
-  const paid = sumMoney(matching.map(p => p.amount));
+  // Net of anything handed back. A refunded rent payment puts the tenant back
+  // into arrears, which is the whole point: the property no longer has the money.
+  const paid = sumMoney(matching.map(p => netPaidAsOf(p, asOf)));
   const balance = subtractMoney(charged, paid);
 
   // Apply payments to charges oldest-first to age the debt.
@@ -367,18 +457,32 @@ export function collectedInPeriod(
   end: string,
   excludeUtilityUnitIds: Set<string> = new Set()
 ): CurrencyTotals {
-  const rows = payments.filter(
-    p => p.status === 'completed' && p.currency === currency && isWithin(p.date, start, end)
-  );
-  const pick = (category: string) => sumMoney(rows.filter(p => p.category === category).map(p => p.amount));
+  const completed = payments.filter(p => p.status === 'completed' && p.currency === currency);
+  const rows = completed.filter(p => isWithin(p.date, start, end));
+
+  /**
+   * Refunds paid out during this period, whatever period the receipt itself was
+   * in. They are a separate filter rather than a netting of `rows` on purpose: a
+   * refund is cash leaving the building on the day it leaves, and a July receipt
+   * refunded in August must reduce August. Netting it into July would silently
+   * restate a month that has already been reported.
+   */
+  const refunds = completed.filter(p => p.refundedOn && isWithin(p.refundedOn, start, end));
+
+  const pick = (category: string) =>
+    subtractMoney(
+      sumMoney(rows.filter(p => p.category === category).map(p => p.amount)),
+      sumMoney(refunds.filter(p => p.category === category).map(p => refundedAsOf(p)))
+    );
 
   const totals: CurrencyTotals = {
     ...EMPTY_TOTALS,
     rent: pick('Rent'),
     maintenance: pick('Maintenance'),
     booking: pick('Booking'),
-    utility: sumMoney(
-      rows.filter(p => p.category === 'Utility' && !excludeUtilityUnitIds.has(p.unitId)).map(p => p.amount)
+    utility: subtractMoney(
+      sumMoney(rows.filter(p => p.category === 'Utility' && !excludeUtilityUnitIds.has(p.unitId)).map(p => p.amount)),
+      sumMoney(refunds.filter(p => p.category === 'Utility' && !excludeUtilityUnitIds.has(p.unitId)).map(p => refundedAsOf(p)))
     ),
     other: pick('Other')
   };
@@ -685,8 +789,16 @@ export interface OwnerStatement {
   bookingCollected: number;
   /** Utility recoveries collected against the villa. */
   utilityCollected: number;
-  /** Total collected on the owner's behalf. */
+  /** Total collected on the owner's behalf, net of anything refunded in the period. */
   collected: number;
+  /**
+   * Money handed back in the period, already deducted from the figures above.
+   *
+   * Carried separately so the statement can show the deduction rather than just a
+   * smaller number. An owner comparing this month with last will notice the drop
+   * and ask; the page should already answer.
+   */
+  refunded: number;
   /** HOA maintenance billed to the owner for the period. */
   maintenanceBilled: number;
   /**
@@ -715,6 +827,12 @@ export interface OwnerStatement {
    * summary can never disagree about what makes up a number.
    */
   collectedItems: Payment[];
+  /**
+   * Receipts refunded during the period, so the itemised list can show the money
+   * going back out as its own line. Without it `collectedItems` would sum to more
+   * than `collected`, and an owner checking the arithmetic would be right to.
+   */
+  refundItems: Payment[];
   maintenanceCharges: Charge[];
   expenseItems: Expense[];
   /** Whether anything at all happened, so empty villas can be dropped. */
@@ -737,6 +855,20 @@ export function ownerStatement(
   const paidIn = (category: PaymentCategory) => inPeriod(unitPayments.filter(p => p.category === category), p => p.date);
   const total = (rows: { amount: number }[]) => sumMoney(rows.map(r => r.amount));
 
+  /**
+   * Refunds paid out in this period, dated by when the money went back.
+   *
+   * Deducted from what was collected on the proprietor's behalf, because it was
+   * not, in the end, collected on their behalf — the agent gave it back. Leaving
+   * it in would pay an owner for money the property no longer has, which is the
+   * one error on a statement nobody catches until it is a shortfall.
+   */
+  const refundItems = unitPayments
+    .filter(p => p.refundedOn && isWithin(p.refundedOn, from, to))
+    .sort((a, b) => (a.refundedOn || '').localeCompare(b.refundedOn || ''));
+  const refundedIn = (category: PaymentCategory) =>
+    sumMoney(refundItems.filter(p => p.category === category).map(p => refundedAsOf(p)));
+
   // Money collected on the proprietor's behalf. Utility recoveries are here
   // because the villa's utility bill is itself charged to the villa below — the
   // recovery offsets that cost rather than being income in its own right, and
@@ -744,11 +876,12 @@ export function ownerStatement(
   const rentItems = paidIn('Rent');
   const bookingItems = paidIn('Booking');
   const utilityItems = paidIn('Utility');
-  const rentCollected = total(rentItems);
-  const bookingCollected = total(bookingItems);
-  const utilityCollected = total(utilityItems);
+  const rentCollected = subtractMoney(total(rentItems), refundedIn('Rent'));
+  const bookingCollected = subtractMoney(total(bookingItems), refundedIn('Booking'));
+  const utilityCollected = subtractMoney(total(utilityItems), refundedIn('Utility'));
   const collected = sumMoney([rentCollected, bookingCollected, utilityCollected]);
-  const maintenancePaid = total(paidIn('Maintenance'));
+  const refunded = sumMoney([refundedIn('Rent'), refundedIn('Booking'), refundedIn('Utility')]);
+  const maintenancePaid = subtractMoney(total(paidIn('Maintenance')), refundedIn('Maintenance'));
 
   const maintenanceCharges = inPeriod(
     chargesForUnit(charges, unit, units).filter(c => c.category === 'Maintenance' && c.status === 'open' && c.currency === currency),
@@ -778,16 +911,19 @@ export function ownerStatement(
     bookingCollected,
     utilityCollected,
     collected,
+    refunded,
     maintenanceBilled,
     maintenancePaid,
     expenses: unitExpenses,
     net,
     maintenanceOutstanding,
     collectedItems: [...rentItems, ...bookingItems, ...utilityItems].sort((a, b) => a.date.localeCompare(b.date)),
+    refundItems,
     maintenanceCharges,
     expenseItems,
     active:
       collected !== 0 ||
+      refunded !== 0 ||
       maintenanceBilled !== 0 ||
       maintenancePaid !== 0 ||
       unitExpenses !== 0 ||

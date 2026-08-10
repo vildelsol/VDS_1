@@ -133,6 +133,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
       'Rent collected',
       'Bookings collected',
       'Utility recoveries',
+      'Refunded in period',
       'Total collected',
       'Maintenance billed',
       'Maintenance paid in period',
@@ -151,6 +152,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
           formatMoneyPlain(s.rentCollected),
           formatMoneyPlain(s.bookingCollected),
           formatMoneyPlain(s.utilityCollected),
+          formatMoneyPlain(s.refunded),
           formatMoneyPlain(s.collected),
           formatMoneyPlain(s.maintenanceBilled),
           formatMoneyPlain(s.maintenancePaid),
@@ -349,6 +351,13 @@ function OwnerCard({
                     Rent {formatMoney(s.rentCollected, s.currency)} · Bookings {formatMoney(s.bookingCollected, s.currency)}
                     {s.utilityCollected !== 0 && <> · Utilities {formatMoney(s.utilityCollected, s.currency)}</>}
                   </span>
+                  {/* Stated rather than merely subtracted: an owner noticing a drop
+                      against last month should find the answer on the same row. */}
+                  {s.refunded !== 0 && (
+                    <span className="mt-0.5 block font-mono text-[10px] text-amber-700">
+                      after {formatMoney(s.refunded, s.currency)} refunded
+                    </span>
+                  )}
                 </td>
                 <td className="p-4 text-right">
                   <span className="font-mono text-rose-500">{formatMoney(s.maintenanceBilled, s.currency)}</span>
@@ -516,12 +525,22 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
           <tbody className="font-mono">
             <LineGroup
               title="Collected on your behalf"
-              rows={s.collectedItems.map(p => ({
-                date: p.date,
-                detail: `${p.category} — ${p.payerName || 'received'} (${p.method})`,
-                ref: p.receiptNo,
-                amount: p.amount
-              }))}
+              rows={[
+                ...s.collectedItems.map(p => ({
+                  date: p.date,
+                  detail: `${p.category} — ${p.payerName || 'received'} (${p.method})`,
+                  ref: p.receiptNo,
+                  amount: p.amount
+                })),
+                // Money handed back, in the same list and dated by when it went
+                // out, so the column adds up to the total beneath it.
+                ...s.refundItems.map(p => ({
+                  date: p.refundedOn || p.date,
+                  detail: `Refund — ${p.payerName || 'payer'} (${p.refundMethod || p.method}): ${p.refundReason || ''}`.trim(),
+                  ref: p.receiptNo,
+                  amount: -(p.refundedAmount || 0)
+                }))
+              ].sort((a, b) => a.date.localeCompare(b.date))}
               total={s.collected}
               currency={c}
               tone="credit"

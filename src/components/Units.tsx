@@ -1339,7 +1339,11 @@ function TenancyEditor({
         <Field
           label="Move-in date"
           htmlFor="tn-start"
-          hint={tenancy.startedOn ? undefined : 'Not recorded — this tenancy predates occupancy tracking.'}
+          hint={
+            tenancy.startedOn
+              ? 'A move-in part way through a month is billed the whole month — rent is not prorated.'
+              : 'Not recorded — this tenancy predates occupancy tracking. A mid-month move-in is billed the whole month.'
+          }
         >
           <input id="tn-start" type="date" value={startedOn} max={today()} onChange={e => setStartedOn(e.target.value)} className={monoInputClass} />
         </Field>

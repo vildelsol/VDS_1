@@ -26,6 +26,7 @@ import Bookings from './components/Bookings';
 import UtilitiesAndExpenses from './components/UtilitiesAndExpenses';
 import Reports from './components/Reports';
 import OwnerStatements from './components/OwnerStatements';
+import ReconciliationTab from './components/Reconciliation';
 import Projections from './components/Projections';
 import Charts from './components/Charts';
 import Audit from './components/Audit';
@@ -57,6 +58,7 @@ import {
   LayoutDashboard,
   Loader2,
   LogOut,
+  Landmark,
   Menu,
   PieChart,
   RefreshCw,
@@ -75,6 +77,7 @@ export type TabKey =
   | 'bookings'
   | 'utilities'
   | 'reports'
+  | 'reconciliation'
   | 'owner-statements'
   | 'charts'
   | 'projections'
@@ -89,6 +92,7 @@ const TAB_TITLES: Record<TabKey, string> = {
   bookings: 'Short-Term Bookings',
   utilities: 'Utilities & Expenses',
   reports: 'Operational Reports',
+  reconciliation: 'Bank Reconciliation',
   'owner-statements': 'Proprietor Statements',
   charts: 'Charts & Visual Snapshots',
   projections: 'Financial Projections',
@@ -372,6 +376,7 @@ export default function App() {
     { key: 'bookings', label: 'Short-Term Bookings', icon: <Calendar className="h-4 w-4" />, visible: true },
     { key: 'utilities', label: 'Utilities & Expenses', icon: <Wrench className="h-4 w-4" />, visible: true },
     { key: 'reports', label: 'Operational Reports', icon: <BarChart3 className="h-4 w-4" />, visible: true },
+    { key: 'reconciliation', label: 'Bank Reconciliation', icon: <Landmark className="h-4 w-4" />, visible: true },
     { key: 'owner-statements', label: 'Proprietor Statements', icon: <Users className="h-4 w-4" />, visible: true },
     { key: 'charts', label: 'Charts & Snapshots', icon: <PieChart className="h-4 w-4" />, visible: true },
     { key: 'projections', label: 'Financial Projections', icon: <TrendingUp className="h-4 w-4" />, visible: true },
@@ -588,6 +593,7 @@ export default function App() {
             onRecordPayment={recordPayment}
             onConfirmPayment={confirmPayment}
             onReversePayment={(id, reason) => mutate(() => api.post(`/api/payments/${id}/reverse`, { reversalReason: reason }))}
+            onRefundPayment={(id, fields) => mutate(() => api.post(`/api/payments/${id}/refund`, fields))}
             onUpdatePayment={(id, fields) => mutate(() => api.put(`/api/payments/${id}`, fields))}
             onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}
             onVoidCharge={(id, reason) => mutate(() => api.post(`/api/charges/${id}/void`, { reason }))}
@@ -641,6 +647,15 @@ export default function App() {
             bookings={data.bookings}
             settings={settings}
             session={session}
+          />
+        )}
+
+        {activeTab === 'reconciliation' && (
+          <ReconciliationTab
+            payments={data.payments}
+            units={data.units}
+            session={session}
+            onReconcile={(id, fields) => mutate(() => api.post(`/api/payments/${id}/reconcile`, fields))}
           />
         )}
 

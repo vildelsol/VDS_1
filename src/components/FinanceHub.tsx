@@ -65,7 +65,8 @@ import {
   Printer,
   RotateCcw,
   Search,
-  ShieldAlert
+  ShieldAlert,
+  Undo2
 } from 'lucide-react';
 
 interface FinanceHubProps {
@@ -76,6 +77,7 @@ interface FinanceHubProps {
   onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
   onConfirmPayment: (paymentId: string, fields?: Record<string, unknown>) => Promise<Payment>;
   onReversePayment: (paymentId: string, reason: string) => Promise<unknown>;
+  onRefundPayment: (paymentId: string, fields: Record<string, unknown>) => Promise<unknown>;
   onUpdatePayment: (paymentId: string, fields: Record<string, unknown>) => Promise<unknown>;
   onPostMonth: (month: string) => Promise<{ message: string }>;
   onVoidCharge: (chargeId: string, reason: string) => Promise<unknown>;
@@ -93,6 +95,7 @@ export default function FinanceHub({
   onRecordPayment,
   onConfirmPayment,
   onReversePayment,
+  onRefundPayment,
   onUpdatePayment,
   onPostMonth,
   onVoidCharge,
@@ -222,6 +225,7 @@ export default function FinanceHub({
   /* ---------------- modals ---------------- */
 
   const [reversalTarget, setReversalTarget] = useState<Payment | null>(null);
+  const [refundTarget, setRefundTarget] = useState<Payment | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<Payment | null>(null);
   const [detailTarget, setDetailTarget] = useState<Payment | null>(null);
   const [chargesTarget, setChargesTarget] = useState<AccountBalance | null>(null);
@@ -519,10 +523,24 @@ export default function FinanceHub({
                         <td className={`p-4 text-right font-mono font-medium ${p.status === 'reversed' ? 'text-slate-400 line-through' : ''}`}>
                           {formatMoney(p.amount, p.currency)}
                           <span className="ml-1 text-[9px] text-slate-400">{p.currency}</span>
+                          {/* The gross stays legible — it is what the receipt says — with what
+                              went back shown under it rather than silently netted. */}
+                          {!!p.refundedAmount && (
+                            <p className="text-[9px] font-normal text-amber-700">
+                              less {formatMoney(p.refundedAmount, p.currency)} refunded
+                            </p>
+                          )}
                         </td>
                         <td className="p-4 font-mono text-[11px] text-slate-500">{formatDayLabel(p.date)}</td>
                         <td className="p-4">
-                          {p.status === 'completed' ? (
+                          {p.status === 'completed' && p.refundedAmount ? (
+                            // Received *and* refunded is its own state, not a
+                            // shade of either. The money came in and went back.
+                            <Badge tone="amber">
+                              <Undo2 className="h-3 w-3" />
+                              {p.refundedAmount >= p.amount ? 'Refunded' : 'Part refunded'}
+                            </Badge>
+                          ) : p.status === 'completed' ? (
                             <Badge tone="green">
                               <CheckCircle className="h-3 w-3" /> Received
                             </Badge>
@@ -557,7 +575,20 @@ export default function FinanceHub({
                                 <Printer className="h-4 w-4" />
                               </button>
                             )}
-                            {p.status !== 'reversed' && canReverse && (
+                            {/* Refund sits beside void, not inside it, because they say
+                                opposite things: void means the money never arrived,
+                                refund means it did and then went back. */}
+                            {p.status === 'completed' && !p.refundedAmount && canReverse && (
+                              <button
+                                onClick={() => setRefundTarget(p)}
+                                className="rounded-lg border border-amber-200 p-1.5 text-amber-700 transition-all hover:bg-amber-50"
+                                title="Refund — record money handed back to the payer"
+                                aria-label={`Refund receipt ${p.receiptNo}`}
+                              >
+                                <Undo2 className="h-4 w-4" />
+                              </button>
+                            )}
+                            {p.status !== 'reversed' && !p.refundedAmount && canReverse && (
                               <button
                                 onClick={() => setReversalTarget(p)}
                                 className="rounded-lg border border-red-200 p-1.5 text-red-600 transition-all hover:bg-red-50"
@@ -652,6 +683,20 @@ export default function FinanceHub({
             await onReversePayment(reversalTarget.id, reason);
             setSuccess(`Receipt ${reversalTarget.receiptNo} has been voided. It remains in the ledger and the audit trail.`);
             setReversalTarget(null);
+          }}
+        />
+      )}
+
+      {refundTarget && (
+        <RefundModal
+          payment={refundTarget}
+          onClose={() => setRefundTarget(null)}
+          onSubmit={async fields => {
+            await onRefundPayment(refundTarget.id, fields);
+            setSuccess(
+              `Refund recorded against receipt ${refundTarget.receiptNo}. The receipt stays valid; the money is netted off from the refund date.`
+            );
+            setRefundTarget(null);
           }}
         />
       )}
@@ -1271,6 +1316,152 @@ function ConfirmReceiptModal({
             <input id="cf-ref" type="text" value={reference} onChange={e => setReference(e.target.value)} className={monoInputClass} />
           </Field>
         </div>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * Record money handed back.
+ *
+ * Deliberately worded against the mistake it exists to prevent. Staff reached for
+ * "void" for this before, because it was the only control there was — and voiding
+ * says the money never arrived, which erases the fact that the property once held
+ * it. The note here says which instrument this is and what the other one means, at
+ * the moment the choice is being made.
+ */
+function RefundModal({
+  payment,
+  onClose,
+  onSubmit
+}: {
+  payment: Payment;
+  onClose: () => void;
+  onSubmit: (fields: Record<string, unknown>) => Promise<void>;
+}) {
+  const [amount, setAmount] = useState(String(payment.amount));
+  const [refundedOn, setRefundedOn] = useState(today());
+  const [method, setMethod] = useState<PaymentMethod>(payment.method);
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const parsed = Number(amount);
+  const partial = parsed > 0 && parsed < payment.amount;
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!(parsed > 0)) {
+      setError('Enter how much was handed back.');
+      return;
+    }
+    if (parsed > payment.amount) {
+      setError(`You cannot refund more than the receipt: ${formatMoneyLong(payment.amount, payment.currency)}.`);
+      return;
+    }
+    if (reason.trim().length < 5) {
+      setError('Give a reason of at least 5 characters. It is stored permanently against the receipt.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit({ amount: parsed, refundedOn, method, reason: reason.trim() });
+    } catch (err) {
+      setError(errorMessage(err, 'Could not record the refund.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Refund this payment"
+      subtitle={payment.receiptNo}
+      onClose={onClose}
+      footer={
+        <div className="flex gap-3">
+          <button
+            type="submit"
+            form="vds-refund-form"
+            disabled={busy}
+            className="flex-1 rounded-xl bg-amber-600 py-2.5 text-xs font-medium text-white transition-all hover:bg-amber-700 disabled:opacity-60"
+          >
+            {busy ? 'Recording…' : 'Record the refund'}
+          </button>
+          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+        </div>
+      }
+    >
+      <form id="vds-refund-form" onSubmit={handleSubmit} className="space-y-4 p-6 text-xs">
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <dl className="space-y-1 rounded-xl bg-slate-50 p-3 font-mono text-[11px]">
+          <div className="flex justify-between gap-3">
+            <dt className="text-slate-500">Payer</dt>
+            <dd className="font-semibold">{payment.payerName}</dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-slate-500">Receipt</dt>
+            <dd className="font-semibold">{formatMoneyLong(payment.amount, payment.currency)}</dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-slate-500">Received</dt>
+            <dd className="font-semibold">{formatDayLabel(payment.date)}</dd>
+          </div>
+        </dl>
+
+        <InfoNote tone="amber">
+          This records money <strong>going back out</strong>. Receipt {payment.receiptNo} stays valid and printable,
+          because the money really was received — it is netted off the balance and the collection figures from the
+          refund date. If instead the payment should never have been recorded at all, void it rather than refunding it.
+        </InfoNote>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Amount handed back" htmlFor="rf-amount" required>
+            <input
+              id="rf-amount"
+              type="number"
+              step="0.01"
+              min="0.01"
+              max={payment.amount}
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              className={monoInputClass}
+            />
+          </Field>
+          <Field label="Date it went back" htmlFor="rf-date" required hint="The day the money actually left.">
+            <input id="rf-date" type="date" value={refundedOn} min={payment.date} onChange={e => setRefundedOn(e.target.value)} className={monoInputClass} />
+          </Field>
+        </div>
+
+        {partial && (
+          <InfoNote>
+            A partial refund. {formatMoneyLong(payment.amount - parsed, payment.currency)} of this receipt stays with the
+            property.
+          </InfoNote>
+        )}
+
+        <Field label="How it was returned" htmlFor="rf-method" required>
+          <select id="rf-method" value={method} onChange={e => setMethod(e.target.value as PaymentMethod)} className={inputClass}>
+            {PAYMENT_METHODS.map(m => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Reason for the refund" htmlFor="rf-reason" required hint="Overpayment returned, stay cancelled, paid twice.">
+          <textarea
+            id="rf-reason"
+            rows={3}
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            className={inputClass}
+            placeholder="e.g. Guest cancelled within the free window; deposit returned in full."
+          />
+        </Field>
       </form>
     </Modal>
   );

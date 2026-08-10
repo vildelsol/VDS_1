@@ -371,6 +371,59 @@ export interface Payment {
   reversedBy?: string;
   reversalReason?: string;
   reversalDate?: string;
+
+  /**
+   * Money genuinely handed back — which is **not** the same as voiding a receipt.
+   *
+   * Voiding says the receipt should never have existed: an entry error, a cheque
+   * that bounced, money that never arrived. The event is erased and the ledger
+   * reads as though it never happened.
+   *
+   * A refund says the opposite. The money *did* arrive, the receipt *is* valid and
+   * stays valid, and then some or all of it went back out again — an overpayment
+   * returned, a cancelled booking, a double payment given back. Recording that as
+   * a void destroys the evidence that the property ever held the money, which is
+   * exactly the record you need when someone asks what happened to it. Recording
+   * it as an expense is no better: a refund is not a cost of running the property,
+   * it is income handed back.
+   *
+   * So it lives here, on the receipt it came out of. Every figure that sums
+   * completed payments nets this off — see `accountBalance`, `collectedInPeriod`
+   * and `ownerStatement` — which is what makes a refunded rent payment put the
+   * tenant back into arrears, correctly, instead of leaving the property looking
+   * as though it still holds the money.
+   *
+   * Partial refunds are the normal case, so this is an amount rather than a flag.
+   */
+  refundedAmount?: number;
+  refundedOn?: string; // YYYY-MM-DD
+  refundMethod?: PaymentMethod;
+  refundReason?: string;
+  refundedBy?: string;
+
+  /**
+   * Seen on the bank statement.
+   *
+   * Nothing tied a receipt to the bank before this. The ledger could say a
+   * J$95,000 transfer was received and be entirely self-consistent while the money
+   * never actually landed — a transfer that was promised and never sent, a cheque
+   * that bounced, or a receipt written for cash that went into somebody's pocket.
+   * Internal consistency is not evidence; the bank is.
+   *
+   * Deliberately a **tick, not an import.** Ro, asked how the statement actually
+   * reaches the office (2026-08-09): manual tick-off. A CSV importer would have to
+   * be written against a bank export format nobody has a sample of, and would fail
+   * silently the first time the bank changed a column. A person with the statement
+   * in front of them, ticking what they can see, is slower and correct.
+   *
+   * `reconciledOn` is the statement date the entry appears under — the bank's date,
+   * not today's, because that is the date being matched against.
+   */
+  reconciledOn?: string; // YYYY-MM-DD
+  reconciledBy?: string;
+  reconciledAt?: string;
+  /** The bank's own reference for the line, when the statement shows one. */
+  reconciledReference?: string;
   /** Number of times this receipt has been rendered for printing. >0 means a reprint. */
   printCount?: number;
   /** Set when the payment was generated from another record, so the two stay in step. */

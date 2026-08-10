@@ -26,17 +26,13 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **364 automated tests pass.** Typecheck clean, build clean.
-- Working tree is clean.
-- **Three commits on `main` are not pushed** — `430ed19` recurring expenses, `1bdfa7b` the audit
-  correction, `b03b732` damage deposits. Push them first thing.
-- Latest release: **v1.6.0** (security deposits and owner statements). The double-record guard,
-  recurring expenses and damage deposits all landed *after* it, so **nothing built since v1.6.0 is
-  on the HP EliteDesk yet.** Tagging is what builds and publishes the `.exe`:
+- **415 automated tests pass.** Typecheck clean, build clean.
+- Working tree is clean, everything pushed.
+- Latest release: **v1.7.0** — the double-record guard, recurring expenses, damage deposits, and
+  Tier 5 (bank reconciliation, refunds, the proration decision).
 
-  ```bash
-  git push && git tag -a v1.7.0 -m "Double-record guard, recurring expenses, damage deposits" && git push origin v1.7.0
-  ```
+**The audit is finished.** Every tier is closed. There is no backlog: the next thing to build is
+whatever Ro asks for, not something on a list in this file.
 
 ### Owner statements — finished
 
@@ -69,7 +65,7 @@ Two things worth knowing about the implementation:
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (364 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (415 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
@@ -121,6 +117,16 @@ Watch it with `gh run watch <id> --exit-status`.
   when you need narrowing afterwards.
 - **Verify by driving the real UI**, not by calling `fetch` in the console — raw `fetch` bypasses
   `src/lib/api.ts` entirely and therefore bypasses the offline queue. I made that mistake once.
+- **Voiding and refunding are opposites, and the codebase now says so.** Void = it never happened.
+  Refund = it happened and the money went back. A receipt can be one or the other, never both.
+- **A refund nets off by `refundedOn`, not by the payment date.** `netPaidAsOf`/`refundedAsOf` in
+  `finance.ts` are the only place that arithmetic lives — never read `refundedAmount` directly, or a
+  month that has already been reported on will quietly restate itself.
+- **The settled-account guard bites in tests too.** A second payment against an account that already
+  owes nothing is refused (correctly). When a test needs another receipt, bill something first or
+  use an account that is genuinely in arrears — do not reach for the override.
+- **Nothing binary goes in `db.json`** if a feature ever needs files again. It is parsed whole into
+  memory, `structuredClone`d on every write and copied on every backup.
 
 ---
 
@@ -144,6 +150,10 @@ Watch it with `gh run watch <id> --exit-status`.
   expenses* above.
 - **Double-recorded payments are refused** at the moment of the write, with a deliberate override.
   See *Double-recorded payments* above, including the trap that hid the override in the UI.
+- **Refunds** — money genuinely handed back, recorded on the receipt it came out of and netted off
+  from the day it left. Not a void, and not an expense. See *Refunds* above.
+- **Bank reconciliation** — tick each receipt against the statement; what stays unticked is what the
+  ledger claims and the bank does not show. A tick, never an import. See above.
 - Utility settling and booking deposits are *expected* until confirmed.
 
 **Operations**
@@ -195,6 +205,81 @@ arithmetic, different operation — and stays a hand-entered expense. Template d
 
 28 tests in `test/recurring-expenses.test.mjs`; verified in the browser against seeded data.
 
+### Bank reconciliation — finished, and it is a tick
+
+Everything in this application derived from the property's own records, which made every figure
+consistent with every other figure and proved nothing. A transfer that was promised and never sent
+looked exactly like one that arrived. **Bank Reconciliation** is the only screen that checks the
+ledger against something outside it.
+
+**A tick, not an import.** Ro, asked directly how the statement reaches the office (2026-08-09):
+manual tick-off. A CSV importer would have to be written against an NCB/Scotiabank export nobody has
+a sample of, and would fail quietly the first time a column moved. Do not build one because it
+sounds better — it is worse until someone produces a real statement file to test against.
+
+One month, one currency, three figures: what the ledger says was received, what has been found on a
+statement, and **what has not** — the number the exercise exists to drive to zero. A "statement date"
+is set once and then every tick uses it, because the posture is statement-open-beside-you, working
+down. Printable and signable for filing.
+
+`reconciledOn` is the *bank's* date, not today's, because that is the date being matched. Only
+`completed` receipts can be matched: an expected cheque has not been banked and a voided receipt
+records something that did not happen. **Matching moves no balance** — it records only whether the
+money was found, and a reconciliation that shifted figures would be a second, rival source of truth.
+Un-matching is allowed and audited, because "it reconciled last week and now it doesn't" is a shape
+worth seeing.
+
+Cash is deliberately included rather than filtered as "never going to appear on a statement": cash
+received and never banked is precisely the thing worth being able to see.
+
+Gated on `recordPayments`, not something heavier — the person who banks the money has the statement,
+and putting it behind a manager would mean it never got done. 24 tests in
+`test/reconciliation.test.mjs`.
+
+### Refunds — finished, and they are not voids
+
+The instrument that was missing. Money going back out could only be recorded by **voiding** the
+receipt — which asserts the money never arrived, destroys the evidence that the property ever held
+it, and leaves no record of the payment out at all.
+
+**Void and refund say opposite things and both are needed.** Void: this should never have been
+recorded — an entry error, a bounced cheque. Refund: it *was* received, the receipt is valid and
+stays printable, and afterwards some or all went back. Recording a refund as an expense is no better
+than voiding it: a refund is not a cost of running the property, it is income handed back.
+
+So it lives on the receipt (`refundedAmount`, `refundedOn`, `refundMethod`, `refundReason`,
+`refundedBy`) — the same shape as a deposit living on its tenancy. The receipt keeps its status and
+its number.
+
+**The date is the whole trick.** A refund is netted off from the day the money *left*, not the day
+the receipt was taken. `netPaidAsOf` and `refundedAsOf` in `finance.ts` are the only place that
+arithmetic is written — nothing should read `refundedAmount` directly. A July receipt refunded in
+August reduces *August*; netting it into July would silently restate a month already reported on.
+
+Partial refunds are the normal case, so it is an amount, not a flag. A receipt cannot be both
+refunded and voided in either order — the pair would take the money off the ledger twice. Booking
+deposits reduce `depositPaid` and put `balanceDue` back; a fully refunded utility settlement reopens
+the bill. Gated on `reversePayments`. 27 tests in `test/refunds.test.mjs`.
+
+Verified in the browser: a refunded maintenance payment correctly returns the owner to arrears, and
+the refund appears on the proprietor statement as its own dated negative line so the column still
+adds up.
+
+### Rent proration — closed as policy, not built
+
+**A mid-month move-in is billed the whole month.** Ro's decision, asked directly, 2026-08-09. Rent is
+not prorated.
+
+Do not "fix" this with day-count arithmetic. Proration would have to reach the advance final month
+and the move-out month as well to stay coherent, and none of that is wanted. It is a lease term, not
+an oversight.
+
+What changed is that it is no longer *invisible*. The move-in charge now says so on its own face when
+the date is not the first — "full month; moved in 20 Aug, not prorated" — so the ledger, the statement
+and the tenant's copy all show a full month against a mid-month date instead of looking like a
+billing error to whoever reads it next. The tenancy screen says the same thing under the move-in
+date field.
+
 ### Guest damage deposits — finished, and optional
 
 Short-Term Bookings gains a **Damage held** column. Blank for a stay with no deposit, which is most
@@ -242,33 +327,41 @@ never appears, and the officer is walled out with no way through. That exact bug
 
 ---
 
-## The audit — what's left
+## The audit — closed
 
-I audited the app as a property manager. Remaining gaps, in the order I'd do them:
+I audited the app as a property manager and worked the list down. **Everything on it is now done or
+deliberately closed.** Kept here so nobody re-derives it or rebuilds something that was ruled out.
 
 **Tier 2 — done**
-1. ~~**Owner statements**~~ — done, see above.
-2. ~~**Recurring expenses**~~ — done, see above.
+1. ~~**Owner statements**~~ · 2. ~~**Recurring expenses**~~ — see above.
 
-**Tier 3 — risk and defensibility**
-3. **Document storage** — leases, IDs, insurance certificates, inspection photos, contractor
-   invoices. Everything is referenced by number only.
-4. **Communication log** — "called re arrears on the 3rd", "notice served on the 10th". In a
-   dispute that log *is* the case.
-5. **Formal notices** — eviction is modelled as a financial write-off; there is no demand letter or
-   notice-to-quit document. Jamaica's process expects served, dated notices.
-6. **Inspection records** — move-in/move-out condition, which is what a deposit deduction is
-   defended with.
+**Tier 3 — closed by decision, NOT built**
+3–6. Document storage, communication log, formal notices, inspection records.
+
+   These were built as one *Records & Documents* timeline — entries dated by when they happened,
+   attached to a villa or a person, with real files stored beside `db.json` — and then **removed at
+   Ro's instruction, 2026-08-09**: *"we'll leave it manual for now as all leases are signed
+   physically anyway."*
+
+   The removal was complete and clean: no types, routes, storage, screen or tests remain, and
+   nothing else ever depended on it (verified on a running server before removing it — the feature
+   was fully additive). Recovering it means rebuilding, not un-hiding.
+
+   **Do not rebuild it speculatively.** Ro was asked what a real dispute had looked like and the
+   answer was that there have been none: *"usually we pull up an owner or tenants records as proof
+   and move accordingly."* If that changes, the shape that was right is one screen, not four — the
+   need is *evidence, dated, attached to a villa or a person, in the order it happened* — and files
+   must go in a folder beside `db.json`, never inside it, with the off-machine backup extended to
+   carry them.
 
 **Tier 4 — short lets: nothing left**
 7. ~~**Guest damage deposit**~~ — done, see above. Channel commission and cleaning fees were
    examined and ruled out as non-issues — see the closed note below before reopening either.
 
-**Tier 5 — finance hygiene**
-8. **Bank reconciliation** — nothing ties receipts to a bank statement.
-9. **No refund instrument** — refunds are done by voiding, which is not the same as recording money
-   going out.
-10. **No rent proration** — a mid-month move-in bills a whole month, and now also a whole advance.
+**Tier 5 — done**
+8. ~~**Bank reconciliation**~~ — a tick, not an import. See above.
+9. ~~**Refund instrument**~~ — refunds are no longer voids. See above.
+10. ~~**Rent proration**~~ — closed as policy: a mid-month move-in is billed whole. See above.
 
 **Closed, and do not reopen it:** short lets are *not* financially overstated, whatever an earlier
 reading of this file said. Confirmed with Ro, 2026-08-09:
@@ -289,21 +382,13 @@ commission that is not charged, or a gross figure that is never received, would 
 
 ### Where to pick up
 
-Tiers 2 and 4 are closed. What remains is Tier 3 and Tier 5, and they are different in kind:
+**Nowhere — there is no backlog.** The audit is finished. The next thing to build is whatever Ro
+asks for.
 
-**Tier 3 is one feature wearing four hats.** Document storage, the communication log, formal notices
-and inspection records are all the same need — *evidence, dated, attached to a villa or a person, in
-the order it happened*. Building them as four separate screens would be four half-answers. Ask Ro
-what an actual dispute has looked like before designing it; that shapes it more than any of this
-file does.
-
-**Tier 5 is three unrelated small jobs.** Bank reconciliation is the largest and the only one with a
-real design question (what a statement import looks like, if anything). The refund instrument is
-mostly modelling — money genuinely going out is not a voided receipt, and today it is recorded as
-one. Rent proration is arithmetic plus a decision from Ro about whether a mid-month move-in is
-prorated at all, or billed whole by policy.
-
-**Do not start any of them without asking.** None is urgent, and the order above is mine, not Ro's.
+Resist the urge to find work here. Two things this file would previously have pointed at are now
+settled decisions rather than gaps: **records/documents stay manual**, and **rent is never
+prorated**. Both were Ro's calls, made explicitly. Treat a new idea the same way the closed items
+above were treated — ask what problem it actually solves at this property before building it.
 
 ---
 
@@ -324,3 +409,9 @@ Decisions already made — **do not re-litigate**:
 - Eviction is veto-gated and writes off rent as bad debt.
 - **First-and-last is not a deposit.** It pays the final month. A damage deposit is separate and
   refundable.
+- **Rent is never prorated.** A mid-month move-in is billed the whole month, by policy (2026-08-09).
+- **Records and documents stay manual.** The Records & Documents feature was built and then removed
+  at Ro's instruction (2026-08-09) — leases are signed physically and the office keeps the paper. Do
+  not rebuild it without being asked.
+- **Bank reconciliation is a tick, not a CSV import** (2026-08-09). Revisit only with a real
+  statement file in hand to test against.

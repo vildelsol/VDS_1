@@ -920,6 +920,25 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
     c => c.unitId === unit.id && c.category === 'Rent' && c.periodMonth === month && c.status === 'open'
   );
   if (!alreadyBilled) {
+    /**
+     * A mid-month move-in is billed the **whole** month, on purpose.
+     *
+     * Ro's decision, 2026-08-09, asked directly: the first month is not prorated.
+     * It is a policy the lease states, not an oversight — so do not "fix" this by
+     * adding day-count arithmetic. Proration would also have to reach the advance
+     * final month and the move-out month to stay coherent, and none of that is
+     * wanted.
+     *
+     * What it must not be is *invisible*. When someone moves in part way through
+     * a month the charge says so on its own face, so the ledger, the statement and
+     * the tenant's own copy all show a full month against a date that is not the
+     * first — instead of looking like a billing error to whoever reads it next.
+     */
+    const movedInOnDay = Number(tenancy.startedOn.slice(8, 10));
+    const description =
+      movedInOnDay > 1
+        ? `First month's rent — ${month} (full month; moved in ${formatDayLabel(tenancy.startedOn)}, not prorated)`
+        : `First month's rent — ${month}`;
     const first: Charge = {
       id: uniqueRecordId(db.charges, `chg-${month}-${unit.id}-rent`),
       unitId: unit.id,
@@ -931,7 +950,7 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
       currency,
       status: 'open',
       payerName: tenancy.tenantName,
-      description: `First month's rent — ${month}`,
+      description,
       createdAt: new Date().toISOString(),
       createdBy: staffName
     };
@@ -2405,6 +2424,16 @@ app.post(
       const target = db.payments.find(p => p.id === id);
       if (!target) throw new ApiError(404, 'Payment not found.');
       if (target.status === 'reversed') throw new ApiError(400, 'That entry has already been voided.');
+      // Voiding says the money never arrived. Having already paid some of it back
+      // says it did. Both cannot be true, and the pair would net the refund off a
+      // receipt that no longer counts — taking the money off the ledger twice.
+      if (target.refundedAmount) {
+        throw new ApiError(
+          400,
+          `${target.currency} ${target.refundedAmount} was refunded against receipt ${target.receiptNo} on ${target.refundedOn}. ` +
+            'A receipt that has been refunded cannot also be voided — voiding says the money never arrived.'
+        );
+      }
       const wasPending = target.status === 'pending';
 
       const before = { ...target };
@@ -2455,6 +2484,204 @@ app.post(
         before,
         target,
         who.name
+      );
+      return target;
+    });
+    res.json({ success: true, payment });
+  })
+);
+
+/**
+ * Give money back.
+ *
+ * The instrument that was missing. Until now the only way to record money going
+ * out to a payer was to void the receipt — which says the money never arrived,
+ * destroys the evidence that the property ever held it, and leaves no record of
+ * the payment out at all. An overpayment returned, a cancelled stay, a double
+ * payment handed back: all of those really happened, in both directions, and the
+ * ledger has to be able to say so.
+ *
+ * A refund therefore does *not* touch the receipt's status. The receipt remains
+ * completed and printable, because it is a true record of money once received.
+ * What changes is that the amount is netted off every derived figure from the day
+ * the money went back — see `netPaidAsOf` in finance.ts.
+ *
+ * Gated on `reverse_payment`: this is money leaving the building, the same
+ * seriousness as voiding a receipt.
+ */
+app.post(
+  '/api/payments/:id/refund',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'reverse_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const payment = await transaction(db => {
+      const target = db.payments.find(p => p.id === id);
+      if (!target) throw new ApiError(404, 'Payment not found.');
+
+      // You cannot hand back money you never took. A pending entry is an
+      // expectation, not a receipt — cancel it instead.
+      if (target.status === 'pending') {
+        throw new ApiError(
+          400,
+          'That payment has not been received yet, so there is nothing to refund. Cancel the expected payment instead.'
+        );
+      }
+      if (target.status === 'reversed') {
+        throw new ApiError(400, 'That receipt has been voided, which says the money never arrived. A voided receipt cannot be refunded.');
+      }
+      if (target.refundedAmount) {
+        throw new ApiError(
+          400,
+          `${target.currency} ${target.refundedAmount} was already refunded against receipt ${target.receiptNo} on ${target.refundedOn}. Void and re-enter if that was wrong.`
+        );
+      }
+
+      const amount = requirePositiveAmount(body.amount ?? target.amount, 'Refund amount');
+      if (amount > target.amount) {
+        throw new ApiError(
+          400,
+          `You cannot refund ${target.currency} ${amount} against a receipt for ${target.currency} ${target.amount}.`
+        );
+      }
+      const refundedOn = requireDay(body.refundedOn || today(), 'Refund date');
+      if (refundedOn < target.date) {
+        throw new ApiError(400, 'The refund cannot be dated before the payment it refunds.');
+      }
+      // The same rule a payment is held to. Money that has not left yet is an
+      // intention, and post-dating one would take it off this month's figures
+      // before anybody actually handed it over.
+      if (refundedOn > today()) {
+        throw new ApiError(400, 'A refund cannot be dated in the future. Record it on the day the money actually goes back.');
+      }
+      const reason = requireString(body.reason, 'Reason for the refund', 500);
+      const method = requireEnum(body.method ?? target.method, PAYMENT_METHODS, 'How the money was returned');
+
+      const before = { ...target };
+      const who = actor(req);
+      target.refundedAmount = amount;
+      target.refundedOn = refundedOn;
+      target.refundMethod = method;
+      target.refundReason = reason;
+      target.refundedBy = who.name;
+
+      /**
+       * Keep linked records honest, exactly as voiding does.
+       *
+       * A refunded booking deposit is money the guest has back, so the stay is no
+       * longer part-paid for it. A fully refunded utility settlement means the
+       * bill is unpaid again. Neither is true of a *partial* refund of a utility —
+       * the bill was still settled — so only a full one reopens it.
+       */
+      if (target.bookingId) {
+        const booking = db.bookings.find(b => b.id === target.bookingId);
+        if (booking) {
+          const bBefore = { ...booking };
+          booking.depositPaid = round2(Math.max(0, booking.depositPaid - amount));
+          booking.balanceDue = round2(Math.max(0, booking.amount - booking.depositPaid));
+          addAudit(db, who.name, who.role, `Reduced the reservation deposit after a refund of ${target.currency} ${amount}`, 'Booking', booking.id, bBefore, booking);
+        }
+      }
+      if (target.utilityId && amount === target.amount) {
+        const utility = db.utilities.find(u => u.id === target.utilityId);
+        if (utility && utility.status === 'paid') {
+          utility.status = 'unpaid';
+          delete utility.paymentId;
+          addAudit(db, who.name, who.role, 'Reopened the utility bill after its settlement was refunded in full', 'Utility', utility.id, 'paid', 'unpaid');
+        }
+      }
+
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Refunded ${target.currency} ${amount} against receipt ${target.receiptNo} — ${reason}`,
+        'Payment',
+        id,
+        before,
+        target,
+        who.name
+      );
+      return target;
+    });
+    res.json({ success: true, payment });
+  })
+);
+
+/**
+ * Tie a receipt to the bank statement, or untie it.
+ *
+ * The last gap in the ledger: everything balanced against itself and nothing
+ * against the bank. A receipt that says money arrived is the property's own word
+ * for it — this is where that word gets checked against the only record that is
+ * not the property's own.
+ *
+ * A tick, not an import, on purpose. See `Payment.reconciledOn`.
+ *
+ * Gated on `record_payment` rather than anything heavier: the person who banks
+ * the money is the person who has the statement, and putting this behind a
+ * manager would mean it simply never got done. Unticking is audited exactly like
+ * ticking, because "it was reconciled last week and now it isn't" is the shape of
+ * a problem worth being able to see.
+ */
+app.post(
+  '/api/payments/:id/reconcile',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'record_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+    const clearing = body.reconciled === false;
+
+    const payment = await transaction(db => {
+      const target = db.payments.find(p => p.id === id);
+      if (!target) throw new ApiError(404, 'Payment not found.');
+      const who = actor(req);
+      const before = { ...target };
+
+      if (clearing) {
+        if (!target.reconciledOn) throw new ApiError(400, 'That receipt is not marked as seen on a statement.');
+        delete target.reconciledOn;
+        delete target.reconciledBy;
+        delete target.reconciledAt;
+        delete target.reconciledReference;
+        addAudit(db, who.name, who.role, `Un-matched receipt ${target.receiptNo} from the bank statement`, 'Payment', id, before, target);
+        return target;
+      }
+
+      // Only money the property says it actually has can be matched against a
+      // statement. An expected cheque has not been banked, and a voided receipt
+      // is a record of something that did not happen.
+      if (target.status !== 'completed') {
+        throw new ApiError(
+          400,
+          target.status === 'pending'
+            ? 'That payment is still awaiting funds. Confirm it as received first — then it can be matched to the statement.'
+            : 'That receipt has been voided, so there is nothing to find on a statement.'
+        );
+      }
+
+      const reconciledOn = requireDay(body.reconciledOn || today(), 'Statement date');
+      if (reconciledOn < target.date) {
+        throw new ApiError(400, 'The statement date cannot be before the payment was received.');
+      }
+      if (reconciledOn > today()) {
+        throw new ApiError(400, 'A statement date cannot be in the future.');
+      }
+
+      target.reconciledOn = reconciledOn;
+      target.reconciledBy = who.name;
+      target.reconciledAt = new Date().toISOString();
+      target.reconciledReference = optionalString(body.reference, 120);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Matched receipt ${target.receiptNo} to the bank statement of ${reconciledOn}`,
+        'Payment',
+        id,
+        before,
+        target
       );
       return target;
     });
