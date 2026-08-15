@@ -137,6 +137,20 @@ export interface ICalFeed {
 }
 
 export interface AppSettings {
+  /**
+   * Who this body corporate is, on the register.
+   *
+   * "Strata corporation" in the Act means **this body corporate** — the
+   * proprietors of Villaggio Del Sol acting together — and NOT the Commission of
+   * Strata Corporations, which is the regulator it files returns with. Printed
+   * documents used to say "the Strata Corporation" and were read as meaning the
+   * regulator. They now name the plan instead, which cannot be misread.
+   *
+   * The Commission's forms ask for both of these in their headers.
+   */
+  strataPlanNumber?: string;
+  /** Taxpayer registration number, as it appears on the annual return forms. */
+  trn?: string;
   /** Indicative JMD per 1 USD, used only for display conversions. Never used to convert stored amounts. */
   fxRateJmdPerUsd: number;
   rolePermissions: {
@@ -164,6 +178,20 @@ export interface AppSettings {
   juniorHasAdvancedAccess?: boolean;
   juniorPermissions?: RolePermissions;
   staffProfiles?: Record<string, StaffProfile>;
+}
+
+/**
+ * How to name this body corporate in a document, unambiguously.
+ *
+ * "Strata corporation" in the Act means the proprietors of this plan acting
+ * together — Villaggio Del Sol itself. It does **not** mean the Commission of
+ * Strata Corporations, which is the regulator the corporation files returns
+ * with. Documents that said "the Strata Corporation" were read as meaning the
+ * regulator, so they name the plan instead.
+ */
+export function bodyCorporateName(settings?: { strataPlanNumber?: string } | null): string {
+  const plan = settings?.strataPlanNumber?.trim();
+  return plan ? `Villaggio Del Sol (Strata Plan No. ${plan})` : 'Villaggio Del Sol';
 }
 
 export type UnitStatus = 'long-term' | 'short-term' | 'owner-occupied' | 'vacant' | 'unavailable';

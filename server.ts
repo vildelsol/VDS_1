@@ -986,10 +986,13 @@ app.post(
   '/api/settings',
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'manage_settings');
-    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir } = req.body || {};
+    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir, strataPlanNumber, trn } = req.body || {};
 
     const settings = await transaction(db => {
       const before = JSON.parse(JSON.stringify(db.settings));
+
+      if (strataPlanNumber !== undefined) db.settings.strataPlanNumber = optionalString(strataPlanNumber, 40);
+      if (trn !== undefined) db.settings.trn = optionalString(trn, 40);
 
       if (rolePermissions) {
         const next = { ...db.settings.rolePermissions };

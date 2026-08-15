@@ -18,7 +18,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit } from '../types';
+import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, bodyCorporateName } from '../types';
 import {
   accountBalance,
   chargeAmount,
@@ -465,7 +465,7 @@ export default function Projections({ units, charges, payments, expenses, settin
           <ForecastTable projections={projections} />
 
           <section className="space-y-3 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
-            <h3 className="font-display text-sm font-semibold text-slate-900">Summary for the Strata Corporation</h3>
+            <h3 className="font-display text-sm font-semibold text-slate-900">Summary for {bodyCorporateName(settings)}</h3>
             <p className="text-[11px] text-slate-500">
               Arithmetic statements about the figures above. No causes are inferred.
             </p>
@@ -672,7 +672,12 @@ function ProjectionDocument({
       <section className="mb-5 break-inside-avoid">
         <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Basis and assumptions</h3>
         <ul className="list-disc space-y-1 pl-5 text-[11px] leading-relaxed">
-          <li>Prepared for the Strata Corporation (body corporate). Income is maintenance (HOA) contributions only; rent and short-term booking income belong to individual proprietors and are excluded.</li>
+          <li>
+            Prepared for <strong>{bodyCorporateName(settings)}</strong> — the body corporate — for its own management and
+            annual general meeting. <strong>This is not the annual return filed with the Commission of Strata Corporations</strong>,
+            which is made on Forms 13A, 13B and 13C for the financial year.
+          </li>
+          <li>Income is maintenance (HOA) contributions only; rent and short-term booking income belong to individual proprietors and are excluded.</li>
           <li>
             Projection is straight-line from the run-rate of {formatDayLabel(basisFrom)} to {formatDayLabel(basisTo)} (
             {lookback} month{lookback === 1 ? '' : 's'}) — no growth, inflation or seasonality is assumed.
@@ -743,7 +748,7 @@ function ProjectionDocument({
       ))}
 
       <section className="mb-6 break-inside-avoid">
-        <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Summary for the Strata Corporation</h3>
+        <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Summary for {bodyCorporateName(settings)}</h3>
         {projections.map(p => (
           <div key={p.currency} className="mb-3">
             <p className="mb-1 font-mono text-[9px] font-bold uppercase text-slate-500">{p.currency}</p>

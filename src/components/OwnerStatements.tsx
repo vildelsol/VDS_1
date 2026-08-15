@@ -5,7 +5,7 @@
  * What the managing agent owes each proprietor, and what each proprietor owes the
  * corporation.
  *
- * The Projections tab is written for the strata corporation: its income is the
+ * The Projections tab is written for the body corporate: its income is the
  * maintenance (HOA) contributions proprietors pay, and rent and short-let booking
  * income are deliberately excluded because they are not the corporation's money.
  * This tab is the other side of that same rule. Rent and booking income belong to
@@ -22,7 +22,9 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, getUnitDisplayName } from '../types';
+import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, getUnitDisplayName,
+  bodyCorporateName
+} from '../types';
 import { OwnerStatement, OwnerStatementGroup, groupStatementsByOwner, ownerStatements } from '../lib/finance';
 import { formatMoney, formatMoneyLong, formatMoneyPlain } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
@@ -482,7 +484,9 @@ function OwnerStatementDocument({
         <ul className="list-disc space-y-1 pl-5 text-[11px] leading-relaxed">
           <li>
             Rent and short-term booking income belong to you as proprietor and are collected on your behalf by the
-            managing agent. Maintenance (HOA) contributions are the income of the Strata Corporation.
+            managing agent. Maintenance (HOA) contributions are the income of the body corporate,{' '}
+            <strong>{bodyCorporateName(settings)}</strong> — not of the Commission of Strata Corporations, which is the
+            regulator the corporation files its annual return with.
           </li>
           <li>
             Maintenance is deducted as <strong>billed</strong> for the period, whether or not it has been paid. Where a
@@ -593,7 +597,7 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
         <p className="mt-2 rounded-lg border border-slate-300 p-2 text-[10px] leading-relaxed">
           <strong>{formatMoneyLong(s.maintenanceOutstanding, c)}</strong> in maintenance contributions remains
           outstanding on this villa as at {formatDayLabel(s.to)}, across all periods. This is a separate debt to the
-          Strata Corporation and is not included in the net figure above.
+          body corporate and is not included in the net figure above.
         </p>
       )}
     </section>

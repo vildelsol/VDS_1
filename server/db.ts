@@ -410,6 +410,10 @@ function defaultRolePermissions(): AppSettings['rolePermissions'] {
 function defaultSettings(): AppSettings {
   return {
     fxRateJmdPerUsd: DEFAULT_FX_RATE_JMD_PER_USD,
+    // Villaggio Del Sol is registered as strata plan 2724. Editable in System
+    // Settings; the Commission's return forms ask for it in their headers.
+    strataPlanNumber: '2724',
+    trn: '',
     rolePermissions: defaultRolePermissions(),
     backupDir: '',
     vendors: [

@@ -22,7 +22,7 @@ with fees billed on a yearly statement of account; the filing fee is quoted at $
 | **13A** | Income and expenditure statement | **Mostly.** Charges give income raised, payments give cash, expenses give expenditure. Framing is cash-movement; an auditor will want levies *raised* as income. |
 | **13B** | Outstanding contributions — what proprietors owe | **Yes, essentially complete.** `delinquentAccounts` / `accountBalance` already produce this per villa per currency, with ageing. Missing only the **strata lot number**. |
 | **13C** | Outstanding payables — what the corporation owes third parties | **Yes.** Expenses with `status: 'pending'` are exactly this, and the monthly-costs run raises them that way by design. |
-| **8** | Not verified — confirm with REBCSC what Form 8 covers. | Unknown. |
+| **8** | Annual registration. Ro's reading: it carries no financial figures. | Not a reporting concern. |
 
 **Supporting documents required with the return:**
 
@@ -62,14 +62,56 @@ should be confirmed before building to it.**
 
 ---
 
+## The forms, as they actually read
+
+Ro supplied the forms on 2026-08-15. All three are made under **Regulation 11D(c)**, filed pursuant
+to **section 4(7)(a)**. Every header asks for **Proprietors Strata Plan No., TRN No., and Name &
+Address of Complex** — Villaggio Del Sol is **Strata Plan No. 2724**, now held in settings.
+
+**13A — Income & Expenditure, for year ending ___.** Three columns: **Current Year | Outstanding
+Amounts | Comments**. The "Outstanding" column is the interesting one — it ties to 13B for income and
+to 13C for expenses, both of which the system already derives.
+
+Its expense lines are fixed and do **not** match this application's expense categories:
+
+> Security · Common Area Upkeep (Gardening, Minor Repairs, Insurance) · Property Tax ·
+> Utilities (Electricity, Telephone, Water) · Special Projects (Painting, Major roof repairs, Other) ·
+> Audit & Accounting (Bank Charges, Other)
+
+Income lines: Maintenance Contributions · Levies/Cess · Interest on Deposits · Other Income.
+
+The app has no Insurance or Bank Charges category, cannot split Utilities into Electricity /
+Telephone / Water, and has Payroll, Supplies and Contractors with no obvious home on the form.
+**This is the open decision — see below.**
+
+**13B — Outstanding Contributions.** `Strata Lot # | 30 days | 60 days | 90 days | 90 days & over`,
+with a Total row. **Built.**
+
+**13C — Outstanding Debts.** `Description | 30 days | 60 days | 90 days | Over 90 days`, with
+Insurance / Property Tax / Light / Water / Other pre-printed and blank rows beneath. **Built.**
+
 ## Still to confirm with REBCSC
 
-1. What Form 8 covers.
-2. The exact line items on 13A, 13B and 13C — build the reports to the real forms, not to a
-   reasonable guess at them.
-3. Whether Villaggio Del Sol's financial year ends 31 March (which sets the 120-day clock).
-4. Whether this corporation needs *audited* statements or GAAP accounts signed by the executive.
-5. The reserve fund obligation in precise terms.
+1. Whether Villaggio Del Sol's financial year ends 31 March (which sets the 120-day clock).
+2. Whether this corporation needs *audited* statements or GAAP accounts signed by the executive.
+   Note the requirement reads "audited **or, subject to the approval of the Commission**, accounts
+   prepared under GAAP" — the cheaper route is a permission, not a right. Ask, and get it in writing.
+3. Which currency the return is made in, and how a USD-billed levy should be presented. Nothing here
+   converts between currencies without somebody choosing a rate.
+4. The reserve fund obligation. **Parked at Ro's instruction, 2026-08-15.**
+
+## The open decision: 13A's expense taxonomy
+
+The application's categories and the form's lines are two different taxonomies, and keeping both
+guarantees drift. Two ways out:
+
+- **Align the app's categories to the form.** Add Insurance and Bank Charges, split Utilities into
+  Electricity / Telephone / Water, add Special Projects. Existing expenses migrate. The form then
+  falls out of the data with no mapping to maintain.
+- **Map at report time.** Leave categories alone and translate. Cheaper now, but every new category
+  is a decision someone has to remember, and an unmapped one silently becomes "Other".
+
+I recommend the first. The form *is* the reporting requirement, so it should drive the taxonomy.
 
 ---
 

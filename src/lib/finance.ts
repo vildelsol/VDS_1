@@ -26,6 +26,7 @@ import {
   Unit,
   UtilityReading,
   Expense,
+  ExpenseCategory,
   Booking
 } from '../types';
 import { round2, sumMoney, subtractMoney } from './money';
@@ -1114,4 +1115,187 @@ export function levyProportionality(units: Unit[]): LevyProportion[] {
  */
 export function disproportionateLevies(units: Unit[], tolerance = 0.01): LevyProportion[] {
   return levyProportionality(units).filter(row => row.variancePct > tolerance);
+}
+
+/* ------------------------------------------------------------------ *
+ * The annual return to the Commission of Strata Corporations
+ *
+ * Forms 13B and 13C, made under Regulation 11D(c) and filed pursuant to
+ * section 4(7)(a) of the Registration (Strata Titles) (Amendment) Act. Both are
+ * ageing schedules over data the system already holds — 13B ages what
+ * proprietors owe the corporation, 13C ages what the corporation owes third
+ * parties. See STRATA_COMPLIANCE.md and the forms themselves.
+ *
+ * The buckets are the form's own: 30 / 60 / 90 / 90-and-over.
+ * ------------------------------------------------------------------ */
+
+/** The four columns on Forms 13B and 13C, in the order they are printed. */
+export interface AgeingBuckets {
+  /** Up to 30 days overdue. Anything not yet due sits here too — it is outstanding, not late. */
+  d30: number;
+  /** 31–60 days. */
+  d60: number;
+  /** 61–90 days. */
+  d90: number;
+  /** More than 90 days. The column the Commission actually reads. */
+  over90: number;
+  total: number;
+}
+
+const emptyBuckets = (): AgeingBuckets => ({ d30: 0, d60: 0, d90: 0, over90: 0, total: 0 });
+
+/** Which column an amount this many days overdue belongs in. */
+function bucketFor(daysOverdue: number): keyof Omit<AgeingBuckets, 'total'> {
+  if (daysOverdue <= 30) return 'd30';
+  if (daysOverdue <= 60) return 'd60';
+  if (daysOverdue <= 90) return 'd90';
+  return 'over90';
+}
+
+function addToBucket(buckets: AgeingBuckets, daysOverdue: number, amount: number) {
+  if (amount <= 0) return;
+  const key = bucketFor(daysOverdue);
+  buckets[key] = round2(buckets[key] + amount);
+  buckets.total = round2(buckets.total + amount);
+}
+
+export interface Form13BRow {
+  unit: Unit;
+  /** The strata lot number the form asks for, falling back to the villa label. */
+  strataLot: string;
+  /** True when the lot has no strata lot number recorded and the label was used. */
+  lotNumberAssumed: boolean;
+  currency: Currency;
+  buckets: AgeingBuckets;
+}
+
+/**
+ * Form 13B — outstanding contributions, aged, by strata lot.
+ *
+ * Payments are applied oldest charge first, and **only the uncovered remainder of
+ * a part-paid charge is aged**. `accountBalance` lists a partly covered charge in
+ * `unpaidCharges` in full, which is right for showing which months are open but
+ * wrong here: summing those would report more owing than the account's balance,
+ * and a return that does not agree with its own balance is worse than no return.
+ * The buckets total exactly the outstanding balance.
+ *
+ * Grouped by currency because everything here is. A lot billed for maintenance in
+ * a currency other than the one being filed appears on its own row rather than
+ * being converted — no exchange rate belongs in a statutory figure without
+ * somebody choosing it.
+ */
+export function form13BContributions(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  asOf: string
+): { rows: Form13BRow[]; totalsByCurrency: { currency: Currency; buckets: AgeingBuckets }[] } {
+  const rows: Form13BRow[] = [];
+
+  for (const unit of units) {
+    const account = accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
+    if (account.balance <= 0) continue;
+
+    // Re-apply oldest-first so a part-paid charge contributes only its remainder.
+    const open = chargesForUnit(charges, unit, units)
+      .filter(c => c.category === 'Maintenance' && c.status === 'open' && c.currency === account.currency && c.dueDate <= asOf)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+    let credit = account.paid;
+    const buckets = emptyBuckets();
+    for (const charge of open) {
+      const covered = Math.min(credit, charge.amount);
+      credit = round2(credit - covered);
+      const residual = round2(charge.amount - covered);
+      if (residual > 0) addToBucket(buckets, daysSinceOn(charge.dueDate, asOf), residual);
+    }
+    if (buckets.total <= 0) continue;
+
+    rows.push({
+      unit,
+      strataLot: unit.strataLotNumber || unit.number,
+      lotNumberAssumed: !unit.strataLotNumber,
+      currency: account.currency,
+      buckets
+    });
+  }
+
+  rows.sort((a, b) => a.strataLot.localeCompare(b.strataLot, undefined, { numeric: true }));
+
+  const totalsByCurrency = (['JMD', 'USD'] as Currency[])
+    .map(currency => {
+      const totals = emptyBuckets();
+      for (const row of rows.filter(r => r.currency === currency)) {
+        totals.d30 = round2(totals.d30 + row.buckets.d30);
+        totals.d60 = round2(totals.d60 + row.buckets.d60);
+        totals.d90 = round2(totals.d90 + row.buckets.d90);
+        totals.over90 = round2(totals.over90 + row.buckets.over90);
+        totals.total = round2(totals.total + row.buckets.total);
+      }
+      return { currency, buckets: totals };
+    })
+    .filter(entry => entry.buckets.total > 0);
+
+  return { rows, totalsByCurrency };
+}
+
+/**
+ * The descriptions Form 13C prints, in its order. Anything that does not map to
+ * one of these keeps its own category name — the form leaves blank rows for
+ * exactly that, and inventing a home for a cost is how a return stops being true.
+ */
+const FORM_13C_LABELS: Partial<Record<ExpenseCategory, string>> = {
+  'Property Taxes': 'Property Tax',
+  Utilities: 'Light / Water'
+};
+
+export interface Form13CRow {
+  description: string;
+  currency: Currency;
+  buckets: AgeingBuckets;
+}
+
+/**
+ * Form 13C — outstanding debts, aged, by description.
+ *
+ * An expense still marked `pending` is money the corporation owes and has not
+ * paid, which is precisely what this form asks for. The monthly costs run raises
+ * its lines that way deliberately, so a month that has been posted but not yet
+ * settled appears here without anyone doing anything.
+ *
+ * Aged from the due date where there is one, falling back to the date the cost
+ * was logged.
+ */
+export function form13CDebts(expenses: Expense[], asOf: string): { rows: Form13CRow[]; totalsByCurrency: { currency: Currency; buckets: AgeingBuckets }[] } {
+  const byKey = new Map<string, Form13CRow>();
+
+  for (const expense of expenses) {
+    if (expense.status !== 'pending') continue;
+    const owedFrom = expense.dueDate || expense.date;
+    if (owedFrom > asOf) continue;
+
+    const description = FORM_13C_LABELS[expense.category] || expense.category;
+    const key = `${description}|${expense.currency}`;
+    const row = byKey.get(key) || { description, currency: expense.currency, buckets: emptyBuckets() };
+    addToBucket(row.buckets, daysSinceOn(owedFrom, asOf), expense.amount);
+    byKey.set(key, row);
+  }
+
+  const rows = [...byKey.values()].filter(r => r.buckets.total > 0).sort((a, b) => a.description.localeCompare(b.description));
+
+  const totalsByCurrency = (['JMD', 'USD'] as Currency[])
+    .map(currency => {
+      const totals = emptyBuckets();
+      for (const row of rows.filter(r => r.currency === currency)) {
+        totals.d30 = round2(totals.d30 + row.buckets.d30);
+        totals.d60 = round2(totals.d60 + row.buckets.d60);
+        totals.d90 = round2(totals.d90 + row.buckets.d90);
+        totals.over90 = round2(totals.over90 + row.buckets.over90);
+        totals.total = round2(totals.total + row.buckets.total);
+      }
+      return { currency, buckets: totals };
+    })
+    .filter(entry => entry.buckets.total > 0);
+
+  return { rows, totalsByCurrency };
 }
