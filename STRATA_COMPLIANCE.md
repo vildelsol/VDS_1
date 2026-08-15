@@ -82,7 +82,7 @@ Income lines: Maintenance Contributions · Levies/Cess · Interest on Deposits �
 
 The app has no Insurance or Bank Charges category, cannot split Utilities into Electricity /
 Telephone / Water, and has Payroll, Supplies and Contractors with no obvious home on the form.
-**This is the open decision — see below.**
+**This does not matter — see "How the return is actually filed" below.**
 
 **13B — Outstanding Contributions.** `Strata Lot # | 30 days | 60 days | 90 days | 90 days & over`,
 with a Total row. **Built.**
@@ -100,18 +100,23 @@ Insurance / Property Tax / Light / Water / Other pre-printed and blank rows bene
    converts between currencies without somebody choosing a rate.
 4. The reserve fund obligation. **Parked at Ro's instruction, 2026-08-15.**
 
-## The open decision: 13A's expense taxonomy
+## How the return is actually filed — read this before "fixing" the categories
 
-The application's categories and the form's lines are two different taxonomies, and keeping both
-guarantees drift. Two ways out:
+**Ro, 2026-08-15:** *"we generally send them an excel sheet of the breakdown, which is an acceptable
+practice as their form cannot reflect their ask."*
 
-- **Align the app's categories to the form.** Add Insurance and Bank Charges, split Utilities into
-  Electricity / Telephone / Water, add Special Projects. Existing expenses migrate. The form then
-  falls out of the data with no mapping to maintain.
-- **Map at report time.** Leave categories alone and translate. Cheaper now, but every new category
-  is a decision someone has to remember, and an unmapped one silently becomes "Other".
+So 13A's fixed lines are a template, not the deliverable. The Commission accepts an Excel breakdown
+alongside it, because the printed form cannot express what a real property spends money on.
 
-I recommend the first. The form *is* the reporting requirement, so it should drive the taxonomy.
+**This overturns what an earlier version of this note recommended.** Do *not* realign the
+application's expense categories to match 13A's lines. That would bend the register to fit a form
+nobody completes literally, lose detail the corporation actually manages by, and force costs like
+payroll into a box the form never had. The categories should describe the property; the export
+should carry the breakdown.
+
+What matters instead is that **the export is good**: a clean spreadsheet of income and expenditure
+for the year, broken down by category, with the amount outstanding beside each figure, and the
+supporting detail behind it. That is the real reporting requirement, and it is what to build.
 
 ---
 

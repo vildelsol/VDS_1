@@ -91,9 +91,23 @@ function rangeForPreset(preset: Preset, custom: { from: string; to: string }): {
   }
 }
 
-/** How a net position is worded. "Due to" and "due from" are not interchangeable. */
-function netLabel(net: number): string {
-  return net >= 0 ? 'Due to proprietor' : 'Due from proprietor';
+/**
+ * How a net position is worded.
+ *
+ * "Due to" and "due from" are not interchangeable, and neither is worth much
+ * without saying *who* and *which villa*. A statement covering two villas
+ * repeated "Due to proprietor" on both, so a line lifted out of context named
+ * nobody. It now names the owner and the villa, because that is the line someone
+ * reads out at a meeting or queries a month later.
+ */
+function netLabel(net: number, owner?: string, unitNumber?: string): string {
+  const direction = net >= 0 ? 'Due to' : 'Due from';
+  const who = (owner || '').trim();
+  const villa = unitNumber ? getUnitDisplayName(unitNumber) : '';
+  if (who && villa) return `${direction} ${who} — ${villa}`;
+  if (who) return `${direction} ${who}`;
+  if (villa) return `${direction} the owner of ${villa}`;
+  return `${direction} the owner`;
 }
 
 export default function OwnerStatements({ units, charges, payments, expenses, settings, session }: OwnerStatementsProps) {
@@ -129,7 +143,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
     rows.push(['Note', 'USD and JMD are stated separately and are never combined.']);
     rows.push([]);
     rows.push([
-      'Proprietor',
+      'Owner',
       'Villa',
       'Currency',
       'Rent collected',
@@ -160,7 +174,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
           formatMoneyPlain(s.maintenancePaid),
           formatMoneyPlain(s.expenses),
           formatMoneyPlain(s.net),
-          netLabel(s.net),
+          netLabel(s.net, s.unit.ownerName, s.unit.number),
           formatMoneyPlain(s.maintenanceOutstanding)
         ]);
       }
@@ -185,7 +199,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
           <div>
             <h2 className="flex items-center gap-2 font-display text-lg font-medium text-slate-900">
               <Users className="h-4 w-4 text-teal-600" />
-              Proprietor statements
+              Owners statements
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
               What was collected for each owner, what they were billed, and the net position — one statement per villa,
@@ -321,7 +335,7 @@ function OwnerCard({
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           {group.netByCurrency.map(row => (
             <Badge key={row.currency} tone={row.net < 0 ? 'red' : 'green'}>
-              {netLabel(row.net)} {formatMoney(Math.abs(row.net), row.currency)}
+              {netLabel(row.net, group.owner)} {formatMoney(Math.abs(row.net), row.currency)}
             </Badge>
           ))}
           <SecondaryButton onClick={onPrint} className="flex items-center gap-1.5 bg-white">
@@ -430,19 +444,19 @@ function OwnerStatementDocument({
         `  Collected on your behalf : ${formatMoneyLong(s.collected, s.currency)}`,
         `  Maintenance billed       : ${formatMoneyLong(s.maintenanceBilled, s.currency)}`,
         `  Expenses on your villa   : ${formatMoneyLong(s.expenses, s.currency)}`,
-        `  ${netLabel(s.net)}       : ${formatMoneyLong(Math.abs(s.net), s.currency)}`,
+        `  ${netLabel(s.net, s.unit.ownerName, s.unit.number)} : ${formatMoneyLong(Math.abs(s.net), s.currency)}`,
         ''
       ]),
       'A full itemised statement is attached or available on request.',
       '',
       'Villaggio Del Sol Management'
     ].join('\n');
-    openMailDraft({ to: ownerEmail, subject: `Proprietor statement — ${period}`, body });
+    openMailDraft({ to: ownerEmail, subject: `Owner statement — ${period}`, body });
   };
 
   return (
     <PrintPortal
-      title={`Proprietor statement — ${group.owner || 'Owner not recorded'}`}
+      title={`Owner statement — ${group.owner || 'Owner not recorded'}`}
       subtitle={period}
       onClose={onClose}
       maxWidthClass="max-w-4xl"
@@ -459,7 +473,7 @@ function OwnerStatementDocument({
         </button>
       }
     >
-      <PrintLetterhead documentTitle="Proprietor Statement" meta={period} generatedBy={generatedBy} />
+      <PrintLetterhead documentTitle="Owner Statement" meta={period} generatedBy={generatedBy} />
 
       <section className="mb-5 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
         {[
@@ -585,7 +599,7 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
           <tfoot>
             <tr className="border-t-2 border-slate-400 font-mono font-bold">
               <td className="p-2" colSpan={3}>
-                {netLabel(s.net)}
+                {netLabel(s.net, s.unit.ownerName, s.unit.number)}
               </td>
               <td className="p-2 text-right">{formatMoney(Math.abs(s.net), c)}</td>
             </tr>
