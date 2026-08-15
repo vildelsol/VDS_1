@@ -181,7 +181,40 @@ export interface Unit {
   tenantPhone: string;
   status: UnitStatus;
   monthlyRent: number;
+  /**
+   * The HOA levy actually billed each month.
+   *
+   * This is the figure that is charged. `entitlement` below is what it is
+   * supposed to be *derived from* — the two are kept separate deliberately, so
+   * that a levy which has drifted out of proportion can be seen rather than
+   * silently overwritten.
+   */
   monthlyMaintenance: number;
+  /**
+   * This lot's unit entitlement from the registered strata plan.
+   *
+   * Contributions must be levied on proprietors in proportion to unit
+   * entitlement, so this — not a typed-in monthly figure — is what makes a levy
+   * defensible when a proprietor challenges it at an AGM. It is the aggregate
+   * share attaching to the lot, not a percentage: the shares are summed across
+   * the plan and each lot's proportion is its share of that total.
+   *
+   * Optional because a register that predates it must keep working, and because
+   * the figure comes off the strata plan rather than out of this system. A lot
+   * with no entitlement recorded is excluded from proportionality checks rather
+   * than assumed to be zero.
+   *
+   * See STRATA_COMPLIANCE.md.
+   */
+  entitlement?: number;
+  /**
+   * The lot number as it appears on the strata plan.
+   *
+   * Distinct from `number`, which is the villa label people use day to day and is
+   * editable. The Commission's annual return asks for proprietor balances against
+   * **strata lot numbers**, and there is no guarantee the two agree.
+   */
+  strataLotNumber?: string;
   currency: Currency;
   maintCurrency?: Currency;
   meterNumber: string;

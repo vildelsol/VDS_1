@@ -27,6 +27,8 @@ import {
   AccountBalance,
   AccountStatus,
   accountBalance,
+  entitlementShare,
+  levyProportionality,
   bookingsForUnit,
   chargesForUnit,
   expensesForUnit,
@@ -638,6 +640,12 @@ function UnitDetail({
           />
         </div>
 
+        {/* The levy is supposed to follow the entitlement on the strata plan. This
+            states the relationship outright, because "is my levy fair?" is the
+            question a proprietor brings to an annual general meeting, and the
+            register previously had no answer beyond "somebody typed it". */}
+        <EntitlementNote unit={unit} units={units} />
+
         {unit.notes && (
           <div className="text-xs">
             <span className="block font-mono text-[10px] uppercase text-slate-400">Administrative notes</span>
@@ -862,6 +870,55 @@ function EmergencyBlock({
   );
 }
 
+/**
+ * What this lot's entitlement is, what share of the plan that represents, and
+ * whether the levy actually billed follows it.
+ *
+ * Says "not recorded" rather than implying fairness when there is nothing to
+ * check against — an absent entitlement is unknown, not proportionate.
+ */
+function EntitlementNote({ unit, units }: { unit: Unit; units: Unit[] }) {
+  const share = entitlementShare(unit, units);
+  const row = levyProportionality(units).find(r => r.unit.id === unit.id);
+
+  if (typeof unit.entitlement !== 'number') {
+    return (
+      <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
+        <span className="font-semibold">No unit entitlement recorded.</span> Contributions are levied in proportion to entitlement, so
+        until it is entered from the strata plan this villa&rsquo;s levy cannot be shown to be proportionate.
+      </div>
+    );
+  }
+
+  const off = row && row.variancePct > 0.01;
+  return (
+    <div
+      className={`rounded-xl border p-3 text-[11px] leading-relaxed ${
+        off ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-100 bg-slate-50 text-slate-600'
+      }`}
+    >
+      <span className="font-semibold">
+        Entitlement {unit.entitlement}
+        {share !== null ? ` — ${(share * 100).toFixed(2)}% of the plan` : ''}
+      </span>
+      {unit.strataLotNumber ? <span className="font-mono"> · lot {unit.strataLotNumber}</span> : ''}
+      {row && (
+        <p className="mt-1">
+          {off ? (
+            <>
+              Levied {formatMoney(row.levied, row.currency)}, against {formatMoney(row.proportionate, row.currency)} if the same total were
+              struck strictly by entitlement — {row.variance > 0 ? 'more' : 'less'} than this lot&rsquo;s share by{' '}
+              {formatMoney(Math.abs(row.variance), row.currency)}.
+            </>
+          ) : (
+            <>The levy of {formatMoney(row.levied, row.currency)} matches this lot&rsquo;s share of the plan.</>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function BillingCard({
   title,
   amount,
@@ -973,7 +1030,11 @@ function UnitEditor({
     meterNumber: unit.meterNumber,
     notes: unit.notes || '',
     rentDueDay: unit.rentDueDay || 1,
-    maintDueDay: unit.maintDueDay || 1
+    maintDueDay: unit.maintDueDay || 1,
+    // Held as strings so the fields can be genuinely empty. An entitlement of ''
+    // means "not recorded", which is different from an entitlement of zero.
+    entitlement: unit.entitlement === undefined ? '' : String(unit.entitlement),
+    strataLotNumber: unit.strataLotNumber || ''
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1053,6 +1114,38 @@ function UnitEditor({
           </Field>
           <Field label="Meter id" htmlFor="ue-meter" hint={isAdmin ? undefined : 'Administrators only.'}>
             <input id="ue-meter" type="text" value={form.meterNumber} disabled={!isAdmin} onChange={e => set('meterNumber', e.target.value)} className={monoInputClass} />
+          </Field>
+        </div>
+
+        {/* From the registered strata plan, not from this system. The levy is
+            supposed to follow the entitlement, and the Commission asks for
+            balances against strata lot numbers rather than villa labels. */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field
+            label="Unit entitlement"
+            htmlFor="ue-entitlement"
+            hint="From the strata plan. Contributions are levied in proportion to it. Leave blank if not yet recorded."
+          >
+            <input
+              id="ue-entitlement"
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.entitlement}
+              onChange={e => set('entitlement', e.target.value)}
+              className={monoInputClass}
+              placeholder="not recorded"
+            />
+          </Field>
+          <Field label="Strata lot number" htmlFor="ue-lot" hint="As registered. May differ from the villa label above.">
+            <input
+              id="ue-lot"
+              type="text"
+              value={form.strataLotNumber}
+              onChange={e => set('strataLotNumber', e.target.value)}
+              className={monoInputClass}
+              placeholder="not recorded"
+            />
           </Field>
         </div>
 

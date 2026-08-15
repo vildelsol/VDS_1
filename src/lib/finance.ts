@@ -1008,3 +1008,110 @@ export function groupStatementsByOwner(statements: OwnerStatement[]): OwnerState
     }))
     .sort((a, b) => a.owner.localeCompare(b.owner));
 }
+
+/* ------------------------------------------------------------------ *
+ * Unit entitlement
+ *
+ * Contributions must be levied on proprietors in proportion to their unit
+ * entitlement — the share attaching to each lot on the registered strata plan.
+ * The register stores the levy actually billed (`monthlyMaintenance`) separately
+ * from the entitlement it should follow, so a levy that has drifted can be seen
+ * instead of being quietly overwritten by a calculation. Deciding what to do
+ * about a drift is the executive committee's job, not this function's.
+ *
+ * See STRATA_COMPLIANCE.md.
+ * ------------------------------------------------------------------ */
+
+/** Lots with an entitlement recorded. A lot without one is excluded, never treated as zero. */
+export function entitledUnits(units: Unit[]): Unit[] {
+  return units.filter(u => typeof u.entitlement === 'number' && u.entitlement > 0);
+}
+
+/** Aggregate entitlement across every lot that has one recorded. */
+export function totalEntitlement(units: Unit[]): number {
+  return round2(sumMoney(entitledUnits(units).map(u => u.entitlement as number)));
+}
+
+/**
+ * This lot's proportion of the aggregate entitlement, 0–1.
+ *
+ * Null when the lot has no entitlement recorded, or nothing does — the caller
+ * must say "not recorded" rather than render a misleading zero.
+ */
+export function entitlementShare(unit: Unit, units: Unit[]): number | null {
+  const total = totalEntitlement(units);
+  if (!total || typeof unit.entitlement !== 'number' || unit.entitlement <= 0) return null;
+  return unit.entitlement / total;
+}
+
+export interface LevyProportion {
+  unit: Unit;
+  currency: Currency;
+  entitlement: number;
+  /** Share of the aggregate entitlement among lots billed in this currency, 0–1. */
+  share: number;
+  /** What is billed today. */
+  levied: number;
+  /** What this lot would carry if the same total were struck strictly by entitlement. */
+  proportionate: number;
+  /** levied − proportionate. Positive means this lot is carrying more than its share. */
+  variance: number;
+  /** Variance as a proportion of the proportionate figure, 0–1. */
+  variancePct: number;
+}
+
+/**
+ * Compare each lot's levy against what its entitlement implies.
+ *
+ * Grouped by billing currency and never across it: a villa billed for maintenance
+ * in USD sits in a different pool from one billed in JMD, and adding them would
+ * produce a shortfall that does not exist. The same rule as everywhere else here.
+ *
+ * The total being redistributed is the total *currently levied* in that currency,
+ * so this answers "is the existing levy shared out correctly?" — not "is the levy
+ * big enough?", which is a budget question and needs a budget to answer.
+ */
+export function levyProportionality(units: Unit[]): LevyProportion[] {
+  const withEntitlement = entitledUnits(units).filter(u => u.monthlyMaintenance > 0 || u.entitlement);
+  const byCurrency = new Map<Currency, Unit[]>();
+  for (const unit of withEntitlement) {
+    const currency = chargeCurrency(unit, 'Maintenance');
+    byCurrency.set(currency, [...(byCurrency.get(currency) || []), unit]);
+  }
+
+  const out: LevyProportion[] = [];
+  for (const [currency, group] of byCurrency) {
+    const poolEntitlement = sumMoney(group.map(u => u.entitlement as number));
+    const poolLevied = sumMoney(group.map(u => u.monthlyMaintenance || 0));
+    if (poolEntitlement <= 0) continue;
+    for (const unit of group) {
+      const entitlement = unit.entitlement as number;
+      const share = entitlement / poolEntitlement;
+      const proportionate = round2(poolLevied * share);
+      const levied = round2(unit.monthlyMaintenance || 0);
+      const variance = round2(levied - proportionate);
+      out.push({
+        unit,
+        currency,
+        entitlement,
+        share,
+        levied,
+        proportionate,
+        variance,
+        variancePct: proportionate > 0 ? Math.abs(variance) / proportionate : 0
+      });
+    }
+  }
+  return out.sort((a, b) => Math.abs(b.variance) - Math.abs(a.variance));
+}
+
+/**
+ * Lots whose levy is out of step with their entitlement by more than a tolerance.
+ *
+ * A tolerance exists because levies are rounded to sensible money — a few dollars
+ * either way is rounding, not unfairness. The default of 1% flags a real
+ * discrepancy without crying about the cents.
+ */
+export function disproportionateLevies(units: Unit[], tolerance = 0.01): LevyProportion[] {
+  return levyProportionality(units).filter(row => row.variancePct > tolerance);
+}

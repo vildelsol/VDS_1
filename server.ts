@@ -1648,6 +1648,23 @@ app.put(
       const monthlyMaintenance =
         status === 'unavailable' ? 0 : optionalAmount(body.monthlyMaintenance, 'The monthly maintenance', original.monthlyMaintenance);
 
+      /**
+       * Unit entitlement off the strata plan. Optional, and clearing it is a
+       * deliberate act: an empty string removes it, an absent field leaves it
+       * alone. Zero and negative are refused rather than stored — an entitlement
+       * of nothing is not a share, and would silently drop the lot out of every
+       * proportionality check while looking like it had been recorded.
+       */
+      const readEntitlement = (): number | undefined => {
+        if (body.entitlement === undefined) return original.entitlement;
+        const raw = String(body.entitlement).trim();
+        if (raw === '') return undefined;
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value <= 0) bad('Unit entitlement must be a number greater than zero, or left blank.');
+        if (value > 1_000_000) bad('Unit entitlement is implausibly large. Please check the figure against the strata plan.');
+        return round2(value);
+      };
+
       const clampDay = (v: unknown, fallback: number) => {
         const n = Math.round(Number(v ?? fallback));
         return Number.isFinite(n) ? Math.min(Math.max(n, 1), 31) : fallback;
@@ -1671,6 +1688,8 @@ app.put(
         status,
         monthlyRent,
         monthlyMaintenance,
+        entitlement: readEntitlement(),
+        strataLotNumber: optionalString(body.strataLotNumber ?? original.strataLotNumber, 40),
         currency,
         maintCurrency,
         meterNumber,
@@ -1724,6 +1743,8 @@ app.put(
       if (original.status !== status) parts.push(`status ${original.status} to ${status}`);
       if (original.monthlyRent !== monthlyRent) parts.push('rent changed');
       if (original.monthlyMaintenance !== monthlyMaintenance) parts.push('maintenance fee changed');
+      if (original.entitlement !== updatedUnit.entitlement) parts.push('unit entitlement changed');
+      if (original.strataLotNumber !== updatedUnit.strataLotNumber) parts.push('strata lot number changed');
 
       addAudit(
         db,

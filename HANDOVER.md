@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **735 automated tests pass.** Typecheck clean, build clean, `npm audit` clean.
+- **762 automated tests pass.** Typecheck clean, build clean, `npm audit` clean.
 - Working tree is clean, everything pushed.
 - Latest release: **v1.8.1**.
   - `v1.8.1` — USB backup drive detection is now fully automatic. When the Backup & recovery tab
@@ -83,7 +83,7 @@ Two things worth knowing about the implementation:
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (735 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (762 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
@@ -537,6 +537,42 @@ page load with the server down, the session probe gets nothing, so it shows the 
 the stored copy is unreachable — you cannot sign in with no server. Fixing that means letting the
 last user's records be read without signing in, which on a shared desk machine is a real exposure.
 Worth asking before building.
+
+### Strata compliance and unit entitlement — started
+
+**Read `STRATA_COMPLIANCE.md` before touching reporting.** It records what the Commission of Strata
+Corporations actually requires, researched from the regulator's own pages on 2026-08-15: Forms 8,
+13A (income and expenditure), 13B (outstanding contributions), 13C (outstanding payables), filed
+within **120 days of the financial year end**, with AGM minutes, a list of proprietor balances
+**against strata lot numbers**, and accounts signed by the Chairman plus one other executive member.
+
+The useful discovery: **13B and 13C are close to free.** `delinquentAccounts` already produces
+outstanding contributions per villa per currency with ageing, and pending expenses are outstanding
+payables by construction — the monthly-costs run raises them that way on purpose.
+
+**Unit entitlement is now in the model.** `Unit.entitlement` and `Unit.strataLotNumber`, both
+optional, both audited when changed. Contributions must be levied in proportion to entitlement, and
+the register previously held `monthlyMaintenance` as a typed-in figure with nothing behind it — so
+the corporation could not show that one villa's levy bore the right relationship to another's, which
+is exactly what a proprietor asks at an AGM.
+
+`levyProportionality()` and `disproportionateLevies()` in `finance.ts` compare what is levied against
+what entitlement implies, and the villa record states the relationship outright. Two rules in there
+are deliberate and should not be "simplified":
+
+- **A lot with no entitlement is excluded, never treated as zero.** Treating it as nothing would
+  redistribute its whole share across its neighbours and manufacture a finding.
+- **Currencies are pooled separately**, like everywhere else here. A villa billed for maintenance in
+  USD is not in the same pool as one billed in JMD.
+
+It reports the drift rather than correcting it: what to do about an out-of-proportion levy is the
+executive committee's decision, not a function's.
+
+**Next, in order:** budget with variance reporting (the central AGM document, and the levy should be
+derived from budget ÷ entitlement), then the reserve/sinking fund. Both are listed in
+`STRATA_COMPLIANCE.md` along with five things that still need confirming with REBCSC — including
+what Form 8 covers and the exact line items on 13A/B/C. **Build the reports to the real forms, not
+to a reasonable guess at them.**
 
 ### Double-recorded payments — fixed
 
