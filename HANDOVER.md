@@ -26,8 +26,8 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **762 automated tests pass.** Typecheck clean, build clean, `npm audit` clean.
-- Working tree is clean, everything pushed.
+- **788 automated tests pass.** Typecheck clean, build clean, `npm audit` clean.
+- Working tree is clean, everything pushed. Latest commit: `276c667`.
 - Latest release: **v1.8.1**.
   - `v1.8.1` — USB backup drive detection is now fully automatic. When the Backup & recovery tab
     opens the server enumerates attached drives. If exactly one removable writable drive is found
@@ -538,7 +538,7 @@ the stored copy is unreachable — you cannot sign in with no server. Fixing tha
 last user's records be read without signing in, which on a shared desk machine is a real exposure.
 Worth asking before building.
 
-### Strata compliance and unit entitlement — started
+### Strata compliance and unit entitlement — engines built, export next
 
 **Read `STRATA_COMPLIANCE.md` before touching reporting.** It records what the Commission of Strata
 Corporations actually requires, researched from the regulator's own pages on 2026-08-15: Forms 8,
@@ -546,33 +546,57 @@ Corporations actually requires, researched from the regulator's own pages on 202
 within **120 days of the financial year end**, with AGM minutes, a list of proprietor balances
 **against strata lot numbers**, and accounts signed by the Chairman plus one other executive member.
 
-The useful discovery: **13B and 13C are close to free.** `delinquentAccounts` already produces
-outstanding contributions per villa per currency with ageing, and pending expenses are outstanding
-payables by construction — the monthly-costs run raises them that way on purpose.
+**Critical filing note (Ro, 2026-08-15):** the Commission accepts an Excel breakdown in place of 13A's
+fixed printed lines, because those lines cannot describe what a real property actually spends. Do NOT
+realign app expense categories to match the form's fixed lines. The export should carry the full
+breakdown. This is recorded in `STRATA_COMPLIANCE.md` under "How the return is actually filed".
 
-**Unit entitlement is now in the model.** `Unit.entitlement` and `Unit.strataLotNumber`, both
-optional, both audited when changed. Contributions must be levied in proportion to entitlement, and
-the register previously held `monthlyMaintenance` as a typed-in figure with nothing behind it — so
-the corporation could not show that one villa's levy bore the right relationship to another's, which
-is exactly what a proprietor asks at an AGM.
+**Unit entitlement is in the model.** `Unit.entitlement` and `Unit.strataLotNumber`, both optional,
+both audited when changed. The strata plan number is Villaggio Del Sol **2724** (in settings as
+`strataPlanNumber`; `trn` also held in settings but not yet filled). `levyProportionality()` and
+`disproportionateLevies()` compare levied amounts against what entitlement implies; villa detail
+shows the entitlement share and whether the levy is proportionate. 27 tests in `entitlement.test.mjs`.
 
-`levyProportionality()` and `disproportionateLevies()` in `finance.ts` compare what is levied against
-what entitlement implies, and the villa record states the relationship outright. Two rules in there
-are deliberate and should not be "simplified":
+Two rules that are deliberate and must not be "simplified":
 
-- **A lot with no entitlement is excluded, never treated as zero.** Treating it as nothing would
-  redistribute its whole share across its neighbours and manufacture a finding.
-- **Currencies are pooled separately**, like everywhere else here. A villa billed for maintenance in
-  USD is not in the same pool as one billed in JMD.
+- **A lot with no entitlement is excluded, never treated as zero.** Treating it as zero would
+  redistribute its share and manufacture a finding.
+- **Currencies are pooled separately.** A villa billed in USD is not in the same pool as one in JMD.
 
-It reports the drift rather than correcting it: what to do about an out-of-proportion levy is the
-executive committee's decision, not a function's.
+**Forms 13B and 13C are built as compute engines in `finance.ts`.** `form13BContributions()` produces
+the outstanding contributions ageing schedule keyed by strata lot number; `form13CDebts()` produces
+the outstanding debts ageing schedule keyed by vendor/category description. Both use 30/60/90/over-90
+day buckets. The invariant that matters most: **13B bucket totals must equal the account balance** — a
+part-paid charge is aged only for what is still owed (payments are re-applied oldest-first inside the
+function). The `accountBalance.unpaidCharges` list shows a partly-paid charge in full — correct for
+display, wrong for the return. 26 tests in `annual-return.test.mjs`, covering boundary days, part-pay
+invariant, strata lot fallback, currency separation, 13C pending-only rule, and future-due exclusion.
 
-**Next, in order:** budget with variance reporting (the central AGM document, and the levy should be
-derived from budget ÷ entitlement), then the reserve/sinking fund. Both are listed in
-`STRATA_COMPLIANCE.md` along with five things that still need confirming with REBCSC — including
-what Form 8 covers and the exact line items on 13A/B/C. **Build the reports to the real forms, not
-to a reasonable guess at them.**
+**Naming and wording fixed throughout.** In the Act, "strata corporation" means the body corporate
+(the proprietors of Villaggio Del Sol themselves), not the Commission of Strata Corporations (the
+regulator). This confusion was in several screens. Fixed by:
+
+- `bodyCorporateName(settings?)` helper in `types.ts` returns "Villaggio Del Sol (Strata Plan No. 2724)"
+- "Proprietor Statements" renamed to **"Owners Statements"** throughout App.tsx and OwnerStatements.tsx
+- `netLabel()` now says "Due to Alba Reid — Villa Unit 1" — owner name and villa number, not the
+  generic "due from proprietor"
+- Projections printout now says explicitly: "This is NOT the annual return filed with the Commission
+  of Strata Corporations"
+- OwnerStatements basis note: "income of the body corporate, Villaggio Del Sol (Strata Plan No. 2724)"
+
+**What remains — the Annual Report export (next task):** build a CSV/Excel download that
+assembles the full annual return for the Commission. It should have:
+
+- Header: Strata Plan No. 2724, TRN (from settings), Name & Address
+- Financial year end date selector
+- 13A-style income and expenditure: contributions raised, outstanding, expenses by category with
+  current-year total and outstanding amount per line
+- 13B table: strata lot rows × 30/60/90/over-90 columns + totals row
+- 13C table: description rows × same columns + totals row
+- BOM CSV (same pattern as Projections.tsx / OwnerStatements.tsx Excel exports)
+- Accessible from the Reports tab or a dedicated Annual Return section
+
+The compute engines exist. What needs building is the UI section and the CSV assembly.
 
 ### Double-recorded payments — fixed
 
