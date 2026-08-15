@@ -501,6 +501,43 @@ recorded as an expense against the villa. Holding needs `recordPayments`; reconc
 
 26 tests in `test/damage-deposit.test.mjs`; verified in the browser.
 
+### Reading the records when the server is down — finished
+
+The offline queue was making a half-promise. Work *entered* while the HP is down is kept and
+replayed, so nothing typed is lost — but nothing could be *read*. The moment the server went away
+the application had no records at all, so nobody could answer "what does Villa 7 owe?" at the gate,
+look up a tenant, or check whether a bill was already settled. Losing writes for ten minutes is an
+inconvenience; losing lookups is the office stopping.
+
+Every successful load is now kept in IndexedDB (`src/lib/snapshot.ts`) and shown when the server
+cannot be reached, under a **red banner naming the time the records were taken** that does not go
+away. That wording is the safety mechanism: a balance an hour old presented as current is how
+somebody takes a payment that was already taken.
+
+Three decisions worth keeping:
+
+- **IndexedDB here, localStorage for the queue** — deliberately opposite, for opposite reasons. The
+  queue holds work that exists nowhere else, so it needs a synchronous write that is on disk before
+  the call returns. This holds a copy of records the server already has: losing it costs nothing but
+  a blank screen, and a synchronous `JSON.stringify` of the whole database on every refresh would
+  stall the interface.
+- **`refresh()` uses `failFast`.** The reconnect loop exists to protect *writes*. A read has nothing
+  to lose, and the first cut inherited the 90-second retry window — ninety seconds of spinner before
+  showing the stored copy, with someone standing at the gate. It now falls back in about 0.2s.
+- **The copy is keyed to the user and cleared on sign-out and on any 401.** The desk machine is
+  shared; records must not outlive the session that loaded them.
+
+**Not covered by the test suite.** Every test boots a real server and talks HTTP; IndexedDB is
+browser-only, so there is no `.mjs` test for this. It was verified by hand — load, `kill -9` the
+server, confirm the ledger still reads with the banner up, restart, confirm it goes live and stores
+a fresh copy. Re-verify that way if you touch it.
+
+**Still open, and it is Ro's call:** this only helps a tab that was *already signed in*. On a cold
+page load with the server down, the session probe gets nothing, so it shows the sign-in screen and
+the stored copy is unreachable — you cannot sign in with no server. Fixing that means letting the
+last user's records be read without signing in, which on a shared desk machine is a real exposure.
+Worth asking before building.
+
 ### Double-recorded payments — fixed
 
 Two officers working the same arrears list, or one person with the hub open in two tabs, both saw

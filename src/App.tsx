@@ -47,6 +47,7 @@ import {
   subscribeSync
 } from './lib/api';
 import { countBookingOverlaps, delinquentAccounts } from './lib/finance';
+import { clearSnapshot, loadSnapshot, saveSnapshot } from './lib/snapshot';
 import {
   AlertTriangle,
   BarChart3,
@@ -144,6 +145,11 @@ export default function App() {
   const [connection, setConnectionState] = useState<ConnectionState>('online');
   const [pendingWrites, setPendingWrites] = useState(0);
   const [sync, setSync] = useState<SyncState>({ phase: 'idle', pending: 0 });
+  /**
+   * When the records on screen were actually taken from the server, or null when
+   * they are live. Set only while falling back to the stored copy.
+   */
+  const [recordsAsOf, setRecordsAsOf] = useState<number | null>(null);
 
   useEffect(() => subscribeConnection((state, pending) => {
     setConnectionState(state);
@@ -170,6 +176,8 @@ export default function App() {
       setSession(null);
       setData(EMPTY);
       setSettings(null);
+      setRecordsAsOf(null);
+      void clearSnapshot();
     });
   }, []);
 
@@ -206,33 +214,60 @@ export default function App() {
 
   /* ---------------- data ---------------- */
 
+  /** Spread one /api/db payload into the shape the screens consume. */
+  const applySnapshot = useCallback((snapshot: DbSnapshot) => {
+    setData({
+      units: snapshot.units || [],
+      bookings: snapshot.bookings || [],
+      charges: snapshot.charges || [],
+      payments: snapshot.payments || [],
+      utilities: snapshot.utilities || [],
+      expenses: snapshot.expenses || [],
+      recurringExpenses: snapshot.recurringExpenses || [],
+      tenancies: snapshot.tenancies || [],
+      auditLogs: snapshot.auditLogs || [],
+      unitActivities: snapshot.unitActivities || [],
+      users: snapshot.users || []
+    });
+    setSettings(snapshot.settings);
+  }, []);
+
   const refresh = useCallback(async () => {
     if (!session || session.mustChangePassword) return;
     setLoading(true);
     try {
-      const snapshot = await api.get<DbSnapshot>('/api/db');
-      setData({
-        units: snapshot.units || [],
-        bookings: snapshot.bookings || [],
-        charges: snapshot.charges || [],
-        payments: snapshot.payments || [],
-        utilities: snapshot.utilities || [],
-        expenses: snapshot.expenses || [],
-        recurringExpenses: snapshot.recurringExpenses || [],
-        tenancies: snapshot.tenancies || [],
-        auditLogs: snapshot.auditLogs || [],
-        unitActivities: snapshot.unitActivities || [],
-        users: snapshot.users || []
-      });
-      setSettings(snapshot.settings);
+      // failFast because this is a read. The reconnect loop exists to protect
+      // *writes* — work that exists nowhere else and must not be lost. A read has
+      // nothing to lose: if the server is away there is a stored copy to fall
+      // back on, and ninety seconds of spinner before showing it is ninety
+      // seconds of someone standing at the gate with no answer.
+      const snapshot = await api.get<DbSnapshot>('/api/db', { failFast: true });
+      applySnapshot(snapshot);
       if (snapshot.currentUser) setSession(snapshot.currentUser);
       setApiError('');
+      setRecordsAsOf(null);
+      // Kept for the next outage. Deliberately not awaited: writing the copy must
+      // never delay records that are already on screen.
+      void saveSnapshot(session.id, snapshot);
     } catch (err) {
-      setApiError(errorMessage(err, 'Could not load data from the server.'));
+      // The server is unreachable — fall back to the last load rather than
+      // showing nothing. An office that cannot look anything up has stopped, and
+      // stale records answer most of what anyone needs at the desk.
+      const cached = await loadSnapshot<DbSnapshot>(session.id);
+      if (cached) {
+        applySnapshot(cached.data);
+        setRecordsAsOf(cached.fetchedAt);
+        // Not an error the person can act on, and the stale banner already says
+        // what is true. Two warnings about one outage is one too many.
+        setApiError('');
+      } else {
+        setRecordsAsOf(null);
+        setApiError(errorMessage(err, 'Could not load data from the server.'));
+      }
     } finally {
       setLoading(false);
     }
-  }, [session]);
+  }, [session, applySnapshot]);
 
   useEffect(() => {
     void refresh();
@@ -250,6 +285,10 @@ export default function App() {
     setData(EMPTY);
     setSettings(null);
     setActiveTab('dashboard');
+    setRecordsAsOf(null);
+    // Records must not outlive the session that loaded them: the desk machine is
+    // shared, and the next person to sign in is not owed the last one's view.
+    void clearSnapshot();
   }, []);
 
   /**
@@ -325,7 +364,7 @@ export default function App() {
   if (!session) {
     return (
       <>
-        <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
+        <ConnectionBanner connection={connection} pendingWrites={pendingWrites} recordsAsOf={recordsAsOf} />
         <SyncBanner sync={sync} onRetry={() => void flushQueue()} />
         <Login onSignedIn={user => setSession(user)} />
       </>
@@ -346,7 +385,7 @@ export default function App() {
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50 text-slate-500">
         {/* Loading the first snapshot is also a moment the link can drop, so the
             reconnect banner has to be reachable from here too. */}
-        <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
+        <ConnectionBanner connection={connection} pendingWrites={pendingWrites} recordsAsOf={recordsAsOf} />
         <SyncBanner sync={sync} onRetry={() => void flushQueue()} />
         {apiError ? (
           <>
@@ -392,7 +431,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 font-sans text-slate-800 md:flex-row">
-      <ConnectionBanner connection={connection} pendingWrites={pendingWrites} />
+      <ConnectionBanner connection={connection} pendingWrites={pendingWrites} recordsAsOf={recordsAsOf} />
         <SyncBanner sync={sync} onRetry={() => void flushQueue()} />
 
       {/*
@@ -781,8 +820,55 @@ function CannotReachServer({ message, onRetry }: { message: string; onRetry: () 
  * A fixed banner that appears only when the link to the server is interrupted.
  * It reassures the user their in-progress save is being retried, not lost.
  */
-function ConnectionBanner({ connection, pendingWrites }: { connection: ConnectionState; pendingWrites: number }) {
-  if (connection === 'online') return null;
+/**
+ * The state of the connection, and — when the server is away — how old the
+ * records on screen are.
+ *
+ * Both facts share one banner on purpose. They are one situation, and two
+ * stacked warnings about a single outage teach people to ignore banners.
+ *
+ * The wording is the important part. Records restored from the stored copy are
+ * genuinely useful — they answer most of what anyone needs at the desk — but a
+ * balance that is an hour old presented as current is how somebody takes a
+ * payment that was already taken. So the time they were read is stated outright,
+ * and this does not go away until the server answers again.
+ */
+function ConnectionBanner({
+  connection,
+  pendingWrites,
+  recordsAsOf
+}: {
+  connection: ConnectionState;
+  pendingWrites: number;
+  recordsAsOf: number | null;
+}) {
+  if (connection === 'online' && recordsAsOf === null) return null;
+
+  const queued =
+    pendingWrites > 0
+      ? ` ${pendingWrites} entr${pendingWrites === 1 ? 'y is' : 'ies are'} held on this machine and will be sent when it returns.`
+      : '';
+
+  if (recordsAsOf !== null) {
+    const takenAt = new Date(recordsAsOf);
+    const sameDay = takenAt.toDateString() === new Date().toDateString();
+    const when = sameDay
+      ? takenAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : `${takenAt.toLocaleDateString()} ${takenAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    return (
+      <div
+        role="alert"
+        className="fixed inset-x-0 top-0 z-[200] flex items-center justify-center gap-2 bg-red-600 px-4 py-2 text-center text-xs font-medium text-white shadow-md print:hidden"
+      >
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+        <span>
+          <strong>The server cannot be reached.</strong> You are looking at records saved on this machine at {when} — anything entered
+          elsewhere since then is not shown.{queued}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div
       role="status"
