@@ -618,6 +618,7 @@ export default function App() {
             onAddUnitActivity={payload => mutate(() => api.post('/api/unit-activities', payload))}
             onUpdateUnitActivity={(id, fields) => mutate(() => api.put(`/api/unit-activities/${id}`, fields))}
             onDeleteUnitActivity={id => mutate(() => api.del(`/api/unit-activities/${id}`))}
+            onRecordPayment={recordPayment}
             onTakeDeposit={(id, payload) => mutate(() => api.post(`/api/tenancies/${id}/deposit`, payload))}
             onSettleDeposit={(id, payload) => mutate(() => api.post(`/api/tenancies/${id}/deposit/settle`, payload))}
           />

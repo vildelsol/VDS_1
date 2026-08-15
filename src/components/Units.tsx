@@ -24,6 +24,7 @@ import {
   getUnitDisplayName
 } from '../types';
 import {
+  AccountBalance,
   AccountStatus,
   accountBalance,
   bookingsForUnit,
@@ -37,6 +38,7 @@ import { convertIndicative, formatMoney, formatMoneyLong, round2, sumMoney } fro
 import { formatDayLabel, formatMonthLabel, nightsBetween, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
+import ReceivePaymentModal from './ReceivePaymentModal';
 import {
   Badge,
   EmptyState,
@@ -52,7 +54,7 @@ import {
   inputClass,
   monoInputClass
 } from './ui';
-import { ClipboardList, Edit3, Home, Mail, Phone, Plus, Printer, Trash2, User } from 'lucide-react';
+import { ArrowUpRight, ClipboardList, Edit3, Home, Mail, Phone, Plus, Printer, Trash2, User } from 'lucide-react';
 
 interface UnitsProps {
   units: Unit[];
@@ -71,6 +73,7 @@ interface UnitsProps {
   onAddUnitActivity: (payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateUnitActivity: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
   onDeleteUnitActivity: (id: string) => Promise<unknown>;
+  onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
   onTakeDeposit: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
   onSettleDeposit: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
 }
@@ -114,6 +117,7 @@ export default function Units({
   onAddUnitActivity,
   onUpdateUnitActivity,
   onDeleteUnitActivity,
+  onRecordPayment,
   onTakeDeposit,
   onSettleDeposit
 }: UnitsProps) {
@@ -126,6 +130,7 @@ export default function Units({
   const [printTenancy, setPrintTenancy] = useState<Tenancy | null>(null);
   const [workOrder, setWorkOrder] = useState<UnitActivity | null>(null);
   const [depositFor, setDepositFor] = useState<Tenancy | null>(null);
+  const [payTarget, setPayTarget] = useState<AccountBalance | null>(null);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -244,6 +249,7 @@ export default function Units({
           onPrintTenancy={setPrintTenancy}
           onManageWork={setWorkOrder}
           onManageDeposit={setDepositFor}
+          onReceivePayment={session.permissions.recordPayments ? setPayTarget : undefined}
           onEvictTenancy={setEvictTenancy}
           onLogActivity={() => setLogActivityFor(live)}
           onDeleteActivity={async id => {
@@ -379,6 +385,25 @@ export default function Units({
           onClose={() => setPrintTenancy(null)}
         />
       )}
+
+      {payTarget && (
+        <ReceivePaymentModal
+          units={units}
+          charges={charges}
+          payments={payments}
+          account={payTarget}
+          onClose={() => setPayTarget(null)}
+          onSubmit={async payload => {
+            // Not caught here: the modal reports its own failures, and wrapping
+            // the error would throw away the code that tells "already settled by
+            // someone else" apart from an ordinary refusal.
+            const payment = await onRecordPayment(payload);
+            setSuccess(`Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`);
+            setError('');
+            setPayTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -405,7 +430,8 @@ function UnitDetail({
   onLogActivity,
   onDeleteActivity,
   onManageWork,
-  onManageDeposit
+  onManageDeposit,
+  onReceivePayment
 }: {
   unit: Unit;
   charges: Charge[];
@@ -427,6 +453,8 @@ function UnitDetail({
   onDeleteActivity: (id: string) => Promise<void>;
   onManageWork: (activity: UnitActivity) => void;
   onManageDeposit: (tenancy: Tenancy) => void;
+  /** Absent when the signed-in role may not receive money. */
+  onReceivePayment?: (account: AccountBalance) => void;
 }) {
   const maintCurrency = unit.maintCurrency || unit.currency;
   const rentAccount = accountBalance(unit, 'Rent', charges, payments, undefined, units);
@@ -595,6 +623,7 @@ function UnitDetail({
             balance={unit.status === 'long-term' ? rentAccount.balance : undefined}
             balanceCurrency={rentAccount.currency}
             status={rentAccount.status}
+            onReceive={onReceivePayment ? () => onReceivePayment(rentAccount) : undefined}
           />
           <BillingCard
             title="Monthly HOA maintenance"
@@ -605,6 +634,7 @@ function UnitDetail({
             balance={unit.status !== 'unavailable' ? maintAccount.balance : undefined}
             balanceCurrency={maintAccount.currency}
             status={maintAccount.status}
+            onReceive={onReceivePayment ? () => onReceivePayment(maintAccount) : undefined}
           />
         </div>
 
@@ -840,7 +870,8 @@ function BillingCard({
   dueNote,
   balance,
   balanceCurrency,
-  status
+  status,
+  onReceive
 }: {
   title: string;
   amount: number;
@@ -851,6 +882,8 @@ function BillingCard({
   balanceCurrency: Currency;
   /** From finance.ts, so this card cannot disagree with the ledger. */
   status?: AccountStatus;
+  /** Offered only when this account actually owes something. */
+  onReceive?: () => void;
 }) {
   const other: Currency = currency === 'USD' ? 'JMD' : 'USD';
   return (
@@ -885,6 +918,19 @@ function BillingCard({
                   ? 'Account settled'
                   : 'Not billed'}
         </p>
+      )}
+      {/* The money can be taken from where the debt is shown. Before this, a
+          villa's record stated what was owed and offered no way to accept it —
+          you could evict the tenant from here but not receipt their payment. */}
+      {onReceive && balance !== undefined && balance > 0 && (
+        <button
+          type="button"
+          onClick={onReceive}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 py-1.5 text-[10px] font-semibold text-white transition-colors hover:bg-emerald-700"
+        >
+          <ArrowUpRight className="h-3 w-3" />
+          Receive payment
+        </button>
       )}
     </div>
   );

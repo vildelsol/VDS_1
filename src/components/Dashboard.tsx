@@ -10,9 +10,7 @@ import {
   Charge,
   Currency,
   Expense,
-  PAYMENT_METHODS,
   Payment,
-  PaymentMethod,
   SessionUser,
   Unit,
   getUnitDisplayName,
@@ -20,7 +18,6 @@ import {
 } from '../types';
 import {
   AccountBalance,
-  chargeCurrency,
   collectedInPeriod,
   chargedInPeriod,
   collectionRate,
@@ -33,21 +30,17 @@ import {
   unbilledOccupancy
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
+import ReceivePaymentModal from './ReceivePaymentModal';
 import { addDays, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
-import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
 import {
-  AlreadySettledNote,
   Badge,
   EmptyState,
   ErrorNote,
   Field,
   InfoNote,
-  Modal,
   SecondaryButton,
-  SubmitButton,
   SuccessNote,
   TableScroller,
-  inputClass,
   monoInputClass
 } from './ui';
 import { AlertTriangle, ArrowUpRight, CalendarDays, Key, LogIn, LogOut, TrendingDown, TrendingUp } from 'lucide-react';
@@ -515,9 +508,10 @@ export default function Dashboard({
       </section>
 
       {payTarget && (
-        <QuickReceiveModal
+        <ReceivePaymentModal
           units={units}
           charges={charges}
+          payments={payments}
           account={payTarget === 'blank' ? null : payTarget}
           onClose={() => setPayTarget(null)}
           onSubmit={async payload => {
@@ -614,237 +608,5 @@ function TransitionList({
         </ul>
       )}
     </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-
-function QuickReceiveModal({
-  units,
-  charges,
-  account,
-  onClose,
-  onSubmit
-}: {
-  units: Unit[];
-  charges: Charge[];
-  account: AccountBalance | null;
-  onClose: () => void;
-  onSubmit: (payload: Record<string, unknown>) => Promise<void>;
-}) {
-  const [unitId, setUnitId] = useState(account?.unit.id || '');
-  const [category, setCategory] = useState<'Rent' | 'Maintenance' | 'Booking' | 'Utility' | 'Other'>(account?.category || 'Maintenance');
-  const [payerName, setPayerName] = useState(account ? account.unpaidCharges[0]?.payerName || '' : '');
-  const [amount, setAmount] = useState(account ? String(Math.max(0, account.balance)) : '');
-  const [currency, setCurrency] = useState<Currency>(account?.currency || 'JMD');
-  const [date, setDate] = useState(today());
-  const [method, setMethod] = useState<PaymentMethod>('Cash');
-  const [reference, setReference] = useState('');
-  const [notes, setNotes] = useState('');
-  const [confirmMismatch, setConfirmMismatch] = useState(false);
-  const [confirmNoCharge, setConfirmNoCharge] = useState(false);
-  // Revealed by the server's refusal: this browser's ledger was fetched before
-  // whoever else banked the money saved it, so it cannot know in advance.
-  const [alreadySettled, setAlreadySettled] = useState('');
-  const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const unit = units.find(u => u.id === unitId);
-
-  /** Nothing billed yet: this money would land as a credit, not settle anything. */
-  const noOpenCharge =
-    !!unit &&
-    (category === 'Rent' || category === 'Maintenance') &&
-    !charges.some(c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === currency);
-
-  /**
-   * Prefill from the unit register. The original picked `unit.currency` even for
-   * maintenance, so a villa billed in USD had its receipt recorded in JMD and
-   * the payment never cleared the delinquency it was raised against.
-   */
-  const applyUnitDefaults = (nextUnitId: string, nextCategory: typeof category) => {
-    const u = units.find(item => item.id === nextUnitId);
-    if (!u) return;
-    if (nextCategory === 'Rent' || nextCategory === 'Maintenance') {
-      setCurrency(chargeCurrency(u, nextCategory));
-      setAmount(String(nextCategory === 'Maintenance' ? u.monthlyMaintenance : u.monthlyRent));
-    } else {
-      setCurrency(u.currency);
-    }
-    setPayerName(nextCategory === 'Maintenance' ? u.ownerName : u.tenantName || u.ownerName);
-  };
-
-  const expectedCurrency = unit && (category === 'Rent' || category === 'Maintenance') ? chargeCurrency(unit, category) : null;
-  const mismatch = !!expectedCurrency && expectedCurrency !== currency;
-
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (busy) return;
-    if (!unitId) {
-      setError('Select the villa this payment relates to.');
-      return;
-    }
-    if (!(Number(amount) > 0)) {
-      setError('Enter an amount greater than zero.');
-      return;
-    }
-    setBusy(true);
-    setError('');
-    try {
-      await onSubmit({
-        unitId,
-        category,
-        payerName,
-        amount: Number(amount),
-        currency,
-        date,
-        method,
-        reference,
-        notes,
-        // This screen's button says "Receive payment": the money is in hand, so
-        // the receipt is issued now and the arrears alert clears immediately.
-        receivedNow: true,
-        confirmCurrencyMismatch: confirmMismatch,
-        confirmNoOpenCharge: confirmNoCharge,
-        confirmAlreadySettled
-      });
-    } catch (err) {
-      if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
-        setAlreadySettled(err.message);
-        setError('');
-      } else {
-        setError(errorMessage(err, 'Could not record the payment.'));
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal
-      title="Record payment received"
-      subtitle={account ? `${getUnitDisplayName(account.unit.number)} — ${account.category}` : undefined}
-      onClose={onClose}
-      footer={
-        <div className="flex gap-3">
-          <SubmitButton busy={busy} busyLabel="Issuing receipt…" form="vds-quick-receive" className="flex-1">
-            Record and issue receipt
-          </SubmitButton>
-          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
-        </div>
-      }
-    >
-      <form id="vds-quick-receive" onSubmit={handleSubmit} className="space-y-4 p-6">
-        {error && <ErrorNote>{error}</ErrorNote>}
-
-        <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
-
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Villa unit" htmlFor="qr-unit" required>
-            <select
-              id="qr-unit"
-              value={unitId}
-              onChange={e => {
-                setUnitId(e.target.value);
-                applyUnitDefaults(e.target.value, category);
-              }}
-              required
-              className={inputClass}
-            >
-              <option value="">Select villa</option>
-              {units.map(u => (
-                <option key={u.id} value={u.id}>
-                  {getUnitDisplayName(u.number)}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Category" htmlFor="qr-cat" required>
-            <select
-              id="qr-cat"
-              value={category}
-              onChange={e => {
-                const next = e.target.value as typeof category;
-                setCategory(next);
-                applyUnitDefaults(unitId, next);
-              }}
-              className={inputClass}
-            >
-              <option value="Maintenance">Maintenance (HOA)</option>
-              <option value="Rent">Rent (long-term)</option>
-              <option value="Booking">Booking (short stay)</option>
-              <option value="Utility">Utility</option>
-              <option value="Other">Other</option>
-            </select>
-          </Field>
-        </div>
-
-        <Field label="Payer name" htmlFor="qr-payer" required>
-          <input id="qr-payer" type="text" value={payerName} onChange={e => setPayerName(e.target.value)} required className={inputClass} placeholder="Owner, tenant or guest" />
-        </Field>
-
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Amount received" htmlFor="qr-amount" required>
-            <input id="qr-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
-          </Field>
-          <Field label="Currency" htmlFor="qr-cur" required>
-            <select id="qr-cur" value={currency} onChange={e => setCurrency(e.target.value as Currency)} className={monoInputClass}>
-              <option value="JMD">JMD (J$)</option>
-              <option value="USD">USD ($)</option>
-            </select>
-          </Field>
-        </div>
-
-        {mismatch && (
-          <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
-            <p>
-              {getUnitDisplayName(unit!.number)} is billed for {category.toLowerCase()} in <strong>{expectedCurrency}</strong>.
-              A receipt in {currency} will not reduce that balance.
-            </p>
-            <label className="flex items-start gap-2">
-              <input type="checkbox" checked={confirmMismatch} onChange={e => setConfirmMismatch(e.target.checked)} className="mt-0.5" />
-              <span>Record in {currency} anyway.</span>
-            </label>
-          </div>
-        )}
-
-        {noOpenCharge && !mismatch && (
-          <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
-            <p>
-              Nothing has been billed to {getUnitDisplayName(unit!.number)} for {category.toLowerCase()} yet, so this would
-              be recorded as a <strong>credit</strong> rather than settling anything. Post the month&apos;s charges first.
-            </p>
-            <label className="flex items-start gap-2">
-              <input type="checkbox" checked={confirmNoCharge} onChange={e => setConfirmNoCharge(e.target.checked)} className="mt-0.5" />
-              <span>Record it as a credit anyway.</span>
-            </label>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Method" htmlFor="qr-method" required>
-            <select id="qr-method" value={method} onChange={e => setMethod(e.target.value as PaymentMethod)} className={inputClass}>
-              {PAYMENT_METHODS.map(m => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Date received" htmlFor="qr-date" required>
-            <input id="qr-date" type="date" value={date} max={today()} onChange={e => setDate(e.target.value)} required className={monoInputClass} />
-          </Field>
-        </div>
-
-        <Field label="Reference" htmlFor="qr-ref">
-          <input id="qr-ref" type="text" value={reference} onChange={e => setReference(e.target.value)} className={monoInputClass} />
-        </Field>
-
-        <Field label="Notes" htmlFor="qr-notes">
-          <textarea id="qr-notes" rows={2} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} />
-        </Field>
-      </form>
-    </Modal>
   );
 }
