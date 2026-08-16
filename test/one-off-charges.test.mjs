@@ -134,6 +134,49 @@ export default async function run({ port, projectRoot }) {
       db.auditLogs.some(a => /one-off/i.test(a.action)),
       db.auditLogs.slice(-4).map(a => a.action).join(' | ').slice(0, 120)
     );
+
+    /* ---------------- the annual insurance apportionment ---------------- */
+
+    /*
+     * A proprietor's share of the insurance premium is one of only two things
+     * the corporation collects from them, and it had no home: the charge
+     * categories are Rent and Maintenance, and the nearest one-off type was
+     * "Special assessment", which means a levy for unbudgeted major works. Using
+     * it would have misdescribed the charge on the owner's ledger and in the
+     * annual return.
+     *
+     * It is raised on the maintenance account because it is a contribution to
+     * the body corporate: it ages into arrears beside the maintenance it is
+     * collected with, and it belongs in the Form 13B outstanding contributions
+     * the same way.
+     */
+    const insurance = await c.post('/api/charges', {
+      unitId: 'unit-1',
+      category: 'Maintenance',
+      oneOffType: 'Insurance share',
+      amount: 45000,
+      currency: 'JMD',
+      dueDate: '2026-04-01',
+      description: 'Share of annual insurance premium 2026/27'
+    });
+    T.check('an insurance share can be raised as its own kind of charge', insurance.status === 200, `status ${insurance.status}`);
+    T.check('and is recorded as an insurance share, not a special assessment', insurance.body?.charge?.oneOffType === 'Insurance share', insurance.body?.charge?.oneOffType);
+    T.check('and sits on the maintenance account it is collected with', insurance.body?.charge?.category === 'Maintenance', insurance.body?.charge?.category);
+
+    // It must reach the balance the owner is chased for.
+    const owing = await balance('unit-1', 'Maintenance');
+    T.check('an unpaid insurance share leaves the owner in arrears for it', owing >= 45000, `balance ${owing}`);
+
+    // And a type that is not on the list is still refused.
+    const bogus = await c.post('/api/charges', {
+      unitId: 'unit-1',
+      category: 'Maintenance',
+      oneOffType: 'Insurance',
+      amount: 1000,
+      currency: 'JMD',
+      dueDate: '2026-04-01'
+    });
+    T.check('a charge type that is not on the list is refused', bogus.status !== 200, `status ${bogus.status}`);
   } finally {
     await srv.stop();
   }

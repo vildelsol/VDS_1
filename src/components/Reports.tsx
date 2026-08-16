@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { getReportRange, setReportRange } from '../lib/reportRange';
 import {
   AppSettings,
   Booking,
@@ -91,13 +92,24 @@ function rangeForPreset(preset: Preset, custom: { from: string; to: string }): {
 }
 
 export default function Reports({ units, charges, payments, expenses, utilities, bookings, settings, session }: ReportsProps) {
-  const [preset, setPreset] = useState<Preset>('last3');
-  const [custom, setCustom] = useState({ from: monthStart(addMonths(currentMonth(), -2)), to: today() });
+  // Adopt the period chosen on Charts, if one was, so the statement and the
+  // charts beside it in a pack cover the same period.
+  const shared = getReportRange();
+  const sharedPreset = shared?.preset && PRESETS.some(p => p.key === shared.preset) ? (shared.preset as Preset) : null;
+
+  const [preset, setPreset] = useState<Preset>(sharedPreset ?? (shared ? 'custom' : 'last3'));
+  const [custom, setCustom] = useState(
+    shared ? { from: shared.from, to: shared.to } : { from: monthStart(addMonths(currentMonth(), -2)), to: today() }
+  );
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState('');
 
   const { from, to } = rangeForPreset(preset, custom);
   const invalidRange = to < from;
+
+  useEffect(() => {
+    if (!invalidRange) setReportRange({ from, to, preset });
+  }, [from, to, preset, invalidRange]);
 
   const ownerBilled = useMemo(() => ownerBilledUnitIds(units), [units]);
   const months = useMemo(() => (invalidRange ? [] : monthsBetween(from, to)), [from, to, invalidRange]);
@@ -171,14 +183,31 @@ export default function Reports({ units, charges, payments, expenses, utilities,
    */
   const observations = useMemo(() => {
     if (invalidRange) return [];
-    const out: string[] = [];
+
+    /**
+     * Ranked, not merely listed.
+     *
+     * These were previously emitted in the order the code happened to compute
+     * them, which put "3 accounts exceed 60 days" in the same undifferentiated
+     * list as "16 of 16 villas are occupied". Both are true; only one needs
+     * acting on this week. Lower rank sorts first, and ties keep the order they
+     * were computed in so a currency's figures stay together.
+     */
+    const URGENT = 0; // money at risk, or a position that has worsened
+    const NOTABLE = 1; // the period's headline figures
+    const CONTEXT = 2; // standing facts that frame the rest
+
+    const entries: { text: string; rank: number }[] = [];
+    const say = (rank: number, text: string) => entries.push({ rank, text });
 
     for (const entry of summary) {
       if (entry.billed.total === 0 && entry.collected.total === 0 && entry.spent === 0) continue;
       const c = entry.currency;
 
       if (entry.billed.total > 0) {
-        out.push(
+        // Anything short of full collection is money outstanding, not a statistic.
+        say(
+          entry.rate !== null && entry.rate < 100 ? URGENT : NOTABLE,
           `${c}: ${formatMoney(entry.billed.total, c)} was billed in rent and maintenance; ` +
             `${formatMoney(sumMoney([entry.collected.rent, entry.collected.maintenance]), c)} was received against it ` +
             `(${entry.rate ?? 0}% of the amount billed in this period).`
@@ -187,7 +216,9 @@ export default function Reports({ units, charges, payments, expenses, utilities,
 
       const movement = round2(entry.closingReceivable - entry.openingReceivable);
       if (entry.openingReceivable !== 0 || entry.closingReceivable !== 0) {
-        out.push(
+        say(
+          // Receivables growing is the single clearest sign collection is slipping.
+          movement > 0 ? URGENT : NOTABLE,
           `${c}: receivables ${movement > 0 ? 'rose' : movement < 0 ? 'fell' : 'were unchanged'} from ` +
             `${formatMoney(entry.openingReceivable, c)} at the start of the period to ${formatMoney(entry.closingReceivable, c)} at the end` +
             (movement === 0 ? '.' : `, ${movement > 0 ? 'an increase' : 'a decrease'} of ${formatMoney(Math.abs(movement), c)}.`)
@@ -196,11 +227,13 @@ export default function Reports({ units, charges, payments, expenses, utilities,
 
       if (entry.breakdown.length > 0) {
         const top = entry.breakdown[0];
-        out.push(`${c}: the largest expense category was ${top.category} at ${formatMoney(top.amount, c)} (${top.share}% of ${c} outflows).`);
+        say(NOTABLE, `${c}: the largest expense category was ${top.category} at ${formatMoney(top.amount, c)} (${top.share}% of ${c} outflows).`);
       }
 
       if (entry.collected.total > 0 || entry.spent > 0) {
-        out.push(
+        say(
+          // Spending more than came in is a fact that belongs at the top.
+          entry.net < 0 ? URGENT : NOTABLE,
           `${c}: ${formatMoney(entry.collected.total, c)} received against ${formatMoney(entry.spent, c)} paid out — ` +
             `a net cash movement of ${formatMoney(entry.net, c)}.`
         );
@@ -214,7 +247,8 @@ export default function Reports({ units, charges, payments, expenses, utilities,
     if (aged.length > 0) {
       const over60 = aged.filter(a => a.oldestUnpaidDays > 60).length;
       const over30 = aged.filter(a => a.oldestUnpaidDays > 30).length;
-      out.push(
+      say(
+        URGENT,
         `${aged.length} account(s) carried a balance at ${formatDayLabel(to)}: ${over30} more than 30 days old, of which ${over60} exceed 60 days.`
       );
     }
@@ -231,21 +265,26 @@ export default function Reports({ units, charges, payments, expenses, utilities,
     const daysInRange = nightsBetween(from, addDays(to, 1));
     if (shortLetUnits > 0 && daysInRange > 0) {
       const available = shortLetUnits * daysInRange;
-      out.push(
+      say(
+        CONTEXT,
         `${nightsSold} guest night(s) were sold across ${shortLetUnits} short-let villa(s) over ${daysInRange} day(s) — ` +
           `${round2((nightsSold / available) * 100)}% of available nights.`
       );
     }
 
     const unpaidUtilities = utilities.filter(u => u.status === 'unpaid').length;
-    if (unpaidUtilities > 0) out.push(`${unpaidUtilities} utility bill(s) remain unsettled at the report date.`);
+    if (unpaidUtilities > 0) say(URGENT, `${unpaidUtilities} utility bill(s) remain unsettled at the report date.`);
 
     const occupied = units.filter(isOccupied).length;
     if (units.length > 0) {
-      out.push(`${occupied} of ${units.length} villas are occupied (long-term, short-let or owner-occupied) at the report date.`);
+      say(CONTEXT, `${occupied} of ${units.length} villas are occupied (long-term, short-let or owner-occupied) at the report date.`);
     }
 
-    return out;
+    // A stable sort: equal ranks keep the order they were computed in.
+    return entries
+      .map((entry, index) => ({ ...entry, index }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map(entry => entry.text);
   }, [summary, units, charges, payments, bookings, utilities, from, to, invalidRange]);
 
   /* ---------------- CSV ---------------- */

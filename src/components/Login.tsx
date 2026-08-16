@@ -37,9 +37,14 @@ export default function Login({ onSignedIn }: LoginProps) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-900 p-4">
       <div className="w-full max-w-sm space-y-6">
-        <div className="text-center">
-          <h1 className="font-display text-lg font-semibold tracking-tight text-white">VILLAGGIO DEL SOL</h1>
-          <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-teal-400">Ocho Rios Operations</p>
+        <div className="flex flex-col items-center">
+          <img
+            src="/vds-logo.png"
+            alt="Villaggio Del Sol"
+            className="w-48"
+          />
+          <p className="mt-3 font-mono text-[10px] uppercase tracking-wider text-teal-400">Ocho Rios Operations</p>
+          <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.2em] text-slate-500">Powered by ISPO</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 rounded-2xl border border-slate-800 bg-slate-850 bg-slate-800/60 p-6 shadow-2xl">

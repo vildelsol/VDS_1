@@ -68,7 +68,9 @@ function auditEverything(db) {
   // --- charges ---
   if (new Set(charges.map(x => x.id)).size !== charges.length) p.push('two charges share an id');
   const billed = new Map();
-  for (const c of charges.filter(x => x.status === 'open' && !x.oneOffType)) {
+  // See scenarios-300: the advance charge for a final month shares the move-in
+  // month's period legitimately and is not a double-billing.
+  for (const c of charges.filter(x => x.status === 'open' && !x.oneOffType && x.kind !== 'advance-final-month')) {
     const key = `${c.unitId}|${c.category}|${c.periodMonth}`;
     if (billed.has(key)) p.push(`${key} billed twice`);
     else billed.set(key, c.id);
@@ -445,6 +447,8 @@ export default async function run({ port, projectRoot }) {
     let ran = 0;
     const failures = [];
 
+    // Only the scenario loop is under scrutiny; setup above may probe freely.
+    c.clearNotFound();
     for (let i = 0; i < SCENARIO_COUNT; i++) {
       const seed = 5000 + i;
       const rand = rng(seed);
@@ -462,6 +466,12 @@ export default async function run({ port, projectRoot }) {
     }
 
     T.check(`all ${SCENARIO_COUNT} scenarios ran without the server failing`, ran === SCENARIO_COUNT, `${ran} of ${SCENARIO_COUNT}`);
+    const dead = c.notFound();
+    T.check(
+      'every scenario called a route that exists, so none of them silently did nothing',
+      dead.length === 0,
+      `${dead.length} calls 404'd, e.g. ${[...new Set(dead)].slice(0, 3).join(' | ')}`
+    );
     T.check('the whole application stayed coherent after every one', failures.length === 0, failures.slice(0, 5).join(' | '));
 
     /* ---------------------------------------------------------------- *

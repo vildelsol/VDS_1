@@ -18,8 +18,8 @@ const OUT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'pu
 fs.mkdirSync(OUT, { recursive: true });
 
 // Brand colours.
-const TEAL = [13, 148, 136]; // #0d9488
-const LIGHT = [204, 251, 241]; // #ccfbf1
+const GOLD = [176, 154, 94];  // #b09a5e — VDS brand gold
+const GOLD_LIGHT = [210, 193, 143]; // lighter gold for inner accent
 const bg = [15, 23, 42]; // slate-900, for the maskable safe area
 
 function crc32(buf) {
@@ -68,17 +68,21 @@ function png(size, paint) {
   ]);
 }
 
-// A simple mark: teal field, a lighter rounded inner square, on a dark maskable
-// backdrop so it reads on any launcher.
+// Gold sun mark on dark slate — matches VDS brand palette.
+// Draws a filled circle (gold field) with a lighter inner circle, on the dark bg.
 function paintMark(maskable) {
   return (x, y, size) => {
-    const pad = maskable ? size * 0.14 : 0; // maskable safe area
+    const pad = maskable ? size * 0.14 : 0;
     const inField = x >= pad && y >= pad && x < size - pad && y < size - pad;
     if (!inField) return bg;
-    // inner accent square
-    const q = size * 0.30;
-    if (x > q && x < size - q && y > q && y < size - q) return LIGHT;
-    return TEAL;
+    const cx = size / 2, cy = size / 2;
+    const r = (size - pad * 2) / 2;
+    const dx = x - cx, dy = y - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > r) return bg;
+    // inner lighter circle
+    if (dist < r * 0.38) return GOLD_LIGHT;
+    return GOLD;
   };
 }
 

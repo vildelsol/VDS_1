@@ -17,7 +17,8 @@ import {
   UtilityReading,
   getAllocationLabel,
   getUnitDisplayName,
-  Tenancy
+  Tenancy,
+  AppSettings
 } from '../types';
 import { AccountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, unbilledOccupancy } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
@@ -42,6 +43,8 @@ import { AlertTriangle, Bell, CalendarX, CheckCircle, DollarSign, Gauge, Wrench 
 
 interface NotificationsTabProps {
   units: Unit[];
+  /** Carries the migration cutover, so months before it are not called unbilled. */
+  settings: AppSettings;
   charges: Charge[];
   payments: Payment[];
   utilities: UtilityReading[];
@@ -76,6 +79,7 @@ interface Item {
 
 export default function NotificationsTab({
   units,
+  settings,
   charges,
   payments,
   utilities,
@@ -117,7 +121,7 @@ export default function NotificationsTab({
     // Occupied months that were never billed — most often a tenant recorded
     // weeks after they moved in. Nothing else surfaces these, because an unbilled
     // month looks identical to a month with nothing owed.
-    const unbilledItems = unbilledOccupancy(units, tenancies, charges).map<Item>(row => ({
+    const unbilledItems = unbilledOccupancy(units, tenancies, charges, today(), settings?.booksBeginOn).map<Item>(row => ({
       id: `unbilled-${row.tenancy.id}`,
       type: 'unbilled',
       title: `Rent not yet billed — ${getUnitDisplayName(row.unit.number)}`,

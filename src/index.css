@@ -165,13 +165,69 @@
    * and box-sizing keeps the box inside its own layout so the right edge is never
    * clipped at the page margin.
    */
+  /*
+   * The letterhead mark.
+   *
+   * Printers and print-to-PDF routinely drop anything the browser classes as a
+   * background graphic, and a page whose only identification is an image that
+   * did not print is an unidentified document. Forcing colour keeps the mark on
+   * the page; the component also falls back to the typeset name if the file
+   * itself never loads, so the two failures are covered separately.
+   */
+  .vds-letterhead-mark {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    /* A point-based height maps onto the print grid rather than being scaled
+       from a CSS pixel, so the mark comes out the same size on every printer. */
+    height: 18mm !important;
+    width: auto !important;
+  }
+
+  /*
+   * The print half of the rule defined outside this block. Only the width
+   * changes: a point-based width maps onto the print grid rather than being
+   * derived from a CSS pixel, which is what stops the rasteriser rounding one
+   * edge to a different number of dots than another.
+   */
   .vds-print-document .print-outline {
     border-width: 1pt !important;
-    border-style: solid !important;
-    box-sizing: border-box !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+}
+
+/*
+ * Rounded, bordered boxes — the letterhead's document-title pill, the receipt's
+ * amount panel — carry a rule of even thickness on all four sides, in every
+ * medium: on screen, in the print preview, and in a downloaded PDF.
+ *
+ * Defined here rather than inside `@media print`, where it used to live. Being
+ * print-only meant the preview and the PDF were drawing two different boxes and
+ * only one of them had ever been corrected.
+ *
+ * Two separate causes made the right edge come out thinner than the other three:
+ *
+ *   1. The pill is laid out flush right, so its right rule landed exactly on its
+ *      container's boundary — a measured gap of zero. A rule ending precisely on
+ *      an edge is where a rasteriser clips or rounds away its outer half, and at
+ *      a page margin that is the first thing to go. The inset below keeps the
+ *      full width of the rule inside the paintable area.
+ *
+ *   2. The box is laid out flush right, so at some container widths it lands on
+ *      a half-pixel and a hairline rule is split across two device pixels at
+ *      half intensity. Measured, though, its left and right edges always carry
+ *      the *same* fraction — so that softens all four sides equally and is not
+ *      what made one side stand out. Left alone deliberately: the obvious
+ *      remedy, forcing a compositing layer with a transform, could not be shown
+ *      to change the geometry at all, and a transformed element inside a printed
+ *      document risks being rasterised at screen resolution by the PDF exporter,
+ *      which would make the rule blurrier rather than crisper.
+ */
+.print-outline {
+  border-style: solid !important;
+  box-sizing: border-box !important;
+  /* Never flush against the boundary it is drawn beside. */
+  margin-right: 1px;
 }
 
 /* On screen the portal is a normal modal overlay. */

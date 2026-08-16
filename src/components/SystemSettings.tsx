@@ -1187,6 +1187,7 @@ function BackupPanel({
 function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (payload: Record<string, unknown>) => Promise<void> }) {
   const [fxRate, setFxRate] = useState(String(settings.fxRateJmdPerUsd));
   const [vendors, setVendors] = useState(settings.vendors.join('\n'));
+  const [booksBeginOn, setBooksBeginOn] = useState(settings.booksBeginOn || '');
   const [busy, setBusy] = useState(false);
 
   const handleSave = async () => {
@@ -1194,6 +1195,7 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
     try {
       await onSave({
         fxRateJmdPerUsd: Number(fxRate),
+        booksBeginOn: booksBeginOn || '',
         vendors: vendors
           .split('\n')
           .map(v => v.trim())
@@ -1217,6 +1219,20 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
         hint="Between 50 and 1000 JMD per USD. Shows an approximate second figure alongside an amount. No stored amount is ever converted with it, and no total mixes the two currencies."
       >
         <input id="gp-fx" type="number" min="50" max="1000" step="0.01" value={fxRate} onChange={e => setFxRate(e.target.value)} className={`${monoInputClass} max-w-[200px]`} />
+      </Field>
+
+      <Field
+        label="The books begin on"
+        htmlFor="gp-books-begin"
+        hint="The day this application took over the records. Months before it were billed in whatever system came before, so the application will not report them as unbilled — which lets a tenancy carry its real start date without producing an alert for every month back to it. It does not excuse anything genuinely owed: a balance carried over is entered as a dated charge and ages normally. Leave empty if the records go all the way back."
+      >
+        <input
+          id="gp-books-begin"
+          type="date"
+          value={booksBeginOn}
+          onChange={e => setBooksBeginOn(e.target.value)}
+          className={`${monoInputClass} max-w-[220px]`}
+        />
       </Field>
 
       <Field label="Vendor list" htmlFor="gp-vendors" hint="One vendor per line. These appear as suggestions when recording an expense.">

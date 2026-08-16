@@ -986,13 +986,26 @@ app.post(
   '/api/settings',
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'manage_settings');
-    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir, strataPlanNumber, trn } = req.body || {};
+    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir, strataPlanNumber, trn, booksBeginOn } = req.body || {};
 
     const settings = await transaction(db => {
       const before = JSON.parse(JSON.stringify(db.settings));
 
       if (strataPlanNumber !== undefined) db.settings.strataPlanNumber = optionalString(strataPlanNumber, 40);
       if (trn !== undefined) db.settings.trn = optionalString(trn, 40);
+
+      /*
+       * The migration cutover. Validated as a real date rather than stored as
+       * typed, because every backward-looking check compares against it: a
+       * malformed value here would silently switch those checks off instead of
+       * failing loudly. Clearing it is allowed and means the records go all the
+       * way back.
+       */
+      if (booksBeginOn !== undefined) {
+        const value = optionalString(booksBeginOn, 10);
+        if (value && !isValidDay(value)) bad('The date the books begin must be a valid date (YYYY-MM-DD).');
+        db.settings.booksBeginOn = value || undefined;
+      }
 
       if (rolePermissions) {
         const next = { ...db.settings.rolePermissions };

@@ -178,7 +178,7 @@ export default async function run({ port, projectRoot }) {
     /* ---------------- the statements ---------------- */
 
     const db = (await c.get('/api/db')).body;
-    const statements = ownerStatements(db.units, db.charges, db.payments, db.expenses, period.from, period.to);
+    const statements = ownerStatements(db.units, db.charges, db.payments, db.expenses, db.utilities, period.from, period.to);
     const find = (unitId, currency) => statements.find(s => s.unit.id === unitId && s.currency === currency);
 
     const villa1 = find('unit-1', 'JMD');
@@ -197,6 +197,8 @@ export default async function run({ port, projectRoot }) {
       villa1?.maintenanceOutstanding === 10000,
       `${villa1?.maintenanceOutstanding}`
     );
+
+
     T.check(
       'the common-property expense lands on no owner',
       !statements.some(s => s.expenseItems.some(e => e.unitNumber === 'General')),
@@ -269,6 +271,7 @@ export default async function run({ port, projectRoot }) {
       db.charges,
       db.payments,
       db.expenses,
+      db.utilities,
       'JMD',
       period.beforePeriod,
       period.beforePeriod
@@ -292,7 +295,7 @@ export default async function run({ port, projectRoot }) {
     await c.post(`/api/charges/${maintCharge.id}/void`, { reason: 'Billed in error' });
 
     const after = (await c.get('/api/db')).body;
-    const villa1After = ownerStatements(after.units, after.charges, after.payments, after.expenses, period.from, period.to).find(
+    const villa1After = ownerStatements(after.units, after.charges, after.payments, after.expenses, after.utilities, period.from, period.to).find(
       s => s.unit.id === 'unit-1' && s.currency === 'JMD'
     );
     T.check('a reversed receipt is no longer collected for the owner', villa1After?.collected === 0, `${villa1After?.collected}`);
@@ -301,6 +304,141 @@ export default async function run({ port, projectRoot }) {
       'and the net becomes what the villa cost them',
       villa1After?.net === -8000,
       `net ${villa1After?.net}`
+    );
+
+    /* ---------------- metered utilities reach the statement ---------------- */
+
+    /*
+     * A meter reading raised against a villa is money that villa owes, but the
+     * statement used to show only the *settlement* of one — as a receipt on the
+     * collected side. So an owner billed for consumption and yet to pay saw no
+     * charge at all, and an owner who had paid saw a credit for a bill that
+     * appeared nowhere on the page. The charge is shown now, whether or not it
+     * has been settled, and a settled one nets against its own receipt.
+     */
+    const meterMonth = period.from.slice(0, 7);
+
+    /*
+     * Measured as a movement, not against a fixed figure. Earlier steps in this
+     * file reverse a receipt and void a charge, so the villa's net by now is
+     * whatever those left behind. The claim being tested is that a meter reading
+     * moves the net by exactly what it billed — which is true wherever this
+     * block sits, and does not silently break when something above it changes.
+     */
+    const statementFor = (database, unitId, currency) =>
+      ownerStatements(database.units, database.charges, database.payments, database.expenses, database.utilities, period.from, period.to).find(
+        s => s.unit.id === unitId && s.currency === currency
+      );
+
+    const netBeforeReading = statementFor((await c.get('/api/db')).body, 'unit-1', 'JMD')?.net ?? 0;
+
+    const unpaidReading = await c.post('/api/utilities', {
+      unitId: 'unit-1',
+      billingPeriod: meterMonth,
+      previousReading: 100,
+      currentReading: 260,
+      amountCharged: 7500,
+      currency: 'JMD'
+    });
+    T.check('a meter reading can be billed to a villa', unpaidReading.status === 200, `status ${unpaidReading.status}`);
+
+    const withUtility = (await c.get('/api/db')).body;
+    const villa1Utility = statementFor(withUtility, 'unit-1', 'JMD');
+
+    T.check(
+      'an unpaid meter reading is billed to the owner on their statement',
+      villa1Utility?.utilityBilled === 7500,
+      `utilityBilled ${villa1Utility?.utilityBilled}`
+    );
+    T.check(
+      'and is itemised, not merely totalled',
+      villa1Utility?.utilityCharges?.length === 1,
+      `${villa1Utility?.utilityCharges?.length} reading(s) itemised`
+    );
+    T.check(
+      'and it reduces the net by exactly what was billed',
+      villa1Utility?.net === netBeforeReading - 7500,
+      `net moved from ${netBeforeReading} to ${villa1Utility?.net}, expected a fall of 7500`
+    );
+    /*
+     * A proprietor's supply is on their own meter in their own name and settled
+     * directly with the utility, so the corporation neither pays it nor bills
+     * it. The statement must therefore be silent about utilities for them — not
+     * merely show a nil. A villa with no reading carries no utility figure at
+     * all, which is what lets the page omit the section entirely.
+     */
+    T.check(
+      'a villa with no meter reading is billed nothing for utilities',
+      ownerStatements(withUtility.units, withUtility.charges, withUtility.payments, withUtility.expenses, withUtility.utilities, period.from, period.to)
+        .filter(s => s.unit.id !== 'unit-1')
+        .every(s => s.utilityBilled === 0),
+      'a reading leaked onto another villa'
+    );
+
+    /*
+     * Settling the reading today — after the statement period closed — must not
+     * reach back and tidy the charge out of that period. The owner was billed in
+     * the period and had not paid by the end of it, and a statement that quietly
+     * rewrites itself when a later payment lands is one nobody can reconcile
+     * against the copy they were sent.
+     *
+     * The receipt belongs to the period it was actually received in, which is a
+     * different statement.
+     */
+    const settled = await c.post(`/api/utilities/${unpaidReading.body?.utility?.id}/settle`, { method: 'Cash' });
+    if (settled.body?.payment?.id) await c.post(`/api/payments/${settled.body.payment.id}/confirm`, {});
+    const afterSettle = statementFor((await c.get('/api/db')).body, 'unit-1', 'JMD');
+    T.check(
+      'settling a reading leaves the charge standing on the period it was billed in',
+      afterSettle?.utilityBilled === 7500,
+      `utilityBilled ${afterSettle?.utilityBilled}`
+    );
+    T.check(
+      'and a payment made after the period does not retroactively change that period',
+      afterSettle?.net === netBeforeReading - 7500,
+      `net ${afterSettle?.net}, expected to stay at ${netBeforeReading - 7500}`
+    );
+
+    /* ---------------- one supply is billed once ---------------- */
+
+    /*
+     * A metered villa produces two records for the same electricity: the
+     * supplier's invoice the corporation pays, and the reading it bills the
+     * owner from. Both landing on the statement would charge the owner twice for
+     * one supply, and that error does not stay on the page — it flows into the
+     * net, into arrears, and into every figure derived from them.
+     *
+     * The reading bills the owner. The invoice is the corporation's cost.
+     */
+    const beforeInvoice = statementFor((await c.get('/api/db')).body, 'unit-1', 'JMD');
+    const netBeforeInvoice = beforeInvoice?.net ?? 0;
+    const beforeInvoiceExpenses = beforeInvoice?.expenses ?? 0;
+
+    await c.post(
+      '/api/expenses',
+      expense({ unitId: 'unit-1', category: 'Utilities', vendor: 'Jamaica Public Service', amount: 7500, description: 'JPS invoice for the metered period' })
+    );
+
+    const afterInvoice = statementFor((await c.get('/api/db')).body, 'unit-1', 'JMD');
+    T.check(
+      "the supplier's utility invoice does not bill the owner a second time",
+      afterInvoice?.net === netBeforeInvoice,
+      `net moved from ${netBeforeInvoice} to ${afterInvoice?.net} — the same supply was charged twice`
+    );
+    T.check(
+      'and it is kept out of what was recharged to the villa',
+      afterInvoice?.expenses === beforeInvoiceExpenses,
+      `expenses ${afterInvoice?.expenses}, expected to stay at ${beforeInvoiceExpenses}`
+    );
+
+    // A cost with no second record still reaches the owner, so the exclusion is
+    // narrow rather than a blanket refusal to recharge anything.
+    await c.post('/api/expenses', expense({ unitId: 'unit-1', category: 'Maintenance', vendor: 'A. Locksmith', amount: 2500, description: 'Replace front door lock' }));
+    const afterLocksmith = statementFor((await c.get('/api/db')).body, 'unit-1', 'JMD');
+    T.check(
+      'an ordinary cost charged to the villa still reaches the owner',
+      afterLocksmith?.expenses === beforeInvoiceExpenses + 2500,
+      `expenses ${afterLocksmith?.expenses}, expected ${beforeInvoiceExpenses + 2500}`
     );
   } finally {
     cleanup();

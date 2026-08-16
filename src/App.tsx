@@ -407,25 +407,48 @@ export default function App() {
     );
   }
 
-  const navItems: { key: TabKey; label: string; icon: React.ReactNode; badge?: number; visible: boolean }[] = [
-    { key: 'dashboard', label: 'General Dashboard', icon: <LayoutDashboard className="h-4 w-4" />, visible: true },
-    { key: 'notifications', label: 'Notifications Hub', icon: <Bell className="h-4 w-4" />, badge: outstandingCount, visible: true },
-    { key: 'units', label: 'Units Register', icon: <Home className="h-4 w-4" />, visible: true },
-    { key: 'finance', label: 'HOA & Tenants Ledger', icon: <Key className="h-4 w-4" />, visible: true },
-    { key: 'bookings', label: 'Short-Term Bookings', icon: <Calendar className="h-4 w-4" />, visible: true },
-    { key: 'utilities', label: 'Utilities & Expenses', icon: <Wrench className="h-4 w-4" />, visible: true },
-    { key: 'reports', label: 'Operational Reports', icon: <BarChart3 className="h-4 w-4" />, visible: true },
-    { key: 'reconciliation', label: 'Bank Reconciliation', icon: <Landmark className="h-4 w-4" />, visible: true },
-    { key: 'owner-statements', label: 'Owners Statements', icon: <Users className="h-4 w-4" />, visible: true },
-    { key: 'charts', label: 'Charts & Snapshots', icon: <PieChart className="h-4 w-4" />, visible: true },
-    { key: 'projections', label: 'Financial Projections', icon: <TrendingUp className="h-4 w-4" />, visible: true },
-    { key: 'audit', label: 'Audit Trail', icon: <ClipboardList className="h-4 w-4" />, visible: true },
+  /**
+   * Grouped by how often the screen is actually opened.
+   *
+   * Thirteen items in one flat list gave a screen opened every morning the same
+   * weight as one opened once a quarter, so every trip to the menu meant reading
+   * all thirteen. The order within each group is unchanged, and nothing has been
+   * hidden or renamed — only sorted into the rhythm the work has.
+   */
+  const navGroups: { heading: string; items: { key: TabKey; label: string; icon: React.ReactNode; badge?: number; visible: boolean }[] }[] = [
     {
-      key: 'settings',
-      label: 'System Settings',
-      icon: <Settings className="h-4 w-4" />,
-      // Hidden rather than shown-then-refused for roles that cannot use it.
-      visible: session.role === 'ADMINISTRATOR' || session.role === 'MANAGER' || !!permissions?.hasVetoPower
+      heading: 'Daily',
+      items: [
+        { key: 'dashboard', label: 'General Dashboard', icon: <LayoutDashboard className="h-4 w-4" />, visible: true },
+        { key: 'notifications', label: 'Notifications Hub', icon: <Bell className="h-4 w-4" />, badge: outstandingCount, visible: true },
+        { key: 'units', label: 'Units Register', icon: <Home className="h-4 w-4" />, visible: true },
+        { key: 'finance', label: 'HOA & Tenants Ledger', icon: <Key className="h-4 w-4" />, visible: true },
+        { key: 'bookings', label: 'Short-Term Bookings', icon: <Calendar className="h-4 w-4" />, visible: true }
+      ]
+    },
+    {
+      heading: 'Financial',
+      items: [
+        { key: 'utilities', label: 'Utilities & Expenses', icon: <Wrench className="h-4 w-4" />, visible: true },
+        { key: 'reports', label: 'Operational Reports', icon: <BarChart3 className="h-4 w-4" />, visible: true },
+        { key: 'reconciliation', label: 'Bank Reconciliation', icon: <Landmark className="h-4 w-4" />, visible: true },
+        { key: 'owner-statements', label: 'Owners Statements', icon: <Users className="h-4 w-4" />, visible: true },
+        { key: 'charts', label: 'Charts & Snapshots', icon: <PieChart className="h-4 w-4" />, visible: true },
+        { key: 'projections', label: 'Financial Projections', icon: <TrendingUp className="h-4 w-4" />, visible: true }
+      ]
+    },
+    {
+      heading: 'Records',
+      items: [
+        { key: 'audit', label: 'Audit Trail', icon: <ClipboardList className="h-4 w-4" />, visible: true },
+        {
+          key: 'settings',
+          label: 'System Settings',
+          icon: <Settings className="h-4 w-4" />,
+          // Hidden rather than shown-then-refused for roles that cannot use it.
+          visible: session.role === 'ADMINISTRATOR' || session.role === 'MANAGER' || !!permissions?.hasVetoPower
+        }
+      ]
     }
   ];
 
@@ -441,9 +464,12 @@ export default function App() {
         sidebar from md upwards.
       */}
       <div className="flex items-center justify-between gap-3 bg-slate-900 p-4 text-white print:hidden md:hidden">
-        <div className="min-w-0">
-          <h1 className="truncate font-display text-sm font-semibold tracking-tight">VILLAGGIO DEL SOL</h1>
-          <p className="truncate font-mono text-[10px] uppercase tracking-wider text-teal-400">{TAB_TITLES[activeTab]}</p>
+        <div className="flex min-w-0 items-center gap-3">
+          <img src="/vds-logo.png" alt="Villaggio Del Sol" className="h-9 w-auto shrink-0" />
+          <div className="min-w-0">
+            <h1 className="truncate font-display text-sm font-semibold tracking-tight">VILLAGGIO DEL SOL</h1>
+            <p className="truncate font-mono text-[10px] uppercase tracking-wider text-teal-400">{TAB_TITLES[activeTab]}</p>
+          </div>
         </div>
         <button
           onClick={() => setNavOpen(true)}
@@ -479,9 +505,9 @@ export default function App() {
       >
         <div className="space-y-8">
           <div className="flex items-start justify-between gap-2">
-            <div>
-              <h1 className="font-display text-lg font-semibold tracking-tight text-white">VILLAGGIO DEL SOL</h1>
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-teal-400">Ocho Rios Operations</p>
+            <div className="space-y-2">
+              <img src="/vds-logo.png" alt="Villaggio Del Sol" className="w-32" />
+              <p className="font-mono text-[10px] uppercase tracking-wider text-teal-400">Ocho Rios Operations</p>
             </div>
             <button
               onClick={() => setNavOpen(false)}
@@ -492,33 +518,39 @@ export default function App() {
             </button>
           </div>
 
-          <nav className="space-y-1.5 text-xs font-medium" aria-label="Main">
-            {navItems
-              .filter(item => item.visible)
-              .map(item => (
-                <button
-                  key={item.key}
-                  onClick={() => {
-                    setActiveTab(item.key);
-                    setNavOpen(false);
-                  }}
-                  aria-current={activeTab === item.key ? 'page' : undefined}
-                  className={`flex w-full items-center justify-between rounded-xl px-4 py-2.5 transition-all ${
-                    activeTab === item.key
-                      ? 'bg-teal-600 font-semibold text-white'
-                      : 'hover:bg-slate-800 hover:text-slate-100'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    {item.icon}
-                    {item.label}
-                  </span>
-                  {item.badge !== undefined && item.badge > 0 && (
-                    <span className="rounded-full bg-red-500 px-1.5 py-0.5 font-mono text-[9px] font-bold text-white">
-                      {item.badge}
-                    </span>
-                  )}
-                </button>
+          <nav className="space-y-5 text-xs font-medium" aria-label="Main">
+            {navGroups
+              .map(group => ({ ...group, items: group.items.filter(item => item.visible) }))
+              .filter(group => group.items.length > 0)
+              .map(group => (
+                <div key={group.heading} className="space-y-1.5">
+                  <p className="px-4 font-mono text-[9px] uppercase tracking-[0.15em] text-slate-600">{group.heading}</p>
+                  {group.items.map(item => (
+                    <button
+                      key={item.key}
+                      onClick={() => {
+                        setActiveTab(item.key);
+                        setNavOpen(false);
+                      }}
+                      aria-current={activeTab === item.key ? 'page' : undefined}
+                      className={`flex w-full items-center justify-between rounded-xl px-4 py-2.5 transition-all ${
+                        activeTab === item.key
+                          ? 'bg-teal-600 font-semibold text-white'
+                          : 'hover:bg-slate-800 hover:text-slate-100'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2.5">
+                        {item.icon}
+                        {item.label}
+                      </span>
+                      {item.badge !== undefined && item.badge > 0 && (
+                        <span className="rounded-full bg-red-500 px-1.5 py-0.5 font-mono text-[9px] font-bold text-white">
+                          {item.badge}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               ))}
           </nav>
         </div>
@@ -538,6 +570,7 @@ export default function App() {
             <LogOut className="h-3.5 w-3.5" />
             Sign out
           </button>
+          <p className="pt-1 text-center font-mono text-[9px] uppercase tracking-[0.2em] text-slate-600">Powered by ISPO</p>
         </div>
       </aside>
 
@@ -586,6 +619,7 @@ export default function App() {
         {activeTab === 'notifications' && (
           <NotificationsTab
             units={data.units}
+            settings={settings}
             charges={data.charges}
             payments={data.payments}
             utilities={data.utilities}
@@ -705,6 +739,7 @@ export default function App() {
             charges={data.charges}
             payments={data.payments}
             expenses={data.expenses}
+            utilities={data.utilities}
             settings={settings}
             session={session}
           />
@@ -716,6 +751,8 @@ export default function App() {
             charges={data.charges}
             payments={data.payments}
             expenses={data.expenses}
+            tenancies={data.tenancies}
+            bookings={data.bookings}
             settings={settings}
             session={session}
           />

@@ -36,6 +36,8 @@ export type OneOffChargeType =
   | 'Amenity fee'
   | 'Legal costs'
   | 'Special assessment'
+  | 'Insurance share'
+  | 'Opening balance'
   | 'Other';
 
 export const ONE_OFF_CHARGE_TYPES: OneOffChargeType[] = [
@@ -45,6 +47,27 @@ export const ONE_OFF_CHARGE_TYPES: OneOffChargeType[] = [
   'Amenity fee',
   'Legal costs',
   'Special assessment',
+  /**
+   * A proprietor's share of the annual insurance premium.
+   *
+   * Distinct from a special assessment, which is a levy for unbudgeted major
+   * works. This is a recurring annual apportionment of a known premium, and
+   * calling it an assessment would misdescribe it on the owner's ledger and in
+   * the annual return. Raised on the maintenance account, because it is a
+   * contribution to the body corporate and ages into arrears alongside the
+   * maintenance it is collected with.
+   */
+  'Insurance share',
+  /**
+   * A balance carried in from the system the corporation kept before this one.
+   *
+   * Labelled distinctly so it is never mistaken for something billed here: on a
+   * ledger it reads as what it is, and it can be told apart from the months this
+   * application actually raised. Dated to when the debt fell due rather than to
+   * the migration, so it ages into the right bucket on the annual return instead
+   * of appearing to have arisen on the day the records were moved.
+   */
+  'Opening balance',
   'Other'
 ];
 
@@ -151,6 +174,25 @@ export interface AppSettings {
   strataPlanNumber?: string;
   /** Taxpayer registration number, as it appears on the annual return forms. */
   trn?: string;
+  /**
+   * The day this application's records begin — the migration cutover.
+   *
+   * Everything before it happened in whatever system came before, and the
+   * application holds no charges for it. Without this date the checks that look
+   * backwards cannot tell "nobody billed this month" from "this month was billed
+   * somewhere else": a tenancy entered with its real start date of, say, 2019
+   * would be reported as having eighty-odd unbilled months, and the notifications
+   * that matter would be buried under them.
+   *
+   * It is deliberately not a substitute for entering what is genuinely owed. A
+   * balance carried over from the old system is entered as a dated charge like
+   * any other, so it appears in arrears and ages correctly. This date only stops
+   * the application inventing obligations for a period it was never keeping.
+   *
+   * Absent means the records are assumed to go all the way back, which is the
+   * right default for a property that started on this system.
+   */
+  booksBeginOn?: string; // YYYY-MM-DD
   /** Indicative JMD per 1 USD, used only for display conversions. Never used to convert stored amounts. */
   fxRateJmdPerUsd: number;
   rolePermissions: {

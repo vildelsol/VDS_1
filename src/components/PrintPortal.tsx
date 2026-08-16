@@ -102,14 +102,40 @@ export default function PrintPortal({
           </div>
         </div>
 
-        <div className="vds-print-document p-6 font-sans text-slate-800 sm:p-8">{children}</div>
+        <div className="vds-print-document p-6 font-sans text-slate-800 sm:p-8">
+          {children}
+          {/*
+            Deliberately a footer credit and deliberately not in the letterhead.
+            The letterhead answers "who issued this document", and on an owner
+            statement that has to be the body corporate and nothing else — a
+            second company's name up there invites a proprietor to wonder who is
+            actually billing them. Down here it reads as what it is: who built
+            the system the document came out of.
+          */}
+          <p className="mt-6 border-t border-slate-200 pt-2 text-center font-mono text-[8px] uppercase tracking-[0.2em] text-slate-400">
+            Powered by ISPO
+          </p>
+        </div>
       </div>
     </div>,
     host
   );
 }
 
-/** Shared letterhead so every printed document identifies itself the same way. */
+/**
+ * Shared letterhead so every printed document identifies itself the same way.
+ *
+ * The mark is drawn at a size that survives paper. An earlier version set it to
+ * 64px tall, which put the wordmark inside the image at roughly a millimetre and
+ * a half once printed — present in the DOM, illegible on the page, and a plain
+ * downgrade from the bold text heading it replaced.
+ *
+ * The name is never carried by the image alone. If the file fails to load — a
+ * stale build, an asset that did not ship, a reader with images disabled — the
+ * document falls back to the typeset name rather than going out with an
+ * anonymous letterhead. A statement that cannot say whose it is, is not a
+ * statement.
+ */
 export function PrintLetterhead({
   documentTitle,
   meta,
@@ -119,11 +145,24 @@ export function PrintLetterhead({
   meta?: string;
   generatedBy?: string;
 }) {
+  const [markFailed, setMarkFailed] = useState(false);
+
   return (
     <div className="mb-6 flex items-start justify-between gap-4 border-b-2 border-slate-900 pb-4">
       <div>
-        <h1 className="text-xl font-bold uppercase tracking-wider text-slate-900">Villaggio Del Sol</h1>
-        <p className="mt-0.5 font-mono text-xs text-slate-500">Ocho Rios, St. Ann, Jamaica</p>
+        {markFailed ? (
+          <h1 className="font-display text-xl font-bold uppercase tracking-wider text-slate-900">Villaggio Del Sol</h1>
+        ) : (
+          <img
+            src="/vds-logo.png"
+            alt="Villaggio Del Sol"
+            onError={() => setMarkFailed(true)}
+            /* Forced, so the gold is not dropped by a printer set to ignore
+               background graphics or by a print-to-PDF default. */
+            className="vds-letterhead-mark h-24 w-auto"
+          />
+        )}
+        <p className="mt-1 font-mono text-xs text-slate-500">Ocho Rios, St. Ann, Jamaica</p>
         <p className="mt-0.5 text-[10px] text-slate-400">16-Unit Gated Residence — Internal Operations Record</p>
       </div>
       <div className="text-right">

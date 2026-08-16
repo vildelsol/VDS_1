@@ -26,56 +26,86 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **788 automated tests pass.** Typecheck clean, build clean, `npm audit` clean.
-- Working tree is clean, everything pushed. Latest commit: `276c667`.
-- Latest release: **v1.8.1**.
-  - `v1.8.1` — USB backup drive detection is now fully automatic. When the Backup & recovery tab
-    opens the server enumerates attached drives. If exactly one removable writable drive is found
-    and no backup folder is configured, it is selected and saved without any user input. When
-    multiple drives are present each shows a single-tap "Use this drive" button that selects, saves,
-    and writes the first copy immediately. Previously the user had to type the path by hand.
-  - `v1.8.0` — a hardening and confidence release. Backups no longer carry working logins; the
-    restore path is tested end to end; a figure is read or refused rather than silently reshaped;
-    sign-in no longer leaks which usernames exist; a stay cancelled on Airbnb is now cancelled here;
-    and a USB backup drive is detected and followed when Windows moves its letter. 300 simulated
-    scenarios across the whole application found no integrity violation. Details in *Hardening —
-    2026-08-10* below.
-  - `v1.7.0` — double-record guard, recurring expenses, damage deposits, and Tier 5 (bank
-    reconciliation, refunds, the proration decision).
-  - `v1.7.1` — three bugs the robustness audit found in that Tier 5 code. **Do not deploy v1.7.0**;
-    it can leave a receipt worth a negative amount. See *Robustness audit* below.
-  - `v1.7.2` — changing a settled receipt's currency now takes an explicit confirmation.
+- **913 automated tests pass.** Typecheck clean, build clean.
+- Working tree is clean. The 2026-08-16 session is committed as a single commit — *"Brand the app,
+  add management reporting, and prepare the Excel migration"*, 36 files. See *Session 2026-08-16*
+  below for what it contains.
+- ⚠️ **Committed but not pushed.** `main` is **1 commit ahead of `origin/main`**. Push before
+  relying on the remote, and before anyone else pulls.
+- Latest release: **v1.8.1**. That session's work is unreleased — no tag, no build shipped to the
+  HP. The live machine is still running v1.8.1.
 
-**The audit is finished.** Every tier is closed. There is no backlog: the next thing to build is
-whatever Ro asks for, not something on a list in this file.
+**The system is live.** The HP runs v1.8.1, Tailscale is installed and remote access from a phone
+is confirmed.
 
-**The system is live.** As of 2026-08-10 the HP is running v1.8.1, Tailscale is installed and
-confirmed working, and remote access from a phone over Tailscale has been tested successfully.
+### Migration from Excel — planned, partially enabled (2026-08-16)
 
-### Owner statements — finished
+Ro is migrating from Excel with a cutover of **1 September**. This is the next real piece of work
+and the enabling parts are built:
 
-The dangling `src/lib/finance.ts` this file used to warn about is committed and in use. Owner
-statements (Tier 2 of the audit) are complete: helpers, screen, printable per-owner document,
-Excel export, 26 tests, verified in the browser against seeded data.
+- **Tenants owe nothing at cutover.** Nothing to carry across for them.
+- **Owners DO owe maintenance.** Ro keys these in by hand.
+- **Deposits are held for some tenants** and must be recorded on the tenancy so they are not lost.
 
-**The design decision, unchanged:** the corporation's income is HOA maintenance; **rent and
-short-let booking income belong to the individual proprietor** — the agent only collects it for
-them — and their villa's costs are theirs. A statement puts those three on one page:
-collected on your behalf − maintenance billed − expenses on your villa = net. Computed **per
-currency, never across**. That matches how the Projections tab frames the strata corporation, so
-the two cannot contradict each other.
+Three things exist to make this safe:
 
-Two things worth knowing about the implementation:
+1. **"The books begin on"** — System Settings → General. Set it to `2026-09-01`.
+   Without it, entering a tenancy with its real start date (some tenants are years-standing) makes
+   `unbilledOccupancy` report *every month back to that date* as unbilled — hundreds of false
+   alerts that bury the real ones. It does **not** hide a month after the cutover that was
+   genuinely missed; that is tested.
+2. **`Opening balance`** one-off charge type — for keying each owner's carried-over arrears.
+3. **`Insurance share`** one-off charge type — for the annual apportionment, adjustable per villa.
 
-- Maintenance is deducted **as billed**, not as paid. So an owner who settles their own
-  maintenance by bank transfer *and* has it withheld from their rent has been charged twice. The
-  statement therefore also carries `maintenancePaid` and says out loud, on screen and on the
-  printed page, how much was received in the period. Nothing else would have shown it.
-- Statements are per villa per currency, but they are grouped by **owner** for issuing —
-  `groupStatementsByOwner()` — because an owner of two villas is owed one document, not two
-  envelopes that each tell half the story.
+**Tell whoever does the data entry:** date an opening balance to **when the debt actually fell
+due**, not to 1 September. The balance is the same either way; the *ageing* is only right if the
+date is, and the Form 13B return depends on that ageing.
 
----
+No bulk-entry screen was built. "Bill a one-off" in the HOA & Tenants Ledger already takes villa,
+account, type, amount, currency, **editable due date** and description — which is the manual
+feature Ro asked for. A bulk apportionment tool was offered and not taken up.
+
+### Owner statements — rebuilt on the correct business model (2026-08-16)
+
+**This section previously described the wrong business model. It has been corrected — read this
+before touching anything on this screen.**
+
+The old note said rent and booking income "belong to the individual proprietor — the agent only
+collects it for them". **That is not the arrangement.** Ro confirmed on 2026-08-16:
+
+- **Proprietors let their own villas entirely on their own account.** The corporation never
+  collects their rent, never sees it, and it does not pass through this system.
+- **The corporation collects exactly two things from a proprietor:** the maintenance contribution,
+  and their share of the annual insurance premium.
+- **Utilities are the owner's own.** Each villa's supply is metered in the owner's own name and
+  settled directly with the utility. Utilities never appear on a proprietor's statement.
+- **Work done for an owner is recharged**, so the "Charged to your villa" section stays.
+- The rent / tenancy / short-term booking machinery exists for the villas **VDS lets on its own
+  account**. It is real and stays.
+
+So for an ordinary proprietor the statement is an **account of what they owe**, not a remittance of
+what was gathered for them:
+
+    contributions billed − payments received = balance owing
+
+The remittance columns ("Collected on your behalf") still exist and are still correct, but they
+**render only when money was actually held** — so a proprietor's statement is never opened by a
+line reading "nothing collected in the period" about rent nobody was collecting. Same conditional
+governs the utilities section.
+
+Still true from the original design, and still load-bearing:
+
+- Maintenance is deducted **as billed**, not as paid, so `maintenancePaid` is stated out loud
+  underneath. An owner who paid directly *and* had it withheld would otherwise be charged twice.
+- Per villa **per currency, never across**.
+- Grouped by **owner** for issuing (`groupStatementsByOwner()`) — an owner of two villas gets one
+  document.
+
+**One supply is billed once.** A metered villa produces two records for the same electricity: the
+supplier invoice the corporation pays, and the reading it bills the occupant from. Utility-category
+expenses are therefore **excluded** from what is recharged to an owner (`ownerStatement` filters
+`e.category !== 'Utilities'`). Removing that filter double-bills, and three tests plus a
+400-scenario invariant will catch you.
 
 ## How to run and test
 
@@ -164,7 +194,10 @@ Watch it with `gh run watch <id> --exit-status`.
 - **First and last month's rent** on move-in; the final month is not charged again, so a tenancy of
   N months is charged exactly N months.
 - **One-off charges** — late fee, repair recharge, fine, amenity fee, legal costs, special
-  assessment — billed onto the tenant's rent or the owner's maintenance account.
+  assessment, **insurance share**, **opening balance** — billed onto the tenant's rent or the
+  owner's maintenance account, with an **editable due date**. The last two were added for the
+  2026-09 migration: date an opening balance to when the debt fell due, not to the cutover, or the
+  ageing on the Form 13B return will be wrong.
 - **Security deposits** — held on the tenancy, refundable, reconciled at move-out. Raises no
   charge, records no payment, moves no balance. Withholding requires a reason and is veto-gated.
 - **Guest damage deposits** — the same instrument on a short stay, and **entirely optional**. See
@@ -619,6 +652,68 @@ never appears, and the officer is walled out with no way through. That exact bug
 
 ---
 
+### Session 2026-08-16 — branding, management reporting, migration groundwork
+
+A long session. Everything below is **staged, not committed**.
+
+**Branding.** Logo (`public/vds-logo.png`, transparent) on the login screen, sidebar, mobile header
+and every printed letterhead. **"Powered by ISPO"** on the sign-in screen, the sidebar footer, and
+printed-document footers — Villaggio Del Sol is owned by Ispo Construction Ltd.
+
+⚠️ **ISPO is deliberately NOT in the letterhead.** The letterhead answers *who issued this
+document*, and on an owner statement that must be the body corporate alone — a second company's
+name there invites a proprietor to ask who is actually billing them. Keep it a footer credit. If
+Forms 13A/13B/13C are ever generated as documents, keep ISPO off them entirely.
+
+**Management reporting — new.**
+- `BoardPack.tsx` — one document (covering figures + charts) replacing the print-three-documents
+  ritual. Button on the Charts tab.
+- Three charts: **rented villas by month**, **collection rate by month**, **arrears ageing**.
+- `arrearsAgeing` / `ageAccountArrears` in `finance.ts`. **Form 13B now buckets debt through the
+  same function**, so the statutory return and the management chart cannot diverge.
+- `occupancySeries` / `occupiedUnitIdsOn` — occupancy read from tenancy and booking *dates*, because
+  `unit.status` has no history. **Consequence, stated on the chart and pinned by a test:** an
+  owner-occupied villa files neither, so it is not counted. This measures villas *rented out*.
+- Every SVG chart now also emits a data table. **This is an invariant, not a nicety** — chart values
+  live in `<title>` tooltips, which are unreachable on paper, by keyboard, or to a screen reader.
+  `components.test.mjs` asserts it per chart *and* as a blanket rule.
+
+**Dashboard / Reports / navigation.**
+- Removed the full-width banner that spent the best space on one button.
+- Unbilled accounts got their own warning — they previously shared a line with the arrears figure
+  and vanished the moment anything was in arrears.
+- Prior-month comparisons on arrears, collection rate and net cash.
+- Report observations ranked (urgent / notable / context) instead of emitted in computation order.
+- Sidebar grouped Daily / Financial / Records.
+- Reporting date range shared between Charts and Reports (`src/lib/reportRange.ts`). **Deliberately
+  not shared with Projections** — that window is a run-rate averaging basis that ends at last month
+  on purpose.
+
+**Terminology.** "Let occupancy" → **"Rented"**. "Occupied" was rejected because the app already
+uses "Owner Occupied" as a unit status.
+
+**Testing — 788 → 913.**
+- `scenarios-400.test.mjs` (was 300). Audits the books **and** the reporting layer after every
+  scenario, exhaustively rather than sampled (16s for 400).
+- `components.test.mjs` — first frontend tests. esbuild + `react-dom/server`, no new dependencies.
+- `management-charts.test.mjs`, `time-assumptions.test.mjs`.
+- **A 404 tripwire now lives in `makeClient`.** Three of my scenarios were posting to routes that
+  do not exist, passing silently, and proving nothing — two assertions above them passed for
+  unrelated reasons. All three scenario suites now assert zero 404s during their loops. The other
+  two suites were clean.
+
+**Read this before trusting a green run:** several fixes in this session were mutation-tested —
+the guard was removed and the suite confirmed to fail. Do the same for anything load-bearing you
+add. A green test that would not catch its own bug is worse than no test.
+
+**Known limitation.** The letterhead pill's right edge was flush with its container (measured gap
+of zero) and lost its outer half to rasteriser clipping; it now has a 1px inset and the rule is
+defined once for all media rather than print-only. **This could not be verified in an actual PDF
+export** — no tool here rasterises one. If it still reads thin on paper, the next step is dropping
+the corner radius for print.
+
+---
+
 ## The audit — closed
 
 I audited the app as a property manager and worked the list down. **Everything on it is now done or
@@ -674,13 +769,29 @@ commission that is not charged, or a gross figure that is never received, would 
 
 ### Where to pick up
 
-**Nowhere — there is no backlog.** The audit is finished. The next thing to build is whatever Ro
-asks for.
+**1. Push, and decide about a release.** The 2026-08-16 commit is not pushed — `main` is 1 ahead of
+`origin/main` (`git log --oneline origin/main..HEAD`). Nothing is tagged and the HP is still running
+v1.8.1, so none of that work is live yet. Decide with Ro whether it ships now or after the
+migration.
 
-Resist the urge to find work here. Two things this file would previously have pointed at are now
-settled decisions rather than gaps: **records/documents stay manual**, and **rent is never
-prorated**. Both were Ro's calls, made explicitly. Treat a new idea the same way the closed items
-above were treated — ask what problem it actually solves at this property before building it.
+**2. The Excel migration is the live piece of work.** Cutover 1 September. See *Migration from
+Excel* under *State right now*. The enabling parts are built; the data entry and a dry run are not.
+Suggested order:
+   - Set **"The books begin on"** to `2026-09-01` in System Settings → General.
+   - Enter tenancies with **real start dates** — that is now safe.
+   - Record security deposits on the tenancies that have them.
+   - Key each owner's carried-over maintenance as an **Opening balance** charge, **dated to when it
+     actually fell due**.
+   - Then verify: arrears match Excel, and the ageing buckets look right on the Charts tab.
+
+**3. Offered and not taken up** — build only if asked:
+   - Bulk insurance apportionment (enter the premium, split across villas, edit each line, post).
+   - A PDF-diff harness. Real print output is the one thing no test here covers, and it is exactly
+     where a regression already slipped through once (the letterhead mark rendered at ~1.5mm and
+     passed every test).
+
+Otherwise: **no backlog.** The audit is closed. Resist finding work here — ask what problem it
+solves at this property first.
 
 ---
 
@@ -707,3 +818,14 @@ Decisions already made — **do not re-litigate**:
   not rebuild it without being asked.
 - **Bank reconciliation is a tick, not a CSV import** (2026-08-09). Revisit only with a real
   statement file in hand to test against.
+- **The corporation does not collect rent for proprietors** (2026-08-16). They let their own villas
+  entirely on their own account. The corporation collects maintenance and the insurance share, and
+  recharges work it performs. The rent/booking machinery is for **VDS's own villas**.
+- **Owners' utilities are their own** (2026-08-16) — metered in their own name, settled directly
+  with the utility, never on an owner statement.
+- **Insurance is apportioned equally per villa and adjusted by hand** (2026-08-16). Not a formula.
+- **Juniors cannot reverse** (2026-08-16, reaffirmed). Void, refund and void-charge all exist and
+  are audited; juniors hold only `recordPayments` and `addBookings`. The person taking money does
+  not erase the record of it. Toggleable in System Settings if that ever changes.
+- **"Rented", not "let" or "occupied"** (2026-08-16), because "Owner Occupied" is already a status.
+- **"Powered by ISPO" is a footer credit, never a letterhead** (2026-08-16).

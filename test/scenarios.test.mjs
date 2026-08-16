@@ -89,7 +89,12 @@ function auditDatabase(db) {
     if (c.currency && !['JMD', 'USD'].includes(c.currency)) problems.push(`charge ${c.id} is in ${c.currency}`);
   }
   // One live rent charge per unit per month: a re-post after a void must not double-bill.
-  const live = charges.filter(c => c.status === 'open' && !c.oneOffType);
+  // The advance charge for a tenant's final month carries the move-in month as
+  // its period without being that month's rent, so it legitimately sits beside
+  // the ordinary rent charge. Excluded here for the same reason one-offs are:
+  // this suite does not currently open a first-and-last tenancy, and would
+  // report a false double-billing the day one is added.
+  const live = charges.filter(c => c.status === 'open' && !c.oneOffType && c.kind !== 'advance-final-month');
   const seen = new Map();
   for (const c of live) {
     const key = `${c.unitId}|${c.category}|${c.periodMonth}`;
@@ -340,6 +345,8 @@ export default async function run({ port, projectRoot }) {
     let firstFailure = null;
     const failedSeeds = [];
 
+    // Only the scenario loop is under scrutiny; setup above may probe freely.
+    c.clearNotFound();
     for (let i = 0; i < SCENARIO_COUNT; i++) {
       const seed = 1000 + i;
       const rand = rng(seed);
@@ -363,6 +370,12 @@ export default async function run({ port, projectRoot }) {
     }
 
     T.check(`all ${SCENARIO_COUNT} scenarios ran without the server failing`, ran === SCENARIO_COUNT, `${ran} of ${SCENARIO_COUNT}`);
+    const dead = c.notFound();
+    T.check(
+      'every scenario called a route that exists, so none of them silently did nothing',
+      dead.length === 0,
+      `${dead.length} calls 404'd, e.g. ${[...new Set(dead)].slice(0, 3).join(' | ')}`
+    );
     T.check('the books stayed coherent after every one of them', failedSeeds.length === 0, failedSeeds.slice(0, 5).join(' | '));
 
     /* ---------------------------------------------------------------- *

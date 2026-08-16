@@ -30,7 +30,7 @@ import {
   Booking
 } from '../types';
 import { round2, sumMoney, subtractMoney } from './money';
-import { currentMonth, daysSince, daysSinceOn, isWithin, monthOf, monthsBetween, addDays, today } from './dates';
+import { currentMonth, daysSince, daysSinceOn, isWithin, monthEnd, monthOf, monthsBetween, addDays, today } from './dates';
 
 /** A record that points at a unit. */
 interface UnitLinked {
@@ -588,6 +588,68 @@ export function isOccupied(unit: Unit): boolean {
 }
 
 /**
+ * Villas occupied on a given day, reconstructed from the dated records.
+ *
+ * `isOccupied` reads `unit.status`, which is a *current* flag with no history —
+ * asking it about last March returns today's answer. Only tenancies and bookings
+ * carry date ranges, so an honest historical series can only be built from those:
+ * a villa counts as occupied on a day when a tenancy covers it or a guest is in
+ * residence that night.
+ *
+ * The consequence, which every caller must state rather than paper over: an
+ * owner-occupied villa files neither a tenancy nor a booking, so it is *not*
+ * counted here. This measures villas rented out, not villas physically occupied,
+ * differ by exactly the owner-occupied lots.
+ */
+export function occupiedUnitIdsOn(units: Unit[], tenancies: Tenancy[], bookings: Booking[], day: string): Set<string> {
+  const out = new Set<string>();
+
+  for (const tenancy of tenancies) {
+    // Dates, never `status` — an ended tenancy still occupied its villa back then.
+    if (tenancy.startedOn > day) continue;
+    if (tenancy.endedOn && day >= tenancy.endedOn) continue;
+    out.add(tenancy.unitId);
+  }
+
+  for (const booking of bookings) {
+    // Blocked and Unavailable are calendar holds, not guests in residence. Matches
+    // the nights-sold definition the operating statement reports.
+    if (booking.source === 'Blocked' || booking.source === 'Unavailable') continue;
+    if (!bookingCoversNight(booking, day)) continue;
+    out.add(booking.unitId);
+  }
+
+  // Only villas still on the register count towards the rate.
+  const known = new Set(units.map(u => u.id));
+  for (const id of [...out]) if (!known.has(id)) out.delete(id);
+  return out;
+}
+
+/**
+ * Villas rented out, at the end of each month in the range.
+ *
+ * Sampled on the last day of the month rather than averaged across it: a single
+ * consistent sample point is a figure someone can verify against the register by
+ * hand, which a blended average is not.
+ */
+export function occupancySeries(
+  units: Unit[],
+  tenancies: Tenancy[],
+  bookings: Booking[],
+  months: string[],
+  asOfCap?: string
+): { month: string; occupied: number; total: number; rate: number | null }[] {
+  return months.map(month => {
+    const raw = monthEnd(month);
+    // Never sample past the report date — a future month would read as empty.
+    const day = asOfCap && raw > asOfCap ? asOfCap : raw;
+    const occupied = occupiedUnitIdsOn(units, tenancies, bookings, day).size;
+    const total = units.length;
+    return { month, occupied, total, rate: total > 0 ? round2((occupied / total) * 100) : null };
+  });
+}
+
+/**
  * A booking blocks a night if the night falls in [checkIn, checkOut).
  * The departure day is free: the same-day turnover is a real operational case and
  * the availability engine has always allowed it, so the calendar must agree.
@@ -708,10 +770,19 @@ export function unbilledOccupancy(
   units: Unit[],
   tenancies: Tenancy[],
   charges: Charge[],
-  asOf: string = today()
+  asOf: string = today(),
+  /**
+   * The migration cutover, when there is one. Months before it were billed in
+   * whatever system came before, so the absence of a charge here is a fact about
+   * this application's history rather than an unbilled month. Without it, a
+   * tenancy carrying its real start date reports every month back to that date
+   * as missing — hundreds of false alerts on the first day of use.
+   */
+  booksBeginOn?: string
 ): UnbilledOccupancy[] {
   const out: UnbilledOccupancy[] = [];
   const thisMonth = monthOf(asOf);
+  const firstBilledMonth = booksBeginOn ? monthOf(booksBeginOn) : null;
 
   for (const tenancy of tenancies) {
     if (!tenancy.startedOn) continue;
@@ -731,6 +802,9 @@ export function unbilledOccupancy(
 
     const months = monthsBetween(tenancy.startedOn, `${lastMonth}-01`).filter(month => {
       if (month === finalMonthCoveredByAdvance) return false;
+      // Before the cutover this application was not keeping the books, so it has
+      // no standing to call a month unbilled.
+      if (firstBilledMonth && month < firstBilledMonth) return false;
       return !charges.some(
         c => c.unitId === unit.id && c.category === 'Rent' && c.periodMonth === month && c.status === 'open'
       );
@@ -834,9 +908,20 @@ export interface OwnerStatement {
    * show that.
    */
   maintenancePaid: number;
+  /**
+   * Metered utilities billed to this villa in the period, paid or not.
+   *
+   * These were previously invisible here. A reading raised against a villa is an
+   * amount that villa owes, but only the *settlement* of one reached the
+   * statement — as a receipt on the collected side — so an owner billed for
+   * consumption and yet to pay saw no charge at all, while an owner who had paid
+   * saw a credit for a bill that appeared nowhere. Billed and paid now both
+   * appear, and net to nothing once settled.
+   */
+  utilityBilled: number;
   /** Property expenses charged to this villa in the period. */
   expenses: number;
-  /** collected − maintenanceBilled − expenses. Negative means the owner owes. */
+  /** collected − maintenanceBilled − utilityBilled − expenses. Negative means the owner owes. */
   net: number;
   /** Maintenance still outstanding at the end of the period, across all time. */
   maintenanceOutstanding: number;
@@ -856,6 +941,8 @@ export interface OwnerStatement {
    */
   refundItems: Payment[];
   maintenanceCharges: Charge[];
+  /** The meter readings behind `utilityBilled`, so the charge can be itemised. */
+  utilityCharges: UtilityReading[];
   expenseItems: Expense[];
   /** Whether anything at all happened, so empty villas can be dropped. */
   active: boolean;
@@ -867,6 +954,7 @@ export function ownerStatement(
   charges: Charge[],
   payments: Payment[],
   expenses: Expense[],
+  utilities: UtilityReading[],
   currency: Currency,
   from: string,
   to: string
@@ -911,8 +999,44 @@ export function ownerStatement(
   ).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const maintenanceBilled = total(maintenanceCharges);
 
+  /*
+   * Metered utilities billed to the villa, dated by the month they were read for.
+   *
+   * Included whether or not they have been settled, on the same principle as
+   * maintenance: the charge is what the owner is liable for, and the receipt is
+   * shown separately. A settled reading therefore appears twice on the page —
+   * once as the charge and once as the payment — and nets to nothing, which is
+   * the arithmetic an owner can actually follow.
+   */
+  const utilityCharges = inPeriod(
+    utilitiesForUnit(utilities, unit, units).filter(u => u.currency === currency && u.amountCharged > 0),
+    u => monthEnd(u.billingPeriod)
+  ).sort((a, b) => a.billingPeriod.localeCompare(b.billingPeriod));
+  const utilityBilled = sumMoney(utilityCharges.map(u => u.amountCharged));
+
+  /*
+   * Costs recharged to the villa — with the supplier's utility invoice excluded.
+   *
+   * A metered villa produces two records for one supply: the invoice the
+   * corporation pays (an Expense, category Utilities, tied to the villa) and the
+   * reading it bills the owner from (a UtilityReading). They are the two sides
+   * of the same electricity, not two costs, and putting both on the owner's
+   * statement charges them twice for it — which then flows into the net, the
+   * arrears and every figure drawn from them.
+   *
+   * The reading is what the owner is actually liable for, so that is the one
+   * that bills them. The supplier invoice stays where it belongs: a cost of the
+   * corporation, recovered by the reading rather than restated on top of it.
+   * `ownerBilledUnitIds` already keeps that recovery out of corporation income
+   * for exactly this reason.
+   *
+   * Anything else charged to the villa — a plumber, a locksmith — has no second
+   * record anywhere and is unaffected.
+   */
   const expenseItems = inPeriod(
-    expensesForUnit(expenses, unit, units).filter(e => e.status === 'paid' && e.currency === currency),
+    expensesForUnit(expenses, unit, units).filter(
+      e => e.status === 'paid' && e.currency === currency && e.category !== 'Utilities'
+    ),
     e => e.datePaid || e.date
   ).sort((a, b) => (a.datePaid || a.date).localeCompare(b.datePaid || b.date));
   const unitExpenses = total(expenseItems);
@@ -922,7 +1046,7 @@ export function ownerStatement(
   const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, to, units);
   const maintenanceOutstanding = maintAccount.currency === currency ? maintAccount.balance : 0;
 
-  const net = round2(collected - maintenanceBilled - unitExpenses);
+  const net = round2(collected - maintenanceBilled - utilityBilled - unitExpenses);
 
   return {
     unit,
@@ -936,18 +1060,21 @@ export function ownerStatement(
     refunded,
     maintenanceBilled,
     maintenancePaid,
+    utilityBilled,
     expenses: unitExpenses,
     net,
     maintenanceOutstanding,
     collectedItems: [...rentItems, ...bookingItems, ...utilityItems].sort((a, b) => a.date.localeCompare(b.date)),
     refundItems,
     maintenanceCharges,
+    utilityCharges,
     expenseItems,
     active:
       collected !== 0 ||
       refunded !== 0 ||
       maintenanceBilled !== 0 ||
       maintenancePaid !== 0 ||
+      utilityBilled !== 0 ||
       unitExpenses !== 0 ||
       maintenanceOutstanding !== 0
   };
@@ -959,13 +1086,14 @@ export function ownerStatements(
   charges: Charge[],
   payments: Payment[],
   expenses: Expense[],
+  utilities: UtilityReading[],
   from: string,
   to: string
 ): OwnerStatement[] {
   const out: OwnerStatement[] = [];
   for (const unit of units) {
     for (const currency of ['JMD', 'USD'] as Currency[]) {
-      const statement = ownerStatement(unit, units, charges, payments, expenses, currency, from, to);
+      const statement = ownerStatement(unit, units, charges, payments, expenses, utilities, currency, from, to);
       if (statement.active) out.push(statement);
     }
   }
@@ -1159,6 +1287,78 @@ function addToBucket(buckets: AgeingBuckets, daysOverdue: number, amount: number
   buckets.total = round2(buckets.total + amount);
 }
 
+/**
+ * Age one account's outstanding balance into the four buckets.
+ *
+ * Extracted so the statutory return (Form 13B) and the management ageing chart
+ * bucket debt by one implementation rather than two. The rule they share is the
+ * one that makes the buckets total the balance: payments are re-applied
+ * oldest-first and **only the uncovered remainder of a part-paid charge is
+ * aged**. `accountBalance` lists a partly covered charge in `unpaidCharges` in
+ * full — correct for showing which months are open, wrong for ageing, because
+ * summing those reports more owing than the account actually carries.
+ *
+ * Returns zeroed buckets for an account that owes nothing.
+ */
+export function ageAccountArrears(
+  unit: Unit,
+  category: ChargeCategory,
+  charges: Charge[],
+  payments: Payment[],
+  asOf: string,
+  allUnits?: Unit[]
+): { currency: Currency; buckets: AgeingBuckets } {
+  const account = accountBalance(unit, category, charges, payments, asOf, allUnits);
+  const buckets = emptyBuckets();
+  if (account.balance <= 0) return { currency: account.currency, buckets };
+
+  const open = chargesForUnit(charges, unit, allUnits)
+    .filter(c => c.category === category && c.status === 'open' && c.currency === account.currency && c.dueDate <= asOf)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  let credit = account.paid;
+  for (const charge of open) {
+    const covered = Math.min(credit, charge.amount);
+    credit = round2(credit - covered);
+    const residual = round2(charge.amount - covered);
+    if (residual > 0) addToBucket(buckets, daysSinceOn(charge.dueDate, asOf), residual);
+  }
+
+  return { currency: account.currency, buckets };
+}
+
+/**
+ * Total outstanding rent and maintenance, aged, per currency.
+ *
+ * The management view of the same debt Form 13B files for maintenance alone:
+ * both categories, summed across every lot, in the form's own buckets so the
+ * chart and the return can be read side by side without reconciling them.
+ */
+export function arrearsAgeing(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  asOf: string
+): { currency: Currency; buckets: AgeingBuckets }[] {
+  return (['JMD', 'USD'] as Currency[])
+    .map(currency => {
+      const totals = emptyBuckets();
+      for (const unit of units) {
+        for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
+          const aged = ageAccountArrears(unit, category, charges, payments, asOf, units);
+          if (aged.currency !== currency || aged.buckets.total <= 0) continue;
+          totals.d30 = round2(totals.d30 + aged.buckets.d30);
+          totals.d60 = round2(totals.d60 + aged.buckets.d60);
+          totals.d90 = round2(totals.d90 + aged.buckets.d90);
+          totals.over90 = round2(totals.over90 + aged.buckets.over90);
+          totals.total = round2(totals.total + aged.buckets.total);
+        }
+      }
+      return { currency, buckets: totals };
+    })
+    .filter(entry => entry.buckets.total > 0);
+}
+
 export interface Form13BRow {
   unit: Unit;
   /** The strata lot number the form asks for, falling back to the villa label. */
@@ -1193,29 +1393,16 @@ export function form13BContributions(
   const rows: Form13BRow[] = [];
 
   for (const unit of units) {
-    const account = accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
-    if (account.balance <= 0) continue;
-
-    // Re-apply oldest-first so a part-paid charge contributes only its remainder.
-    const open = chargesForUnit(charges, unit, units)
-      .filter(c => c.category === 'Maintenance' && c.status === 'open' && c.currency === account.currency && c.dueDate <= asOf)
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-
-    let credit = account.paid;
-    const buckets = emptyBuckets();
-    for (const charge of open) {
-      const covered = Math.min(credit, charge.amount);
-      credit = round2(credit - covered);
-      const residual = round2(charge.amount - covered);
-      if (residual > 0) addToBucket(buckets, daysSinceOn(charge.dueDate, asOf), residual);
-    }
+    // Shared with the management ageing chart, so the return and the chart can
+    // never bucket the same debt differently.
+    const { currency, buckets } = ageAccountArrears(unit, 'Maintenance', charges, payments, asOf, units);
     if (buckets.total <= 0) continue;
 
     rows.push({
       unit,
       strataLot: unit.strataLotNumber || unit.number,
       lotNumberAssumed: !unit.strataLotNumber,
-      currency: account.currency,
+      currency,
       buckets
     });
   }

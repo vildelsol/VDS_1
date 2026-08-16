@@ -175,7 +175,12 @@ export default function Units({
       {units.length === 0 ? (
         <EmptyState title="No villas in the register" icon={<Home className="h-6 w-6" />} />
       ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        // One column on a phone. Two columns gave each villa card about 160px,
+        // which was not enough for the figures it carries — "J$25,000.00/mo"
+        // overflowed its card by up to 49px with nothing to scroll, so the rent
+        // and maintenance rates were simply cut off. Two columns return as soon
+        // as there is room for them.
+        <div className="grid grid-cols-1 gap-4 min-[420px]:grid-cols-2 sm:grid-cols-3 xl:grid-cols-4">
           {units.map(unit => {
             const styles = STATUS_STYLES[unit.status];
             const state = liveUnitState(unit, bookings, todayStr, units);

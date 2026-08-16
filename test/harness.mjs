@@ -97,6 +97,22 @@ export async function startServer({ port, adminPassword, projectRoot, dataDir: r
 /** An HTTP client with a cookie jar. Options are always forwarded (a real one bit us before). */
 export function makeClient(baseUrl) {
   let cookie = '';
+  /**
+   * Every 404 this client received, in order.
+   *
+   * A simulation calls endpoints and ignores most responses, because plenty of
+   * its actions are *meant* to be refused — money in the wrong currency, a
+   * mistyped figure, a clashing stay. Those come back 400, 403 or 409. A 404
+   * means something else entirely: the route does not exist, so the call did
+   * nothing and the scenario containing it proved nothing while still counting
+   * as a scenario that ran.
+   *
+   * Three scenarios were found doing exactly that. Recorded here so a suite can
+   * assert on it; tests that deliberately probe a missing record (asking for a
+   * payment that was never made) simply do not make that assertion.
+   */
+  const notFound = [];
+
   async function call(method, apiPath, body, opts = {}) {
     const headers = { ...(opts.headers || {}) };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -115,6 +131,7 @@ export function makeClient(baseUrl) {
     } catch {
       /* non-JSON body */
     }
+    if (res.status === 404) notFound.push(`${method} ${apiPath}`);
     return { status: res.status, body: json, setCookie, text };
   }
   return {
@@ -124,7 +141,10 @@ export function makeClient(baseUrl) {
     put: (p, b, o) => call('PUT', p, b, o),
     del: (p, b, o) => call('DELETE', p, b, o),
     setCookie: c => (cookie = c),
-    getCookie: () => cookie
+    getCookie: () => cookie,
+    /** Every 404 seen so far, for suites that assert none should happen. */
+    notFound: () => [...notFound],
+    clearNotFound: () => (notFound.length = 0)
   };
 }
 

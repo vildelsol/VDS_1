@@ -2,18 +2,25 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * What the managing agent owes each proprietor, and what each proprietor owes the
- * corporation.
+ * What each proprietor owes the corporation.
  *
  * The Projections tab is written for the body corporate: its income is the
  * maintenance (HOA) contributions proprietors pay, and rent and short-let booking
  * income are deliberately excluded because they are not the corporation's money.
- * This tab is the other side of that same rule. Rent and booking income belong to
- * the individual proprietor — the agent only collects it on their behalf — and the
- * costs of their villa are theirs. An owner statement is the one document that
- * puts those three facts on a single page:
+ * This tab is the other side of that same rule.
  *
- *     collected on your behalf − maintenance billed − expenses on your villa = net
+ * **Proprietors let their own villas on their own account.** The corporation does
+ * not collect rent or guest income for them, and never sees it. What it does
+ * collect is contributions — the maintenance levy and each lot's share of the
+ * annual insurance premium — so for an ordinary proprietor this page is an
+ * account of what they owe, not a remittance of what was gathered for them.
+ *
+ * The remittance columns are still here, and still correct, for the villas the
+ * corporation lets on its *own* account. They render only when money was
+ * actually held, so a proprietor's statement is never opened by a line reading
+ * "nothing collected in the period" about rent nobody was collecting:
+ *
+ *     collected (when any) − contributions billed − utilities billed − amounts charged = net
  *
  * Every figure comes from the same finance helpers the ledger, the reports and the
  * projection use, so the two tabs cannot contradict each other. USD and JMD are
@@ -22,7 +29,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, getUnitDisplayName,
+import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, UtilityReading, getUnitDisplayName,
   bodyCorporateName
 } from '../types';
 import { OwnerStatement, OwnerStatementGroup, groupStatementsByOwner, ownerStatements } from '../lib/finance';
@@ -48,6 +55,8 @@ interface OwnerStatementsProps {
   charges: Charge[];
   payments: Payment[];
   expenses: Expense[];
+  /** Metered utilities billed to a villa, which are charges the owner owes. */
+  utilities: UtilityReading[];
   settings: AppSettings;
   session: SessionUser;
 }
@@ -110,7 +119,7 @@ function netLabel(net: number, owner?: string, unitNumber?: string): string {
   return `${direction} the owner`;
 }
 
-export default function OwnerStatements({ units, charges, payments, expenses, settings, session }: OwnerStatementsProps) {
+export default function OwnerStatements({ units, charges, payments, expenses, utilities, settings, session }: OwnerStatementsProps) {
   const [preset, setPreset] = useState<Preset>('lastMonth');
   const [custom, setCustom] = useState({
     from: monthStart(addMonths(currentMonth(), -1)),
@@ -122,8 +131,8 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
   const invalidRange = to < from;
 
   const groups = useMemo(
-    () => (invalidRange ? [] : groupStatementsByOwner(ownerStatements(units, charges, payments, expenses, from, to))),
-    [units, charges, payments, expenses, from, to, invalidRange]
+    () => (invalidRange ? [] : groupStatementsByOwner(ownerStatements(units, charges, payments, expenses, utilities, from, to))),
+    [units, charges, payments, expenses, utilities, from, to, invalidRange]
   );
 
   const hasData = groups.length > 0;
@@ -139,7 +148,8 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
     rows.push(['VILLAGGIO DEL SOL — PROPRIETOR STATEMENTS']);
     rows.push(['Period', `${formatDayLabel(from)} to ${formatDayLabel(to)}`]);
     rows.push(['Generated', formatDayLabel(today()), 'by', session.name]);
-    rows.push(['Note', 'Rent and booking income belong to the individual proprietor; the agent collects it on their behalf.']);
+    rows.push(['Note', 'Proprietors let their own villas; rent and guest income is theirs in full and does not pass through the corporation.']);
+    rows.push(['Note', 'Collection columns are populated only for villas the corporation lets on its own account.']);
     rows.push(['Note', 'USD and JMD are stated separately and are never combined.']);
     rows.push([]);
     rows.push([
@@ -153,6 +163,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
       'Total collected',
       'Maintenance billed',
       'Maintenance paid in period',
+      'Utilities billed',
       'Villa expenses',
       'Net',
       'Net position',
@@ -172,6 +183,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
           formatMoneyPlain(s.collected),
           formatMoneyPlain(s.maintenanceBilled),
           formatMoneyPlain(s.maintenancePaid),
+          formatMoneyPlain(s.utilityBilled),
           formatMoneyPlain(s.expenses),
           formatMoneyPlain(s.net),
           netLabel(s.net, s.unit.ownerName, s.unit.number),
@@ -202,8 +214,8 @@ export default function OwnerStatements({ units, charges, payments, expenses, se
               Owners statements
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              What was collected for each owner, what they were billed, and the net position — one statement per villa,
-              per currency.
+              What each proprietor has been billed by the corporation and what they have paid — one statement per villa,
+              per currency. Villas the corporation lets on its own account also show what was collected.
             </p>
           </div>
           <SecondaryButton onClick={downloadSpreadsheet} disabled={!hasData} className="flex items-center gap-1.5 self-start">
@@ -439,11 +451,15 @@ function OwnerStatementDocument({
       '',
       `Please find your proprietor statement for ${period} summarised below.`,
       '',
+      // The collection line is omitted unless the corporation actually held
+      // money for the villa, for the same reason it is omitted on the printed
+      // page: quoting a nil collection to a proprietor who lets their own villa
+      // invites a question about rent that was never the corporation's to take.
       ...group.statements.flatMap(s => [
         `${getUnitDisplayName(s.unit.number)} (${s.currency})`,
-        `  Collected on your behalf : ${formatMoneyLong(s.collected, s.currency)}`,
-        `  Maintenance billed       : ${formatMoneyLong(s.maintenanceBilled, s.currency)}`,
-        `  Expenses on your villa   : ${formatMoneyLong(s.expenses, s.currency)}`,
+        ...(s.collected !== 0 ? [`  Collected on your behalf : ${formatMoneyLong(s.collected, s.currency)}`] : []),
+        `  Contributions billed     : ${formatMoneyLong(s.maintenanceBilled, s.currency)}`,
+        ...(s.expenses !== 0 ? [`  Charged to your villa    : ${formatMoneyLong(s.expenses, s.currency)}`] : []),
         `  ${netLabel(s.net, s.unit.ownerName, s.unit.number)} : ${formatMoneyLong(Math.abs(s.net), s.currency)}`,
         ''
       ]),
@@ -475,12 +491,24 @@ function OwnerStatementDocument({
     >
       <PrintLetterhead documentTitle="Owner Statement" meta={period} generatedBy={generatedBy} />
 
+      {/*
+        "Net position: -J$150,000" asks the reader to work out that a minus sign
+        means they owe it. When the corporation collected nothing there is no
+        position to net — there is a balance owing — so the tile says that and
+        drops the sign. The netting language stays for the villas the corporation
+        does let, where money genuinely runs both ways.
+      */}
       <section className="mb-5 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
         {[
           ['Registered proprietor', group.owner || '—'],
           ['Villas', String(new Set(group.statements.map(s => s.unit.id)).size)],
           ['Period', period],
-          ['Net position', group.netByCurrency.map(r => formatMoneyLong(r.net, r.currency)).join(' · ') || '—']
+          group.statements.some(s => s.collected !== 0)
+            ? ['Net position', group.netByCurrency.map(r => formatMoneyLong(r.net, r.currency)).join(' · ') || '—']
+            : [
+                group.netByCurrency.every(r => r.net <= 0) ? 'Balance owing' : 'Balance',
+                group.netByCurrency.map(r => formatMoneyLong(Math.abs(r.net), r.currency)).join(' · ') || '—'
+              ]
         ].map(([label, value]) => (
           <div key={label}>
             <span className="block font-mono text-[9px] uppercase text-slate-500">{label}</span>
@@ -493,26 +521,39 @@ function OwnerStatementDocument({
         <StatementSection key={`${s.unit.id}-${s.currency}`} statement={s} />
       ))}
 
+      {/*
+        Retitled from "Basis", which told a lay proprietor nothing, and corrected.
+        The first bullet used to state that rent and booking income were
+        "collected on your behalf by the managing agent". That is not the
+        arrangement: proprietors let their own villas entirely on their own
+        account, and the corporation collects only contributions. A statement
+        that describes a service it does not provide is worse than one that says
+        nothing, so the claim is gone rather than softened.
+      */}
       <section className="mb-5 break-inside-avoid">
-        <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Basis</h3>
+        <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
+          How this statement is prepared
+        </h3>
         <ul className="list-disc space-y-1 pl-5 text-[11px] leading-relaxed">
           <li>
-            Rent and short-term booking income belong to you as proprietor and are collected on your behalf by the
-            managing agent. Maintenance (HOA) contributions are the income of the body corporate,{' '}
-            <strong>{bodyCorporateName(settings)}</strong> — not of the Commission of Strata Corporations, which is the
-            regulator the corporation files its annual return with.
+            This is an account of what you owe the body corporate,{' '}
+            <strong>{bodyCorporateName(settings)}</strong> — not of income from your villa. Letting your villa is
+            yours to arrange, and any rent or guest income from it is yours in full and does not pass through this
+            corporation.
           </li>
           <li>
-            Maintenance is deducted as <strong>billed</strong> for the period, whether or not it has been paid. Where a
-            contribution has already been received in the period it is stated beneath the deduction, so the same money is
+            Contributions are shown as <strong>billed</strong> for the period, whether or not they have been paid. Where
+            a contribution has already been received in the period it is stated beneath the charge, so the same money is
             not accounted for twice.
           </li>
           <li>
-            Expenses are those charged to your villa and paid in the period. Common property and office costs are the
-            corporation's and do not appear here.
+            Only amounts the corporation charges you appear here — your maintenance contribution, your share of the
+            annual insurance premium, and anything separately recharged to your villa. Your utilities are supplied on
+            your own meter in your own name and settled directly with the utility, so they never appear on this
+            statement. Common property and office costs are the corporation's.
           </li>
           <li>
-            Only payments confirmed as received are included; money expected but not yet received counts for nothing.
+            Only payments confirmed as received are credited; money expected but not yet received counts for nothing.
             USD and JMD are stated separately and never combined.
           </li>
         </ul>
@@ -532,6 +573,15 @@ function OwnerStatementDocument({
 /** One villa, one currency: the itemised working behind the net figure. */
 function StatementSection({ statement: s }: { statement: OwnerStatement }) {
   const c = s.currency;
+  /**
+   * Whether the corporation held any money for this villa in the period.
+   *
+   * False for a proprietor letting their own villa, which is the ordinary case:
+   * nothing is collected for them, so the page is an account of what they owe
+   * rather than a remittance, and the headings have to say so. "Less:" only
+   * makes sense when there is something to deduct from.
+   */
+  const remitted = s.collected !== 0 || s.collectedItems.length > 0 || s.refundItems.length > 0;
   return (
     <section className="mb-6 break-inside-avoid">
       <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
@@ -541,31 +591,44 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
       <TableScroller>
         <table className="w-full text-left text-[10px]">
           <tbody className="font-mono">
+            {/*
+              Shown only when the corporation actually holds money for this
+              villa — which, for a proprietor letting their own villa, it never
+              does. Rendering it unconditionally opened every owner's statement
+              with "Collected on your behalf — nothing collected in the period",
+              which reads as a failure to collect rent nobody was collecting,
+              and then deducted contributions from that nothing.
+
+              It stays for the villas the corporation does let on its own
+              account, where the figure is real and the heading is true.
+            */}
+            {remitted && (
+              <LineGroup
+                title="Collected on your behalf"
+                rows={[
+                  ...s.collectedItems.map(p => ({
+                    date: p.date,
+                    detail: `${p.category} — ${p.payerName || 'received'} (${p.method})`,
+                    ref: p.receiptNo,
+                    amount: p.amount
+                  })),
+                  // Money handed back, in the same list and dated by when it went
+                  // out, so the column adds up to the total beneath it.
+                  ...s.refundItems.map(p => ({
+                    date: p.refundedOn || p.date,
+                    detail: `Refund — ${p.payerName || 'payer'} (${p.refundMethod || p.method}): ${p.refundReason || ''}`.trim(),
+                    ref: p.receiptNo,
+                    amount: -(p.refundedAmount || 0)
+                  }))
+                ].sort((a, b) => a.date.localeCompare(b.date))}
+                total={s.collected}
+                currency={c}
+                tone="credit"
+                emptyLabel="Nothing collected in the period."
+              />
+            )}
             <LineGroup
-              title="Collected on your behalf"
-              rows={[
-                ...s.collectedItems.map(p => ({
-                  date: p.date,
-                  detail: `${p.category} — ${p.payerName || 'received'} (${p.method})`,
-                  ref: p.receiptNo,
-                  amount: p.amount
-                })),
-                // Money handed back, in the same list and dated by when it went
-                // out, so the column adds up to the total beneath it.
-                ...s.refundItems.map(p => ({
-                  date: p.refundedOn || p.date,
-                  detail: `Refund — ${p.payerName || 'payer'} (${p.refundMethod || p.method}): ${p.refundReason || ''}`.trim(),
-                  ref: p.receiptNo,
-                  amount: -(p.refundedAmount || 0)
-                }))
-              ].sort((a, b) => a.date.localeCompare(b.date))}
-              total={s.collected}
-              currency={c}
-              tone="credit"
-              emptyLabel="Nothing collected in the period."
-            />
-            <LineGroup
-              title="Less: maintenance billed"
+              title={remitted ? 'Less: maintenance billed' : 'Maintenance contribution billed'}
               rows={s.maintenanceCharges.map(charge => ({
                 date: charge.dueDate,
                 detail: charge.description || `Maintenance — ${formatMonthLabel(charge.periodMonth)}`,
@@ -582,8 +645,36 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
                   : undefined
               }
             />
+            {/*
+              Shown only when the corporation actually metered and billed this
+              villa — which for a proprietor it does not, because each owner's
+              supply is in their own name and settled directly with the utility.
+              Rendering it regardless would put "no utilities were billed to this
+              villa" on every proprietor's statement, about a bill that was never
+              the corporation's to raise.
+
+              It stays for the villas the corporation lets on its own account,
+              where it does meter the occupant and the figure is real.
+            */}
+            {s.utilityCharges.length > 0 && (
             <LineGroup
-              title="Less: expenses on your villa"
+              title={remitted ? 'Less: utilities billed to your villa' : 'Utilities billed to your villa'}
+              rows={s.utilityCharges.map(u => ({
+                date: monthEnd(u.billingPeriod),
+                detail: `Utilities — ${formatMonthLabel(u.billingPeriod)}${u.meterNumber ? ` (meter ${u.meterNumber})` : ''}${
+                  u.consumption ? ` — ${u.consumption} units` : ''
+                }`,
+                ref: u.status === 'paid' ? 'settled' : 'unpaid',
+                amount: u.amountCharged
+              }))}
+              total={s.utilityBilled}
+              currency={c}
+              tone="debit"
+              emptyLabel="No utilities were billed to this villa in the period."
+            />
+            )}
+            <LineGroup
+              title={remitted ? 'Less: expenses on your villa' : 'Charged to your villa'}
               rows={s.expenseItems.map(e => ({
                 date: e.datePaid || e.date,
                 detail: `${e.category}${e.vendor ? ` — ${e.vendor}` : ''}${e.description ? ` — ${e.description}` : ''}`,
@@ -593,7 +684,7 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
               total={s.expenses}
               currency={c}
               tone="debit"
-              emptyLabel="No expenses charged to this villa in the period."
+              emptyLabel="Nothing else was charged to this villa in the period."
             />
           </tbody>
           <tfoot>
@@ -637,8 +728,15 @@ function LineGroup({
 }) {
   return (
     <>
+      {/*
+        Horizontally padded to the same inset as the cells beneath it. The
+        heading previously carried only vertical padding, so every section title
+        sat hard against the table's left rule while its own rows were indented
+        by `p-2` — the heading looked like it belonged to the border rather than
+        to the figures under it.
+      */}
       <tr>
-        <td colSpan={4} className="pt-3 pb-1 font-sans text-[10px] font-bold uppercase tracking-wide text-slate-700">
+        <td colSpan={4} className="px-2 pt-4 pb-1 font-sans text-[10px] font-bold uppercase tracking-wide text-slate-700">
           {title}
         </td>
       </tr>
@@ -662,7 +760,11 @@ function LineGroup({
       )}
       <tr className="border-t border-slate-300 font-semibold">
         <td className="p-2 font-sans" colSpan={3}>
-          {tone === 'credit' ? 'Total collected' : `Total ${title.replace('Less: ', '')}`}
+          {/* "Total Maintenance contribution billed" read as two headings collided;
+              the section name is lower-cased so the total reads as a sentence. */}
+          {tone === 'credit'
+            ? 'Total collected'
+            : `Total ${title.replace('Less: ', '').replace(/^./, ch => ch.toLowerCase())}`}
         </td>
         <td className="p-2 text-right">{formatMoney(total, currency)}</td>
       </tr>

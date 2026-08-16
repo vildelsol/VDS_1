@@ -29,9 +29,9 @@ import {
   unbilledAccounts,
   unbilledOccupancy
 } from '../lib/finance';
-import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
+import { formatMoney, formatMoneyLong, round2, sumMoney } from '../lib/money';
 import ReceivePaymentModal from './ReceivePaymentModal';
-import { addDays, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
+import { addDays, addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
 import {
   Badge,
   EmptyState,
@@ -105,7 +105,10 @@ export default function Dashboard({
    * Occupied months that were never billed — the same list the notifications hub
    * shows, from the same function, so the two screens cannot disagree about it.
    */
-  const unbilledMonths = useMemo(() => unbilledOccupancy(units, tenancies, charges), [units, tenancies, charges]);
+  const unbilledMonths = useMemo(
+    () => unbilledOccupancy(units, tenancies, charges, today(), settings.booksBeginOn),
+    [units, tenancies, charges, settings.booksBeginOn]
+  );
 
   /** Leases ending or already lapsed — same function the hub uses. */
   const leases = useMemo(() => leasesNeedingAttention(units, tenancies), [units, tenancies]);
@@ -119,6 +122,25 @@ export default function Dashboard({
 
   const chargesPostedForMonth = charges.some(c => c.periodMonth === month && c.status === 'open');
 
+  /* ---------------- the month before, for comparison ---------------- */
+
+  /**
+   * A single figure says nothing about direction: 88% collected is good news or
+   * bad depending entirely on what it was last month. Every comparison here is
+   * the same measure over the preceding month, computed by the same functions —
+   * never a different measure dressed up as a trend.
+   */
+  const previousMonth = addMonths(month, -1);
+  const previousStart = monthStart(previousMonth);
+  const previousEnd = monthEnd(previousMonth);
+
+  /** Arrears as they stood at the end of the previous month. */
+  const previousArrears = useMemo(
+    () => delinquentAccounts(units, charges, payments, previousEnd),
+    [units, charges, payments, previousEnd]
+  );
+  const arrearsDelta = arrears.length - previousArrears.length;
+
   /* ---------------- money for the selected period ---------------- */
 
   const ledger = useMemo(() => {
@@ -126,16 +148,29 @@ export default function Dashboard({
       const collected = collectedInPeriod(payments, currency, periodStart, periodEnd, ownerBilled);
       const billed = chargedInPeriod(charges, currency, periodStart, periodEnd);
       const spent = expensesInPeriod(expenses, currency, periodStart, periodEnd);
+
+      // The same three figures for the preceding month, so the screen can say
+      // which way each one moved rather than only where it stands.
+      const priorCollected = collectedInPeriod(payments, currency, previousStart, previousEnd, ownerBilled);
+      const priorBilled = chargedInPeriod(charges, currency, previousStart, previousEnd);
+      const priorSpent = expensesInPeriod(expenses, currency, previousStart, previousEnd);
+
+      const rate = collectionRate(billed.total, sumMoney([collected.rent, collected.maintenance]));
+      const priorRate = collectionRate(priorBilled.total, sumMoney([priorCollected.rent, priorCollected.maintenance]));
+
       return {
         currency,
         collected,
         billed,
         spent,
         net: sumMoney([collected.total, -spent]),
-        rate: collectionRate(billed.total, sumMoney([collected.rent, collected.maintenance]))
+        rate,
+        priorRate,
+        priorNet: sumMoney([priorCollected.total, -priorSpent]),
+        priorReceived: priorCollected.total
       };
     });
-  }, [payments, charges, expenses, periodStart, periodEnd, ownerBilled]);
+  }, [payments, charges, expenses, periodStart, periodEnd, previousStart, previousEnd, ownerBilled]);
 
   /* ---------------- short-term ---------------- */
 
@@ -170,22 +205,24 @@ export default function Dashboard({
       {error && <ErrorNote>{error}</ErrorNote>}
       {success && <SuccessNote>{success}</SuccessNote>}
 
-      {/* Quick actions */}
-      <div className="flex flex-col items-start justify-between gap-4 rounded-2xl border border-teal-950 bg-teal-900 p-5 text-white shadow-md sm:flex-row sm:items-center">
-        <div>
-          <h3 className="font-display text-sm font-semibold tracking-wide">Operational quick actions</h3>
-          <p className="mt-1 text-xs text-teal-100/80">Record a payment received at the office without leaving this page.</p>
-        </div>
-        {session.permissions.recordPayments && (
+      {/*
+        The full-width banner that used to sit here held a single button, which
+        spent the most valuable space on the screen on an action while the
+        problems — arrears, unbilled accounts, lapsing leases — began below the
+        fold. The action is still one click away, in the row of figures it
+        belongs beside.
+      */}
+      {session.permissions.recordPayments && (
+        <div className="flex justify-end print:hidden">
           <button
             onClick={() => setPayTarget('blank')}
-            className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-white px-4 py-2.5 text-xs font-semibold text-teal-900 shadow-sm transition-all hover:bg-teal-50 sm:w-auto"
+            className="flex items-center justify-center gap-1.5 rounded-xl bg-teal-700 px-4 py-2.5 text-xs font-semibold text-white shadow-xs transition-all hover:bg-teal-800"
           >
-            <ArrowUpRight className="h-4 w-4 text-emerald-600" />
+            <ArrowUpRight className="h-4 w-4" />
             Receive payment
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Overview */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
@@ -221,10 +258,18 @@ export default function Dashboard({
                 ]
                   .filter(Boolean)
                   .join(' + ') + ' outstanding'
-              : unbilled.length > 0
-                ? // Never say everything is settled while accounts are set up but unbilled.
-                  `${unbilled.length} account${unbilled.length === 1 ? '' : 's'} not yet billed`
-                : 'All billed accounts settled'
+              : 'All billed accounts settled'
+          }
+          // Unbilled accounts used to share this line, which meant they vanished
+          // the moment anything was in arrears — exactly when nobody would notice
+          // they had gone. They carry their own warning below now.
+          delta={
+            arrearsDelta === 0
+              ? { direction: 'flat', label: `unchanged from ${formatMonthLabel(previousMonth)}` }
+              : {
+                  direction: arrearsDelta > 0 ? 'worse' : 'better',
+                  label: `${arrearsDelta > 0 ? '+' : ''}${arrearsDelta} vs ${formatMonthLabel(previousMonth)}`
+                }
           }
           icon={<AlertTriangle className="h-6 w-6" />}
           tone={arrears.length > 0 ? 'red' : 'slate'}
@@ -246,8 +291,18 @@ export default function Dashboard({
               <div key={`${account.unit.id}-${account.category}`} className="flex flex-col justify-between gap-3 rounded-xl border border-red-100 bg-white p-4 text-xs shadow-xs">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <p className="font-semibold text-slate-800">{getUnitDisplayName(account.unit.number)}</p>
+                    {/*
+                      The balance beside this column is `shrink-0`, so a long
+                      figure squeezes the name into whatever is left — measured
+                      at 80px against 84px of content, which clipped the end of
+                      the villa name with no way to read it. The name is allowed
+                      to shrink and ellipsise, and carries its full text as a
+                      title so nothing is actually lost.
+                    */}
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      <p className="min-w-0 truncate font-semibold text-slate-800" title={getUnitDisplayName(account.unit.number)}>
+                        {getUnitDisplayName(account.unit.number)}
+                      </p>
                       <Badge tone={account.category === 'Maintenance' ? 'purple' : 'green'}>{account.category}</Badge>
                     </div>
                     <p className="mt-1.5 truncate text-[10px] text-slate-500">
@@ -295,6 +350,31 @@ export default function Dashboard({
             and use <strong>Post month</strong> to raise rent and maintenance charges for a billing month.
           </InfoNote>
         )
+      )}
+
+      {/*
+        Accounts configured to be billed that have never had a charge raised.
+        They owe nothing, so they can never appear in arrears — which is exactly
+        why this needs saying out loud rather than sharing a line with the
+        arrears figure, where any arrears at all would hide it.
+      */}
+      {unbilled.length > 0 && (
+        <InfoNote tone="amber">
+          <strong>
+            {unbilled.length} account{unbilled.length === 1 ? ' is' : 's are'} set up to be billed but{' '}
+            {unbilled.length === 1 ? 'has' : 'have'} never been charged.
+          </strong>{' '}
+          {unbilled
+            .slice(0, 3)
+            .map(account => `${getUnitDisplayName(account.unit.number)} (${account.category})`)
+            .join(', ')}
+          {unbilled.length > 3 ? ` and ${unbilled.length - 3} more` : ''}. Nothing is owed because nothing was billed, so
+          these never reach the arrears above. Open the{' '}
+          <button onClick={() => onNavigateToTab('finance')} className="font-semibold underline">
+            HOA &amp; Tenants Ledger
+          </button>{' '}
+          and use <strong>Post month</strong> to raise the charges.
+        </InfoNote>
       )}
 
       {leases.length > 0 && (
@@ -417,6 +497,24 @@ export default function Dashboard({
                       <dt>Collection rate</dt>
                       <dd className="font-mono font-medium">{entry.rate === null ? 'n/a' : `${entry.rate}%`}</dd>
                     </div>
+                    {entry.rate !== null && entry.priorRate !== null && (
+                      <div className="flex justify-between gap-2 text-[10px] text-slate-400">
+                        <dt>vs {formatMonthLabel(previousMonth)}</dt>
+                        <dd
+                          className={`font-mono ${
+                            entry.rate > entry.priorRate
+                              ? 'text-emerald-600'
+                              : entry.rate < entry.priorRate
+                                ? 'text-red-600'
+                                : ''
+                          }`}
+                        >
+                          {entry.rate === entry.priorRate
+                            ? 'unchanged'
+                            : `${entry.rate > entry.priorRate ? '+' : ''}${round2(entry.rate - entry.priorRate)} pts`}
+                        </dd>
+                      </div>
+                    )}
                   </dl>
                 </div>
 
@@ -432,6 +530,10 @@ export default function Dashboard({
                       <dd className={`font-mono ${entry.net < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
                         {formatMoney(entry.net, entry.currency)}
                       </dd>
+                    </div>
+                    <div className="flex justify-between gap-2 text-[10px] text-slate-400">
+                      <dt>vs {formatMonthLabel(previousMonth)}</dt>
+                      <dd className="font-mono">{formatMoney(entry.priorNet, entry.currency)}</dd>
                     </div>
                   </dl>
                 </div>
@@ -533,16 +635,25 @@ export default function Dashboard({
 
 /* ------------------------------------------------------------------ */
 
+/** How a figure moved against the same figure a month earlier. */
+interface StatDelta {
+  /** Whether the movement is good news, bad news, or no movement at all. */
+  direction: 'better' | 'worse' | 'flat';
+  label: string;
+}
+
 function StatCard({
   label,
   value,
   hint,
+  delta,
   icon,
   tone
 }: {
   label: string;
   value: string;
   hint: string;
+  delta?: StatDelta;
   icon: React.ReactNode;
   tone: 'emerald' | 'teal' | 'indigo' | 'red' | 'slate';
 }) {
@@ -553,6 +664,8 @@ function StatCard({
     red: 'bg-red-50 text-red-600',
     slate: 'bg-slate-50 text-slate-600'
   };
+  const deltaTone =
+    delta?.direction === 'better' ? 'text-emerald-600' : delta?.direction === 'worse' ? 'text-red-600' : 'text-slate-400';
   return (
     <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-white p-5 shadow-xs">
       <div className="min-w-0">
@@ -561,6 +674,11 @@ function StatCard({
         <p className="mt-1 truncate text-xs text-slate-400" title={hint}>
           {hint}
         </p>
+        {delta && (
+          <p className={`mt-0.5 truncate font-mono text-[10px] ${deltaTone}`} title={delta.label}>
+            {delta.label}
+          </p>
+        )}
       </div>
       <div className={`ml-3 shrink-0 rounded-xl p-3 ${tones[tone]}`}>{icon}</div>
     </div>
