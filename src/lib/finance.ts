@@ -30,7 +30,7 @@ import {
   Booking
 } from '../types';
 import { round2, sumMoney, subtractMoney } from './money';
-import { currentMonth, daysSince, daysSinceOn, isWithin, monthEnd, monthOf, monthsBetween, addDays, today } from './dates';
+import { currentMonth, daysSince, daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, addDays, today } from './dates';
 
 /** A record that points at a unit. */
 interface UnitLinked {
@@ -1485,4 +1485,537 @@ export function form13CDebts(expenses: Expense[], asOf: string): { rows: Form13C
     .filter(entry => entry.buckets.total > 0);
 
   return { rows, totalsByCurrency };
+}
+
+
+/* ------------------------------------------------------------------ *
+ * The owners' annual report (AGM)
+ *
+ * A different document from the Commission's return, and the distinction
+ * matters. Forms 13A/13B/13C are a statutory filing keyed by strata lot: what
+ * each proprietor owes, aged. This is the report circulated to owners before the
+ * annual general meeting, and it is about **how the property is run** — what it
+ * costs to operate, what the maintenance contribution raises against that, and
+ * what the contribution has to become. Ro, 2026-08-16: it is identical for every
+ * owner and carries nothing personal. No unit balances, no arrears by name, no
+ * personalisation of any kind. Do not merge owner data into it. The same figures
+ * are what goes to the Commission of Strata Corporations.
+ *
+ * **The vocabulary here is the property's, not an accountant's, and it is worth
+ * reading before changing anything.** Ro, 2026-08-16:
+ *
+ *   - **Maintenance collected** — the contribution, times the number of villas.
+ *     $20,000 × 16. It is *assessed* income and is deliberately taken at full
+ *     value: a proprietor is obliged by law to pay, so the document does not
+ *     discount it for arrears. Arrears are a collection matter and are chased
+ *     through Form 13B, not by quietly shrinking the income line here.
+ *   - **Billed** — what the property was invoiced. The expenditure it incurred.
+ *   - **The gap** between the two is the shortfall, and sizing it is the entire
+ *     purpose of the document.
+ *
+ * There are exactly two levers on that gap, and the report must show both,
+ * because the second one is what happens when the meeting says no to the first:
+ *
+ *   1. **Raise the contribution** to cover the expenditure — `feeToCoverBudget`.
+ *   2. **Cut the expenditure** to fit the contribution — `expenditureCeiling`
+ *      and `reductionRequired`. Ro's own example: drop the security line.
+ * ------------------------------------------------------------------ */
+
+/** One expenditure category across the two years and the year being budgeted. */
+export interface AnnualCategoryLine {
+  category: string;
+  /** Paid in the report year. */
+  actual: number;
+  /** Paid in the year before it, for the year-over-year column. */
+  prior: number;
+  /** What the coming year is budgeted at. Defaults to the report year's actual. */
+  budget: number;
+  /** actual vs prior. Null when there is no prior figure to compare against. */
+  priorChangePct: number | null;
+  /** budget vs actual. Null when there is no actual to compare against. */
+  budgetChangePct: number | null;
+  /** Share of the budgeted total — which lines are big enough to be worth cutting. */
+  budgetShare: number;
+}
+
+/** One month of the report year: what it cost against what the contribution raised. */
+export interface AnnualMonthLine {
+  month: string;
+  /** Expenditure incurred — what the property was billed. */
+  expenditure: number;
+  /** The contribution for the month: fee × contributing villas. */
+  income: number;
+  /** Contributions actually received that month. Context only; never the basis. */
+  received: number;
+  /** Positive means the month cost more than the contribution raised. */
+  shortfall: number;
+}
+
+export interface AnnualOwnersReport {
+  currency: Currency;
+  /** The year reported on, and the year budgeted (the one after it). */
+  reportYear: number;
+  budgetYear: number;
+  /** Villas assessed a maintenance contribution in this currency. */
+  contributingUnits: number;
+
+  /** Actual operating expenditure in the report year, and the year before. */
+  expenditure: number;
+  priorExpenditure: number;
+  expenditureChangePct: number | null;
+
+  /** The same, per villa. What it actually costs to run a villa. */
+  perUnitAnnual: number;
+  perUnitMonthly: number;
+
+  /** The contribution per villa per month, as assessed during the report year. */
+  feeBilled: number;
+  /** What that raised across every contributing villa: fee × villas × 12. */
+  contributionsAnnual: number;
+  /**
+   * feeBilled - perUnitMonthly. Negative is the deficit absorbed on owners'
+   * behalf, per villa per month — the headline figure of the whole document.
+   */
+  monthlyPositionPerUnit: number;
+  /** The same across the community for the year. Negative is the shortfall. */
+  annualCommunityPosition: number;
+
+  /** Contributions actually received, for context beside the assessed figure. */
+  received: number;
+  collectionRatePct: number | null;
+
+  /** The budgeted year. */
+  budgetExpenditure: number;
+  budgetPerUnitAnnual: number;
+  budgetPerUnitMonthly: number;
+  budgetChangePct: number | null;
+
+  /* --- lever 1: raise the contribution --- */
+  /** The contribution that would exactly cover the budgeted expenditure. */
+  feeToCoverBudget: number;
+  /** The fee being put to the meeting. Defaults to the requirement. */
+  proposedFee: number;
+  proposedAnnualCommunity: number;
+  /** Proposed fee less the requirement. Negative means it still under-collects. */
+  reservePerUnitMonthly: number;
+  reserveAnnual: number;
+  /** Reserve as a share of the proposed contribution. */
+  reserveShare: number | null;
+
+  /* --- lever 2: cut the expenditure --- */
+  /**
+   * What total expenditure would have to fall to for the *current* contribution
+   * to cover it. The alternative the meeting has if it declines the increase.
+   */
+  expenditureCeiling: number;
+  /** Budgeted expenditure less that ceiling. Positive is what must come out. */
+  reductionRequired: number;
+  /**
+   * Categories whose budget alone would close the gap if removed entirely,
+   * largest first. Not advice — arithmetic, so the meeting can see what scale
+   * of cut is actually being discussed.
+   */
+  cutsThatWouldClose: { category: string; budget: number; closesGap: boolean }[];
+
+  categories: AnnualCategoryLine[];
+  months: AnnualMonthLine[];
+  /** Months of the report year the current contribution covered, and the ones it did not. */
+  monthsCovered: number;
+  monthsOver: string[];
+}
+
+/**
+ * The figures behind the owners' annual report, for one currency.
+ *
+ * Every number the document states is computed here so the narrative and the
+ * arithmetic cannot drift apart — the report circulated in 2026 had to carry a
+ * corrections log precisely because percentages were typed beside figures that
+ * did not produce them.
+ *
+ * Rules it inherits from the rest of this module and must keep:
+ *   - **Only `status === 'paid'` expenses count as spent.** A pending bill is a
+ *     liability, not expenditure. It reaches the Commission through Form 13C.
+ *   - **Per currency, never across.** Common-property expenditure is JMD in
+ *     practice, but nothing here assumes that.
+ *   - **Income is the assessed contribution at full value**, for the reason set
+ *     out in the block comment above. `received` is carried beside it as context
+ *     and is never the basis of the gap.
+ *
+ * `budgetByCategory` carries next year's figures keyed by category. Anything
+ * absent falls back to the report year's actual, which makes an untouched budget
+ * a flat run-rate rather than an empty one.
+ */
+export function annualOwnersReport(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  expenses: Expense[],
+  currency: Currency,
+  reportYear: number,
+  options?: { budgetByCategory?: Record<string, number>; proposedFee?: number }
+): AnnualOwnersReport {
+  const budgetByCategory = options?.budgetByCategory || {};
+  const yearStart = `${reportYear}-01-01`;
+  const yearEnd = `${reportYear}-12-31`;
+  const priorStart = `${reportYear - 1}-01-01`;
+  const priorEnd = `${reportYear - 1}-12-31`;
+
+  const expenditure = expensesInPeriod(expenses, currency, yearStart, yearEnd);
+  const priorExpenditure = expensesInPeriod(expenses, currency, priorStart, priorEnd);
+
+  // Villas assessed a contribution in this currency. The divisor for every
+  // per-unit figure in the document, so it is stated once and reused.
+  const contributing = units.filter(u => isBillable(u, 'Maintenance') && chargeCurrency(u, 'Maintenance') === currency);
+  const contributingUnits = contributing.length;
+  const divisor = Math.max(1, contributingUnits);
+
+  // The contribution as it stands. Averaged across contributing villas rather
+  // than assumed equal, because an entitlement-weighted contribution is lawful
+  // and a single "the fee" figure must not pretend otherwise.
+  const feeBilled = contributingUnits > 0 ? round2(sumMoney(contributing.map(u => chargeAmount(u, 'Maintenance'))) / divisor) : 0;
+  const contributionsAnnual = round2(feeBilled * contributingUnits * 12);
+
+  const perUnitAnnual = round2(expenditure / divisor);
+  const perUnitMonthly = round2(perUnitAnnual / 12);
+  const monthlyPositionPerUnit = round2(feeBilled - perUnitMonthly);
+  /**
+   * The residual, not the per-villa figure multiplied back up.
+   *
+   * `perUnitMonthly` is a division rounded twice (to the year, then to the
+   * month), so scaling the rounded remainder across sixteen villas and twelve
+   * months re-inflates that rounding into real money — the headline "shortfall
+   * absorbed" would then disagree with `contributions − expenditure`, which is
+   * exactly the subtraction a proprietor does to check it. Same fix, and same
+   * reason, as `reserveAnnual` below.
+   *
+   * Caught by the 400-scenario reporting audit, not by a unit test.
+   */
+  const annualCommunityPosition = round2(contributionsAnnual - expenditure);
+
+  // Context only. Stated beside the assessed figure so the meeting can see how
+  // much of the contribution actually arrived, without it moving the gap.
+  const received = collectedInPeriod(payments, currency, yearStart, yearEnd).maintenance;
+  const billedCharges = chargedInPeriod(charges, currency, yearStart, yearEnd).maintenance;
+
+  /* --- categories, both years plus the budget --- */
+  const actualByCategory = new Map<string, number>();
+  const priorByCategory = new Map<string, number>();
+  const collect = (into: Map<string, number>, start: string, end: string) => {
+    for (const e of expenses) {
+      if (e.status !== 'paid' || e.currency !== currency) continue;
+      if (!isWithin(e.datePaid || e.date, start, end)) continue;
+      into.set(e.category, sumMoney([into.get(e.category) || 0, e.amount]));
+    }
+  };
+  collect(actualByCategory, yearStart, yearEnd);
+  collect(priorByCategory, priorStart, priorEnd);
+
+  const names = new Set<string>([...actualByCategory.keys(), ...priorByCategory.keys(), ...Object.keys(budgetByCategory)]);
+  const pct = (from: number, to: number): number | null => (from > 0 ? round2(((to - from) / from) * 100) : null);
+
+  const draft = Array.from(names).map(category => {
+    const actual = round2(actualByCategory.get(category) || 0);
+    const prior = round2(priorByCategory.get(category) || 0);
+    // An untouched line budgets at this year's actual: a flat run-rate, never zero.
+    const budgeted = budgetByCategory[category];
+    const budget = round2(Number.isFinite(budgeted) ? (budgeted as number) : actual);
+    return { category, actual, prior, budget };
+  });
+
+  const budgetExpenditure = sumMoney(draft.map(l => l.budget));
+
+  const categories: AnnualCategoryLine[] = draft
+    .map(l => ({
+      ...l,
+      priorChangePct: pct(l.prior, l.actual),
+      budgetChangePct: pct(l.actual, l.budget),
+      budgetShare: budgetExpenditure > 0 ? round2((l.budget / budgetExpenditure) * 100) : 0
+    }))
+    .sort((a, b) => b.budget - a.budget || a.category.localeCompare(b.category));
+
+  const budgetPerUnitAnnual = round2(budgetExpenditure / divisor);
+  const budgetPerUnitMonthly = round2(budgetPerUnitAnnual / 12);
+
+  /* --- lever 1: raise the contribution --- */
+  /**
+   * Rounded **up** to the cent, and computed in one step rather than from the
+   * already-rounded annual figure.
+   *
+   * "The contribution needed to cover the budget" has to actually cover it. A
+   * plain `round2` rounds down half the time, which leaves the community a few
+   * dollars short of its own budget and makes the report state a *shortfall*
+   * against the very fee it just recommended. Rounding up costs at most a cent
+   * per villa and is always the safe direction for a figure a meeting votes on.
+   */
+  const feeToCoverBudget =
+    contributingUnits > 0 ? Math.ceil((budgetExpenditure / contributingUnits / 12) * 100) / 100 : 0;
+  // Absent a proposal, the report states the requirement itself, so the document
+  // is coherent before anybody has decided what to ask the meeting for.
+  const proposedFee = round2(options?.proposedFee ?? feeToCoverBudget);
+  const proposedAnnualCommunity = round2(proposedFee * contributingUnits * 12);
+  const reservePerUnitMonthly = round2(proposedFee - feeToCoverBudget);
+  /**
+   * The residual, not the per-villa figure multiplied up.
+   *
+   * `feeToCoverBudget` is a division rounded to the cent, so multiplying the
+   * rounded remainder back across sixteen villas and twelve months re-inflates
+   * that rounding into pounds: the allocation table printed
+   * 4,843,030.00 + 916,968.96 against a total of 5,760,000.00 and was short by
+   * 1.04 on its face. Taking the reserve as what is left of the proposed
+   * contributions after the budget makes the column add up exactly, which is
+   * the only version an owner checking the arithmetic will accept.
+   */
+  const reserveAnnual = round2(proposedAnnualCommunity - budgetExpenditure);
+  const reserveShare = proposedFee > 0 ? round2((reservePerUnitMonthly / proposedFee) * 100) : null;
+
+  /* --- lever 2: cut the expenditure to fit the contribution --- */
+  const expenditureCeiling = contributionsAnnual;
+  const reductionRequired = round2(Math.max(0, budgetExpenditure - expenditureCeiling));
+  const cutsThatWouldClose = categories
+    .filter(l => l.budget > 0)
+    .map(l => ({ category: l.category, budget: l.budget, closesGap: l.budget >= reductionRequired }))
+    .sort((a, b) => b.budget - a.budget);
+
+  /* --- month by month --- */
+  // The contribution is a monthly assessment, so a twelfth of the annual figure
+  // is the month's income by construction rather than by inference.
+  const monthlyContribution = round2(feeBilled * contributingUnits);
+  const months: AnnualMonthLine[] = [];
+  for (let m = 1; m <= 12; m++) {
+    const month = `${reportYear}-${String(m).padStart(2, '0')}`;
+    const spend = expensesInPeriod(expenses, currency, monthStart(month), monthEnd(month));
+    const got = collectedInPeriod(payments, currency, monthStart(month), monthEnd(month)).maintenance;
+    months.push({
+      month,
+      expenditure: spend,
+      income: monthlyContribution,
+      received: got,
+      shortfall: round2(spend - monthlyContribution)
+    });
+  }
+  const monthsOver = months.filter(r => r.shortfall > 0).map(r => r.month);
+
+  return {
+    currency,
+    reportYear,
+    budgetYear: reportYear + 1,
+    contributingUnits,
+    expenditure,
+    priorExpenditure,
+    expenditureChangePct: pct(priorExpenditure, expenditure),
+    perUnitAnnual,
+    perUnitMonthly,
+    feeBilled,
+    contributionsAnnual,
+    monthlyPositionPerUnit,
+    annualCommunityPosition,
+    received,
+    collectionRatePct: collectionRate(billedCharges, received),
+    budgetExpenditure,
+    budgetPerUnitAnnual,
+    budgetPerUnitMonthly,
+    budgetChangePct: pct(expenditure, budgetExpenditure),
+    feeToCoverBudget,
+    proposedFee,
+    proposedAnnualCommunity,
+    reservePerUnitMonthly,
+    reserveAnnual,
+    reserveShare,
+    expenditureCeiling,
+    reductionRequired,
+    cutsThatWouldClose,
+    categories,
+    months,
+    monthsCovered: 12 - monthsOver.length,
+    monthsOver
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Operational and financial health
+ *
+ * One grade, from four things the ledger already knows. Asked for as a quick
+ * read on the dashboard — "is the property being run well right now" — without
+ * anyone having to open four screens and hold the figures in their head.
+ *
+ * **Nothing here is invented and nothing is weighted by opinion about the
+ * property.** Each component is an arithmetic statement about records that
+ * exist, each is reported alongside the grade with its own score, and the
+ * grade is a weighted mean of exactly those. If it cannot be explained by the
+ * components printed beside it, it is a bug.
+ *
+ * **A component with no data is excluded and the weights are renormalised — it
+ * is never scored zero.** A property that has billed nothing has not "failed
+ * collection"; there is simply nothing to collect, and scoring that as zero
+ * would manufacture a bad grade out of an empty month. Same rule as
+ * `entitledUnits`: absent is not zero. When nothing at all can be measured the
+ * function returns `null` rather than a grade, and the dashboard says so.
+ * ------------------------------------------------------------------ */
+
+export type HealthGrade = 'A' | 'B' | 'C' | 'D' | 'E';
+
+export interface HealthComponent {
+  key: 'collection' | 'coverage' | 'ageing' | 'cash';
+  label: string;
+  /** 0–100. */
+  score: number;
+  /** Share of the grade this component carried, after renormalising. */
+  weight: number;
+  /** The figure behind the score, in words, for printing beside it. */
+  detail: string;
+}
+
+export interface OperationalHealth {
+  currency: Currency;
+  /** 0–100, the weighted mean of the components below. */
+  score: number;
+  grade: HealthGrade;
+  components: HealthComponent[];
+  /** The period the grade describes. */
+  from: string;
+  to: string;
+}
+
+/** Where the grade boundaries sit. Stated once so the UI cannot disagree. */
+export function gradeFor(score: number): HealthGrade {
+  if (score >= 85) return 'A';
+  if (score >= 70) return 'B';
+  if (score >= 55) return 'C';
+  if (score >= 40) return 'D';
+  return 'E';
+}
+
+/** Clamp a ratio into a 0–100 score. */
+function scoreOf(ratio: number): number {
+  return round2(Math.max(0, Math.min(1, ratio)) * 100);
+}
+
+/**
+ * A single read on how the property is running, for one currency.
+ *
+ * The four components, and why each is in:
+ *
+ *   - **Collection** — of what was billed in the period, how much arrived. The
+ *     most direct measure of whether the corporation is actually funded.
+ *   - **Cost coverage** — contributions billed against money spent. A property
+ *     collecting perfectly can still be run at a structural loss, which is
+ *     precisely the position the annual report exists to surface, so it cannot
+ *     be left out of a health figure.
+ *   - **Debt ageing** — what share of outstanding debt is under 90 days. Old
+ *     debt is materially worse than recent debt and a flat arrears total hides
+ *     that entirely.
+ *   - **Cash** — collected less spent over the period. The one figure that
+ *     needs no interpretation.
+ */
+export function operationalHealth(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  expenses: Expense[],
+  currency: Currency,
+  from: string,
+  to: string
+): OperationalHealth | null {
+  const parts: { key: HealthComponent['key']; label: string; weight: number; score: number; detail: string }[] = [];
+
+  const billed = chargedInPeriod(charges, currency, from, to);
+  const collected = collectedInPeriod(payments, currency, from, to);
+  const billedTotal = round2(billed.rent + billed.maintenance);
+  const collectedTotal = round2(collected.rent + collected.maintenance);
+  const spent = expensesInPeriod(expenses, currency, from, to);
+
+  // --- collection ---
+  if (billedTotal > 0) {
+    const rate = collectedTotal / billedTotal;
+    parts.push({
+      key: 'collection',
+      label: 'Collection',
+      weight: 35,
+      // Capped at 100: a rate above it is arrears catch-up, not sustainable
+      // performance, and letting it run over would mask a weak component.
+      score: scoreOf(rate),
+      detail: `${formatPct(rate * 100)} of ${formatPlain(billedTotal)} billed was received`
+    });
+  }
+
+  // --- cost coverage ---
+  if (spent > 0 && billedTotal > 0) {
+    parts.push({
+      key: 'coverage',
+      label: 'Cost coverage',
+      weight: 30,
+      score: scoreOf(billedTotal / spent),
+      detail: `${formatPlain(billedTotal)} billed against ${formatPlain(spent)} spent`
+    });
+  }
+
+  // --- debt ageing ---
+  const aged = arrearsAgeing(units, charges, payments, to).find(a => a.currency === currency);
+  if (aged && aged.buckets.total > 0) {
+    const fresh = round2(aged.buckets.total - aged.buckets.over90);
+    parts.push({
+      key: 'ageing',
+      label: 'Debt ageing',
+      weight: 20,
+      score: scoreOf(fresh / aged.buckets.total),
+      detail: `${formatPlain(aged.buckets.over90)} of ${formatPlain(aged.buckets.total)} owing is over 90 days`
+    });
+  } else if (aged || billedTotal > 0) {
+    // Billed something and nobody is in arrears: that is a full score, and it
+    // has to be said rather than dropped, or a property with no debt would be
+    // graded only on the components where it can lose.
+    parts.push({
+      key: 'ageing',
+      label: 'Debt ageing',
+      weight: 20,
+      score: 100,
+      detail: 'nothing is outstanding'
+    });
+  }
+
+  // --- cash ---
+  if (collectedTotal > 0 || spent > 0) {
+    const net = round2(collectedTotal - spent);
+    // Scored against what was spent: breaking even is 50, collecting twice what
+    // was spent is 100, spending twice what was collected is 0. A property with
+    // no costs recorded cannot be scored on this and is excluded above.
+    const score = spent > 0 ? scoreOf(collectedTotal / (spent * 2)) : 100;
+    parts.push({
+      key: 'cash',
+      label: 'Cash position',
+      weight: 15,
+      score,
+      detail: `${formatPlain(collectedTotal)} received against ${formatPlain(spent)} spent (${net >= 0 ? '+' : ''}${formatPlain(net)})`
+    });
+  }
+
+  if (parts.length === 0) return null;
+
+  // Renormalise across the components that could actually be measured, so a
+  // missing one never drags the grade down.
+  const totalWeight = parts.reduce((s, p) => s + p.weight, 0);
+  const score = round2(parts.reduce((s, p) => s + p.score * (p.weight / totalWeight), 0));
+
+  return {
+    currency,
+    score,
+    grade: gradeFor(score),
+    from,
+    to,
+    components: parts.map(p => ({
+      key: p.key,
+      label: p.label,
+      score: p.score,
+      weight: round2((p.weight / totalWeight) * 100),
+      detail: p.detail
+    }))
+  };
+}
+
+function formatPct(v: number): string {
+  return `${round2(v).toFixed(1)}%`;
+}
+
+function formatPlain(v: number): string {
+  return round2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }

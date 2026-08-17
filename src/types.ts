@@ -193,6 +193,15 @@ export interface AppSettings {
    * right default for a property that started on this system.
    */
   booksBeginOn?: string; // YYYY-MM-DD
+  /**
+   * Whether the dashboard shows the property health grade.
+   *
+   * **Absent means shown.** It is stored as "hide" rather than "show" so that a
+   * database written before this existed — and there are live ones — keeps the
+   * card rather than losing it to a missing field. Anything reading this must
+   * treat `undefined` as on.
+   */
+  hidePropertyHealth?: boolean;
   /** Indicative JMD per 1 USD, used only for display conversions. Never used to convert stored amounts. */
   fxRateJmdPerUsd: number;
   rolePermissions: {
@@ -753,3 +762,92 @@ export const UNIT_STATUS_LABELS: Record<UnitStatus, string> = {
   vacant: 'Vacant',
   unavailable: 'Unavailable'
 };
+
+/* ------------------------------------------------------------------ *
+ * The owners' annual report (AGM)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The sections of the AGM report that are written rather than computed.
+ *
+ * Deliberately a fixed set of named fields and **not a document editor**. The
+ * figures, tables and charts are generated from the ledger into fixed slots; only
+ * these boxes are typed. That is the whole safety property: nobody can type over
+ * a number, so the arithmetic in the document is always the arithmetic in the
+ * books. A free canvas would lose that on the first edit, and the 2026 report
+ * needed a corrections log for exactly that reason.
+ *
+ * Keys are stable — renaming one silently drops last year's text.
+ */
+export const ANNUAL_REPORT_SECTIONS = [
+  { key: 'executiveSummary', label: 'Executive summary', hint: 'The position in a few sentences: what the year cost, what owners were billed, and what is being proposed.' },
+  { key: 'costContext', label: 'What it costs to run the property', hint: 'Why the cost is what it is. The figures and chart are generated below this text.' },
+  { key: 'categoryNotes', label: 'What each category contains', hint: 'What sits inside each expenditure heading, so owners can see nothing is combined for convenience.' },
+  { key: 'movements', label: 'What the movements tell us', hint: 'The year-over-year changes worth explaining — which lines moved and why.' },
+  { key: 'recommendation', label: 'Recommendation', hint: 'The contribution being proposed, and the case for it.' },
+  { key: 'alternatives', label: 'If the increase is not approved', hint: 'What must be reduced to fit within the current contribution. The reduction required is computed below.' },
+  { key: 'risks', label: 'Risks of deferring', hint: 'What happens if the position is left as it is.' },
+  { key: 'nextSteps', label: 'Next steps', hint: 'What owners are being asked to do, and when.' }
+] as const;
+
+export type AnnualReportSectionKey = (typeof ANNUAL_REPORT_SECTIONS)[number]['key'];
+
+/**
+ * One year's AGM report: the narrative, the budget, and the proposal.
+ *
+ * Stored per year so that opening next year's report starts from last year's
+ * wording with every figure recomputed, rather than from a blank page. The
+ * figures themselves are never stored — they are derived from the ledger on
+ * every render by `annualOwnersReport()`, so a correction to a receipt reaches
+ * the report without anyone re-opening it.
+ */
+export interface AnnualReport {
+  /** The year reported on. The budget is for the year after it. */
+  year: number;
+  /** Which currency the report is stated in. JMD in practice. */
+  currency: Currency;
+  /** Narrative, keyed by section. Absent means not yet written. */
+  narrative: Partial<Record<AnnualReportSectionKey, string>>;
+  /**
+   * Next year's budget per expenditure category. A category left out falls back
+   * to this year's actual, so an untouched budget is a flat run-rate.
+   */
+  budgetByCategory: Record<string, number>;
+  /** The contribution being put to the meeting, per villa per month. */
+  proposedFee?: number;
+  /** When the meeting is, printed on the cover. */
+  meetingDate?: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * The records checking themselves
+ * ------------------------------------------------------------------ */
+
+/**
+ * What the application found when it read its own records.
+ *
+ * Declared here rather than imported from `server/integrity.ts`, because that
+ * module imports the server's `Database` type and pulling it into the client
+ * bundle would drag the whole persistence layer with it. The shapes must stay
+ * in step; both are small and both are covered by `self-check.test.mjs`.
+ */
+export interface IntegrityFinding {
+  /** 'serious' means money is misstated somewhere. */
+  severity: 'serious' | 'warning';
+  code: string;
+  message: string;
+  /** The records involved, so a person can go and look at them. */
+  records: string[];
+}
+
+export interface IntegrityReport {
+  checkedAt: string;
+  ok: boolean;
+  serious: number;
+  warnings: number;
+  findings: IntegrityFinding[];
+  /** Stated so "nothing found" on an empty database is not mistaken for a pass. */
+  counts: { units: number; charges: number; payments: number; bookings: number; expenses: number };
+}

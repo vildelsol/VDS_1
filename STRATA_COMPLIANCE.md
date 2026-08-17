@@ -66,7 +66,7 @@ should be confirmed before building to it.**
 
 Ro supplied the forms on 2026-08-15. All three are made under **Regulation 11D(c)**, filed pursuant
 to **section 4(7)(a)**. Every header asks for **Proprietors Strata Plan No., TRN No., and Name &
-Address of Complex** — Villaggio Del Sol is **Strata Plan No. 2724**, now held in settings.
+Address of Complex** — Villaggio Del Sol is **Strata Plan No. 2324**, now held in settings.
 
 **13A — Income & Expenditure, for year ending ___.** Three columns: **Current Year | Outstanding
 Amounts | Comments**. The "Outstanding" column is the interesting one — it ties to 13B for income and

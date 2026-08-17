@@ -33,8 +33,27 @@ jobs:
         with:
           node-version: 'lts/*'
 
+      # `npm ci` installs exactly what package-lock.json pins and fails if the
+      # lockfile and package.json disagree — so a release can never be built
+      # from a dependency tree nobody recorded.
       - name: Install dependencies
         run: npm ci
+
+      # A release carries tenants' financial records on a machine that sits on a
+      # desk in an office. A dependency with a known advisory must not reach it
+      # silently. This gates the build: high and critical advisories stop the
+      # release rather than being reported into a log nobody reads.
+      #
+      # Deliberately `--omit=dev`: a vulnerability in esbuild or vite is a
+      # build-time concern, not something shipped inside the .exe, and failing a
+      # release over it would train whoever runs this to ignore the step.
+      - name: Check dependencies for known advisories
+        run: npm audit --omit=dev --audit-level=high
+
+      # Typecheck before the suite: a type error is a faster, clearer failure
+      # than whatever it eventually causes at run time.
+      - name: Typecheck
+        run: npm run lint
 
       # Run the same automated suite that gates every change on the test PC,
       # so a build that would fail on a real machine never reaches Releases.

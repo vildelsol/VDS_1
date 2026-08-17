@@ -26,14 +26,24 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **913 automated tests pass.** Typecheck clean, build clean.
-- Working tree is clean. The 2026-08-16 session is committed as a single commit — *"Brand the app,
-  add management reporting, and prepare the Excel migration"*, 36 files. See *Session 2026-08-16*
-  below for what it contains.
-- ⚠️ **Committed but not pushed.** `main` is **1 commit ahead of `origin/main`**. Push before
-  relying on the remote, and before anyone else pulls.
-- Latest release: **v1.8.1**. That session's work is unreleased — no tag, no build shipped to the
-  HP. The live machine is still running v1.8.1.
+- **1,087 automated tests pass.** Typecheck clean, build clean, `npm audit` clean. A full run
+  simulates **800 audited scenarios** (200 ledger + 200 whole-application on full data + 400
+  reporting), and the application now checks its own records at start-up as well.
+- ⚠️ **There is a large body of uncommitted work — the only copy is on Ro's Mac.**
+  **18 files modified (+1,843 lines) and 6 added (~2,390 lines)**, none of it committed. It includes
+  the Annual Report, the property health grade, the integrity self-check, and a correction to the
+  strata plan number that **also edited the live `db.json`** (backed up first to
+  `db-backups/db.json.pre-2324-*`). Read *Sessions of 2026-08-16* below before touching anything.
+- **`main` and `origin/main` are level** at `413de34` — verified against the remote with
+  `git ls-remote`, not from a local ref. *Earlier versions of this file claimed `main` was one
+  commit ahead and unpushed; that was stale and wrong.* Nothing is waiting to be pushed. The only
+  thing not on the remote is the uncommitted work above.
+- Latest release: **v1.8.1**. The pushed commit is unreleased and none of the uncommitted work is
+  live — no tag, no build shipped to the HP.
+
+**There is no known outstanding bug.** Everything found during 2026-08-16 was fixed in the same
+session and carries a regression test. What is genuinely open is *untested surface* and the Excel
+migration — both listed under *Where to pick up*. Do not go hunting for a bug list; there isn't one.
 
 **The system is live.** The HP runs v1.8.1, Tailscale is installed and remote access from a phone
 is confirmed.
@@ -113,7 +123,7 @@ expenses are therefore **excluded** from what is recharged to an owner (`ownerSt
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (762 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (1,087 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
@@ -124,6 +134,10 @@ cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildel
 production server on an isolated temp dir and populates units, charges, payments, bookings,
 utilities and expenses. It's disposable — rewrite it if it's gone. Never point a preview at the
 real `db.json`.
+
+**Checking the live records:** `npm test` proves the code; it says nothing about the file on the HP.
+For that, start the server and read the line it prints at start-up, or open **System Settings →
+Backup & recovery → Check now**. `GET /api/integrity` returns the same report to any signed-in user.
 
 **Verifying in the browser:** the app is a PWA with a service worker. After a rebuild the browser
 will serve the **stale cached bundle** — unregister the service worker and clear caches, or you
@@ -184,7 +198,7 @@ Watch it with `gh run watch <id> --exit-status`.
 
 ---
 
-## Built so far (all on `main`, all tested)
+## Built so far (all tested; the 2026-08-16 second session is **not yet committed** — see *State right now*)
 
 **Money handling**
 - **Proprietor statements** — per villa, per currency, grouped by owner; itemised printable
@@ -237,6 +251,17 @@ Watch it with `gh run watch <id> --exit-status`.
   path stops answering (Windows hands a stick whatever letter is free), the marker is searched for
   across the attached drives, the copy still lands, and the new path is saved and audited. Without
   that, a moved drive letter meant the off-machine copy silently stopped happening.
+- **The records check themselves** (2026-08-16, uncommitted) — `server/integrity.ts` walks the live
+  database at start-up and on demand from **System Settings → Backup & recovery → Check now**, and
+  reports anything that contradicts itself. It never repairs, never refuses to start, and is proved
+  not to cry wolf against a 400-scenario database. See *Built-in safeguards* below.
+- **A database from a newer build is refused** (2026-08-16, uncommitted) — restoring a
+  post-upgrade backup onto an older `.exe` used to load it and stamp the old version on it. Older
+  files still migrate forward; only newer is refused, with an instruction to install the current
+  version.
+- **Dependencies are gated in CI** (2026-08-16, uncommitted) — `npm audit --omit=dev
+  --audit-level=high` and a typecheck run before the suite in `build-exe.yml`, so a release cannot
+  be built carrying a known high or critical advisory.
 - **Admin password recovery** — drop `RESET-ADMIN-PASSWORD.txt` next to `db.json`, restart.
   File-based only; nothing over the network can trigger it.
 - **Adversarial pass** — a running server was attacked rather than read. What held: 20-way races on
@@ -585,7 +610,7 @@ realign app expense categories to match the form's fixed lines. The export shoul
 breakdown. This is recorded in `STRATA_COMPLIANCE.md` under "How the return is actually filed".
 
 **Unit entitlement is in the model.** `Unit.entitlement` and `Unit.strataLotNumber`, both optional,
-both audited when changed. The strata plan number is Villaggio Del Sol **2724** (in settings as
+both audited when changed. The strata plan number is Villaggio Del Sol **2324** (in settings as
 `strataPlanNumber`; `trn` also held in settings but not yet filled). `levyProportionality()` and
 `disproportionateLevies()` compare levied amounts against what entitlement implies; villa detail
 shows the entitlement share and whether the levy is proportionate. 27 tests in `entitlement.test.mjs`.
@@ -609,18 +634,18 @@ invariant, strata lot fallback, currency separation, 13C pending-only rule, and 
 (the proprietors of Villaggio Del Sol themselves), not the Commission of Strata Corporations (the
 regulator). This confusion was in several screens. Fixed by:
 
-- `bodyCorporateName(settings?)` helper in `types.ts` returns "Villaggio Del Sol (Strata Plan No. 2724)"
+- `bodyCorporateName(settings?)` helper in `types.ts` returns "Villaggio Del Sol (Strata Plan No. 2324)"
 - "Proprietor Statements" renamed to **"Owners Statements"** throughout App.tsx and OwnerStatements.tsx
 - `netLabel()` now says "Due to Alba Reid — Villa Unit 1" — owner name and villa number, not the
   generic "due from proprietor"
 - Projections printout now says explicitly: "This is NOT the annual return filed with the Commission
   of Strata Corporations"
-- OwnerStatements basis note: "income of the body corporate, Villaggio Del Sol (Strata Plan No. 2724)"
+- OwnerStatements basis note: "income of the body corporate, Villaggio Del Sol (Strata Plan No. 2324)"
 
 **What remains — the Annual Report export (next task):** build a CSV/Excel download that
 assembles the full annual return for the Commission. It should have:
 
-- Header: Strata Plan No. 2724, TRN (from settings), Name & Address
+- Header: Strata Plan No. 2324, TRN (from settings), Name & Address
 - Financial year end date selector
 - 13A-style income and expenditure: contributions raised, outstanding, expenses by category with
   current-year total and outstanding amount per line
@@ -767,14 +792,360 @@ So there is no commission model to build and nothing to net off. Do not add one:
 commission that is not charged, or a gross figure that is never received, would make the ledger
 *less* true than it is now.
 
+## Sessions of 2026-08-16
+
+Two sessions ran on this date and they are recorded separately.
+
+**The first** is the commit *"Brand the app, add management reporting, and prepare the Excel
+migration"* — pushed, and written up under *Session 2026-08-16* above.
+
+**The second is everything below, and it is all uncommitted.** It ran in five passes, each of which
+found something the one before it had missed. Read them in order; the lesson at the end of each is
+the part worth keeping:
+
+1. *Stress run* — a dead route hiding behind a probabilistic branch.
+2. *Plan number*, *Projections and USD* — a wrong statutory number, and a non-bug.
+3. *Property health grade*, *The annual report* — the two features built.
+4. *Full-data simulation pass* — the headline figure did not reconcile; scenario coverage had
+   silently collapsed.
+5. *Closing the untested gaps*, *Built-in safeguards* — permissions, restore, concurrency, mobile;
+   then the self-check, the schema guard and the dependency gate.
+
+**The thread running through all five:** a green suite proves the assertions ran, not that they
+still mean anything. Three separate times a guard existed, passed, and could not possibly have
+fired — a dead route, a frozen scenario month, a receipt pattern that matched nothing. **A guard
+that cannot fire is worse than no guard, because it is counted as coverage.**
+
+### Stress run — 2026-08-16 (second session)
+
+The 2026-08-16 changes were re-attacked by simulation rather than re-read. **800 audited scenarios
+per suite run**: 200 through the ledger, **200 across the whole application from a fully populated
+property** (raised from 100), and 400 against the reporting layer. The whole database is audited
+after *every single scenario*. **913 tests pass, typecheck clean, build clean. No integrity
+violation in any of them** — no shared receipt numbers, no NaN, nothing refunded beyond its worth,
+no month billed twice, no villa sold twice on a night, and every ageing column still totals the
+balance behind it.
+
+**One real defect found, and it was in the tests, not the books.** `scenarios-full` was calling
+`DELETE /api/expenses/:id` — **a route that has never existed**, server-side or in the client. An
+expense is an audited record and the correction path is an edit; there is no delete and there should
+not be one. The call sat behind a `rand() > 0.7` arm that a hundred iterations never reached, so it
+had never fired and had never been caught. At two hundred it fired, the 404 tripwire caught it
+exactly as designed, and the scenario now re-dates and re-categorises the cost instead — which is
+what the office actually does to a cost entered wrongly.
+
+**`SCENARIO_COUNT` in `scenarios-full.test.mjs` is now 200, and the reason is written above it:
+raise it, never lower it.** At a hundred, the scenario list does not come round often enough for its
+probabilistic branches to all fire, and a dead route can hide in one indefinitely. It is
+env-overridable for a deeper pass — `VDS_SCENARIOS_FULL=500 node test/run.mjs`. Seeds are still
+fixed, so a failure names a seed that reproduces it.
+
+**The lesson, and it generalises:** the 404 tripwire added in the previous session works, but a
+tripwire only fires on code that runs. A probabilistic branch in a seeded, fixed-count loop is not
+covered just because the file it lives in is. If you add a scenario arm behind a `rand()` gate,
+check the count is high enough to reach it.
+
+### The strata plan number was wrong — corrected to 2324 (2026-08-16)
+
+It read **2724** in `server/db.ts`, in the live `db.json`, in `STRATA_COMPLIANCE.md` and throughout
+this file. It is **2324**, confirmed by Ro against the owners' AGM report
+(`docs/Villaggio_Del_Sol_Owners_Financial_Report_2027.pdf`), which carries it on all eleven pages.
+
+This was on the letterhead of every printed document and in the header of every statutory return.
+Corrected in all four places; `db.json` was backed up to `db-backups/db.json.pre-2324-*` first.
+`bodyCorporateName()` reads it from settings, so every screen picked the change up at once.
+
+**If it ever moves again, change it in System Settings** — the value in `server/db.ts` is only the
+default for a fresh database and will not touch a live one.
+
+### Financial Projections and USD — not a bug (2026-08-16)
+
+Ro asked why Projections only shows Jamaican Dollars when rent, maintenance and short lets are
+sometimes taken in USD. **The screen already builds both currencies and always has**, then drops
+either one that has no activity (`active` in `Projections.tsx`). USD is empty because:
+
+- **Every villa is assessed maintenance in JMD** (`maintCurrency: 'JMD'` on all sixteen). Villa A1
+  is USD 1,000 rent but JMD 25,000 maintenance.
+- **Projections is maintenance-only by design.** Rent and short-term income are excluded, so A1's
+  USD rent never reaches it.
+
+A USD card will appear on its own the moment a villa is assessed maintenance in USD. **Ro decided
+2026-08-16 to leave the scope as it is** — maintenance contributions versus common-property
+expenditure, which is what the corporation actually forecasts, and what the AGM report is stated in.
+Offered and declined: projecting rent and booking income for the villas VDS lets on its own account.
+Do not widen this without being asked.
+
+### Property health grade — dashboard, built 2026-08-16
+
+One letter on the dashboard for "is the property being run well", from four things the ledger
+already knows: **collection** (35), **cost coverage** (30), **debt ageing** (20), **cash position**
+(15). `operationalHealth()` in `finance.ts`, `HealthCard` in `Dashboard.tsx`, 27 tests in
+`health.test.mjs` plus 8 render checks in `components.test.mjs`.
+
+**A single letter is the most dangerous figure on a dashboard** — it is the one nobody checks,
+because checking it means reconstructing it. So three rules are load-bearing and all three were
+mutation-tested:
+
+1. **It shows its working.** Every component prints its own score, its weight and the figures behind
+   it, and the grade is exactly their weighted mean. Reproducible by hand. The bar is a *second*
+   reading of the table, never the only one — same invariant as every chart here.
+2. **A component that cannot be measured is excluded and the weights renormalised — never scored
+   zero.** A property that has billed nothing has not failed at collection, and grading it E would
+   have somebody acting on an empty month. Same principle as `entitledUnits`.
+3. **Nothing measurable at all returns `null`**, and the card says so, rather than printing an E.
+
+Collection is capped at 100 (a rate above it is arrears catch-up, not performance, and letting it
+run over would mask a weak component elsewhere). Graded per currency like everything else.
+
+The grade boundaries live in `gradeFor()` and are printed on the card, so the UI cannot disagree
+with the engine.
+
+**It can be switched off** — System Settings → General, "Show the property health grade". Stored as
+`hidePropertyHealth` on `AppSettings`: **the negative, deliberately.** Live databases exist that
+were written before this field, and `undefined` has to mean *shown*, or upgrading would silently
+strip the card from every installation. Anything reading it must treat absent as on. Six tests cover
+the round trip, including that saving an unrelated General setting does not disturb the choice and
+that only a genuine boolean turns it off.
+
+### The annual report — built 2026-08-16
+
+**There are two annual reports and they are different documents.** Ro made this explicit on
+2026-08-16 and the distinction is now in the code:
+
+- **Forms 13A/13B/13C** — the statutory filing to the Commission, keyed by strata lot: what each
+  proprietor owes, aged. Compute engines exist in `finance.ts`; the export UI is still unbuilt.
+- **The annual report** (sidebar: *Annual Report*) — circulated to proprietors before the AGM. **Identical for every
+  owner, carrying nothing personal.** Ro: *"it has to do with how the property is run, not their
+  unit nor their finances."* No balances, no arrears by name. **Do not merge owner data into it.**
+  The same figures are the basis of what goes to the Commission.
+
+Reference document: `docs/Villaggio_Del_Sol_Owners_Financial_Report_2027.pdf` — the 2026 report,
+the model this was built from. Read it before changing the shape of the document.
+
+**The vocabulary is the property's, not an accountant's. Read this before touching the engine.**
+
+- **"Maintenance collected"** = the contribution × villas. $20,000 × 16. It is **assessed** income
+  taken at full value — a proprietor is obliged by law to pay, so the document does not discount it
+  for arrears. (Ro, asked directly: *"the proposed fee assumes every owner pays, because by law they
+  MUST pay."*) Arrears are chased through Form 13B, not by shrinking this line.
+- **"Billed"** = what the *property* was invoiced. Its expenditure.
+- **The gap** between them is the shortfall, and sizing it is the whole purpose of the document.
+
+**There are two levers and the report shows both**, because the second is what the meeting turns to
+when it refuses the first (Ro: *"if the owners do not agree, then something like security can be
+removed as an expense to fall within what the total maintenance can cover"*):
+
+1. **Raise the contribution** — `feeToCoverBudget`.
+2. **Cut the expenditure** — `expenditureCeiling`, `reductionRequired`, and `cutsThatWouldClose`,
+   which names the categories large enough to close the gap on their own.
+
+A report that only argued for an increase would have no answer at the meeting. Do not remove lever 2.
+
+**It is a form, not a document editor, and that is the safety property.** The figures, tables and
+month-by-month are generated from the ledger into fixed slots; eight named narrative boxes
+(`ANNUAL_REPORT_SECTIONS` in `types.ts`) are the only things typed. Nobody can type over a number,
+so the arithmetic in the printed document is always the arithmetic in the books. **The 2026 report
+needed a whole corrections log (Appendix A) because percentages were typed beside figures that did
+not produce them** — a free canvas reintroduces exactly that. If asked for rich text, say no and
+explain why.
+
+Narrative and budget persist **per year**, so opening 2028 starts from 2027's wording with every
+figure recomputed. Figures are never stored — a corrected receipt reaches the report without anyone
+reopening it.
+
+**The budget.** `budgetByCategory` holds next year per expenditure category; **a category left out
+falls back to this year's actual**, so an untouched budget is a flat run-rate, never zero. `0` is a
+meaningful value — it is how a service is cut — so the route uses `optionalAmount`, not
+`requirePositiveAmount`. Clearing a line (`null`) removes the override.
+
+**The contribution comes from the Units Register and nowhere else.** `feeBilled` reads
+`monthlyMaintenance` off each unit via `chargeAmount()`. Ro, 2026-08-16: after the meeting votes,
+the fees are changed by hand in the Units Register and the report follows. There is deliberately no
+separate "fee" setting to drift out of step with the units.
+
+**Excel export** (`Export figures`) carries the **narrative as well as the figures**, so a document
+can be finished or adjusted outside the application without retyping the wording. Amounts are
+exported unformatted (`1976334`, not `J$1,976,334.00`) so Excel reads them as numbers; currency is
+stated in the header instead. BOM CSV, same pattern as Projections and Owner Statements.
+
+Where things live: `annualOwnersReport()` in `finance.ts`; `AnnualReport` type and
+`ANNUAL_REPORT_SECTIONS` in `types.ts`; `db.annualReports` (migrated in, added to `/api/db`);
+`PUT /api/annual-reports/:year` gated on `post_charges`; `src/components/AnnualReport.tsx`;
+73 tests in `test/owners-annual-report.test.mjs`.
+
+**Two bugs found by verifying in the browser, both invisible to the tests that existed:**
+
+1. **`/api/db` never returned `annualReports`.** The report saved to disk and audited correctly, but
+   came back blank on the next load, so the printed document had no narrative in it. Every unit test
+   passed throughout — the arithmetic was never the problem. There is now a **round-trip test**, and
+   it was mutation-tested: removing the field again fails 11 checks. **Any new top-level collection
+   needs the same treatment — `/api/db` is a hand-written projection, not a dump.**
+2. **The allocation table did not add up.** It printed `4,843,030.00 + 916,968.96` against a stated
+   total of `5,760,000.00` — short by 1.04, because the reserve was the *rounded* per-villa figure
+   multiplied back across sixteen villas and twelve months. `reserveAnnual` is now the residual
+   (`proposedAnnualCommunity - budgetExpenditure`), and a test asserts the column sums **exactly**,
+   not nearly. This is the table an owner adds up with a pen.
+
+3. **The recommended contribution could round *down*.** `feeToCoverBudget` used a plain round-to-
+   cent, so half the time it raised slightly less than the budget and the report stated a shortfall
+   against the very fee it had just recommended. It now rounds **up** to the cent, computed in one
+   step rather than from an already-rounded annual figure. A property-based test runs 400 different
+   budgets and asserts the fee never under-covers and the allocation column always balances.
+
+**Still open, and worth asking Ro:** the app has no *budget* concept beyond this screen — next
+year's figures are keyed in per category here and live only on the report record. If budgeting ever
+needs to drive anything else (Projections, a variance report), it should move into its own model
+rather than being read out of the AGM document.
+
+### Full-data simulation pass — 2026-08-16 (third)
+
+Ran the whole suite plus a deep pass at `VDS_SCENARIOS_FULL=500`. **1,030 tests pass at the committed
+defaults and at 500. No integrity violation in any scenario.**
+
+**First, a gap that was closed:** the 400-scenario reporting audit did not touch either engine built
+this session. `annualOwnersReport()` and `operationalHealth()` are now audited after **every one of
+the 400 scenarios**, and two new scenarios drive `PUT /api/annual-reports/:year` (including a
+year that cannot exist, an unknown narrative section, a cleared budget line and a line budgeted at
+zero) and toggle the health setting mid-flight.
+
+**Three defects found, all by the simulation, none by a unit test.**
+
+1. **The headline shortfall did not reconcile.** `annualCommunityPosition` was the *rounded*
+   per-villa position scaled across sixteen villas and twelve months, so it did not exactly equal
+   `contributions − expenditure` — the subtraction a proprietor does to check the figure. Now the
+   residual, pinned by an exact-equality test and a 400-budget property test. Same class as the
+   `reserveAnnual` bug; if you add another per-villa figure that is also stated annually, **derive
+   the annual one by subtraction, not by multiplication.**
+
+2. **A scenario branch stopped firing when the scenario count changed.** One utility scenario left
+   readings unpaid on `i % 3 === 0`. A scenario only runs when `i % scenarios.length` selects it, so
+   `i % n` is **constant** for that scenario whenever `n` divides the scenario count. Adding two
+   scenarios took the count to 24, and the branch went from firing sometimes to never. **Never gate
+   a scenario's internal branch on `i` — use the seeded `rand()`.**
+
+3. **The same arithmetic froze the month for every scenario.** `monthOf(i)` cycles every twelve, so
+   at a scenario count that is a multiple of twelve *every run of a given scenario lands in the same
+   month*. Records that dedupe per period collapsed: meter readings fell from dozens to **ten, all
+   settled**, and the suite went on asserting coverage it no longer had. The month is now taken from
+   the repetition number (`Math.floor(i / scenarios.length)`), which varies whatever the count is.
+   Fixed in all three scenario suites.
+
+**Two guards were added so this cannot regress silently**: the simulation must reach at least six
+distinct billing months and four distinct meter periods. Both would have failed on the broken build.
+
+**The lesson, and it is the third time this session:** a green suite proves the assertions ran, not
+that they still mean anything. Coverage assertions need their own guards. Anything derived from the
+loop index is coupled to the scenario count, and adding a scenario silently re-rolls that coupling.
+
+### Closing the untested gaps — 2026-08-16 (fourth)
+
+Asked directly what had *not* been tested, and the answer was checked against the suite rather than
+recalled. Four gaps were real and are now closed:
+
+- **Permissions on the annual report.** `PUT /api/annual-reports/:year` is gated on `post_charges`,
+  but nothing proved a junior was refused — every other write route had that test. Four checks in
+  `permissions.test.mjs`: a junior cannot write it, cannot set the contribution it proposes, leaves
+  nothing behind when refused, and somebody who posts the charges can.
+- **The annual report through a backup and a restore.** The narrative is the only thing in this
+  application that exists nowhere else — every figure recomputes, the wording does not — so losing
+  it in a restore would be silent and permanent. `restore.test.mjs` now writes a report before the
+  backup and proves the wording, the budget (including a line deliberately at zero), the proposed
+  contribution and the meeting date all come back.
+- **Concurrency.** A 20-way race on the same year settles to exactly one record, and the winner is
+  one officer's document rather than two stitched together — the summary and the fee must come from
+  the same write.
+- **Mobile.** Both new screens verified at 375px. The page never scrolls sideways; the budget table
+  is wider than the screen and scrolls **inside its own container**, which is the house pattern.
+
+**Cosmetic, known, and left alone:** with the proposed contribution left blank the report defaults it
+to the requirement, and because that figure is rounded *up* to the cent the year raises about a
+pound more than the budget — so the reserve reads `J$0.00` per villa monthly and `J$1.00` annually.
+Both columns still add up exactly, which is the invariant that matters. Do not "fix" it by
+multiplying the per-villa figure back up: that is the bug that was removed twice already.
+
+**Still never exercised by anyone** — unchanged, and no test here can close them: the Windows `.exe`
+outside CI, the PWA and service worker, the offline queue under real network loss, a live Airbnb
+feed, the two-PC dry run, real print output on paper or in a PDF, and the Excel export actually
+opened in Excel. **And the largest one: none of this has met real data.** Every figure demonstrated
+so far came from a seeded property. The annual report has never been run against Villaggio Del Sol's
+actual expenditure, and the Excel migration has not been dry-run.
+
+### Built-in safeguards — 2026-08-16 (fifth)
+
+Asked to make sure the safeguards are **built in**, not merely tested. That is a real distinction:
+the suite proves the code was right when it ran on a developer's laptop; it says nothing about the
+file on the HP after a year of use, a restore from a USB stick, or a disk returning bad sectors.
+Three gaps were found and closed.
+
+**1. The records now check themselves, on the machine that holds them.**
+`server/integrity.ts` walks the live database and reports every contradiction: a receipt number
+issued twice, money received with no receipt, a receipt both voided *and* refunded, a month billed
+twice, a villa sold to two guests on one night, a deposit settled beyond what was held, one job's
+cost reaching the register twice, a monthly cost posted twice, a meter running backwards, a record
+pointing at a villa that is no longer on the register, and a receipt counter that has fallen behind
+what has already been issued. Runs **at startup** and on demand from **System Settings → Backup &
+recovery**.
+
+Four rules it lives by, and they are not negotiable:
+- **It never repairs.** An automatic fix to a ledger is a second, unaudited author of the accounts.
+  It names the records and lets a person decide.
+- **It never throws and never refuses to start.** A property that cannot take a payment this morning
+  is worse than one running on records with a stated fault.
+- **It never cries wolf.** Verified clean against the database 400 scenarios of refunds, voids,
+  part-payments and cancelled stays build — a check that fires on a healthy property is ignored
+  within a week, and the real finding is ignored with it.
+- **Serious and warning are separated.** Serious means money is misstated.
+
+41 tests in `self-check.test.mjs`, each invariant proved against a database broken in exactly that
+way, plus malformed input, plus a live server. Verified by hand too: a copy of a real database was
+deliberately corrupted four ways and all four were caught and displayed.
+
+**2. A database from a newer build is now refused.** `readFromDisk` used to load *any* schema version
+and stamp its own on it. Restoring a post-upgrade backup onto an older `.exe` — exactly what somebody
+does in a hurry the morning the disk dies — would have read the file with the wrong assumptions and
+written it back silently damaged. It now refuses with an instruction to install the current version.
+Older files still migrate forward as before; only *newer* is refused.
+
+**3. Dependencies are gated in CI.** `npm audit --omit=dev --audit-level=high` now runs before the
+suite in `build-exe.yml`, so a release cannot be built carrying a known high or critical advisory.
+Dev-only advisories deliberately do not fail the build — they are not shipped inside the `.exe`, and
+failing releases over them trains people to ignore the step. `npm run lint` (typecheck) was added
+ahead of the suite for a faster, clearer failure. `npm ci` was already installing from the lockfile.
+
+**Two bugs in the safeguard itself, both worth remembering:**
+- The typechecker caught that a voided payment carries `status: 'reversed'`, not `'void'`. Had it
+  compiled, that check would have passed on every database forever.
+- The receipt-counter check read `R-2026-0001`; the real format is `REC-2026-0001`. It matched
+  nothing, so it silently passed on every property that had ever issued a receipt. Found only by
+  running it against a real database. **A guard that cannot fire is worse than no guard, because it
+  is counted as coverage.** The test now pins the real format.
+
 ### Where to pick up
 
-**1. Push, and decide about a release.** The 2026-08-16 commit is not pushed — `main` is 1 ahead of
-`origin/main` (`git log --oneline origin/main..HEAD`). Nothing is tagged and the HP is still running
-v1.8.1, so none of that work is live yet. Decide with Ro whether it ships now or after the
+**1. Commit the outstanding work, then push.** This is the first thing, and it is not optional
+housekeeping: a session's worth of work exists only on Ro's Mac, and a disk failure loses it. Ro
+reviewed it on 2026-08-16 and asked to commit in a following session — confirm that is still what
+they want, then commit and push. `main` is already level with the remote, so this is one commit and
+one push. Decide separately whether it is tagged and shipped to the HP, or held until after the
 migration.
 
-**2. The Excel migration is the live piece of work.** Cutover 1 September. See *Migration from
+**`db.json` is gitignored and is never committed** — it holds the property's financial records. The
+strata plan number correction edited it directly on this machine (backed up first to
+`db-backups/db.json.pre-2324-*`), so that change is **local only**: any other machine picks up the
+corrected number from the new default in `server/db.ts`, or by setting it in System Settings.
+
+**2. Nothing is known to be broken.** Every defect found on 2026-08-16 was fixed with a regression
+test — see the five session notes below for what they were and why they mattered. If the next
+session opens expecting a bug list, there is none. The real work is 3 and 4.
+
+**3. The untested surface is the honest risk, and no test here can close it.** Never exercised by
+anyone: the Windows `.exe` outside CI, the PWA and service worker, the offline queue under real
+network loss, a live Airbnb feed, the two-PC dry run, real print output on paper or in a PDF, and
+the Excel export actually opened in Excel. **And the largest: none of this has met real data.**
+Every figure demonstrated so far came from a seeded property. The Annual Report has never been run
+against Villaggio Del Sol's actual expenditure.
+
+**4. The Excel migration is the live piece of work.** Cutover 1 September. See *Migration from
 Excel* under *State right now*. The enabling parts are built; the data entry and a dry run are not.
 Suggested order:
    - Set **"The books begin on"** to `2026-09-01` in System Settings → General.
@@ -782,16 +1153,17 @@ Suggested order:
    - Record security deposits on the tenancies that have them.
    - Key each owner's carried-over maintenance as an **Opening balance** charge, **dated to when it
      actually fell due**.
-   - Then verify: arrears match Excel, and the ageing buckets look right on the Charts tab.
+   - Then verify: arrears match Excel, the ageing buckets look right on the Charts tab, and
+     **System Settings → Backup & recovery → Check now** reports no contradictions.
 
-**3. Offered and not taken up** — build only if asked:
+**5. Offered and not taken up** — build only if asked:
    - Bulk insurance apportionment (enter the premium, split across villas, edit each line, post).
    - A PDF-diff harness. Real print output is the one thing no test here covers, and it is exactly
      where a regression already slipped through once (the letterhead mark rendered at ~1.5mm and
      passed every test).
 
-Otherwise: **no backlog.** The audit is closed. Resist finding work here — ask what problem it
-solves at this property first.
+Otherwise: **no backlog.** The audit is closed and no bug is outstanding. Resist finding work here —
+ask what problem it solves at this property first.
 
 ---
 

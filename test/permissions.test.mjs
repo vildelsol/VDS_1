@@ -38,6 +38,27 @@ export default async function run({ port, projectRoot }) {
     T.check('junior is still blocked from creating staff', (await jr.post('/api/users', { name: 'S', username: 's', role: 'ADMINISTRATOR', password: 'Sneak-1111!' })).status === 403);
     T.check('junior is still blocked from rewriting the permission matrix', (await jr.post('/api/settings', { rolePermissions: { JUNIOR_OFFICER: { reversePayments: true } } })).status === 403);
 
+    // The annual report is the document circulated to every proprietor and the
+    // basis of the return to the Commission. It is gated on post_charges — the
+    // person who runs the books — not on holding the desk.
+    T.check(
+      'junior is blocked from writing the annual report',
+      (await jr.put('/api/annual-reports/2026', { narrative: { executiveSummary: 'Rewritten by the desk.' } })).status === 403
+    );
+    T.check(
+      'and blocked from setting the contribution it proposes',
+      (await jr.put('/api/annual-reports/2026', { proposedFee: 99000 })).status === 403
+    );
+    T.check(
+      'and nothing of theirs was written even so',
+      ((await admin.get('/api/db')).body.annualReports || []).length === 0,
+      JSON.stringify((await admin.get('/api/db')).body.annualReports)
+    );
+    T.check(
+      'while somebody who posts the charges can write it',
+      (await admin.put('/api/annual-reports/2026', { narrative: { executiveSummary: 'Prepared by the office.' } })).status === 200
+    );
+
     // --- withdraw it in Settings ---
     const off = await admin.post('/api/settings', { rolePermissions: { JUNIOR_OFFICER: { addBookings: true, recordPayments: false } } });
     T.check('the withdrawal is stored', off.body?.settings?.rolePermissions?.JUNIOR_OFFICER?.recordPayments === false);

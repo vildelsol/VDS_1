@@ -62,6 +62,7 @@ async function loadComponents(projectRoot) {
           OccupancyChart
         } from './src/components/Charts';
         export { PrintLetterhead, PrintSignatures } from './src/components/PrintPortal';
+        export { HealthCard } from './src/components/Dashboard';
         export { default as React } from 'react';
       `,
       resolveDir: projectRoot,
@@ -214,6 +215,48 @@ export default async function run({ projectRoot }) {
     const table = render(h(mod.CategoryTable, { breakdown: BREAKDOWN, currency: 'JMD' }));
     T.check('the category table separates what is paid from what is outstanding', textOf(table).includes('Paid') && textOf(table).includes('Outstanding'));
     T.check('and shows a category still owing money', textOf(table).includes('5,000'), textOf(table).slice(0, 120));
+
+
+    /* ---------------- the health grade ---------------- */
+
+    // A single letter is the most dangerous figure on a dashboard: it is the one
+    // nobody checks, because checking it means reconstructing it. So it falls
+    // under the same rule as every chart here — the numbers behind it must be on
+    // the page, not only in the bar or a tooltip.
+    const HEALTH = {
+      currency: 'JMD',
+      score: 62.5,
+      grade: 'C',
+      from: '2026-06-01',
+      to: '2026-06-30',
+      components: [
+        { key: 'collection', label: 'Collection', score: 80, weight: 40, detail: '80.0% of 100,000.00 billed was received' },
+        { key: 'coverage', label: 'Cost coverage', score: 50, weight: 35, detail: '100,000.00 billed against 200,000.00 spent' },
+        { key: 'ageing', label: 'Debt ageing', score: 45, weight: 25, detail: '55,000.00 of 100,000.00 owing is over 90 days' }
+      ]
+    };
+
+    const health = render(h(mod.HealthCard, { health: HEALTH, currency: 'JMD' }));
+    const healthText = textOf(health);
+    T.check('the health card prints its grade', healthText.includes('C'), healthText.slice(0, 120));
+    T.check('and the score behind the letter', healthText.includes('62') || healthText.includes('63'), healthText.slice(0, 200));
+    T.check('every component it was graded on is named', ['Collection', 'Cost coverage', 'Debt ageing'].every(l => healthText.includes(l)), healthText.slice(0, 300));
+    T.check(
+      'each component shows the figures behind it, not just a bar',
+      healthText.includes('80.0% of 100,000.00 billed was received') && healthText.includes('over 90 days'),
+      healthText.slice(0, 400)
+    );
+    T.check('and the weight it carried, so the grade can be reproduced by hand', healthText.includes('40%') && healthText.includes('35%'));
+    T.check(
+      'the values live in a real table, not only in the bar',
+      /<table[\s\S]*Collection[\s\S]*<\/table>/.test(health),
+      'the health card must carry a data table like every other visual here'
+    );
+    T.check('the grade boundaries are stated on the card itself', healthText.includes('85') && healthText.includes('70'));
+
+    // Nothing to grade must say so, rather than showing a zero or the worst grade.
+    const noHealth = textOf(render(h(mod.HealthCard, { health: null, currency: 'JMD' })));
+    T.check('with nothing to grade it says so instead of printing an E', !/\bE\b/.test(noHealth) && /nothing to grade/i.test(noHealth), noHealth.slice(0, 200));
 
     /* ---------------- currency is never blended ---------------- */
 

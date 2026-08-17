@@ -23,6 +23,7 @@ import {
   Expense,
   Payment,
   RecurringExpense,
+  AnnualReport,
   Tenancy,
   Unit,
   UnitActivity,
@@ -56,6 +57,8 @@ export interface Database {
   utilities: UtilityReading[];
   expenses: Expense[];
   recurringExpenses: RecurringExpense[];
+  /** One AGM report per year: its narrative and budget. Figures are never stored. */
+  annualReports: AnnualReport[];
   auditLogs: AuditLog[];
   unitActivities: UnitActivity[];
   users: StoredUser[];
@@ -410,9 +413,12 @@ function defaultRolePermissions(): AppSettings['rolePermissions'] {
 function defaultSettings(): AppSettings {
   return {
     fxRateJmdPerUsd: DEFAULT_FX_RATE_JMD_PER_USD,
-    // Villaggio Del Sol is registered as strata plan 2724. Editable in System
-    // Settings; the Commission's return forms ask for it in their headers.
-    strataPlanNumber: '2724',
+    // Villaggio Del Sol is registered as strata plan 2324, confirmed by Ro on
+    // 2026-08-16 against the owners' AGM report, which carries it on every page.
+    // It read 2724 here until then — wrong on the letterhead and on every
+    // statutory return header. Editable in System Settings; the Commission's
+    // return forms ask for it in their headers.
+    strataPlanNumber: '2324',
     trn: '',
     rolePermissions: defaultRolePermissions(),
     backupDir: '',
@@ -474,6 +480,7 @@ function emptyDb(): Database {
     utilities: [],
     expenses: [],
     recurringExpenses: [],
+    annualReports: [],
     auditLogs: [],
     unitActivities: [],
     users: [],
@@ -690,6 +697,32 @@ function readFromDisk(): Database {
   }
   const raw = fs.readFileSync(DB_FILE, 'utf-8');
   const parsed = JSON.parse(raw) as Partial<Database>;
+
+  /*
+   * Refuse a database written by a *newer* build than this one.
+   *
+   * `migrate()` moves an older file forward. Nothing can move a newer one back,
+   * because this build does not know what changed — it would read the file with
+   * the wrong assumptions, stamp its own version on it, and write that back. The
+   * damage is silent and lands on the one file the property cannot lose.
+   *
+   * This is not hypothetical: the real path to it is restoring a backup taken
+   * after an upgrade onto an older .exe that is still lying around, which is
+   * exactly what somebody does in a hurry on the morning the disk died.
+   *
+   * Refusing costs an install of the current version. Not refusing costs the
+   * records.
+   */
+  const version = Number(parsed.schemaVersion);
+  if (Number.isFinite(version) && version > SCHEMA_VERSION) {
+    throw new Error(
+      `db.json was written by a newer version of this application (database format ${version}, ` +
+        `this build understands ${SCHEMA_VERSION}). It has NOT been read or modified. ` +
+        `Install the current version of Villaggio Del Sol and start it again — ` +
+        `an older build cannot safely open newer records.`
+    );
+  }
+
   return { ...emptyDb(), ...parsed, settings: { ...defaultSettings(), ...(parsed.settings || {}) } } as Database;
 }
 
@@ -845,6 +878,10 @@ function migrate(db: Database): boolean {
   }
   if (!Array.isArray(db.recurringExpenses)) {
     db.recurringExpenses = [];
+    changed = true;
+  }
+  if (!Array.isArray(db.annualReports)) {
+    db.annualReports = [];
     changed = true;
   }
   if (!db.counters) {

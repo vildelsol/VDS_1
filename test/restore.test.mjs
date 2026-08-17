@@ -61,7 +61,24 @@ export default async function run({ port, projectRoot }) {
     const receiptNo = paid.body?.payment?.receiptNo;
     T.check('a receipt was issued before the backup', !!receiptNo, `receiptNo="${receiptNo}"`);
 
+    // The annual report's narrative is the one thing in this application that
+    // exists nowhere else — every figure is recomputed from the ledger, but the
+    // written sections are typed once and stored. If a restore dropped them the
+    // loss would be silent and permanent, so it is proved here rather than
+    // assumed from the fact that the field is on the Database type.
+    await admin.put('/api/annual-reports/2026', {
+      currency: 'JMD',
+      narrative: {
+        executiveSummary: 'The committee held the contribution for as long as it responsibly could.',
+        risks: 'No reserve remains to draw on.'
+      },
+      budgetByCategory: { Security: 2157400, Payroll: 0 },
+      proposedFee: 30000,
+      meetingDate: '2026-11-20'
+    });
+
     const before = (await admin.get('/api/db')).body;
+    T.check('the annual report was written before the backup', (before.annualReports || []).length === 1);
     const ran = await admin.post('/api/backup/run', {});
     T.check('a backup can be taken on demand', ran.status === 200);
 
@@ -115,6 +132,27 @@ export default async function run({ port, projectRoot }) {
     T.check(
       'settings came back',
       JSON.stringify(after.settings.rolePermissions) === JSON.stringify(before.settings.rolePermissions)
+    );
+
+    // The AGM report: the figures would rebuild themselves from the restored
+    // ledger, but the wording would not.
+    const report = (after.annualReports || []).find(r => r.year === 2026) || null;
+    T.check('the annual report came back', !!report, JSON.stringify(after.annualReports));
+    T.check(
+      'and its written sections came back word for word',
+      !!report && report.narrative?.executiveSummary === before.annualReports[0].narrative.executiveSummary,
+      String(JSON.stringify(report?.narrative)).slice(0, 200)
+    );
+    T.check('every section, not just the first', !!report && report.narrative?.risks === 'No reserve remains to draw on.');
+    T.check('the budget came back', !!report && report.budgetByCategory?.Security === 2157400);
+    T.check(
+      'including a line deliberately budgeted at zero, which is how a service is cut',
+      !!report && report.budgetByCategory?.Payroll === 0,
+      String(JSON.stringify(report?.budgetByCategory))
+    );
+    T.check(
+      'and the contribution it puts to the meeting',
+      !!report && report.proposedFee === 30000 && report.meetingDate === '2026-11-20'
     );
 
     // A restore must not resurrect a login. The token was valid when the backup

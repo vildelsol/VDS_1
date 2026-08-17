@@ -24,6 +24,8 @@ import {
   Currency,
   Expense,
   EXPENSE_CATEGORIES,
+  ANNUAL_REPORT_SECTIONS,
+  AnnualReport,
   PAYMENT_CATEGORIES,
   PAYMENT_METHODS,
   Payment,
@@ -68,6 +70,7 @@ import {
   startBackupSchedule,
   transaction
 } from './server/db';
+import { checkIntegrity, describeIntegrity } from './server/integrity';
 import {
   ACTION_DENIED_MESSAGE,
   AuthedRequest,
@@ -750,6 +753,7 @@ app.get(
       utilities: db.utilities,
       expenses: db.expenses,
       recurringExpenses: db.recurringExpenses,
+      annualReports: db.annualReports || [],
       tenancies: db.tenancies,
       auditLogs: db.auditLogs.slice(0, 2000),
       unitActivities: db.unitActivities,
@@ -881,6 +885,27 @@ app.post(
 );
 
 /* ------------------------------------------------------------------ *
+ * The records checking themselves
+ * ------------------------------------------------------------------ */
+
+/**
+ * Run the integrity check against the live database, on demand.
+ *
+ * Readable by any signed-in user rather than gated on `manage_settings`: this
+ * reports whether the records contradict themselves, and the person who would
+ * notice the consequence first is whoever is at the desk. It reveals nothing
+ * that `/api/db` does not already return to the same user, and it changes
+ * nothing — see `server/integrity.ts` for why it never repairs.
+ */
+app.get(
+  '/api/integrity',
+  handler((_req: AuthedRequest, res) => {
+    // Everything under /api already sits behind the session guard.
+    res.json(checkIntegrity(getDb()));
+  })
+);
+
+/* ------------------------------------------------------------------ *
  * Backup and recovery
  * ------------------------------------------------------------------ */
 
@@ -986,13 +1011,18 @@ app.post(
   '/api/settings',
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'manage_settings');
-    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir, strataPlanNumber, trn, booksBeginOn } = req.body || {};
+    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir, strataPlanNumber, trn, booksBeginOn, hidePropertyHealth } =
+      req.body || {};
 
     const settings = await transaction(db => {
       const before = JSON.parse(JSON.stringify(db.settings));
 
       if (strataPlanNumber !== undefined) db.settings.strataPlanNumber = optionalString(strataPlanNumber, 40);
       if (trn !== undefined) db.settings.trn = optionalString(trn, 40);
+
+      // Stored as "hide" so an older database, which has no such field, keeps
+      // showing the card rather than silently losing it.
+      if (hidePropertyHealth !== undefined) db.settings.hidePropertyHealth = hidePropertyHealth === true;
 
       /*
        * The migration cutover. Validated as a real date rather than stored as
@@ -3384,6 +3414,114 @@ app.put(
   })
 );
 
+/* ------------------------------------------------------------------ *
+ * The owners' annual report (AGM)
+ *
+ * Only the written part and the budget are stored. Every figure in the document
+ * is derived from the ledger when it renders, so a corrected receipt reaches the
+ * report without anyone re-opening it, and nobody can type over a number.
+ *
+ * Gated on `post_charges` rather than `manage_settings`: this is the person who
+ * runs the books preparing a document for the meeting, not an administrator
+ * changing how the system behaves.
+ * ------------------------------------------------------------------ */
+
+function readAnnualReportFields(body: Record<string, unknown>, existing?: AnnualReport) {
+  const yearRaw = Number(body.year ?? existing?.year);
+  if (!Number.isInteger(yearRaw) || yearRaw < 2000 || yearRaw > 2200) {
+    bad('Report year must be a whole year between 2000 and 2200.');
+  }
+
+  // Narrative: a fixed set of known sections. An unknown key is dropped rather
+  // than stored, so the document cannot grow fields nothing renders.
+  const narrative: Record<string, string> = { ...(existing?.narrative || {}) };
+  const incoming = body.narrative;
+  if (incoming !== undefined) {
+    if (typeof incoming !== 'object' || incoming === null || Array.isArray(incoming)) {
+      bad('Narrative must be a set of named sections.');
+    }
+    for (const section of ANNUAL_REPORT_SECTIONS) {
+      const value = (incoming as Record<string, unknown>)[section.key];
+      if (value === undefined) continue;
+      narrative[section.key] = optionalString(value, 20000);
+    }
+  }
+
+  // Budget: one figure per known expenditure category. Zero is meaningful here —
+  // it is how a line is cut to nothing, which is the whole point of the second
+  // lever — so this cannot use requirePositiveAmount.
+  const budgetByCategory: Record<string, number> = { ...(existing?.budgetByCategory || {}) };
+  const budgetIn = body.budgetByCategory;
+  if (budgetIn !== undefined) {
+    if (typeof budgetIn !== 'object' || budgetIn === null || Array.isArray(budgetIn)) {
+      bad('The budget must be a set of categories and amounts.');
+    }
+    for (const category of EXPENSE_CATEGORIES) {
+      const value = (budgetIn as Record<string, unknown>)[category];
+      if (value === undefined) continue;
+      if (value === null || value === '') {
+        // Cleared: fall back to this year's actual, a flat run-rate.
+        delete budgetByCategory[category];
+        continue;
+      }
+      budgetByCategory[category] = optionalAmount(value, `Budget for ${category}`, 0);
+    }
+  }
+
+  const proposedFee =
+    body.proposedFee === undefined
+      ? existing?.proposedFee
+      : body.proposedFee === null || body.proposedFee === ''
+        ? undefined
+        : optionalAmount(body.proposedFee, 'Proposed contribution', 0);
+
+  const meetingDate =
+    body.meetingDate === undefined
+      ? existing?.meetingDate
+      : body.meetingDate === null || body.meetingDate === ''
+        ? undefined
+        : requireDay(body.meetingDate, 'Meeting date');
+
+  return {
+    year: yearRaw,
+    currency: requireCurrency(body.currency ?? existing?.currency ?? 'JMD'),
+    narrative,
+    budgetByCategory,
+    proposedFee,
+    meetingDate
+  };
+}
+
+app.put(
+  '/api/annual-reports/:year',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'post_charges');
+    const year = Number(req.params.year);
+    const report = await transaction(db => {
+      if (!Array.isArray(db.annualReports)) db.annualReports = [];
+      const idx = db.annualReports.findIndex(r => r.year === year);
+      const original = idx === -1 ? undefined : db.annualReports[idx];
+      const who = actor(req);
+      const fields = readAnnualReportFields({ ...(req.body || {}), year }, original);
+      const updated: AnnualReport = { ...fields, updatedAt: new Date().toISOString(), updatedBy: who.name };
+      if (idx === -1) db.annualReports.push(updated);
+      else db.annualReports[idx] = updated;
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        original ? `Updated the ${year} owners' annual report` : `Started the ${year} owners' annual report`,
+        'AnnualReport',
+        String(year),
+        original || '',
+        updated
+      );
+      return updated;
+    });
+    res.json({ success: true, report });
+  })
+);
+
 /**
  * Post a month's recurring costs.
  *
@@ -4121,6 +4259,30 @@ async function startServer() {
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Villaggio Del Sol operations server running at http://localhost:${PORT}`);
+
+    /*
+     * Check the books on the machine that holds them.
+     *
+     * Every one of these invariants was already asserted in the test suite,
+     * against a simulated property, on a developer's laptop. None of it ran
+     * here. Startup is the right moment: it is immediately after the file has
+     * been read, which is when a bad restore, a half-finished upgrade or a
+     * failing disk shows itself.
+     *
+     * It never repairs and never refuses to start. A property that cannot take
+     * a payment this morning is a worse outcome than one running on records
+     * with a known, stated fault in them.
+     */
+    try {
+      const report = checkIntegrity(getDb());
+      console.log(describeIntegrity(report));
+      if (!report.ok) {
+        console.log('  Open the application and look at System Settings → Backup & recovery for the detail.');
+      }
+    } catch {
+      console.log('The records could not be checked at start-up. The application is still running.');
+    }
+
     createDesktopShortcutIfNeeded();
     openBrowserIfAsked();
   });

@@ -47,7 +47,21 @@ function rng(seed) {
 const pick = (rand, list) => list[Math.floor(rand() * list.length) % list.length];
 const money = (rand, low, high) => Math.round((low + rand() * (high - low)) * 100) / 100;
 const pad = n => String(n).padStart(2, '0');
-const monthOf = i => `2026-${pad((i % 12) + 1)}`;
+/**
+ * The month a scenario acts in.
+ *
+ * Derived from how many times this scenario has already run, **not** from `i`
+ * directly. A scenario only runs when `i % scenarios.length` selects it, so
+ * `monthOf(i)` is *constant* for a given scenario whenever the scenario count is
+ * a multiple of twelve — every run lands in the same month, records that dedupe
+ * per period collapse to one, and the simulation quietly stops covering the
+ * ground its assertions claim. Adding two scenarios took the count to 24 and cut
+ * utility readings from dozens to ten, all settled.
+ *
+ * Taking the repetition number instead varies the month whatever the scenario
+ * count is.
+ */
+const monthOf = n => `2026-${pad((n % 12) + 1)}`;
 const dayIn = (month, day) => `${month}-${pad(day)}`;
 
 const isBadNumber = v => typeof v === 'number' && !Number.isFinite(v);
@@ -351,7 +365,7 @@ export default async function run({ port, projectRoot }) {
       const seed = 1000 + i;
       const rand = rng(seed);
       const scenario = scenarios[i % scenarios.length];
-      const context = { unitId: unitIds[i % unitIds.length], month: monthOf(i), rand, i, seed };
+      const context = { unitId: unitIds[i % unitIds.length], month: monthOf(Math.floor(i / scenarios.length)), rand, i, seed };
 
       try {
         await scenario(context);

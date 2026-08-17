@@ -12,6 +12,7 @@ import {
   Expense,
   Payment,
   RecurringExpense,
+  AnnualReport as AnnualReportRecord,
   SessionUser,
   Tenancy,
   Unit,
@@ -28,6 +29,7 @@ import Reports from './components/Reports';
 import OwnerStatements from './components/OwnerStatements';
 import ReconciliationTab from './components/Reconciliation';
 import Projections from './components/Projections';
+import AnnualReport from './components/AnnualReport';
 import Charts from './components/Charts';
 import Audit from './components/Audit';
 import SystemSettings from './components/SystemSettings';
@@ -54,6 +56,7 @@ import {
   Bell,
   Calendar,
   ClipboardList,
+  FileText,
   Home,
   Key,
   LayoutDashboard,
@@ -82,6 +85,7 @@ export type TabKey =
   | 'owner-statements'
   | 'charts'
   | 'projections'
+  | 'annual-report'
   | 'audit'
   | 'settings';
 
@@ -97,6 +101,7 @@ const TAB_TITLES: Record<TabKey, string> = {
   'owner-statements': 'Owners Statements',
   charts: 'Charts & Visual Snapshots',
   projections: 'Financial Projections',
+  'annual-report': 'Annual Report',
   audit: 'Audit Trail',
   settings: 'System Settings'
 };
@@ -109,6 +114,7 @@ interface DbSnapshot {
   utilities: UtilityReading[];
   expenses: Expense[];
   recurringExpenses: RecurringExpense[];
+  annualReports: AnnualReportRecord[];
   tenancies: Tenancy[];
   auditLogs: AuditLog[];
   unitActivities: UnitActivity[];
@@ -125,6 +131,7 @@ const EMPTY: Omit<DbSnapshot, 'settings' | 'currentUser'> = {
   utilities: [],
   expenses: [],
   recurringExpenses: [],
+  annualReports: [],
   tenancies: [],
   auditLogs: [],
   unitActivities: [],
@@ -224,6 +231,7 @@ export default function App() {
       utilities: snapshot.utilities || [],
       expenses: snapshot.expenses || [],
       recurringExpenses: snapshot.recurringExpenses || [],
+      annualReports: snapshot.annualReports || [],
       tenancies: snapshot.tenancies || [],
       auditLogs: snapshot.auditLogs || [],
       unitActivities: snapshot.unitActivities || [],
@@ -434,7 +442,8 @@ export default function App() {
         { key: 'reconciliation', label: 'Bank Reconciliation', icon: <Landmark className="h-4 w-4" />, visible: true },
         { key: 'owner-statements', label: 'Owners Statements', icon: <Users className="h-4 w-4" />, visible: true },
         { key: 'charts', label: 'Charts & Snapshots', icon: <PieChart className="h-4 w-4" />, visible: true },
-        { key: 'projections', label: 'Financial Projections', icon: <TrendingUp className="h-4 w-4" />, visible: true }
+        { key: 'projections', label: 'Financial Projections', icon: <TrendingUp className="h-4 w-4" />, visible: true },
+        { key: 'annual-report', label: 'Annual Report', icon: <FileText className="h-4 w-4" />, visible: true }
       ]
     },
     {
@@ -766,6 +775,20 @@ export default function App() {
             expenses={data.expenses}
             settings={settings}
             session={session}
+          />
+        )}
+
+        {activeTab === 'annual-report' && (
+          <AnnualReport
+            units={data.units}
+            charges={data.charges}
+            payments={data.payments}
+            expenses={data.expenses}
+            settings={settings}
+            reports={data.annualReports}
+            currentUserName={session.name}
+            canEdit={!!permissions?.postCharges}
+            onSave={(year, patch) => mutate(() => api.put(`/api/annual-reports/${year}`, patch))}
           />
         )}
 

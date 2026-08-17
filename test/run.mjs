@@ -21,7 +21,7 @@ if (!fs.existsSync(path.join(projectRoot, 'dist', 'server.cjs'))) {
   process.exit(1);
 }
 
-const modules = ['auth', 'money-math', 'account-recovery', 'backup-target', 'backup-drives', 'restore', 'ledger', 'billing-state', 'tenancy', 'first-and-last-rent', 'one-off-charges', 'lease-expiry', 'work-orders', 'deposits', 'damage-deposit', 'owner-statements', 'entitlement', 'annual-return', 'management-charts', 'components', 'time-assumptions', 'double-record', 'recurring-expenses', 'refunds', 'reconciliation', 'permissions', 'staff-accounts', 'input-hardening', 'integrity', 'ssrf', 'calendar-sync', 'ical-parsing', 'scenarios', 'scenarios-full', 'scenarios-400'];
+const modules = ['auth', 'money-math', 'account-recovery', 'backup-target', 'backup-drives', 'restore', 'ledger', 'billing-state', 'tenancy', 'first-and-last-rent', 'one-off-charges', 'lease-expiry', 'work-orders', 'deposits', 'damage-deposit', 'owner-statements', 'entitlement', 'annual-return', 'owners-annual-report', 'health', 'management-charts', 'components', 'time-assumptions', 'double-record', 'recurring-expenses', 'refunds', 'reconciliation', 'permissions', 'staff-accounts', 'input-hardening', 'integrity', 'self-check', 'ssrf', 'calendar-sync', 'ical-parsing', 'scenarios', 'scenarios-full', 'scenarios-400'];
 let port = 3971;
 let totalPass = 0;
 let totalFail = 0;

@@ -68,7 +68,21 @@ function rng(seed) {
 const pick = (rand, list) => list[Math.floor(rand() * list.length) % list.length];
 const money = (rand, low, high) => Math.round((low + rand() * (high - low)) * 100) / 100;
 const pad = n => String(n).padStart(2, '0');
-const monthOf = i => `2026-${pad((i % 12) + 1)}`;
+/**
+ * The month a scenario acts in.
+ *
+ * Derived from how many times this scenario has already run, **not** from `i`
+ * directly. A scenario only runs when `i % scenarios.length` selects it, so
+ * `monthOf(i)` is *constant* for a given scenario whenever the scenario count is
+ * a multiple of twelve — every run lands in the same month, records that dedupe
+ * per period collapse to one, and the simulation quietly stops covering the
+ * ground its assertions claim. Adding two scenarios took the count to 24 and cut
+ * utility readings from dozens to ten, all settled.
+ *
+ * Taking the repetition number instead varies the month whatever the scenario
+ * count is.
+ */
+const monthOf = n => `2026-${pad((n % 12) + 1)}`;
 const dayIn = (month, day) => `${month}-${pad(Math.min(28, Math.max(1, day)))}`;
 const isBadNumber = v => typeof v === 'number' && !Number.isFinite(v);
 const cents = v => Math.round(v * 100);
@@ -307,6 +321,99 @@ function auditReporting(db, fin, asOf) {
           problems.push(`villa ${unit.number} ${category} does not total whole cents`);
         }
       }
+    }
+  }
+
+
+  /* --- the annual report: the AGM document and the Commission's basis --- */
+
+  // Audited on every scenario because these figures leave the building. An
+  // owner adds the allocation column up with a pen, and the same numbers are
+  // the basis of what goes to the Commission of Strata Corporations.
+  for (const currency of ['JMD', 'USD']) {
+    for (const year of [2025, 2026]) {
+      const r = fin.annualOwnersReport(units, charges, payments, db.expenses || [], currency, year);
+
+      for (const [name, v] of Object.entries({
+        expenditure: r.expenditure,
+        perUnitAnnual: r.perUnitAnnual,
+        perUnitMonthly: r.perUnitMonthly,
+        feeBilled: r.feeBilled,
+        contributionsAnnual: r.contributionsAnnual,
+        annualCommunityPosition: r.annualCommunityPosition,
+        budgetExpenditure: r.budgetExpenditure,
+        feeToCoverBudget: r.feeToCoverBudget,
+        reserveAnnual: r.reserveAnnual,
+        reductionRequired: r.reductionRequired
+      })) {
+        if (isBadNumber(v)) problems.push(`${currency} ${year} annual report ${name} is ${v}`);
+      }
+
+      // The allocation table has to add up exactly — this is the column an
+      // owner checks by hand, and a penny out is what produced a corrections
+      // log on the real 2026 report.
+      if (cents(r.budgetExpenditure) + cents(r.reserveAnnual) !== cents(r.proposedAnnualCommunity)) {
+        problems.push(
+          `${currency} ${year} allocation column does not add up: ${r.budgetExpenditure} + ${r.reserveAnnual} != ${r.proposedAnnualCommunity}`
+        );
+      }
+
+      // The recommended contribution must actually cover the budget it is
+      // recommended for, never fall a few dollars short of it.
+      if (r.contributingUnits > 0 && cents(r.feeToCoverBudget * r.contributingUnits * 12) < cents(r.budgetExpenditure)) {
+        problems.push(`${currency} ${year} recommended contribution does not cover its own budget`);
+      }
+
+      // The breakdown must reconcile with the total it breaks down, and the
+      // budget with its own lines.
+      const actualSum = r.categories.reduce((t, c) => t + cents(c.actual), 0);
+      if (actualSum !== cents(r.expenditure)) {
+        problems.push(`${currency} ${year} category actuals sum to ${actualSum} against expenditure ${cents(r.expenditure)}`);
+      }
+      const budgetSum = r.categories.reduce((t, c) => t + cents(c.budget), 0);
+      if (budgetSum !== cents(r.budgetExpenditure)) {
+        problems.push(`${currency} ${year} category budgets sum to ${budgetSum} against ${cents(r.budgetExpenditure)}`);
+      }
+
+      // Twelve months, and they sum to the year.
+      if (r.months.length !== 12) problems.push(`${currency} ${year} annual report has ${r.months.length} months`);
+      const monthSum = r.months.reduce((t, m) => t + cents(m.expenditure), 0);
+      if (monthSum !== cents(r.expenditure)) {
+        problems.push(`${currency} ${year} monthly expenditure sums to ${monthSum} against ${cents(r.expenditure)}`);
+      }
+      if (r.monthsCovered + r.monthsOver.length !== 12) {
+        problems.push(`${currency} ${year} months covered and over do not make twelve`);
+      }
+
+      // The headline gap is the contributions less the cost, and nothing else.
+      if (cents(r.contributionsAnnual) - cents(r.expenditure) !== cents(r.annualCommunityPosition)) {
+        problems.push(`${currency} ${year} community position does not equal contributions less expenditure`);
+      }
+    }
+  }
+
+  /* --- the health grade must be reproducible from what it shows --- */
+
+  for (const currency of ['JMD', 'USD']) {
+    const h = fin.operationalHealth(units, charges, payments, db.expenses || [], currency, '2026-01-01', '2026-12-31');
+    if (!h) continue;
+
+    if (isBadNumber(h.score)) problems.push(`${currency} health score is ${h.score}`);
+    if (h.score < 0 || h.score > 100) problems.push(`${currency} health score is out of range: ${h.score}`);
+    if (h.grade !== fin.gradeFor(h.score)) problems.push(`${currency} health grade ${h.grade} does not match score ${h.score}`);
+
+    const weightSum = h.components.reduce((t, c) => t + c.weight, 0);
+    if (Math.abs(weightSum - 100) > 0.05) problems.push(`${currency} health weights sum to ${weightSum}`);
+
+    // The whole reason the card prints its components: the letter has to be
+    // reproducible from exactly what is on screen beside it.
+    const rebuilt = h.components.reduce((t, c) => t + c.score * (c.weight / 100), 0);
+    if (Math.abs(rebuilt - h.score) > 0.05) {
+      problems.push(`${currency} health score ${h.score} cannot be rebuilt from its components (${rebuilt})`);
+    }
+    for (const c of h.components) {
+      if (isBadNumber(c.score) || c.score < 0 || c.score > 100) problems.push(`${currency} health component ${c.key} scores ${c.score}`);
+      if (!c.detail) problems.push(`${currency} health component ${c.key} states no figures`);
     }
   }
 
@@ -649,7 +756,14 @@ export default async function run({ port, projectRoot }) {
           currency: 'USD'
         });
         const id = reading.body?.utility?.id;
-        if (!id || i % 3 === 0) return; // some are deliberately left unpaid
+        // Deliberately leave some unsettled, chosen from the seeded generator
+        // rather than from `i`. A scenario only runs when `i % scenarios.length`
+        // picks it, so any test on `i % n` is constant for that scenario
+        // whenever `n` divides the scenario count — adding two scenarios made
+        // the count a multiple of three and this branch silently stopped firing
+        // altogether, taking its coverage assertion down with it. Never gate a
+        // scenario's internal branch on `i`.
+        if (!id || rand() > 0.65) return;
         const settled = await c.post(`/api/utilities/${id}/settle`, { method: 'Cash' });
         if (settled.body?.payment?.id) await c.post(`/api/payments/${settled.body.payment.id}/confirm`, {});
       },
@@ -669,6 +783,39 @@ export default async function run({ port, projectRoot }) {
           unitId,
           vendor: 'Jamaica Public Service'
         });
+      },
+
+      // The annual report being prepared while the books are still moving.
+      // Only the narrative and the budget are ever stored — every figure is
+      // recomputed — so this must never be able to corrupt the ledger, and the
+      // report audit above runs against whatever it leaves behind.
+      async ({ rand, i }) => {
+        const year = rand() > 0.5 ? 2026 : 2025;
+        await c.put(`/api/annual-reports/${year}`, {
+          currency: rand() > 0.85 ? 'USD' : 'JMD',
+          narrative: {
+            executiveSummary: `Draft ${i} of the position for ${year}.`,
+            recommendation: rand() > 0.5 ? 'A contribution increase is proposed.' : ''
+          },
+          budgetByCategory: {
+            Security: Math.round(money(rand, 0, 3000000)),
+            // Zero is meaningful — it is how a service is cut — and clearing a
+            // line must fall back to the run-rate rather than storing nothing.
+            Payroll: rand() > 0.8 ? 0 : Math.round(money(rand, 100000, 2000000)),
+            Utilities: rand() > 0.9 ? null : Math.round(money(rand, 50000, 900000))
+          },
+          proposedFee: rand() > 0.3 ? Math.round(money(rand, 15000, 45000)) : null,
+          meetingDate: rand() > 0.6 ? `${year}-11-20` : null
+        });
+        // Rubbish at the same surface: a year that cannot exist, and a
+        // narrative section nothing renders.
+        await c.put('/api/annual-reports/1200', {});
+        await c.put(`/api/annual-reports/${year}`, { narrative: { notARealSection: 'x'.repeat(50) } });
+      },
+
+      // Turning the health grade off and on while everything else runs.
+      async ({ rand }) => {
+        await c.post('/api/settings', { hidePropertyHealth: rand() > 0.5 });
       }
     ];
 
@@ -684,7 +831,7 @@ export default async function run({ port, projectRoot }) {
       const seed = 5000 + i;
       const rand = rng(seed);
       const index = i % scenarios.length;
-      const context = { month: monthOf(i), rand, i, seed };
+      const context = { month: monthOf(Math.floor(i / scenarios.length)), rand, i, seed };
 
       try {
         await scenarios[index](context);
@@ -782,7 +929,25 @@ export default async function run({ port, projectRoot }) {
       'an insurance share landed on the wrong account'
     );
     T.check('villas the corporation meters were billed for utilities', db.utilities.length > 0, `${db.utilities.length} readings`);
-    T.check('and some readings were left unsettled', db.utilities.some(u => u.status === 'unpaid'));
+    T.check(
+      'and some readings were left unsettled',
+      db.utilities.some(u => u.status === 'unpaid'),
+      `statuses seen: ${JSON.stringify([...new Set(db.utilities.map(u => u.status))])} across ${db.utilities.length} readings`
+    );
+    // The guard on the guard. Every coverage assertion in this file assumes the
+    // simulation moved through the year; when the month froze per scenario, the
+    // records that dedupe per period collapsed and the suite went on claiming
+    // coverage it no longer had. Assert the spread itself.
+    T.check(
+      'the simulation moved through the year rather than repeating one month',
+      new Set(db.charges.map(c => c.periodMonth).filter(Boolean)).size >= 6,
+      `only ${new Set(db.charges.map(c => c.periodMonth).filter(Boolean)).size} distinct billing months were reached`
+    );
+    T.check(
+      'and it read meters across several periods, not just one',
+      new Set(db.utilities.map(u => u.billingPeriod)).size >= 4,
+      `only ${new Set(db.utilities.map(u => u.billingPeriod)).size} distinct meter periods, across ${db.utilities.length} readings`
+    );
     T.check(
       "the supplier's own utility invoices were recorded as the corporation's cost",
       db.expenses.some(e => e.category === 'Utilities' && e.unitId),
@@ -819,6 +984,23 @@ export default async function run({ port, projectRoot }) {
     T.check('and the final reported figures agree with them', auditReporting(db, fin, '2026-12-31').length === 0, auditReporting(db, fin, '2026-12-31').slice(0, 3).join('; '));
 
     /* ---------------- the server survived it ---------------- */
+
+    // The application's own self-check, against the busiest legitimate database
+    // this suite can build. A checker that cries wolf on a real property gets
+    // ignored inside a week, and the finding that matters is ignored with it.
+    // Four hundred scenarios of refunds, voids, part-payments, cancelled stays
+    // and re-posted months must still come back clean.
+    const selfCheck = (await c.get('/api/integrity')).body;
+    T.check(
+      'the application checking its own records finds nothing wrong with them',
+      selfCheck?.ok === true,
+      JSON.stringify(selfCheck?.findings?.slice(0, 3))
+    );
+    T.check(
+      'and it genuinely walked the whole property rather than an empty one',
+      (selfCheck?.counts?.payments || 0) > 50 && (selfCheck?.counts?.charges || 0) > 50,
+      JSON.stringify(selfCheck?.counts)
+    );
 
     T.check('the server is still answering', (await c.get('/api/health')).status === 200);
     const reread = await c.get('/api/db');

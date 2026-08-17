@@ -2,9 +2,9 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * A hundred scenarios across the whole application, on a fully populated property.
+ * Two hundred scenarios across the whole application, on a fully populated property.
  *
- * The two-hundred-scenario run exercises the ledger hard but starts from bare
+ * The `scenarios` run exercises the ledger hard but starts from bare
  * villas and touches roughly half the application. This one starts from a
  * property that looks like a real one on its first day of use — all sixteen villas
  * configured, a mix of long lets, short lets, an owner-occupied villa and one out
@@ -26,9 +26,17 @@
 
 import { startServer, makeClient, reporter, activateAdmin } from './harness.mjs';
 
-export const title = 'One hundred scenarios across the whole application';
+export const title = 'Two hundred scenarios across the whole application';
 
-const SCENARIO_COUNT = 100;
+/**
+ * Two hundred, not one hundred. At a hundred, the scenario list does not get
+ * round often enough for its probabilistic branches to all fire — a dead route
+ * sat in the expense scenario undetected because the `rand() > 0.7` arm that
+ * called it was never reached. Raise this rather than lower it.
+ *
+ * Override for a deeper run: VDS_SCENARIOS_FULL=500 node test/run.mjs
+ */
+const SCENARIO_COUNT = Number(process.env.VDS_SCENARIOS_FULL) || 200;
 
 function rng(seed) {
   let s = seed >>> 0;
@@ -41,7 +49,21 @@ function rng(seed) {
 const pick = (rand, list) => list[Math.floor(rand() * list.length) % list.length];
 const money = (rand, low, high) => Math.round((low + rand() * (high - low)) * 100) / 100;
 const pad = n => String(n).padStart(2, '0');
-const monthOf = i => `2026-${pad((i % 12) + 1)}`;
+/**
+ * The month a scenario acts in.
+ *
+ * Derived from how many times this scenario has already run, **not** from `i`
+ * directly. A scenario only runs when `i % scenarios.length` selects it, so
+ * `monthOf(i)` is *constant* for a given scenario whenever the scenario count is
+ * a multiple of twelve — every run lands in the same month, records that dedupe
+ * per period collapse to one, and the simulation quietly stops covering the
+ * ground its assertions claim. Adding two scenarios took the count to 24 and cut
+ * utility readings from dozens to ten, all settled.
+ *
+ * Taking the repetition number instead varies the month whatever the scenario
+ * count is.
+ */
+const monthOf = n => `2026-${pad((n % 12) + 1)}`;
 const dayIn = (month, day) => `${month}-${pad(Math.min(28, Math.max(1, day)))}`;
 const isBad = v => typeof v === 'number' && !Number.isFinite(v);
 
@@ -398,13 +420,22 @@ export default async function run({ port, projectRoot }) {
         if (added.body?.feed?.id && rand() > 0.5) await c.del(`/api/ical/feeds/${added.body.feed.id}`);
       },
 
-      // Costs edited and removed.
+      // Costs recorded and then corrected. There is no delete: an expense is an
+      // audited record and the correction path is an edit, so a scenario that
+      // reached for DELETE was calling a route that does not exist and proving
+      // nothing. It re-dates and re-categorises instead, which is what the
+      // office actually does to a cost entered wrongly.
       async ({ month, rand }) => {
         const e = await c.post('/api/expenses', { category: pick(rand, ['Maintenance', 'Security', 'Supplies', 'Contractors']), description: 'ad hoc cost', amount: money(rand, 500, 40000), currency: pick(rand, ['JMD', 'USD']), date: dayIn(month, 1 + Math.floor(rand() * 27)), vendor: 'Vendor' });
         const id = e.body?.expense?.id;
         if (!id) return;
         await c.put(`/api/expenses/${id}`, { amount: money(rand, 500, 40000) });
-        if (rand() > 0.7) await c.del(`/api/expenses/${id}`);
+        if (rand() > 0.7) {
+          await c.put(`/api/expenses/${id}`, {
+            category: pick(rand, ['Maintenance', 'Security', 'Supplies', 'Contractors']),
+            date: dayIn(month, 1 + Math.floor(rand() * 27))
+          });
+        }
       },
 
       // Backups and the records export, while everything else is running.
@@ -454,7 +485,7 @@ export default async function run({ port, projectRoot }) {
       const rand = rng(seed);
       const scenario = scenarios[i % scenarios.length];
       try {
-        await scenario({ month: monthOf(i), rand, i, seed });
+        await scenario({ month: monthOf(Math.floor(i / scenarios.length)), rand, i, seed });
       } catch (err) {
         failures.push(`seed ${seed} threw ${err.message}`);
         continue;

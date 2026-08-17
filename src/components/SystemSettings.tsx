@@ -13,7 +13,8 @@ import {
   Unit,
   User,
   UserRole,
-  getUnitDisplayName
+  getUnitDisplayName,
+  IntegrityReport
 } from '../types';
 import { formatDayLabel } from '../lib/dates';
 import { api, errorMessage } from '../lib/api';
@@ -811,6 +812,8 @@ function BackupPanel({
   const [folderResult, setFolderResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [drives, setDrives] = useState<DetectedDrive[] | null>(null);
   const [drivesBusy, setDrivesBusy] = useState(false);
+  const [integrity, setIntegrity] = useState<IntegrityReport | null>(null);
+  const [integrityBusy, setIntegrityBusy] = useState(false);
 
   const refreshStatus = async () => {
     const s = await api.get<BackupStatus>('/api/backup/status');
@@ -932,6 +935,24 @@ function BackupPanel({
     }
   };
 
+  /**
+   * Ask the application to check its own records.
+   *
+   * It lives beside backup and recovery because that is where somebody already
+   * goes when they are worried about the records, and because the answer to a
+   * serious finding is usually a restore.
+   */
+  const runIntegrity = async () => {
+    setIntegrityBusy(true);
+    try {
+      setIntegrity(await api.get<IntegrityReport>('/api/integrity'));
+    } catch (err) {
+      onError(err);
+    } finally {
+      setIntegrityBusy(false);
+    }
+  };
+
   const runBackup = async () => {
     setBusy(true);
     try {
@@ -957,6 +978,8 @@ function BackupPanel({
 
   return (
     <div className="space-y-4">
+      <IntegritySection report={integrity} busy={integrityBusy} onRun={() => void runIntegrity()} />
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-xs">
           <p className="font-mono text-[10px] uppercase text-slate-500">Today&apos;s backup</p>
@@ -1188,6 +1211,9 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
   const [fxRate, setFxRate] = useState(String(settings.fxRateJmdPerUsd));
   const [vendors, setVendors] = useState(settings.vendors.join('\n'));
   const [booksBeginOn, setBooksBeginOn] = useState(settings.booksBeginOn || '');
+  // Held as "show" here because that is what the checkbox says; stored the
+  // opposite way round so an older database keeps the card. See AppSettings.
+  const [showHealth, setShowHealth] = useState(settings.hidePropertyHealth !== true);
   const [busy, setBusy] = useState(false);
 
   const handleSave = async () => {
@@ -1196,6 +1222,7 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
       await onSave({
         fxRateJmdPerUsd: Number(fxRate),
         booksBeginOn: booksBeginOn || '',
+        hidePropertyHealth: !showHealth,
         vendors: vendors
           .split('\n')
           .map(v => v.trim())
@@ -1235,6 +1262,31 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
         />
       </Field>
 
+      <Field
+        label="Property health grade on the dashboard"
+        htmlFor="gp-health"
+        hint="A single letter for how the property is running, from collection, cost coverage, debt ageing and cash position — each shown with the figures behind it. Turn it off if a graded summary is not wanted on the front page; every underlying figure stays available on its own screen either way."
+      >
+        {/*
+          * Deliberately NOT wrapped in a second <label>. `Field` already renders
+          * one with htmlFor="gp-health", and nesting another around the input
+          * meant a click on the visible text was forwarded by both — toggling
+          * the box twice and landing back where it started, so the setting
+          * looked broken while the code was fine. Found by clicking it in a
+          * browser; every test passed throughout.
+          */}
+        <span className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            id="gp-health"
+            type="checkbox"
+            checked={showHealth}
+            onChange={e => setShowHealth(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+          />
+          <span>Show the property health grade</span>
+        </span>
+      </Field>
+
       <Field label="Vendor list" htmlFor="gp-vendors" hint="One vendor per line. These appear as suggestions when recording an expense.">
         <textarea id="gp-vendors" rows={8} value={vendors} onChange={e => setVendors(e.target.value)} className={inputClass} />
       </Field>
@@ -1243,5 +1295,90 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
         Save settings
       </SubmitButton>
     </div>
+  );
+}
+
+/**
+ * The application checking its own records, and saying so in plain words.
+ *
+ * The check itself is worthless if its answer only reaches a console log on a
+ * machine in a cupboard. This is the part that makes it a safeguard: whoever is
+ * worried about the records can press a button and get a straight answer, and a
+ * serious finding names the records so somebody can go and look at them.
+ *
+ * It deliberately does **not** offer to fix anything. An automatic repair to a
+ * ledger is a second, unaudited author of the accounts.
+ */
+function IntegritySection({
+  report,
+  busy,
+  onRun
+}: {
+  report: IntegrityReport | null;
+  busy: boolean;
+  onRun: () => void;
+}) {
+  const tone = !report
+    ? 'border-slate-100 bg-white'
+    : report.ok
+      ? 'border-emerald-200 bg-emerald-50/50'
+      : report.serious > 0
+        ? 'border-rose-200 bg-rose-50/50'
+        : 'border-amber-200 bg-amber-50/50';
+
+  return (
+    <section className={`space-y-3 rounded-2xl border p-6 shadow-xs ${tone}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-display text-sm font-semibold text-slate-900">Check the records</h3>
+          <p className="mt-1 max-w-2xl text-xs text-slate-600">
+            Reads every record and reports anything that contradicts itself — a receipt number issued twice, a month
+            billed twice, a villa sold to two guests on one night, money refunded beyond what was received. It changes
+            nothing: a fault is reported so a person can decide, never repaired automatically. This also runs on its own
+            each time the program starts.
+          </p>
+        </div>
+        <SubmitButton type="button" busy={busy} busyLabel="Checking…" onClick={onRun}>
+          Check now
+        </SubmitButton>
+      </div>
+
+      {report && report.ok && (
+        <p className="text-sm font-medium text-emerald-800">
+          No contradictions found — {report.counts.payments} payments, {report.counts.charges} charges,{' '}
+          {report.counts.bookings} stays and {report.counts.expenses} costs were checked.
+        </p>
+      )}
+
+      {report && !report.ok && (
+        <div className="space-y-3">
+          <p className={`text-sm font-semibold ${report.serious > 0 ? 'text-rose-800' : 'text-amber-800'}`}>
+            {report.serious > 0
+              ? `${report.serious} serious problem${report.serious === 1 ? '' : 's'} found in the records.`
+              : `${report.warnings} thing${report.warnings === 1 ? '' : 's'} worth looking at.`}
+            {report.serious > 0 && ' Money is misstated somewhere. Do not take a backup over a good one until this is understood.'}
+          </p>
+          <ul className="space-y-2">
+            {report.findings.map(f => (
+              <li key={f.code} className="rounded-xl border border-slate-200 bg-white p-3">
+                <div className="flex items-start gap-2">
+                  <Badge tone={f.severity === 'serious' ? 'red' : 'amber'}>
+                    {f.severity === 'serious' ? 'Serious' : 'Worth checking'}
+                  </Badge>
+                  <p className="text-xs text-slate-800">{f.message}</p>
+                </div>
+                {f.records.length > 0 && (
+                  <p className="mt-2 break-words font-mono text-[10px] text-slate-500">{f.records.join(' · ')}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-slate-500">
+            Nothing has been changed. If a serious finding cannot be explained, restore the most recent backup taken
+            before it appeared and re-enter the work since.
+          </p>
+        </div>
+      )}
+    </section>
   );
 }

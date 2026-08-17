@@ -108,7 +108,7 @@ export default async function run({ projectRoot }) {
   try {
     /* ---------------- 13B: the columns are the form's ---------------- */
 
-    const units = [villa({ id: 'unit-1', number: '1', strataLotNumber: 'SP2724-1' })];
+    const units = [villa({ id: 'unit-1', number: '1', strataLotNumber: 'SP2324-1' })];
     const aged = mod.form13BContributions(
       units,
       [
@@ -168,7 +168,7 @@ export default async function run({ projectRoot }) {
 
     /* ---------------- it is keyed by strata lot ---------------- */
 
-    T.check('the row is keyed by the strata lot number', row.strataLot === 'SP2724-1', row.strataLot);
+    T.check('the row is keyed by the strata lot number', row.strataLot === 'SP2324-1', row.strataLot);
     T.check('and does not claim the number was assumed', row.lotNumberAssumed === false);
 
     const noLot = mod.form13BContributions([villa({ id: 'unit-1', number: '7' })], [charge({ amount: 5000 })], [], AS_OF).rows[0];

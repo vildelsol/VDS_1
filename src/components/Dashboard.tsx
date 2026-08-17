@@ -27,7 +27,9 @@ import {
   ownerBilledUnitIds,
   leasesNeedingAttention,
   unbilledAccounts,
-  unbilledOccupancy
+  unbilledOccupancy,
+  operationalHealth,
+  OperationalHealth
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2, sumMoney } from '../lib/money';
 import ReceivePaymentModal from './ReceivePaymentModal';
@@ -82,6 +84,25 @@ export default function Dashboard({
   const periodStart = monthStart(month);
   const periodEnd = monthEnd(month);
   const ownerBilled = useMemo(() => ownerBilledUnitIds(units), [units]);
+
+  /**
+   * The health grade, for the month on screen.
+   *
+   * Graded per currency like everything else. JMD leads because the corporation's
+   * own operating costs are in JMD; a USD grade is shown beside it only when
+   * there is USD activity to grade, rather than an empty card asserting nothing.
+   */
+  const healthByCurrency = useMemo(
+    () =>
+      (['JMD', 'USD'] as Currency[])
+        .map(c => operationalHealth(units, charges, payments, expenses, c, periodStart, periodEnd))
+        .filter((h): h is OperationalHealth => h !== null),
+    [units, charges, payments, expenses, periodStart, periodEnd]
+  );
+
+  // Absent means shown — see `hidePropertyHealth` on AppSettings for why it is
+  // stored the negative way round.
+  const showHealth = settings.hidePropertyHealth !== true;
 
   /* ---------------- occupancy ---------------- */
 
@@ -275,6 +296,19 @@ export default function Dashboard({
           tone={arrears.length > 0 ? 'red' : 'slate'}
         />
       </div>
+
+      {/* How the property is running, in one letter that shows its working.
+          Switched off entirely in System Settings → General for anyone who does
+          not want a graded summary on the front page. */}
+      {!showHealth ? null : healthByCurrency.length === 0 ? (
+        <HealthCard health={null} currency="JMD" />
+      ) : (
+        <div className={`grid grid-cols-1 gap-4 ${healthByCurrency.length > 1 ? 'xl:grid-cols-2' : ''}`}>
+          {healthByCurrency.map(h => (
+            <HealthCard key={h.currency} health={h} currency={h.currency} />
+          ))}
+        </div>
+      )}
 
       {/* Arrears */}
       {arrears.length > 0 ? (
@@ -726,5 +760,104 @@ function TransitionList({
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * The health grade.
+ *
+ * One letter for "is the property being run well", from four things the ledger
+ * already knows. Asked for as a quick read so nobody has to open four screens
+ * and hold the figures in their head.
+ *
+ * **It shows its working, and that is not decoration.** A single letter is the
+ * most dangerous figure on the screen — it is the one nobody checks, because
+ * checking it means reconstructing it. So every component is listed with its
+ * own score, its weight, and the figures behind it, and the grade is exactly
+ * their weighted mean. The bar is a second reading of the same numbers, never
+ * the only one: the values live in the table, not in a tooltip, for the same
+ * reason every other chart here carries a data table.
+ *
+ * A component that cannot be measured is absent from the list rather than
+ * scored zero, and when nothing can be measured there is no grade at all.
+ */
+export function HealthCard({ health, currency }: { health: OperationalHealth | null; currency: Currency }) {
+  if (!health) {
+    return (
+      <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
+        <h3 className="font-display text-sm font-semibold text-slate-900">Property health</h3>
+        <p className="mt-2 text-xs text-slate-500">
+          Nothing has been billed or spent in {currency} this period, so there is nothing to grade yet. A grade appears
+          once the month has been posted and costs are recorded.
+        </p>
+      </section>
+    );
+  }
+
+  const tone =
+    health.grade === 'A' || health.grade === 'B'
+      ? { text: 'text-emerald-700', ring: 'border-emerald-200 bg-emerald-50/50', bar: 'bg-emerald-500' }
+      : health.grade === 'C'
+        ? { text: 'text-amber-700', ring: 'border-amber-200 bg-amber-50/50', bar: 'bg-amber-500' }
+        : { text: 'text-rose-700', ring: 'border-rose-200 bg-rose-50/50', bar: 'bg-rose-500' };
+
+  const meaning: Record<string, string> = {
+    A: 'Running well — collecting, covering its costs, and not carrying old debt.',
+    B: 'Sound, with something worth watching below.',
+    C: 'Under strain. One or more of the figures below needs attention.',
+    D: 'Struggling — the property is not being funded as it is being run.',
+    E: 'Serious. Collection or cost coverage has broken down.'
+  };
+
+  return (
+    <section className={`space-y-4 rounded-2xl border p-6 shadow-xs ${tone.ring}`}>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h3 className="font-display text-sm font-semibold text-slate-900">Property health</h3>
+          <p className="mt-1 text-xs text-slate-600">{meaning[health.grade]}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className={`font-display text-4xl font-bold leading-none ${tone.text}`}>{health.grade}</div>
+          <div className="text-right">
+            <p className={`font-mono text-lg font-semibold ${tone.text}`}>{health.score.toFixed(0)}</p>
+            <p className="text-[10px] uppercase tracking-wide text-slate-400">out of 100 · {health.currency}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* The bar is a second reading of the table below it, never the only one. */}
+      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+        <div className={`h-full rounded-full ${tone.bar}`} style={{ width: `${Math.max(2, health.score)}%` }} />
+      </div>
+
+      <TableScroller>
+        <table className="w-full text-left text-xs">
+          <thead>
+            <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-400">
+              <th scope="col" className="py-2 pr-3">What was measured</th>
+              <th scope="col" className="py-2 pr-3">The figures behind it</th>
+              <th scope="col" className="py-2 pr-3 text-right">Score</th>
+              <th scope="col" className="py-2 text-right">Weight</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {health.components.map(c => (
+              <tr key={c.key}>
+                <td className="py-2 pr-3 font-medium text-slate-800">{c.label}</td>
+                <td className="py-2 pr-3 text-slate-500">{c.detail}</td>
+                <td className="py-2 pr-3 text-right font-mono text-slate-800">{c.score.toFixed(0)}</td>
+                <td className="py-2 text-right font-mono text-slate-400">{c.weight.toFixed(0)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableScroller>
+
+      <p className="text-[11px] leading-relaxed text-slate-500">
+        The grade is the weighted average of the scores above and nothing else — A is 85 and over, B 70, C 55, D 40.
+        Anything that cannot be measured this period is left out and the weights are shared across the rest, rather than
+        being counted as a zero. Currencies are graded separately.
+      </p>
+    </section>
   );
 }
