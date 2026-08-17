@@ -39,12 +39,18 @@ next session from inside `pm-app`.
   stale twice: once claiming `main` was a commit ahead when it was not, once claiming work was
   uncommitted after it had been committed and pushed. A local `origin/main` ref only says what the
   last fetch saw.
-- The plan number correction **also edited the live `db.json`** (backed up first to
-  `db-backups/db.json.pre-2324-*`), and that edit is committed too.
+- ⚠️ **The plan number fix does NOT travel in a release, and this is the trap.** `9b75b61` changed
+  `defaultSettings()` in `server/db.ts`, and `db.json` is **gitignored** — it has never been tracked
+  and cannot be. The Mac's own `db.json` was edited by hand (backed up to
+  `db-backups/db.json.pre-2324-*`); that edit exists on this machine only. On load, `loadDb()` merges
+  as `{ ...defaultSettings(), ...parsed.settings }` (`server/db.ts:726`), so **a stored value always
+  beats the new default** — an existing `db.json` holding `2724` keeps `2724` through any upgrade.
+  The default only applies to a database that has never had the field. **Installing a new `.exe` on
+  the HP will not correct its plan number. Someone has to set it in System Settings → General on the
+  HP itself, and then check a printed letterhead.**
 - Latest release: **v1.8.1**, which is what the HP runs. `9b75b61` is **unreleased** — no tag, no
-  `.exe` built, nothing shipped. So the plan number fix, the health grade and the Annual Report are
-  in git but **not on the machine doing the work**; the HP still prints 2724 on letterheads until a
-  release goes out. See *Releasing*.
+  `.exe` built, nothing shipped. So the health grade and the Annual Report are in git but **not on
+  the machine doing the work**. See *Releasing*.
 
 **There is no known outstanding bug.** Everything found during 2026-08-16 was fixed in the same
 session and carries a regression test. What is genuinely open is *untested surface* and the Excel
@@ -861,7 +867,11 @@ Corrected in all four places; `db.json` was backed up to `db-backups/db.json.pre
 `bodyCorporateName()` reads it from settings, so every screen picked the change up at once.
 
 **If it ever moves again, change it in System Settings** — the value in `server/db.ts` is only the
-default for a fresh database and will not touch a live one.
+default for a fresh database and will not touch a live one. `loadDb()` merges stored settings *over*
+the defaults, so a live `db.json` keeps whatever it already holds. **This cuts both ways: the HP's
+own `db.json` is not corrected by installing a new build.** It must be changed in System Settings on
+the HP, or it will go on heading statutory returns with the wrong plan number no matter what the
+source says.
 
 ### Financial Projections and USD — not a bug (2026-08-16)
 
