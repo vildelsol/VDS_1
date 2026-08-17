@@ -29,17 +29,22 @@ next session from inside `pm-app`.
 - **1,087 automated tests pass.** Typecheck clean, build clean, `npm audit` clean. A full run
   simulates **800 audited scenarios** (200 ledger + 200 whole-application on full data + 400
   reporting), and the application now checks its own records at start-up as well.
-- ⚠️ **There is a large body of uncommitted work — the only copy is on Ro's Mac.**
-  **18 files modified (+1,843 lines) and 6 added (~2,390 lines)**, none of it committed. It includes
-  the Annual Report, the property health grade, the integrity self-check, and a correction to the
-  strata plan number that **also edited the live `db.json`** (backed up first to
-  `db-backups/db.json.pre-2324-*`). Read *Sessions of 2026-08-16* below before touching anything.
-- **`main` and `origin/main` are level** at `413de34` — verified against the remote with
-  `git ls-remote`, not from a local ref. *Earlier versions of this file claimed `main` was one
-  commit ahead and unpushed; that was stale and wrong.* Nothing is waiting to be pushed. The only
-  thing not on the remote is the uncommitted work above.
-- Latest release: **v1.8.1**. The pushed commit is unreleased and none of the uncommitted work is
-  live — no tag, no build shipped to the HP.
+- **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. *Earlier versions of
+  this file warned that a large body of work existed only on Ro's Mac — the Annual Report, the
+  property health grade, the integrity self-check, the dependency gate and the strata plan number
+  correction. All of it went into `9b75b61` and is on the remote. That warning is discharged; do not
+  go looking for uncommitted changes.*
+- **`main` and `origin/main` are level** at `9b75b61` — verified against the remote with
+  `git ls-remote`, not from a local ref. **Keep verifying it that way.** This section has now been
+  stale twice: once claiming `main` was a commit ahead when it was not, once claiming work was
+  uncommitted after it had been committed and pushed. A local `origin/main` ref only says what the
+  last fetch saw.
+- The plan number correction **also edited the live `db.json`** (backed up first to
+  `db-backups/db.json.pre-2324-*`), and that edit is committed too.
+- Latest release: **v1.8.1**, which is what the HP runs. `9b75b61` is **unreleased** — no tag, no
+  `.exe` built, nothing shipped. So the plan number fix, the health grade and the Annual Report are
+  in git but **not on the machine doing the work**; the HP still prints 2724 on letterheads until a
+  release goes out. See *Releasing*.
 
 **There is no known outstanding bug.** Everything found during 2026-08-16 was fixed in the same
 session and carries a regression test. What is genuinely open is *untested surface* and the Excel
@@ -198,7 +203,7 @@ Watch it with `gh run watch <id> --exit-status`.
 
 ---
 
-## Built so far (all tested; the 2026-08-16 second session is **not yet committed** — see *State right now*)
+## Built so far (all tested; everything here is committed and on the remote as of `9b75b61`)
 
 **Money handling**
 - **Proprietor statements** — per villa, per currency, grouped by owner; itemised printable
@@ -251,15 +256,15 @@ Watch it with `gh run watch <id> --exit-status`.
   path stops answering (Windows hands a stick whatever letter is free), the marker is searched for
   across the attached drives, the copy still lands, and the new path is saved and audited. Without
   that, a moved drive letter meant the off-machine copy silently stopped happening.
-- **The records check themselves** (2026-08-16, uncommitted) — `server/integrity.ts` walks the live
+- **The records check themselves** (2026-08-16) — `server/integrity.ts` walks the live
   database at start-up and on demand from **System Settings → Backup & recovery → Check now**, and
   reports anything that contradicts itself. It never repairs, never refuses to start, and is proved
   not to cry wolf against a 400-scenario database. See *Built-in safeguards* below.
-- **A database from a newer build is refused** (2026-08-16, uncommitted) — restoring a
+- **A database from a newer build is refused** (2026-08-16) — restoring a
   post-upgrade backup onto an older `.exe` used to load it and stamp the old version on it. Older
   files still migrate forward; only newer is refused, with an instruction to install the current
   version.
-- **Dependencies are gated in CI** (2026-08-16, uncommitted) — `npm audit --omit=dev
+- **Dependencies are gated in CI** (2026-08-16) — `npm audit --omit=dev
   --audit-level=high` and a typecheck run before the suite in `build-exe.yml`, so a release cannot
   be built carrying a known high or critical advisory.
 - **Admin password recovery** — drop `RESET-ADMIN-PASSWORD.txt` next to `db.json`, restart.
@@ -679,7 +684,7 @@ never appears, and the officer is walled out with no way through. That exact bug
 
 ### Session 2026-08-16 — branding, management reporting, migration groundwork
 
-A long session. Everything below is **staged, not committed**.
+A long session. Everything below is committed and pushed (`413de34`).
 
 **Branding.** Logo (`public/vds-logo.png`, transparent) on the login screen, sidebar, mobile header
 and every printed letterhead. **"Powered by ISPO"** on the sign-in screen, the sidebar footer, and
@@ -799,7 +804,7 @@ Two sessions ran on this date and they are recorded separately.
 **The first** is the commit *"Brand the app, add management reporting, and prepare the Excel
 migration"* — pushed, and written up under *Session 2026-08-16* above.
 
-**The second is everything below, and it is all uncommitted.** It ran in five passes, each of which
+**The second is everything below, and it is all committed and pushed (`9b75b61`).** It ran in five passes, each of which
 found something the one before it had missed. Read them in order; the lesson at the end of each is
 the part worth keeping:
 
