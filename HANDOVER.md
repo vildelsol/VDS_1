@@ -29,35 +29,33 @@ next session from inside `pm-app`.
 - **1,087 automated tests pass.** Typecheck clean, build clean, `npm audit` clean. A full run
   simulates **800 audited scenarios** (200 ledger + 200 whole-application on full data + 400
   reporting), and the application now checks its own records at start-up as well.
-- **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. *Earlier versions of
-  this file warned that a large body of work existed only on Ro's Mac — the Annual Report, the
-  property health grade, the integrity self-check, the dependency gate and the strata plan number
-  correction. All of it went into `9b75b61` and is on the remote. That warning is discharged; do not
-  go looking for uncommitted changes.*
-- **`main` and `origin/main` are level** at `9b75b61` — verified against the remote with
-  `git ls-remote`, not from a local ref. **Keep verifying it that way.** This section has now been
-  stale twice: once claiming `main` was a commit ahead when it was not, once claiming work was
-  uncommitted after it had been committed and pushed. A local `origin/main` ref only says what the
-  last fetch saw.
-- ⚠️ **The plan number fix does NOT travel in a release, and this is the trap.** `9b75b61` changed
-  `defaultSettings()` in `server/db.ts`, and `db.json` is **gitignored** — it has never been tracked
-  and cannot be. The Mac's own `db.json` was edited by hand (backed up to
+- **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. All work from the
+  2026-08-16 sessions is committed and on the remote.
+- **`main` and `origin/main` are level** at `70af15d` — verified against the remote with
+  `git ls-remote`, not from a local ref. **Keep verifying it that way.** This section has been stale
+  twice before: once claiming `main` was a commit ahead when it was not, once claiming work was
+  uncommitted after it had been pushed. A local `origin/main` ref only says what the last fetch saw.
+- ⚠️ **The plan number fix does NOT travel in a release, and this is the trap.** The 2026-08-16
+  session changed `defaultSettings()` in `server/db.ts`, and `db.json` is **gitignored** — it has
+  never been tracked and cannot be. The Mac's own `db.json` was edited by hand (backed up to
   `db-backups/db.json.pre-2324-*`); that edit exists on this machine only. On load, `loadDb()` merges
   as `{ ...defaultSettings(), ...parsed.settings }` (`server/db.ts:726`), so **a stored value always
   beats the new default** — an existing `db.json` holding `2724` keeps `2724` through any upgrade.
   The default only applies to a database that has never had the field. **Installing a new `.exe` on
   the HP will not correct its plan number. Someone has to set it in System Settings → General on the
   HP itself, and then check a printed letterhead.**
-- Latest release: **v1.8.1**, which is what the HP runs. `9b75b61` is **unreleased** — no tag, no
-  `.exe` built, nothing shipped. So the health grade and the Annual Report are in git but **not on
-  the machine doing the work**. See *Releasing*.
+- Latest release: **v1.8.2** — tagged and shipped on 2026-08-17. The Annual Report, property health
+  grade, integrity self-check, schema forward-version guard and CI dependency gate are all in it.
+  **The HP needs to be updated from v1.8.1 to v1.8.2** — see *Where to pick up*. Two commits sit
+  after the release tag (`83b41a6` and `70af15d`); both affect only the workflow runner and carry no
+  app changes.
 
 **There is no known outstanding bug.** Everything found during 2026-08-16 was fixed in the same
 session and carries a regression test. What is genuinely open is *untested surface* and the Excel
 migration — both listed under *Where to pick up*. Do not go hunting for a bug list; there isn't one.
 
-**The system is live.** The HP runs v1.8.1, Tailscale is installed and remote access from a phone
-is confirmed.
+**The system is live.** The HP runs v1.8.1 and needs upgrading to v1.8.2 (see *Where to pick up*).
+Tailscale is installed and remote access from a phone is confirmed.
 
 ### Migration from Excel — planned, partially enabled (2026-08-16)
 
@@ -209,7 +207,7 @@ Watch it with `gh run watch <id> --exit-status`.
 
 ---
 
-## Built so far (all tested; everything here is committed and on the remote as of `9b75b61`)
+## Built so far (all tested; everything here is committed and on the remote as of `70af15d`, released as v1.8.2)
 
 **Money handling**
 - **Proprietor statements** — per villa, per currency, grouped by owner; itemised printable
@@ -803,6 +801,21 @@ So there is no commission model to build and nothing to net off. Do not add one:
 commission that is not charged, or a gross figure that is never received, would make the ledger
 *less* true than it is now.
 
+## Session of 2026-08-18
+
+Handover-only session. No code was changed.
+
+Confirmed that v1.8.2 was already released on 2026-08-17 containing the full 2026-08-16 body of
+work. The previous handover stated `main` was at `9b75b61` (unreleased); the remote had moved two
+commits further to `70af15d` through commits `83b41a6` ("Say plainly that a release does not carry
+the plan number") and `70af15d` ("Move the release workflow off the deprecated Node 20 runtime"),
+both by `vildelsol`, neither carrying app changes.
+
+No outstanding bugs. No uncommitted work. The action is to install v1.8.2 on the HP and set the
+plan number in System Settings.
+
+---
+
 ## Sessions of 2026-08-16
 
 Two sessions ran on this date and they are recorded separately.
@@ -810,7 +823,7 @@ Two sessions ran on this date and they are recorded separately.
 **The first** is the commit *"Brand the app, add management reporting, and prepare the Excel
 migration"* — pushed, and written up under *Session 2026-08-16* above.
 
-**The second is everything below, and it is all committed and pushed (`9b75b61`).** It ran in five passes, each of which
+**The second is everything below, and it is all committed and pushed (`9b75b61`) and released as v1.8.2.** It ran in five passes, each of which
 found something the one before it had missed. Read them in order; the lesson at the end of each is
 the part worth keeping:
 
@@ -1137,17 +1150,19 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-**1. Commit the outstanding work, then push.** This is the first thing, and it is not optional
-housekeeping: a session's worth of work exists only on Ro's Mac, and a disk failure loses it. Ro
-reviewed it on 2026-08-16 and asked to commit in a following session — confirm that is still what
-they want, then commit and push. `main` is already level with the remote, so this is one commit and
-one push. Decide separately whether it is tagged and shipped to the HP, or held until after the
-migration.
+**1. Install v1.8.2 on the HP.** Everything from the 2026-08-16 sessions — Annual Report, property
+health grade, integrity self-check, schema forward-version guard, CI dependency gate — is released
+in v1.8.2 (2026-08-17). Download `Villaggio-Del-Sol.exe` from
+`https://github.com/vildelsol/VDS_1/releases/tag/v1.8.2` and run it on the HP in place of the
+current one. The first startup will print a self-check line; on a clean database it should say "no
+contradictions found". Clear the service worker and browser cache on the Kamrui and phones after
+the upgrade or they will serve the old bundle.
 
 **`db.json` is gitignored and is never committed** — it holds the property's financial records. The
 strata plan number correction edited it directly on this machine (backed up first to
-`db-backups/db.json.pre-2324-*`), so that change is **local only**: any other machine picks up the
-corrected number from the new default in `server/db.ts`, or by setting it in System Settings.
+`db-backups/db.json.pre-2324-*`), so that change is **local only**. **After installing v1.8.2 on
+the HP, set the plan number to 2324 in System Settings → General** — the new default does not
+touch an existing `db.json`. Check a printed letterhead to confirm.
 
 **2. Nothing is known to be broken.** Every defect found on 2026-08-16 was fixed with a regression
 test — see the five session notes below for what they were and why they mattered. If the next
