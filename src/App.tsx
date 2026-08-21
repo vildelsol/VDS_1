@@ -579,7 +579,7 @@ export default function App() {
             <LogOut className="h-3.5 w-3.5" />
             Sign out
           </button>
-          <p className="pt-1 text-center font-mono text-[9px] uppercase tracking-[0.2em] text-slate-600">Powered by ISPO</p>
+          <p className="pt-1 text-center font-mono text-[9px] uppercase tracking-[0.2em] text-slate-600">Powered by ISPO · v{__APP_VERSION__}</p>
         </div>
       </aside>
 

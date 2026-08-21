@@ -301,6 +301,27 @@ The notable one: records used to reference a unit by its *display number*, so re
 orphaned its financial history. Records are relinked to a stable unit id, and the unit label now
 cascades on rename.
 
+### Updating to a new version
+
+Your records live in `db.json`. The program file (`Villaggio-Del-Sol.exe`) is entirely separate
+from your data — updating replaces only the program and never touches `db.json`.
+
+**On the HP (the server):**
+
+1. Close the current program (close the console window).
+2. Download the new `Villaggio-Del-Sol.exe` from the [Releases](../../releases) page.
+3. Put the new file in the same folder as the old one, replacing it.
+4. Double-click `Villaggio-Del-Sol.exe` to start it.
+
+On first start the program checks its own records and prints the result to the console; on a
+healthy database it reads **"no contradictions found"**. If the new version needs to change any
+record format, it migrates `db.json` automatically and writes what it changed to the audit trail.
+
+**On the Kamrui and any other devices:** the app is cached in the browser, so the old screens
+keep showing until you clear them. After the HP is running the new version, press
+**Ctrl+Shift+R** on each device for a hard reload. If the old version persists, open the
+browser dev tools (**F12 → Application → Service Workers → Unregister**) and reload.
+
 ---
 
 ## Receipts, statements and guest documents
@@ -498,7 +519,6 @@ dashboard, ledger, notifications and reports cannot drift apart.
   editing financial records against stale data over a long outage needs conflict handling this app
   does not attempt.
 * **Single property.** The data model assumes one property with one set of units.
-* **No refund instrument.** A refund is recorded by voiding the receipt; there is no separate
-  outbound-payment record for the cash returned.
-* **Rent proration is not modelled.** A mid-month move-in bills the whole month; adjust with a
-  charge void and a manual entry.
+* **Rent proration is not modelled.** A mid-month move-in is billed the whole month, by policy.
+  The charge carries a note explaining this (e.g. "full month; moved in 20 Aug, not prorated")
+  so it is clear on the ledger and on the tenant's statement.

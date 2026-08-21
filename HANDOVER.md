@@ -651,8 +651,11 @@ regulator). This confusion was in several screens. Fixed by:
   of Strata Corporations"
 - OwnerStatements basis note: "income of the body corporate, Villaggio Del Sol (Strata Plan No. 2324)"
 
-**What remains — the Annual Report export (next task):** build a CSV/Excel download that
-assembles the full annual return for the Commission. It should have:
+**What remains — the statutory return export. DEFERRED by Ro on 2026-08-21: "we'll do that
+manually for now."** The compute engines exist and are tested (`form13BContributions`,
+`form13CDebts`); nothing in the UI calls them, so the app cannot put Forms 13B/13C on paper and
+the return is worked out by hand. **Do not build this unless asked** — the deployment and the
+Excel migration come first. When it is asked for, the shape below is what was designed:
 
 - Header: Strata Plan No. 2324, TRN (from settings), Name & Address
 - Financial year end date selector
@@ -1187,6 +1190,8 @@ Suggested order:
      **System Settings → Backup & recovery → Check now** reports no contradictions.
 
 **5. Offered and not taken up** — build only if asked:
+   - **The Forms 13B/13C export.** Deferred by Ro on 2026-08-21 — the statutory return is done by
+     hand for now. Engines are built and tested; only the UI and CSV assembly are missing.
    - Bulk insurance apportionment (enter the premium, split across villas, edit each line, post).
    - A PDF-diff harness. Real print output is the one thing no test here covers, and it is exactly
      where a regression already slipped through once (the letterhead mark rendered at ~1.5mm and

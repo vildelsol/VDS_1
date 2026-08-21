@@ -10,46 +10,37 @@ You do **not** need to understand any of the technical parts. Just follow the st
 
 ## Part 1 — Start it on the HP
 
-### Step 1: Get the program folder onto the HP
-Put the program in **its own folder** — for example on the Desktop. If you were given a
-**zip**, right-click it → **Extract All**, and let it create its own folder (the default).
-You should end up with a folder like `villaggio-del-sol-app` that contains
-`Villaggio-Del-Sol` and the other files.
+### Step 1: Download the program
 
-> ⚠️ **Do not drop the loose files straight onto the C: drive** (the top level, next to
-> `Windows` and `Program Files`). The program can't run from there and will tell you to
-> move it into a folder first. Keeping it in its own folder — Desktop is perfect — avoids
-> that.
+Go to: **https://github.com/vildelsol/VDS_1/releases/latest**
 
-### Step 2: Double-click **`Villaggio-Del-Sol.bat`**
-That is the whole thing. There is no separate installer and nothing to activate.
+Download the file called **`Villaggio-Del-Sol.exe`**. That is the only file you need —
+there is no zip, no installer, nothing else.
 
-- **The first time**, it sets itself up: it installs what it needs, prepares the
-  application, and adds a **"Villaggio Del Sol"** icon to the Desktop. This takes a few
-  minutes — leave the window open.
-- **Every time after that**, it starts straight away.
-- Once the icon is on the Desktop, use that from then on. It does exactly the same
-  thing.
+Create a folder on the Desktop called **`Villaggio Del Sol`** and put the `.exe` inside it.
+The program saves your records next to itself, so pick a permanent spot and don't move the
+folder after you've started using it.
 
-If it says **Node.js is needed**, it opens the download page for you. Download the big
-green **LTS** button, install it (click Next → Next → Finish), then double-click
-**`Villaggio-Del-Sol.bat`** again. That is a one-time thing for the computer.
+### Step 2: Double-click **`Villaggio-Del-Sol.exe`**
+
+That is the whole thing. Nothing else to install.
+
+A black console window opens and stays open — that is the "engine". **Leave it open** while
+anyone is using the program. Closing it shuts the program down.
+
+Your browser should open the app automatically. If it does not, open Chrome or Edge and go to:
+`http://localhost:3000`
 
 ### Step 3: Sign in
-1. A green window stays open — that is the "engine". **Leave it open** while anyone is
-   using the program. Closing it shuts the program down.
-2. Your browser opens the app automatically.
-3. The very first time, the green window prints a **one-time admin password**.
-   **Write it down.** Sign in with username **admin** and that password; you will be
-   asked to choose your own password straight away.
-4. Go to **System Settings → Staff accounts** and make an account for each person, so
-   everyone signs in as themselves.
+
+The very first time you run it, the console window prints a **one-time admin password**.
+**Write it down before the window scrolls.** Sign in with username **admin** and that
+password — you will be asked to set your own password straight away.
+
+Go to **System Settings → Staff accounts** and make an account for each person, so
+everyone signs in as themselves rather than sharing the admin login.
 
 That's it — the HP is now running the program.
-
-> **If the window flashes and disappears:** a file called `last-run-log.txt` is written
-> next to `Villaggio-Del-Sol.bat` every time it runs. Send that file — it says what went
-> wrong.
 
 ---
 
@@ -103,29 +94,33 @@ signed in is signed out. This only ever works by being at the HP itself with its
 nobody on the Kamrui, or anywhere else, can trigger it.
 
 **Where are my records kept? Are they safe?**
-Everything is in a single file called `db.json`, kept next to the program on the HP. The
-program keeps a fresh backup every day. From inside the app, **System Settings → Backup
-& recovery** has a "Download a snapshot" button — use it before anything risky.
+Everything is in a single file called `db.json`, kept next to `Villaggio-Del-Sol.exe` on
+the HP. The program keeps a fresh daily backup automatically. From inside the app,
+**System Settings → Backup & recovery** has a "Download a snapshot" button — use it
+before anything risky, and to keep a copy off the machine.
 
-To keep a copy **off** the computer as well (strongly recommended), see
-`VDS_BACKUP_DIR` in `TESTING.md` — point it at a OneDrive folder or a USB drive.
+To back up automatically to a USB drive or a cloud-synced folder (OneDrive, Dropbox),
+open **System Settings → Backup & recovery → Back up to an external drive**, choose the
+folder, and press **Save and back up now**. The app writes a copy there every day from
+then on without you having to remember.
 
-**Can I get a `.exe` instead?**
-`Villaggio-Del-Sol.bat` already behaves like one: double-click, it does everything. A
-true single `.exe` — where the computer needs nothing installed at all, not even
-Node.js — is built automatically, but not yet handed out. It is assembled by GitHub on a
-real Windows machine each time a new version is released, and comes as one file you can
-put anywhere and double-click. Once a release is published you will be given a link to
-`Villaggio-Del-Sol.exe` directly — no folder, no `npm install`, no Node.js.
+**How do I update to a new version without losing my records?**
+Your records (`db.json`) are completely separate from the program file. Updating is safe.
 
-**Where do I get the program folder? Can I use GitHub?**
-Two options:
-- **Copy the folder** onto the HP (USB stick, network share). Simplest.
-- **GitHub:** if you create a free account at github.com and make a repository, you can
-  store the program there and download it with `git clone`. The web address would be
-  `https://github.com/YOUR-USERNAME/villaggio-del-sol` — but that link only exists after
-  *you* create the repository; it can't be made for you in advance. Your live records
-  are never uploaded (they're excluded automatically).
+1. Close the program (close the black console window).
+2. Go to **https://github.com/vildelsol/VDS_1/releases/latest** and download the new
+   `Villaggio-Del-Sol.exe`.
+3. Put the new file in the same folder as the old one, replacing it.
+4. Double-click `Villaggio-Del-Sol.exe` to start it.
+
+That's it. Your `db.json` stays exactly where it is — nothing touches it. On first start
+the program checks its own records and prints a line to the console; on a healthy
+database it reads **"no contradictions found"**.
+
+After the HP is running the new version, do this on the **Kamrui and any phones**:
+open the app, press **Ctrl+Shift+R** (hard reload) to clear the cached screens. If the
+old version keeps showing, press **F12 → Application → Service Workers → Unregister**,
+then reload.
 
 ---
 

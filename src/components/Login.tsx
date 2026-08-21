@@ -44,7 +44,7 @@ export default function Login({ onSignedIn }: LoginProps) {
             className="w-48"
           />
           <p className="mt-3 font-mono text-[10px] uppercase tracking-wider text-teal-400">Ocho Rios Operations</p>
-          <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.2em] text-slate-500">Powered by ISPO</p>
+          <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.2em] text-slate-500">Powered by ISPO · v{__APP_VERSION__}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 rounded-2xl border border-slate-800 bg-slate-850 bg-slate-800/60 p-6 shadow-2xl">
