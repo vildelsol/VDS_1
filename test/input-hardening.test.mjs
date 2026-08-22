@@ -73,14 +73,14 @@ export default async function run({ port, projectRoot }) {
 
     // The same grammar has to hold where a figure is optional, or the guard is
     // just moved somewhere quieter.
-    const unreadableRent = await admin.put('/api/units/unit-1', { number: '1', ownerName: 'O', status: 'long-term', currency: 'JMD', maintCurrency: 'JMD', monthlyRent: '1.500.000' });
+    const unreadableRent = await admin.put('/api/units/unit-1', { number: '1', ownerName: 'O', ownerChangeIntent: 'correction', status: 'long-term', currency: 'JMD', maintCurrency: 'JMD', monthlyRent: '1.500.000' });
     T.check('an unreadable rent is refused rather than stored as 1.5', unreadableRent.status === 400, `got ${unreadableRent.status}`);
     T.check(
       'and the rent that was already there is untouched',
       (await admin.get('/api/db')).body.units.find(u => u.id === 'unit-1')?.monthlyRent === 50000
     );
 
-    const omittedRent = await admin.put('/api/units/unit-1', { number: '1', ownerName: 'O', status: 'long-term', currency: 'JMD', maintCurrency: 'JMD' });
+    const omittedRent = await admin.put('/api/units/unit-1', { number: '1', ownerName: 'O', ownerChangeIntent: 'correction', status: 'long-term', currency: 'JMD', maintCurrency: 'JMD' });
     T.check('omitting the rent still means "leave it as it was"', omittedRent.status === 200);
     T.check(
       'and it really was left alone',

@@ -186,7 +186,7 @@ export default async function run({ port, projectRoot }) {
       // A tenant moves in, is billed, and pays in full.
       async ({ unitId, month, rand }) => {
         const rent = money(rand, 20000, 90000);
-        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', tenantName: 'Tenant', status: 'long-term', monthlyRent: rent, monthlyMaintenance: money(rand, 5000, 15000), currency: 'JMD', maintCurrency: 'JMD' });
+        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: 'Tenant', status: 'long-term', monthlyRent: rent, monthlyMaintenance: money(rand, 5000, 15000), currency: 'JMD', maintCurrency: 'JMD' });
         await c.post('/api/charges/post-month', { monthString: month });
         const p = await c.post('/api/payments', { unitId, category: 'Rent', amount: rent, currency: 'JMD', payerName: 'Tenant', method: pick(rand, ['Cash', 'Bank Transfer', 'Cheque']) });
         if (p.body?.payment?.id) await c.post(`/api/payments/${p.body.payment.id}/confirm`, {});
@@ -277,7 +277,7 @@ export default async function run({ port, projectRoot }) {
 
       // A villa billed in USD, alongside the JMD ones.
       async ({ unitId, month, rand }) => {
-        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', tenantName: 'Tenant', status: 'long-term', monthlyRent: money(rand, 500, 3000), monthlyMaintenance: money(rand, 100, 500), currency: 'USD', maintCurrency: 'USD' });
+        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: 'Tenant', status: 'long-term', monthlyRent: money(rand, 500, 3000), monthlyMaintenance: money(rand, 100, 500), currency: 'USD', maintCurrency: 'USD' });
         await c.post('/api/charges/post-month', { monthString: month });
         const p = await c.post('/api/payments', { unitId, category: 'Rent', amount: money(rand, 100, 3000), currency: 'USD', payerName: 'Tenant', method: 'Bank Transfer', confirmNoOpenCharge: true });
         if (p.body?.payment?.id) await c.post(`/api/payments/${p.body.payment.id}/confirm`, {});
@@ -301,7 +301,7 @@ export default async function run({ port, projectRoot }) {
       async ({ unitId, rand }) => {
         const tenancies = (await c.get('/api/db')).body.tenancies.filter(t => t.unitId === unitId && !t.moveOutDate);
         if (tenancies.length) await c.post(`/api/tenancies/${tenancies[0].id}/evict`, { reason: 'lease ended', moveOutDate: '2026-06-30' });
-        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', tenantName: 'New Tenant', status: 'long-term', monthlyRent: money(rand, 20000, 80000), monthlyMaintenance: money(rand, 4000, 12000), currency: 'JMD', maintCurrency: 'JMD' });
+        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: 'New Tenant', status: 'long-term', monthlyRent: money(rand, 20000, 80000), monthlyMaintenance: money(rand, 4000, 12000), currency: 'JMD', maintCurrency: 'JMD' });
       },
 
       // A tenant's security deposit held, then returned with a deduction.

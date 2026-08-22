@@ -317,6 +317,49 @@ export interface Unit {
  * last year, and what were they paying?". Tenancies are append-only: a tenant is
  * never edited away, their period is closed and a new one opened.
  */
+/**
+ * A period of ownership of one villa.
+ *
+ * The unit record holds only the *current* proprietor, as editable fields, which
+ * meant a villa changing hands was indistinguishable from an owner's name being
+ * typed wrong: both were a silent overwrite, and afterwards nothing could answer
+ * "who owned Villa 7 in March, and what did they owe?".
+ *
+ * That question is not academic here. Contributions are levied on proprietors,
+ * and Form 13B reports what each one owes **against their strata lot**. When a
+ * villa sells mid-year the arrears belong to whoever was the proprietor when the
+ * contribution fell due — not to whoever owns it at the time the return is
+ * filed. Charges already raised keep the payer they were raised with, so the
+ * ledger is right; this record is what makes it *explicable*.
+ *
+ * Append-only, exactly like `Tenancy`: a sale closes the period and opens a new
+ * one, and nothing is ever erased. Correcting a mis-typed name edits the open
+ * period in place, because a spelling mistake is not a change of ownership.
+ */
+export interface Ownership {
+  id: string;
+  unitId: string;
+  unitNumber: string;
+  ownerName: string;
+  ownerEmail: string;
+  ownerPhone: string;
+  /**
+   * When this proprietor acquired the villa, where it is known.
+   *
+   * Empty is normal and is not a defect. The register is usually filled in for
+   * owners who have held their villas for years, and inventing a date would be
+   * worse than admitting the date is not recorded — the same rule `Tenancy`
+   * follows for a move-in.
+   */
+  startedOn: string; // YYYY-MM-DD, or '' when not known
+  endedOn?: string; // YYYY-MM-DD
+  endReason?: string;
+  status: 'active' | 'ended';
+  recordedBy: string;
+  recordedAt: string;
+  closedBy?: string;
+}
+
 export interface Tenancy {
   id: string;
   unitId: string;

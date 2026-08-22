@@ -1048,7 +1048,10 @@ function UnitEditor({
    * question is actually put, so nothing is assumed on the way in — the server
    * refuses a bare change and the answer is only ever one the user gave.
    */
-  const [tenantIntent, setTenantIntent] = useState<'correction' | 'changeover' | ''>('');
+  const [tenantIntent, setTenantIntent] = useState<'correction' | 'changeover' | 'moved-out' | ''>('');
+  const [ownerIntent, setOwnerIntent] = useState<'correction' | 'sale' | ''>('');
+  /** The day the villa changed hands, asked for only when a sale is declared. */
+  const [ownerAcquiredOn, setOwnerAcquiredOn] = useState('');
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm(prev => ({ ...prev, [key]: value }));
 
@@ -1068,11 +1071,31 @@ function UnitEditor({
     !!form.tenantName.trim() &&
     form.tenantName.trim().toLowerCase() !== unit.tenantName.trim().toLowerCase();
 
+  /**
+   * The tenant is being taken off the villa — either by clearing the name or by
+   * moving it off a long-term lease. The expensive direction: a move-out spends
+   * the advance and writes off the final month, and a mis-keyed status should not.
+   */
+  const tenantRemoved = !!unit.tenantName.trim() && (!tenantApplies || !form.tenantName.trim());
+
+  const ownerNameChanged =
+    !!unit.ownerName.trim() &&
+    !!form.ownerName.trim() &&
+    form.ownerName.trim().toLowerCase() !== unit.ownerName.trim().toLowerCase();
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (busy) return;
     if (tenantNameChanged && !tenantIntent) {
       setError('Say whether this is a correction to the name or a new tenant, so the right thing happens to the rent.');
+      return;
+    }
+    if (tenantRemoved && !tenantIntent) {
+      setError('Say whether the tenant moved out or was entered by mistake — the two do different things to the rent.');
+      return;
+    }
+    if (ownerNameChanged && !ownerIntent) {
+      setError('Say whether the owner name is being corrected or the villa has been sold.');
       return;
     }
     setBusy(true);
@@ -1085,7 +1108,9 @@ function UnitEditor({
         monthlyMaintenance: Number(form.monthlyMaintenance) || 0,
         rentDueDay: Number(form.rentDueDay),
         maintDueDay: Number(form.maintDueDay),
-        ...(tenantNameChanged && tenantIntent ? { tenantChangeIntent: tenantIntent } : {})
+        ...((tenantNameChanged || tenantRemoved) && tenantIntent ? { tenantChangeIntent: tenantIntent } : {}),
+        ...(ownerNameChanged && ownerIntent ? { ownerChangeIntent: ownerIntent } : {}),
+        ...(ownerNameChanged && ownerIntent === 'sale' && ownerAcquiredOn ? { ownerAcquiredOn } : {})
       });
     } catch (err) {
       setError(errorMessage(err, 'Could not save the unit.'));
@@ -1133,6 +1158,107 @@ function UnitEditor({
           * here would be the machine guessing again, which is the fault this
           * exists to remove.
           */}
+        {/*
+          * A villa changing hands and an owner's name typed wrong are the same
+          * edit to one field and completely different events. This one reaches
+          * the statutory return: Form 13B reports what each proprietor owes
+          * against their strata lot, and a sale leaves the seller's arrears with
+          * the seller.
+          */}
+        {ownerNameChanged && (
+          <InfoNote tone="amber">
+            <p className="font-semibold">
+              This villa is on record as owned by {unit.ownerName.trim()}. What is happening?
+            </p>
+            <div className="mt-2 space-y-2">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="vds-owner-intent"
+                  className="mt-0.5"
+                  checked={ownerIntent === 'correction'}
+                  onChange={() => setOwnerIntent('correction')}
+                />
+                <span>
+                  <strong>The name was wrong — this is a correction.</strong> The spelling is put right on the existing
+                  ownership record, and any outstanding maintenance follows the corrected name.
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="vds-owner-intent"
+                  className="mt-0.5"
+                  checked={ownerIntent === 'sale'}
+                  onChange={() => setOwnerIntent('sale')}
+                />
+                <span>
+                  <strong>The villa has been sold.</strong> {unit.ownerName.trim()}&apos;s ownership is closed and kept.
+                  Anything they already owe <strong>stays with them</strong> and goes on ageing, which is what the annual
+                  return to the Commission has to show. {form.ownerName.trim() || 'The new owner'} is billed from the next
+                  posting onwards.
+                </span>
+              </label>
+            </div>
+            {ownerIntent === 'sale' && (
+              <div className="mt-3">
+                <Field label="Date the villa changed hands" htmlFor="ue-acquired" hint="Leave empty if it is not known — today is used, and it can be corrected later.">
+                  <input
+                    id="ue-acquired"
+                    type="date"
+                    value={ownerAcquiredOn}
+                    onChange={e => setOwnerAcquiredOn(e.target.value)}
+                    className={`${monoInputClass} max-w-[220px]`}
+                  />
+                </Field>
+              </div>
+            )}
+          </InfoNote>
+        )}
+
+        {/*
+          * Taking the tenant off the villa. The expensive direction: a move-out
+          * spends the advance and writes off the final month's rent, and a
+          * mis-keyed status must not be able to do that silently.
+          */}
+        {tenantRemoved && (
+          <InfoNote tone="amber">
+            <p className="font-semibold">
+              {unit.tenantName.trim()} is recorded as the tenant of this villa, and is being taken off it. What is
+              happening?
+            </p>
+            <div className="mt-2 space-y-2">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="vds-tenant-intent"
+                  className="mt-0.5"
+                  checked={tenantIntent === 'moved-out'}
+                  onChange={() => setTenantIntent('moved-out')}
+                />
+                <span>
+                  <strong>They have moved out.</strong> The tenancy is closed and kept, and the last month&apos;s rent
+                  they paid in advance at move-in is used for their final month, so it is not charged again.
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="vds-tenant-intent"
+                  className="mt-0.5"
+                  checked={tenantIntent === 'correction'}
+                  onChange={() => setTenantIntent('correction')}
+                />
+                <span>
+                  <strong>They were entered by mistake.</strong> The entry is taken back: unpaid rent raised for them is
+                  voided, nothing is written off, and no departure is recorded. A receipt already issued to them stands
+                  and must be dealt with in the ledger.
+                </span>
+              </label>
+            </div>
+          </InfoNote>
+        )}
+
         {tenantNameChanged && (
           <InfoNote tone="amber">
             <p className="font-semibold">

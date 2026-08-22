@@ -277,24 +277,23 @@ export default async function run({ port, projectRoot }) {
     const wrongVillaCharges = openRent(db, 'unit-11').map(x => x.id);
     T.check('and has been billed there', wrongVillaCharges.length === 2, `${wrongVillaCharges.length}`);
 
-    await c.put('/api/units/unit-11', villa({ number: '11', status: 'vacant', tenantName: '', monthlyRent: 0 }));
+    // Taking them off the wrong villa is a correction, not a departure — so the
+    // rent raised there is voided rather than a move-out being recorded.
+    await c.put('/api/units/unit-11', villa({ number: '11', status: 'vacant', tenantName: '', monthlyRent: 0, tenantChangeIntent: 'correction' }));
     await c.put('/api/units/unit-12', villa({ number: '12', tenantName: 'Wrong Villa', tenantMovedInOn: IN }));
     db = (await c.get('/api/db')).body;
     T.check('the right villa now carries the tenant', activeTenancy(db, 'unit-12')?.tenantName === 'Wrong Villa');
     T.check('and is billed there', openRent(db, 'unit-12').length === 2, `${openRent(db, 'unit-12').length}`);
     T.check('the wrong villa has no active tenancy left', !activeTenancy(db, 'unit-11'));
     T.check('its tenancy record is kept, closed', allTenancies(db, 'unit-11').filter(t => t.status === 'ended').length >= 1);
+    T.check('the wrong villa owes nothing', openRent(db, 'unit-11').length === 0, `${openRent(db, 'unit-11').length}`);
     T.check(
-      'the charges wrongly raised on it are still there to be voided, not silently dropped',
-      wrongVillaCharges.every(id => !!db.charges.find(x => x.id === id)),
+      'the charges wrongly raised on it are voided, not deleted',
+      wrongVillaCharges.every(id => db.charges.find(x => x.id === id)?.status === 'void'),
       'a charge is a record; removing it silently would hide the mistake'
     );
-
-    for (const id of wrongVillaCharges) await c.post(`/api/charges/${id}/void`, { reason: 'Tenant was entered against the wrong villa.' });
-    db = (await c.get('/api/db')).body;
-    T.check('once voided the wrong villa owes nothing', openRent(db, 'unit-11').length === 0, `${openRent(db, 'unit-11').length}`);
-    T.check('and the right villa is unaffected by that cleanup', openRent(db, 'unit-12').length === 2);
-    T.check('the whole mistake is reconstructable from the audit trail', wrongVillaCharges.every(id => db.auditLogs.some(a => a.recordId === id)));
+    T.check('and the right villa is unaffected', openRent(db, 'unit-12').length === 2);
+    T.check('the whole mistake is reconstructable from the audit trail', wrongVillaCharges.every(id => db.auditLogs.some(a => a.recordId === id) || db.auditLogs.some(a => /taken back/i.test(a.action))));
 
     /* ================================================================
      * 9. The books-begin date itself corrected after data is in.
@@ -380,7 +379,113 @@ export default async function run({ port, projectRoot }) {
     T.check('leaving the tenancy alone', allTenancies(db, 'unit-12').filter(t => t.status === 'active').length === 1);
 
     /* ================================================================
-     * 12. After every one of those mistakes, the records still agree
+     * 12. Taking the tenant off the villa — the expensive direction.
+     *     A move-out spends the advance; a mis-key must not.
+     * ================================================================ */
+
+    await c.put('/api/units/unit-3', villa({ number: '3', status: 'vacant', tenantName: '', monthlyRent: 0, tenantChangeIntent: 'correction' }));
+    await c.put('/api/units/unit-3', villa({ number: '3', tenantName: 'Keyed By Mistake', tenantMovedInOn: IN }));
+    db = (await c.get('/api/db')).body;
+    T.check('a tenant is on the villa and billed', openRent(db, 'unit-3').length === 2, `${openRent(db, 'unit-3').length}`);
+
+    const removeBare = await c.put('/api/units/unit-3', villa({ number: '3', status: 'vacant', tenantName: '', monthlyRent: 0 }));
+    T.check('taking the tenant off without saying why is refused', removeBare.status === 400, `status ${removeBare.status}`);
+    T.check('with the same code the screen already knows', removeBare.body?.code === 'tenant-change-intent-required', String(removeBare.body?.code));
+    db = (await c.get('/api/db')).body;
+    T.check('and nothing is changed by the refusal', !!activeTenancy(db, 'unit-3'));
+
+    await c.put('/api/units/unit-3', villa({ number: '3', status: 'vacant', tenantName: '', monthlyRent: 0, tenantChangeIntent: 'correction' }));
+    db = (await c.get('/api/db')).body;
+    T.check('taking a mis-keyed entry back leaves nothing owed', openRent(db, 'unit-3').length === 0, `${openRent(db, 'unit-3').length} still open`);
+    T.check(
+      'the charges it raised are voided, not deleted',
+      db.charges.filter(x => x.unitId === 'unit-3' && x.payerName === 'Keyed By Mistake' && x.status === 'void').length === 2,
+      `${db.charges.filter(x => x.unitId === 'unit-3' && x.payerName === 'Keyed By Mistake' && x.status === 'void').length}`
+    );
+    T.check('each voided charge says it was an error', db.charges.filter(x => x.unitId === 'unit-3' && x.payerName === 'Keyed By Mistake' && x.status === 'void').every(x => /error/i.test(x.voidReason || '')));
+    const takenBack = allTenancies(db, 'unit-3').find(t => t.status === 'ended');
+    T.check('the tenancy is closed as recorded in error', /recorded in error/i.test(takenBack?.endReason || ''), String(takenBack?.endReason));
+    T.check('and it does not register as an occupancy that happened', takenBack?.endedOn === takenBack?.startedOn, `${takenBack?.startedOn} -> ${takenBack?.endedOn}`);
+    T.check('the advance was not spent, because there was no final month', !takenBack?.advanceRentChargeId);
+
+    // The genuine direction still works exactly as it did.
+    await c.put('/api/units/unit-4', villa({ number: '4', status: 'vacant', tenantName: '', monthlyRent: 0, tenantChangeIntent: 'correction' }));
+    await c.put('/api/units/unit-4', villa({ number: '4', tenantName: 'Real Leaver', tenantMovedInOn: IN }));
+    await c.post('/api/charges/post-month', { monthString: '2026-08' });
+    db = (await c.get('/api/db')).body;
+    T.check('the leaver is billed the following month too', openRent(db, 'unit-4').some(x => x.periodMonth === '2026-08'));
+
+    await c.put('/api/units/unit-4', villa({ number: '4', status: 'vacant', tenantName: '', monthlyRent: 0, tenantChangeIntent: 'moved-out' }));
+    db = (await c.get('/api/db')).body;
+    const augLeaver = db.charges.filter(x => x.unitId === 'unit-4' && x.category === 'Rent' && x.periodMonth === '2026-08' && x.status === 'open' && x.kind !== 'advance-final-month');
+    T.check('a genuine move-out spends the advance on the final month', augLeaver.length === 0, `${augLeaver.length} still open`);
+    T.check('and the tenancy is closed and kept', allTenancies(db, 'unit-4').some(t => t.status === 'ended' && !/error/i.test(t.endReason || '')));
+
+    /* ================================================================
+     * 13. The proprietor: a corrected spelling is not a sale.
+     * ================================================================ */
+
+    db = (await c.get('/api/db')).body;
+    T.check('every villa on the register has an open ownership period', db.units.every(u => !u.ownerName.trim() || db.ownerships.some(o => o.unitId === u.id && o.status === 'active')));
+    T.check('and ownerships come back from the server at all', Array.isArray(db.ownerships), 'a collection missing from /api/db saves and then returns empty');
+
+    // A villa with no tenant on it, so the owner question is asked on its own.
+    await c.put('/api/units/unit-16', villa({ number: '16', ownerName: 'Alba Ried', status: 'vacant', tenantName: '', monthlyRent: 0 }));
+    await c.post('/api/charges/post-month', { monthString: '2026-08' });
+    db = (await c.get('/api/db')).body;
+    const ownerMaint = db.charges.filter(x => x.unitId === 'unit-16' && x.category === 'Maintenance' && x.status === 'open');
+    T.check('the proprietor is billed maintenance', ownerMaint.length > 0, `${ownerMaint.length}`);
+
+    const ownerBare = await c.put('/api/units/unit-16', villa({ number: '16', ownerName: 'Alba Reid', status: 'vacant', tenantName: '', monthlyRent: 0 }));
+    T.check('changing an owner name without saying why is refused', ownerBare.status === 400, `status ${ownerBare.status}`);
+    T.check('with its own code', ownerBare.body?.code === 'owner-change-intent-required', String(ownerBare.body?.code));
+    T.check('naming the proprietor already on record', String(ownerBare.body?.error || '').includes('Alba Ried'));
+
+    await c.put('/api/units/unit-16', villa({ number: '16', ownerName: 'Alba Reid', status: 'vacant', tenantName: '', monthlyRent: 0, ownerChangeIntent: 'correction' }));
+    db = (await c.get('/api/db')).body;
+    T.check('a corrected owner name keeps one ownership period', db.ownerships.filter(o => o.unitId === 'unit-16').length === 1, `${db.ownerships.filter(o => o.unitId === 'unit-16').length}`);
+    T.check('still open', db.ownerships.find(o => o.unitId === 'unit-16')?.status === 'active');
+    T.check('carrying the corrected spelling', db.ownerships.find(o => o.unitId === 'unit-16')?.ownerName === 'Alba Reid');
+    T.check(
+      'and the outstanding contribution follows the corrected name',
+      db.charges.filter(x => x.unitId === 'unit-16' && x.category === 'Maintenance' && x.status === 'open').every(x => x.payerName === 'Alba Reid'),
+      db.charges.filter(x => x.unitId === 'unit-16' && x.category === 'Maintenance' && x.status === 'open').map(x => x.payerName).join(' / ')
+    );
+
+    /* ================================================================
+     * 14. A sale leaves the seller's arrears with the seller.
+     * ================================================================ */
+
+    const arrearsBefore = db.charges.filter(x => x.unitId === 'unit-16' && x.category === 'Maintenance' && x.status === 'open').map(x => x.id);
+    await c.put('/api/units/unit-16', villa({ number: '16', ownerName: 'New Proprietor', status: 'vacant', tenantName: '', monthlyRent: 0, ownerChangeIntent: 'sale', ownerAcquiredOn: '2026-08-15' }));
+    db = (await c.get('/api/db')).body;
+    const periods = db.ownerships.filter(o => o.unitId === 'unit-16');
+    T.check('a sale opens a second ownership period', periods.length === 2, `${periods.length}`);
+    T.check('the seller’s period is closed', periods.filter(o => o.status === 'ended').length === 1);
+    T.check('on the day the villa changed hands', periods.find(o => o.status === 'ended')?.endedOn === '2026-08-15');
+    T.check('saying it was sold, and to whom', /sold to New Proprietor/i.test(periods.find(o => o.status === 'ended')?.endReason || ''));
+    T.check('the buyer’s period opens on the same day', periods.find(o => o.status === 'active')?.startedOn === '2026-08-15');
+    T.check('with exactly one period open', periods.filter(o => o.status === 'active').length === 1);
+    T.check(
+      'what the seller already owed stays recorded against the seller',
+      arrearsBefore.every(id => db.charges.find(x => x.id === id)?.payerName === 'Alba Reid'),
+      arrearsBefore.map(id => db.charges.find(x => x.id === id)?.payerName).join(' / ')
+    );
+    T.check('the sale is written to the audit trail', db.auditLogs.some(a => /sold to New Proprietor/i.test(a.action)));
+
+    // A sale that is not dated falls back to today rather than being refused.
+    await c.put('/api/units/unit-11', villa({ number: '11', ownerName: 'Sold Undated', status: 'vacant', tenantName: '', monthlyRent: 0, ownerChangeIntent: 'sale' }));
+    db = (await c.get('/api/db')).body;
+    T.check('an undated sale still closes and opens a period', db.ownerships.filter(o => o.unitId === 'unit-11').length === 2, `${db.ownerships.filter(o => o.unitId === 'unit-11').length}`);
+    T.check('dated today rather than left blank', !!db.ownerships.find(o => o.unitId === 'unit-11' && o.status === 'active')?.startedOn);
+
+    const badOwnerIntent = await c.put('/api/units/unit-11', villa({ number: '11', ownerName: 'Another Name', status: 'vacant', tenantName: '', monthlyRent: 0, ownerChangeIntent: 'nonsense' }));
+    T.check('an owner intent that is neither answer is refused', badOwnerIntent.status >= 400, `status ${badOwnerIntent.status}`);
+    const futureSale = await c.put('/api/units/unit-11', villa({ number: '11', ownerName: 'Another Name', status: 'vacant', tenantName: '', monthlyRent: 0, ownerChangeIntent: 'sale', ownerAcquiredOn: '2099-01-01' }));
+    T.check('a sale dated in the future is refused', futureSale.status >= 400, `status ${futureSale.status}`);
+
+    /* ================================================================
+     * 15. After every one of those mistakes, the records still agree
      *     with themselves.
      * ================================================================ */
 
@@ -425,6 +530,11 @@ export default async function run({ port, projectRoot }) {
     T.check('no tenancy ends before it began', db.tenancies.every(t => !t.endedOn || !t.startedOn || t.endedOn >= t.startedOn));
     T.check('every advance a tenancy points at actually exists', db.tenancies.every(t => !t.advanceRentChargeId || db.charges.some(x => x.id === t.advanceRentChargeId)));
     T.check('no two charges share an id', new Set(db.charges.map(x => x.id)).size === db.charges.length);
+    T.check('no villa has two open ownership periods at once', db.units.every(u => db.ownerships.filter(o => o.unitId === u.id && o.status === 'active').length <= 1));
+    T.check('every ownership period belongs to a villa on the register', db.ownerships.every(o => db.units.some(u => u.id === o.unitId)));
+    T.check('every closed ownership period says why it closed', db.ownerships.filter(o => o.status === 'ended').every(o => (o.endReason || '').length > 0));
+    T.check('no ownership period ends before it began', db.ownerships.every(o => !o.endedOn || !o.startedOn || o.endedOn >= o.startedOn));
+    T.check('no two ownership periods share an id', new Set(db.ownerships.map(o => o.id)).size === db.ownerships.length);
     T.check('the database still reads back cleanly', (await c.get('/api/db')).status === 200);
   } finally {
     await srv.stop();

@@ -755,6 +755,11 @@ app.get(
       recurringExpenses: db.recurringExpenses,
       annualReports: db.annualReports || [],
       tenancies: db.tenancies,
+      // This projection is hand-written, not a dump: a collection left out here
+      // saves to disk and audits correctly and then comes back empty on the next
+      // load. That has happened once already (annualReports), and every unit test
+      // passed throughout because the arithmetic was never the problem.
+      ownerships: db.ownerships || [],
       auditLogs: db.auditLogs.slice(0, 2000),
       unitActivities: db.unitActivities,
       settings: db.settings,
@@ -1397,7 +1402,173 @@ function closeTenancy(
  */
 const TENANT_INTENT = 'tenant-change-intent-required';
 
-export type TenantChangeIntent = 'correction' | 'changeover';
+/**
+ * `changeover` and `moved-out` are both "this genuinely happened" and differ
+ * only in which edit is being made: a name replaced by another person, or the
+ * tenant taken off the villa altogether. They are kept apart so the word the
+ * screen shows matches the act, and so a future reader is not left wondering why
+ * removing a tenant was called a changeover.
+ */
+export type TenantChangeIntent = 'correction' | 'changeover' | 'moved-out';
+
+/**
+ * The same ambiguity on the proprietor, and it reaches further.
+ *
+ * A changed owner name is either a corrected spelling or a villa that has
+ * changed hands, and until now both were a silent overwrite of one editable
+ * field. That matters more than the tenant case: contributions are levied on
+ * proprietors and Form 13B reports what each one owes against their strata lot,
+ * so when a villa sells mid-year the arrears belong to whoever was proprietor
+ * when the contribution fell due. Charges keep the payer they were raised with,
+ * so the ledger stays right on its own; what was missing was any record of the
+ * handover to explain it by.
+ *
+ * A **sale** closes the ownership period and opens a new one. A **correction**
+ * edits the open period and re-payers the outstanding contributions, because a
+ * misspelling never owed anything separately.
+ */
+const OWNER_INTENT = 'owner-change-intent-required';
+
+export type OwnerChangeIntent = 'correction' | 'sale';
+
+/**
+ * Keep the ownership history in step with an edit to the unit register.
+ *
+ * Mirrors `syncTenancy`. Returns a note for the unit audit line.
+ */
+function syncOwnership(
+  db: Database,
+  unit: Unit,
+  original: Unit,
+  staffName: string,
+  role: UserRole,
+  /** The date the villa changed hands, when it is known. */
+  acquiredOn?: string,
+  intent?: OwnerChangeIntent
+): string {
+  if (!Array.isArray(db.ownerships)) db.ownerships = [];
+  const current = db.ownerships.find(o => o.unitId === unit.id && o.status === 'active');
+  const name = unit.ownerName.trim();
+  const stamp = today();
+
+  if (!name) return '';
+
+  // No proprietor on file yet: open the first period. Nothing is ambiguous here.
+  if (!current) {
+    db.ownerships.push({
+      id: `own-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      unitId: unit.id,
+      unitNumber: unit.number,
+      ownerName: name,
+      ownerEmail: unit.ownerEmail,
+      ownerPhone: unit.ownerPhone,
+      startedOn: acquiredOn || '',
+      status: 'active',
+      recordedBy: staffName,
+      recordedAt: new Date().toISOString()
+    });
+    return `ownership opened for ${name}`;
+  }
+
+  // Same proprietor: refresh their details on the open period.
+  if (sameName(current.ownerName, name)) {
+    const before = { ...current };
+    current.ownerName = name;
+    current.ownerEmail = unit.ownerEmail;
+    current.ownerPhone = unit.ownerPhone;
+    if (acquiredOn) current.startedOn = acquiredOn;
+    if (JSON.stringify(before) !== JSON.stringify(current)) {
+      addAudit(db, staffName, role, `Updated ownership details for ${name} at ${unit.number}`, 'Ownership', current.id, before, current);
+    }
+    return '';
+  }
+
+  if (!intent) {
+    throw new ApiError(
+      400,
+      `Villa ${unit.number} is on record as owned by ${current.ownerName}. ` +
+        `Is "${name}" a correction to that name, or has the villa been sold? ` +
+        `A sale closes ${current.ownerName}'s ownership and starts a new one, leaving what they already owe with them; ` +
+        `a correction changes the spelling on the existing record.`,
+      OWNER_INTENT
+    );
+  }
+
+  if (intent === 'correction') {
+    const before = { ...current };
+    current.ownerName = name;
+    current.ownerEmail = unit.ownerEmail;
+    current.ownerPhone = unit.ownerPhone;
+    if (acquiredOn) current.startedOn = acquiredOn;
+
+    /**
+     * Outstanding contributions follow the corrected spelling.
+     *
+     * Only what is still open: a charge that has been settled is a closed piece
+     * of history and its receipt already carries the name it was issued in.
+     * Rewriting those would restate documents that have been sent out.
+     */
+    let repayered = 0;
+    for (const charge of db.charges) {
+      if (charge.unitId !== unit.id || charge.category !== 'Maintenance' || charge.status !== 'open') continue;
+      if (sameName(charge.payerName || '', before.ownerName)) {
+        charge.payerName = name;
+        repayered++;
+      }
+    }
+    addAudit(
+      db,
+      staffName,
+      role,
+      `Corrected the proprietor's name at ${unit.number} from ${before.ownerName} to ${name}` +
+        (repayered ? ` (${repayered} outstanding contribution(s) re-payered)` : ''),
+      'Ownership',
+      current.id,
+      before,
+      current
+    );
+    return `owner name corrected to ${name}`;
+  }
+
+  /**
+   * A sale. The outgoing proprietor keeps what they already owe.
+   *
+   * Nothing is moved between the two: charges raised while the seller held the
+   * lot keep their name and go on ageing under it, which is what Form 13B has to
+   * report. The new proprietor is billed from the next posting onwards.
+   */
+  const before = { ...current };
+  current.status = 'ended';
+  current.endedOn = acquiredOn || stamp;
+  current.endReason = `Villa sold to ${name}.`;
+  current.closedBy = staffName;
+  addAudit(
+    db,
+    staffName,
+    role,
+    `Closed ownership for ${before.ownerName} at ${unit.number} — villa sold to ${name}`,
+    'Ownership',
+    current.id,
+    before,
+    `Ended ${current.endedOn}. Anything ${before.ownerName} still owes stays recorded against them and goes on ageing.`
+  );
+
+  const next = {
+    id: `own-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    unitId: unit.id,
+    unitNumber: unit.number,
+    ownerName: name,
+    ownerEmail: unit.ownerEmail,
+    ownerPhone: unit.ownerPhone,
+    startedOn: acquiredOn || stamp,
+    status: 'active' as const,
+    recordedBy: staffName,
+    recordedAt: new Date().toISOString()
+  };
+  db.ownerships.push(next);
+  addAudit(db, staffName, role, `Opened ownership for ${name} at ${unit.number}`, 'Ownership', next.id, '', next);
+  return `villa sold to ${name}`;
+}
 
 function syncTenancy(
   db: Database,
@@ -1416,6 +1587,71 @@ function syncTenancy(
 
   if (!wantsTenant) {
     if (current) {
+      /**
+       * Taking the tenant off the register is the same ambiguity again, and this
+       * one is the expensive direction.
+       *
+       * "They moved out" closes the tenancy and **spends the advance** — voiding
+       * the final month's rent, because it was bought at move-in. "The status was
+       * keyed wrong" should do neither. Getting it wrong the expensive way writes
+       * off a month of rent that is genuinely owed and leaves a departure in the
+       * occupancy history that never happened, and un-picking it means re-entering
+       * the tenant, which bills first and last all over again.
+       */
+      if (!intent) {
+        throw new ApiError(
+          400,
+          `${current.tenantName} is recorded as the tenant of villa ${unit.number}. ` +
+            `Have they moved out, or was this entered by mistake? ` +
+            `A move-out closes the tenancy and uses the last month's rent they paid in advance; ` +
+            `a correction takes the entry back and bills nothing.`,
+          TENANT_INTENT
+        );
+      }
+
+      /**
+       * A correction. They were never the tenant, so undo what recording them did.
+       *
+       * The advance is deliberately **not** spent: there was no final month to
+       * pay for. Charges this tenancy raised are voided where they are still
+       * unpaid, and the tenancy is closed on the day it started so it cannot
+       * register as an occupancy that happened. A receipt already taken is not
+       * touched — money that genuinely came in is not un-received by editing the
+       * register, and the audit note says where to deal with it.
+       */
+      if (intent === 'correction') {
+        const before = { ...current };
+        let voided = 0;
+        for (const charge of db.charges) {
+          if (charge.unitId !== unit.id || charge.category !== 'Rent' || charge.status !== 'open') continue;
+          if (!sameName(charge.payerName || '', current.tenantName)) continue;
+          charge.status = 'void';
+          charge.voidedBy = staffName;
+          charge.voidedAt = new Date().toISOString();
+          charge.voidReason = `Tenant recorded in error at ${unit.number}; the entry was taken back.`;
+          voided++;
+        }
+        current.status = 'ended';
+        current.endedOn = current.startedOn || stamp;
+        current.endReason = 'Recorded in error — this tenancy did not happen.';
+        current.closedBy = staffName;
+        // Never held, so never spent: leave the advance unapplied.
+        delete current.advanceRentChargeId;
+        addAudit(
+          db,
+          staffName,
+          role,
+          `Took back the tenant entry for ${current.tenantName} at ${unit.number}` +
+            (voided ? ` (${voided} unpaid charge(s) voided)` : ''),
+          'Tenancy',
+          current.id,
+          before,
+          `Recorded in error. The advance was not spent and no month was written off. ` +
+            `Any receipt already issued to ${current.tenantName} stands and must be voided or refunded in the ledger if it too was a mistake.`
+        );
+        return `tenant entry for ${current.tenantName} taken back`;
+      }
+
       const reason =
         unit.status !== 'long-term'
           ? `Unit status changed from ${original.status} to ${unit.status}.`
@@ -1975,16 +2211,26 @@ app.put(
        */
       const rawIntent = body.tenantChangeIntent;
       const intent: TenantChangeIntent | undefined =
-        rawIntent === 'correction' || rawIntent === 'changeover' ? rawIntent : undefined;
+        rawIntent === 'correction' || rawIntent === 'changeover' || rawIntent === 'moved-out' ? rawIntent : undefined;
       if (rawIntent !== undefined && intent === undefined) {
-        bad('A tenant change must be recorded as either a correction or a changeover.');
+        bad('A tenant change must be recorded as a correction, a changeover, or a move-out.');
       }
 
+      const rawOwnerIntent = body.ownerChangeIntent;
+      const ownerIntent: OwnerChangeIntent | undefined =
+        rawOwnerIntent === 'correction' || rawOwnerIntent === 'sale' ? rawOwnerIntent : undefined;
+      if (rawOwnerIntent !== undefined && ownerIntent === undefined) {
+        bad('An owner change must be recorded as either a correction or a sale.');
+      }
+      const acquiredOn = body.ownerAcquiredOn ? requireDay(body.ownerAcquiredOn, 'Date the villa changed hands') : undefined;
+      if (acquiredOn && acquiredOn > today()) bad('The date the villa changed hands cannot be in the future.');
+
       const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role, movedInOn, intent);
+      const ownershipNote = syncOwnership(db, updatedUnit, original, who.name, who.role, acquiredOn, ownerIntent);
 
       const parts: string[] = [];
       if (original.number !== number) parts.push(`renamed "${original.number}" to "${number}" (${cascaded} linked record(s) relabelled)`);
-      if (original.ownerName !== updatedUnit.ownerName) parts.push('new owner');
+      if (ownershipNote) parts.push(ownershipNote);
       if (tenancyNote) parts.push(tenancyNote);
       if (original.status !== status) parts.push(`status ${original.status} to ${status}`);
       if (original.monthlyRent !== monthlyRent) parts.push('rent changed');

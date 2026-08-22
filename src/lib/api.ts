@@ -84,6 +84,16 @@ export const CURRENCY_CHANGE = 'currency-change-not-confirmed';
  */
 export const TENANT_INTENT = 'tenant-change-intent-required';
 
+/**
+ * The same refusal for the proprietor, and it reaches further than the tenant
+ * one. Contributions are levied on proprietors and Form 13B reports what each
+ * owes against their strata lot, so a villa that changes hands mid-year leaves
+ * its arrears with the seller. A corrected spelling must not look like a sale,
+ * and a sale must not look like a typo. Kept in step with `OWNER_INTENT` in
+ * server.ts.
+ */
+export const OWNER_INTENT = 'owner-change-intent-required';
+
 let onUnauthenticated: (() => void) | null = null;
 
 /** Registered by App so an expired session bounces the user to the sign-in screen. */

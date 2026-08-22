@@ -24,6 +24,7 @@ import {
   Payment,
   RecurringExpense,
   AnnualReport,
+  Ownership,
   Tenancy,
   Unit,
   UnitActivity,
@@ -50,6 +51,8 @@ export interface Session {
 export interface Database {
   schemaVersion: number;
   units: Unit[];
+  /** Append-only ownership periods per villa. See Ownership in types.ts. */
+  ownerships: Ownership[];
   tenancies: Tenancy[];
   bookings: Booking[];
   charges: Charge[];
@@ -473,6 +476,7 @@ function emptyDb(): Database {
   return {
     schemaVersion: SCHEMA_VERSION,
     units: seedUnits(),
+    ownerships: [],
     tenancies: [],
     bookings: [],
     charges: [],
@@ -884,6 +888,10 @@ function migrate(db: Database): boolean {
     db.annualReports = [];
     changed = true;
   }
+  if (!Array.isArray(db.ownerships)) {
+    db.ownerships = [];
+    changed = true;
+  }
   if (!db.counters) {
     db.counters = { receiptYear: new Date().getFullYear(), receiptSeq: 0 };
     changed = true;
@@ -934,6 +942,48 @@ function migrate(db: Database): boolean {
         'Tenancy',
         'backfill',
         `Occupancy history now survives unit edits. Start dates are unknown and left blank: ${opened.join(' | ')}`
+      );
+    }
+  }
+
+  // The same reconciliation for proprietors. Every villa with an owner on the
+  // register gets an open ownership period, so a later sale closes something
+  // real instead of overwriting the only record of who held the lot. Written as
+  // a reconciliation for the same reason as the tenancies above: an empty array
+  // cannot be told apart from "not yet migrated".
+  {
+    if (!Array.isArray(db.ownerships)) db.ownerships = [];
+    const opened: string[] = [];
+    for (const unit of db.units) {
+      if (!unit.ownerName || !unit.ownerName.trim()) continue;
+      const alreadyTracked = db.ownerships.some(
+        o => o.unitId === unit.id && o.status === 'active' && o.ownerName.trim().toLowerCase() === unit.ownerName.trim().toLowerCase()
+      );
+      if (alreadyTracked) continue;
+      db.ownerships.push({
+        id: `own-migrated-${unit.id}`,
+        unitId: unit.id,
+        unitNumber: unit.number,
+        ownerName: unit.ownerName.trim(),
+        ownerEmail: unit.ownerEmail || '',
+        ownerPhone: unit.ownerPhone || '',
+        // Not recorded anywhere, so left blank rather than invented — the same
+        // rule the tenancy backfill above follows for a move-in date.
+        startedOn: '',
+        status: 'active',
+        recordedBy: 'System Migration',
+        recordedAt: new Date().toISOString()
+      });
+      opened.push(`${unit.number}: ${unit.ownerName.trim()}`);
+    }
+    if (opened.length > 0) {
+      changed = true;
+      note(
+        `Opened ${opened.length} ownership record(s) from the current unit register`,
+        'Ownership',
+        'backfill',
+        `Ownership history now survives unit edits, so a sale can be told from a corrected spelling. ` +
+          `Acquisition dates are unknown and left blank: ${opened.join(' | ')}`
       );
     }
   }

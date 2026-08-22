@@ -451,10 +451,10 @@ export default async function run({ port, projectRoot }) {
         body = { number, ownerName: `Owner ${i}`, status: 'owner-occupied', monthlyMaintenance: money(setup, 8000, 18000), currency: 'JMD', maintCurrency: 'JMD' };
       } else if (i === 12) {
         // One villa billed entirely in USD, so no currency is ever the only one.
-        body = { number, ownerName: `Owner ${i}`, tenantChangeIntent: 'changeover', tenantName: `Tenant ${i}`, status: 'long-term', monthlyRent: money(setup, 700, 2400), monthlyMaintenance: money(setup, 100, 400), currency: 'USD', maintCurrency: 'USD', rentDueDay: 1, maintDueDay: 1 };
+        body = { number, ownerName: `Owner ${i}`, tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: `Tenant ${i}`, status: 'long-term', monthlyRent: money(setup, 700, 2400), monthlyMaintenance: money(setup, 100, 400), currency: 'USD', maintCurrency: 'USD', rentDueDay: 1, maintDueDay: 1 };
         longLets.push(id);
       } else {
-        body = { number, ownerName: `Owner ${i}`, tenantChangeIntent: 'changeover', tenantName: `Tenant ${i}`, status: 'long-term', monthlyRent: money(setup, 45000, 140000), monthlyMaintenance: money(setup, 8000, 20000), currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1 };
+        body = { number, ownerName: `Owner ${i}`, tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: `Tenant ${i}`, status: 'long-term', monthlyRent: money(setup, 45000, 140000), monthlyMaintenance: money(setup, 8000, 20000), currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1 };
         longLets.push(id);
       }
       await c.put(`/api/units/${id}`, body);
@@ -599,6 +599,7 @@ export default async function run({ port, projectRoot }) {
           ownerName: 'Owner',
           tenantName: `Resident ${i}`,
           tenantChangeIntent: 'changeover',
+          ownerChangeIntent: 'correction',
           status: 'long-term',
           monthlyRent: money(rand, 40000, 120000),
           monthlyMaintenance: money(rand, 6000, 15000),
@@ -664,7 +665,7 @@ export default async function run({ port, projectRoot }) {
       // And brought back into service.
       async ({ rand }) => {
         const unitId = anyLong(rand);
-        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', tenantName: 'Returned', status: 'long-term', monthlyRent: money(rand, 40000, 90000), monthlyMaintenance: money(rand, 6000, 14000), currency: 'JMD', maintCurrency: 'JMD' });
+        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: 'Returned', status: 'long-term', monthlyRent: money(rand, 40000, 90000), monthlyMaintenance: money(rand, 6000, 14000), currency: 'JMD', maintCurrency: 'JMD' });
       },
 
       // Two people at the desk at once, on one account.
