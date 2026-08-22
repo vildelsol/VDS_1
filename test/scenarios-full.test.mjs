@@ -206,6 +206,7 @@ export default async function run({ port, projectRoot }) {
           number,
           ownerName: `Owner ${i}`,
           tenantName: `Tenant ${i}`,
+          tenantChangeIntent: 'changeover',
           status: 'long-term',
           monthlyRent: money(setup, 45000, 140000),
           monthlyMaintenance: money(setup, 8000, 20000),

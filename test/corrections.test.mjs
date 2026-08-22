@@ -88,13 +88,22 @@ export default async function run({ port, projectRoot }) {
     T.check('and no advance is held against them', advances(db, 'unit-1').length === 0);
     T.check('so the villa owes nothing on the rent account', total(db, 'unit-1') === 0);
 
-    await c.put('/api/units/unit-1', villa({ tenantName: 'Long Standing Corrected', tenantMovedInOn: '2024-03-15' }));
+    // A bare rename is refused: the server will not guess which act this is.
+    const bare = await c.put('/api/units/unit-1', villa({ tenantName: 'Long Standing Corrected', tenantMovedInOn: '2024-03-15' }));
+    T.check('changing a tenant name without saying why is refused', bare.status === 400, `status ${bare.status}`);
+    T.check('and the refusal carries a code the screen can act on', bare.body?.code === 'tenant-change-intent-required', String(bare.body?.code));
+    T.check('the refusal names the tenant already on record', String(bare.body?.error || '').includes('Long Standing'));
+    db = (await c.get('/api/db')).body;
+    T.check('nothing is changed by a refused rename', activeTenancy(db, 'unit-1')?.tenantName === 'Long Standing');
+
+    await c.put('/api/units/unit-1', villa({ tenantName: 'Long Standing Corrected', tenantMovedInOn: '2024-03-15', tenantChangeIntent: 'correction' }));
     db = (await c.get('/api/db')).body;
     T.check('correcting the mistyped name still raises nothing', openRent(db, 'unit-1').length === 0, `${openRent(db, 'unit-1').length} charges`);
     T.check('and does not invent an advance', advances(db, 'unit-1').length === 0);
     T.check('the corrected name is the one on the active tenancy', activeTenancy(db, 'unit-1')?.tenantName === 'Long Standing Corrected');
-    T.check('the mistyped tenancy is kept, not erased', allTenancies(db, 'unit-1').length === 2, `${allTenancies(db, 'unit-1').length} tenancies`);
-    T.check('with the mistyped one closed', allTenancies(db, 'unit-1').filter(t => t.status === 'ended').length === 1);
+    T.check('a correction renames in place — no phantom tenancy is created', allTenancies(db, 'unit-1').length === 1, `${allTenancies(db, 'unit-1').length} tenancies`);
+    T.check('and nothing is closed, because nobody moved out', allTenancies(db, 'unit-1').filter(t => t.status === 'ended').length === 0);
+    T.check('the real move-in date survives the correction', activeTenancy(db, 'unit-1')?.startedOn === '2024-03-15');
 
     /* ================================================================
      * 2. A tenant genuinely starting inside the books must still be
@@ -134,25 +143,26 @@ export default async function run({ port, projectRoot }) {
     const advanceIdBefore = advances(db, 'unit-6')[0]?.id;
     T.check('an advance id is recorded before the correction', !!advanceIdBefore);
 
-    await c.put('/api/units/unit-6', villa({ number: '6', tenantName: 'Typo Name', tenantMovedInOn: IN }));
+    await c.put('/api/units/unit-6', villa({ number: '6', tenantName: 'Typo Name', tenantMovedInOn: IN, tenantChangeIntent: 'correction' }));
     db = (await c.get('/api/db')).body;
     rent = openRent(db, 'unit-6');
     T.check('correcting the name does NOT raise a second set of charges', rent.length === 2, `${rent.length} charges after correction`);
     T.check('there is still exactly one advance', advances(db, 'unit-6').length === 1, `${advances(db, 'unit-6').length} advances`);
-    T.check('it is the same charge, carried over rather than reissued', advances(db, 'unit-6')[0]?.id === advanceIdBefore);
+    T.check('it is the same charge, untouched', advances(db, 'unit-6')[0]?.id === advanceIdBefore);
     T.check('the villa is not billed twice over', total(db, 'unit-6') === RENT * 2, String(total(db, 'unit-6')));
-    T.check('every charge now names the corrected tenant', rent.every(x => x.payerName === 'Typo Name'), rent.map(x => x.payerName).join(' / '));
-    T.check('and the new tenancy is bound to that same advance', activeTenancy(db, 'unit-6')?.advanceRentChargeId === advanceIdBefore);
-    T.check('carrying the advance over is written to the audit trail', db.auditLogs.some(a => a.recordId === advanceIdBefore));
+    T.check('every open charge now names the corrected tenant', rent.every(x => x.payerName === 'Typo Name'), rent.map(x => x.payerName).join(' / '));
+    T.check('the tenancy keeps its advance', activeTenancy(db, 'unit-6')?.advanceRentChargeId === advanceIdBefore);
+    T.check('the correction is written to the audit trail', db.auditLogs.some(a => /Corrected the tenant/.test(a.action)));
 
-    await c.put('/api/units/unit-6', villa({ number: '6', tenantName: 'Typo Name II', tenantMovedInOn: IN }));
-    await c.put('/api/units/unit-6', villa({ number: '6', tenantName: 'Typo Name III', tenantMovedInOn: IN }));
+    await c.put('/api/units/unit-6', villa({ number: '6', tenantName: 'Typo Name II', tenantMovedInOn: IN, tenantChangeIntent: 'correction' }));
+    await c.put('/api/units/unit-6', villa({ number: '6', tenantName: 'Typo Name III', tenantMovedInOn: IN, tenantChangeIntent: 'correction' }));
     db = (await c.get('/api/db')).body;
     T.check('three corrections in a row still leave two charges', openRent(db, 'unit-6').length === 2, `${openRent(db, 'unit-6').length}`);
     T.check('and still exactly one advance', advances(db, 'unit-6').length === 1);
     T.check('the ledger total is unchanged by any of it', total(db, 'unit-6') === RENT * 2, String(total(db, 'unit-6')));
-    T.check('every correction is kept as its own closed tenancy', allTenancies(db, 'unit-6').filter(t => t.status === 'ended').length === 3);
-    T.check('with exactly one still active', allTenancies(db, 'unit-6').filter(t => t.status === 'active').length === 1);
+    T.check('and there is still just the one tenancy, renamed', allTenancies(db, 'unit-6').length === 1, `${allTenancies(db, 'unit-6').length} tenancies`);
+    T.check('with the latest correction on it', activeTenancy(db, 'unit-6')?.tenantName === 'Typo Name III');
+    T.check('every open charge follows the latest correction', openRent(db, 'unit-6').every(x => x.payerName === 'Typo Name III'));
 
     /* ================================================================
      * 4. A tenant entered with no move-in date — the register being
@@ -179,27 +189,18 @@ export default async function run({ port, projectRoot }) {
      * opening ahead of today — every correction falls outside, which is what makes
      * data entry safe.
      */
-    await c.put('/api/units/unit-7', villa({ number: '7', tenantName: 'No Date Corrected' }));
+    await c.put('/api/units/unit-7', villa({ number: '7', tenantName: 'No Date Corrected', tenantChangeIntent: 'correction' }));
     db = (await c.get('/api/db')).body;
     T.check('the corrected name is on the active tenancy', activeTenancy(db, 'unit-7')?.tenantName === 'No Date Corrected');
-    T.check('correcting the name stamps today, because a correction cannot be told from a changeover', activeTenancy(db, 'unit-7')?.startedOn !== '', String(activeTenancy(db, 'unit-7')?.startedOn));
-    T.check('and inside the books that does bill, which is the gap booksBeginOn covers', openRent(db, 'unit-7').length === 2, `${openRent(db, 'unit-7').length} charges`);
-
-    // The same correction, with the books opening ahead of today: nothing is billed.
-    await c.post('/api/settings', { booksBeginOn: '2027-01-01' });
-    await c.put('/api/units/unit-16', villa({ number: '16', tenantName: 'Mig Typo' }));
-    await c.put('/api/units/unit-16', villa({ number: '16', tenantName: 'Mig Typo Fixed' }));
-    db = (await c.get('/api/db')).body;
-    T.check('with the books opening ahead of today, a correction bills nothing at all', openRent(db, 'unit-16').length === 0, `${openRent(db, 'unit-16').length} charges`);
-    T.check('which is what makes entering the register safe before cutover', total(db, 'unit-16') === 0);
-    T.check('the corrected name is still recorded', activeTenancy(db, 'unit-16')?.tenantName === 'Mig Typo Fixed');
-    await c.post('/api/settings', { booksBeginOn: BOOKS });
+    T.check('a correction does not stamp a move-in date that was never known', activeTenancy(db, 'unit-7')?.startedOn === '', JSON.stringify(activeTenancy(db, 'unit-7')?.startedOn));
+    T.check('and bills nothing at all', openRent(db, 'unit-7').length === 0, `${openRent(db, 'unit-7').length} charges`);
+    T.check('with no phantom tenancy left behind', allTenancies(db, 'unit-7').length === 1, `${allTenancies(db, 'unit-7').length}`);
 
     let ten7 = activeTenancy(db, 'unit-7');
     await c.put(`/api/tenancies/${ten7.id}`, { startedOn: '2023-06-01' });
     db = (await c.get('/api/db')).body;
-    T.check('the real move-in date can still be set afterwards', activeTenancy(db, 'unit-7')?.startedOn === '2023-06-01');
-    T.check('and correcting it raises nothing further', openRent(db, 'unit-7').length === 2, `${openRent(db, 'unit-7').length} charges`);
+    T.check('the real move-in date can be set afterwards', activeTenancy(db, 'unit-7')?.startedOn === '2023-06-01');
+    T.check('and being before the books, it still bills nothing', openRent(db, 'unit-7').length === 0, `${openRent(db, 'unit-7').length} charges`);
 
     /* ================================================================
      * 5. The same, but the date supplied later falls inside the books.
@@ -323,7 +324,7 @@ export default async function run({ port, projectRoot }) {
 
     await c.post('/api/settings', { booksBeginOn: BOOKS });
     await c.put('/api/units/unit-15', villa({ number: '15', tenantName: 'Mistyped Leaver', tenantMovedInOn: IN }));
-    await c.put('/api/units/unit-15', villa({ number: '15', tenantName: 'Correct Leaver', tenantMovedInOn: IN }));
+    await c.put('/api/units/unit-15', villa({ number: '15', tenantName: 'Correct Leaver', tenantMovedInOn: IN, tenantChangeIntent: 'correction' }));
     db = (await c.get('/api/db')).body;
     T.check('after correction the villa holds exactly one advance', advances(db, 'unit-15').length === 1);
 
@@ -345,7 +346,41 @@ export default async function run({ port, projectRoot }) {
     T.check('and the tenancy is closed with a reason', allTenancies(db, 'unit-15').find(t => t.status === 'ended' && t.endedOn === '2026-08-20')?.endReason?.length > 0);
 
     /* ================================================================
-     * 11. After every one of those mistakes, the records still agree
+     * 11. The other half of the choice: a genuine changeover must
+     *     still do everything it always did.
+     * ================================================================ */
+
+    await c.put('/api/units/unit-9', villa({ number: '9', status: 'vacant', tenantName: '', monthlyRent: 0 }));
+    await c.put('/api/units/unit-9', villa({ number: '9', tenantName: 'First Occupant', tenantMovedInOn: IN }));
+    db = (await c.get('/api/db')).body;
+    const firstOccupantTenancy = activeTenancy(db, 'unit-9')?.id;
+    T.check('a first occupant is recorded', !!firstOccupantTenancy);
+
+    await c.put('/api/units/unit-9', villa({ number: '9', tenantName: 'Second Occupant', tenantChangeIntent: 'changeover' }));
+    db = (await c.get('/api/db')).body;
+    T.check('a changeover closes the outgoing tenancy', db.tenancies.find(t => t.id === firstOccupantTenancy)?.status === 'ended');
+    T.check('and keeps it, never deletes it', !!db.tenancies.find(t => t.id === firstOccupantTenancy));
+    T.check('recording why it ended', (db.tenancies.find(t => t.id === firstOccupantTenancy)?.endReason || '').length > 0);
+    T.check('a new tenancy is opened for the new tenant', activeTenancy(db, 'unit-9')?.tenantName === 'Second Occupant');
+    T.check('and it is a different record from the one that closed', activeTenancy(db, 'unit-9')?.id !== firstOccupantTenancy);
+    T.check('dated today, because a changeover genuinely starts now', activeTenancy(db, 'unit-9')?.startedOn !== '');
+    T.check('the villa still has exactly one active tenancy', allTenancies(db, 'unit-9').filter(t => t.status === 'active').length === 1);
+
+    // A nonsense answer is refused rather than quietly treated as a changeover.
+    const nonsense = await c.put('/api/units/unit-12', villa({ number: '12', tenantName: 'Some Other Name', tenantChangeIntent: 'whatever' }));
+    T.check('an intent that is neither of the two answers is refused', nonsense.status >= 400, `status ${nonsense.status}`);
+    db = (await c.get('/api/db')).body;
+    T.check('and nothing is changed by it', activeTenancy(db, 'unit-12')?.tenantName === 'Wrong Villa', String(activeTenancy(db, 'unit-12')?.tenantName));
+
+    // Naming the same person again is not a change at all, so no answer is needed.
+    const unchanged = await c.put('/api/units/unit-12', villa({ number: '12', tenantName: 'Wrong Villa', monthlyRent: 90000 }));
+    T.check('re-saving a villa without touching the tenant name needs no answer', unchanged.status === 200, `status ${unchanged.status}`);
+    db = (await c.get('/api/db')).body;
+    T.check('and the edit lands', db.units.find(u => u.id === 'unit-12')?.monthlyRent === 90000);
+    T.check('leaving the tenancy alone', allTenancies(db, 'unit-12').filter(t => t.status === 'active').length === 1);
+
+    /* ================================================================
+     * 12. After every one of those mistakes, the records still agree
      *     with themselves.
      * ================================================================ */
 

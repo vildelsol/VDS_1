@@ -1043,6 +1043,12 @@ function UnitEditor({
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /**
+   * Which of the two things a changed tenant name means. Left unset until the
+   * question is actually put, so nothing is assumed on the way in — the server
+   * refuses a bare change and the answer is only ever one the user gave.
+   */
+  const [tenantIntent, setTenantIntent] = useState<'correction' | 'changeover' | ''>('');
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm(prev => ({ ...prev, [key]: value }));
 
@@ -1051,9 +1057,24 @@ function UnitEditor({
   const renaming = form.number.trim() !== unit.number;
   const currencyChanged = form.currency !== unit.currency || form.maintCurrency !== (unit.maintCurrency || unit.currency);
 
+  /**
+   * A different tenant name against a villa that already had one. Asked here
+   * rather than after a refusal, because the two answers do different things to
+   * the ledger and the choice belongs beside the field being changed.
+   */
+  const tenantNameChanged =
+    tenantApplies &&
+    !!unit.tenantName.trim() &&
+    !!form.tenantName.trim() &&
+    form.tenantName.trim().toLowerCase() !== unit.tenantName.trim().toLowerCase();
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (busy) return;
+    if (tenantNameChanged && !tenantIntent) {
+      setError('Say whether this is a correction to the name or a new tenant, so the right thing happens to the rent.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -1063,7 +1084,8 @@ function UnitEditor({
         monthlyRent: Number(form.monthlyRent) || 0,
         monthlyMaintenance: Number(form.monthlyMaintenance) || 0,
         rentDueDay: Number(form.rentDueDay),
-        maintDueDay: Number(form.maintDueDay)
+        maintDueDay: Number(form.maintDueDay),
+        ...(tenantNameChanged && tenantIntent ? { tenantChangeIntent: tenantIntent } : {})
       });
     } catch (err) {
       setError(errorMessage(err, 'Could not save the unit.'));
@@ -1101,6 +1123,49 @@ function UnitEditor({
             Changing the billing currency does <strong>not</strong> convert the amounts below — it changes which currency
             they are billed in. Enter the correct figure in the new currency yourself. Charges already posted keep the
             currency they were raised in.
+          </InfoNote>
+        )}
+
+        {/*
+          * The two answers are genuinely different acts, so they are laid out as a
+          * choice with the consequence written on each, rather than a checkbox
+          * whose meaning has to be remembered. Nothing is preselected: a default
+          * here would be the machine guessing again, which is the fault this
+          * exists to remove.
+          */}
+        {tenantNameChanged && (
+          <InfoNote tone="amber">
+            <p className="font-semibold">
+              {unit.tenantName.trim()} is recorded as the tenant of this villa. What is happening?
+            </p>
+            <div className="mt-2 space-y-2">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="vds-tenant-intent"
+                  className="mt-0.5"
+                  checked={tenantIntent === 'correction'}
+                  onChange={() => setTenantIntent('correction')}
+                />
+                <span>
+                  <strong>The name was wrong — this is a correction.</strong> The spelling is put right and the tenancy
+                  carries on as it is. No rent is billed and no move-in date is recorded.
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="vds-tenant-intent"
+                  className="mt-0.5"
+                  checked={tenantIntent === 'changeover'}
+                  onChange={() => setTenantIntent('changeover')}
+                />
+                <span>
+                  <strong>A new tenant has moved in.</strong> {unit.tenantName.trim()}&apos;s tenancy is closed and kept,
+                  and {form.tenantName.trim() || 'the new tenant'} is billed first and last month&apos;s rent.
+                </span>
+              </label>
+            </div>
           </InfoNote>
         )}
 

@@ -69,6 +69,21 @@ export const ALREADY_SETTLED = 'account-already-settled';
  */
 export const CURRENCY_CHANGE = 'currency-change-not-confirmed';
 
+/**
+ * The server refused a change of tenant because it cannot tell which of two
+ * quite different things is being asked for.
+ *
+ * Replacing the name because it was typed wrong and replacing it because
+ * somebody new moved in look identical over the wire, and they must not do the
+ * same thing: a changeover closes the tenancy, dates the new one, and bills first
+ * and last month's rent, while a correction should do none of that. Guessing it
+ * from the dates was tried and reverted — a real handover very often follows a
+ * tenant who had no move-in date recorded either. So the screen asks, and sends
+ * the answer as `tenantChangeIntent`. Kept in step with `TENANT_INTENT` in
+ * server.ts.
+ */
+export const TENANT_INTENT = 'tenant-change-intent-required';
+
 let onUnauthenticated: (() => void) | null = null;
 
 /** Registered by App so an expired session bounces the user to the sign-in screen. */

@@ -1373,6 +1373,32 @@ function closeTenancy(
  * year or what they were paying. Nothing is erased here: the open tenancy is
  * closed with a reason and a new one is opened.
  */
+/**
+ * Replacing a tenant's name means one of two quite different things, and the
+ * request has to say which.
+ *
+ * A **changeover** — somebody new has moved in — closes the outgoing tenancy,
+ * opens a new one dated today, and bills first and last month's rent. A
+ * **correction** — the name was typed wrong — must do none of that: there is no
+ * new occupancy, no date to record, and no rent to raise. Over the wire the two
+ * are identical.
+ *
+ * Deriving it was tried and reverted. Keying off the outgoing tenancy's move-in
+ * date looked right and was not: a genuine handover very often follows a tenant
+ * who had no date recorded either, so it suppressed the advance on real
+ * changeovers throughout the scenario suite. The signal has to come from the
+ * person doing the entering.
+ *
+ * So this follows the house pattern for a consequential act the machine cannot
+ * infer — refuse once with a code the screen can act on, exactly as
+ * `ALREADY_SETTLED` and `CURRENCY_CHANGE` do. The difference is that those have
+ * one right answer and this has two, so the screen offers a choice rather than a
+ * confirmation.
+ */
+const TENANT_INTENT = 'tenant-change-intent-required';
+
+export type TenantChangeIntent = 'correction' | 'changeover';
+
 function syncTenancy(
   db: Database,
   unit: Unit,
@@ -1380,7 +1406,9 @@ function syncTenancy(
   staffName: string,
   role: UserRole,
   /** The real move-in date, when whoever is recording the tenant knows it. */
-  movedInOn?: string
+  movedInOn?: string,
+  /** Whether a replaced name is a corrected spelling or a genuinely new tenant. */
+  intent?: TenantChangeIntent
 ): string {
   const current = activeTenancy(db, unit.id);
   const wantsTenant = unit.status === 'long-term' && !!unit.tenantName.trim();
@@ -1424,6 +1452,67 @@ function syncTenancy(
       addAudit(db, staffName, role, `Updated tenancy details for ${current.tenantName} at ${unit.number}`, 'Tenancy', current.id, before, current);
     }
     return '';
+  }
+
+  /**
+   * A different name against an open tenancy. Which of the two it is decides
+   * everything that follows, and only the person entering it knows.
+   */
+  if (current && !intent) {
+    throw new ApiError(
+      400,
+      `Villa ${unit.number} already has ${current.tenantName} recorded as the tenant. ` +
+        `Is "${unit.tenantName.trim()}" a correction to that name, or has a new tenant moved in? ` +
+        `A new tenant closes ${current.tenantName}'s tenancy and bills first and last month's rent; ` +
+        `a correction changes the spelling and bills nothing.`,
+      TENANT_INTENT
+    );
+  }
+
+  /**
+   * A correction. The name was wrong, so put it right in place.
+   *
+   * Nothing is closed and nothing is opened: there was only ever one occupancy
+   * and one tenant, mis-spelled. Closing and reopening would date a move-in that
+   * never happened, bill first and last month's rent against it, and leave a
+   * tenancy in the history for a person who does not exist — which is exactly the
+   * fault this replaces. Charges already raised are re-payered so the ledger, the
+   * statement and the tenant's own copy all read the corrected name.
+   */
+  if (current && intent === 'correction') {
+    const before = { ...current };
+    current.tenantName = unit.tenantName.trim();
+    current.tenantEmail = unit.tenantEmail;
+    current.tenantPhone = unit.tenantPhone;
+    current.emergencyName = unit.tenantEmergencyName || '';
+    current.emergencyPhone = unit.tenantEmergencyPhone || '';
+    current.emergencyEmail = unit.tenantEmergencyEmail || '';
+    current.monthlyRent = unit.monthlyRent;
+    current.currency = unit.currency;
+    current.rentDueDay = unit.rentDueDay || 1;
+    if (movedInOn) current.startedOn = movedInOn;
+
+    let repayered = 0;
+    for (const charge of db.charges) {
+      if (charge.unitId !== unit.id || charge.category !== 'Rent' || charge.status !== 'open') continue;
+      if (charge.payerName === before.tenantName) {
+        charge.payerName = current.tenantName;
+        repayered++;
+      }
+    }
+
+    addAudit(
+      db,
+      staffName,
+      role,
+      `Corrected the tenant's name at ${unit.number} from ${before.tenantName} to ${current.tenantName}` +
+        (repayered ? ` (${repayered} open charge(s) re-payered)` : ''),
+      'Tenancy',
+      current.id,
+      before,
+      current
+    );
+    return `tenant name corrected to ${current.tenantName}`;
   }
 
   if (current) {
@@ -1878,7 +1967,20 @@ app.put(
       const who = actor(req);
       const movedInOn = body.tenantMovedInOn ? requireDay(body.tenantMovedInOn, 'Move-in date') : undefined;
       if (movedInOn && movedInOn > today()) bad('The move-in date cannot be in the future.');
-      const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role, movedInOn);
+
+      /**
+       * Only the two named answers count. Anything else is treated as no answer
+       * at all, so a client sending nonsense is refused rather than quietly
+       * getting the changeover it did not ask for.
+       */
+      const rawIntent = body.tenantChangeIntent;
+      const intent: TenantChangeIntent | undefined =
+        rawIntent === 'correction' || rawIntent === 'changeover' ? rawIntent : undefined;
+      if (rawIntent !== undefined && intent === undefined) {
+        bad('A tenant change must be recorded as either a correction or a changeover.');
+      }
+
+      const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role, movedInOn, intent);
 
       const parts: string[] = [];
       if (original.number !== number) parts.push(`renamed "${original.number}" to "${number}" (${cascaded} linked record(s) relabelled)`);

@@ -52,7 +52,10 @@ export default async function run({ port, projectRoot }) {
     T.check('a move-in date in the future is refused', future.status === 400, String(future.body?.error).slice(0, 46));
 
     // --- a genuine changeover is dated today ---
-    await c.put('/api/units/unit-1', villa({ tenantName: 'Replacement Tenant' }));
+    // The intent is required now: a replaced name could equally be a corrected
+    // spelling, and the two do opposite things to the rent. See TENANT_INTENT in
+    // server.ts and test/corrections.test.mjs.
+    await c.put('/api/units/unit-1', villa({ tenantName: 'Replacement Tenant', tenantChangeIntent: 'changeover' }));
     db = (await c.get('/api/db')).body;
     const closed = db.tenancies.find(t => t.unitId === 'unit-1' && t.tenantName === 'Existing Tenant');
     const opened = db.tenancies.find(t => t.unitId === 'unit-1' && t.status === 'active');
