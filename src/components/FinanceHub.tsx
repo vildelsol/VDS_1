@@ -881,6 +881,21 @@ function AccountTable({
                           control line up in the same column on every row, regardless of which
                           state a row is in. */}
                       <div className="flex items-center justify-end gap-2">
+                        {/*
+                          * Reaching the individual charges used to mean knowing that the
+                          * "Billed" figure was a button — a plain number with no underline
+                          * and only a tooltip to say so. Voiding a charge raised in error
+                          * lives behind it, so in practice the correction path could not be
+                          * found: it was reported as "there is no void option". It is a
+                          * labelled control now, beside Statement.
+                          */}
+                        <button
+                          onClick={() => onViewCharges(account)}
+                          title="See every charge billed to this account, and void one raised in error"
+                          className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 font-medium text-slate-600 transition-colors hover:bg-slate-50"
+                        >
+                          <FileText className="h-3.5 w-3.5" /> Charges
+                        </button>
                         <button
                           onClick={() => onPrintStatement(account)}
                           title="Print or email an account statement"
@@ -1870,6 +1885,20 @@ function ChargeHistoryModal({
     >
       <div className="space-y-4 p-6 text-xs">
         {error && <ErrorNote>{error}</ErrorNote>}
+
+        {/*
+          * Say why the Void column is absent rather than simply omitting it. A
+          * charge raised in error is corrected here and nowhere else, so someone
+          * without the permission needs to know who to ask — not to conclude the
+          * application cannot do it.
+          */}
+        {!canVoid && rows.length > 0 && (
+          <p className="rounded-lg bg-slate-50 p-3 text-[11px] text-slate-500">
+            A charge raised in error is cancelled by voiding it, which needs the permission to
+            correct settled records. Ask an Administrator or Manager. Nothing is deleted — a
+            voided charge stays on the record with the reason and who voided it.
+          </p>
+        )}
 
         {rows.length === 0 ? (
           <EmptyState title="No charges have been posted for this account yet" />

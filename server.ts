@@ -1121,6 +1121,14 @@ function activeTenancy(db: Database, unitId: string): Tenancy | undefined {
  * Does nothing without a move-in date (the month would be a guess), without a rent
  * figure, or if this tenancy has already had it — so it is safe to call again when
  * a date is corrected later.
+ *
+ * **It also does nothing for a move-in that predates the books.** A tenant of
+ * several years settled their first and last month with whoever kept the records
+ * before this system did; raising it again at migration invents two months of debt
+ * that nobody owes, dated to a month the books do not even cover. "The books begin
+ * on" is what draws that line — see `AppSettings.booksBeginOn`. This was found on
+ * real migration data: entering a long-standing tenant with their true move-in date
+ * produced two outstanding charges against a month years before the cutover.
  */
 function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string, role: UserRole): boolean {
   if (!tenancy.startedOn) return false;
@@ -1132,15 +1140,87 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
   if (!unit) return false;
 
   const month = monthOf(tenancy.startedOn);
+
+  /**
+   * Months before the books begin belong to whatever kept the records first.
+   *
+   * Compared as months rather than days on purpose: rent is billed by the month,
+   * so a tenant who moved in on the 15th of the opening month is still starting
+   * within the books and is billed normally. Only a month wholly before the
+   * opening month is somebody else's ledger.
+   */
+  const booksBegin = db.settings.booksBeginOn;
+  if (booksBegin && month < monthOf(booksBegin)) return false;
+
   const dueDay = tenancy.rentDueDay || unit.rentDueDay || 1;
   const currency = tenancy.currency || unit.currency;
 
-  // The tenant's first month. Skipped if a charge for it already exists, so a
-  // month posted before the tenant was recorded is not billed twice.
-  const alreadyBilled = db.charges.some(
-    c => c.unitId === unit.id && c.category === 'Rent' && c.periodMonth === month && c.status === 'open'
+  /**
+   * Charges already standing against this villa for this month.
+   *
+   * The two kinds are looked for **separately**, which matters. A single "is
+   * anything billed?" test treated an advance as proof the first month was
+   * covered, and the reverse left a second advance free to be raised beside the
+   * first — which is exactly what happened when a mistyped tenant name was
+   * corrected: the correction closes one tenancy and opens another, the new one
+   * carries no `advanceRentChargeId`, and the villa ended up holding two advances
+   * for one month, one of them in the name of a tenant who never existed.
+   *
+   * Where a charge is already there it is **adopted** rather than duplicated: the
+   * payer is renamed to the tenant now on record, and the advance is bound to this
+   * tenancy so closing it still spends the right charge. Nothing is raised twice
+   * and nothing is orphaned.
+   */
+  const existingFirst = db.charges.find(
+    c =>
+      c.unitId === unit.id &&
+      c.category === 'Rent' &&
+      c.periodMonth === month &&
+      c.status === 'open' &&
+      c.kind !== 'advance-final-month'
   );
-  if (!alreadyBilled) {
+  const existingAdvance = db.charges.find(
+    c =>
+      c.unitId === unit.id &&
+      c.category === 'Rent' &&
+      c.periodMonth === month &&
+      c.status === 'open' &&
+      c.kind === 'advance-final-month'
+  );
+
+  if (existingFirst && existingFirst.payerName !== tenancy.tenantName) {
+    const was = existingFirst.payerName;
+    existingFirst.payerName = tenancy.tenantName;
+    addAudit(
+      db,
+      staffName,
+      role,
+      `Corrected the payer on ${unit.number}'s first month's rent to ${tenancy.tenantName}`,
+      'Charge',
+      existingFirst.id,
+      was,
+      tenancy.tenantName
+    );
+  }
+
+  if (existingAdvance) {
+    const was = existingAdvance.payerName;
+    existingAdvance.payerName = tenancy.tenantName;
+    tenancy.advanceRentChargeId = existingAdvance.id;
+    addAudit(
+      db,
+      staffName,
+      role,
+      `Carried the advance already held on ${unit.number} over to ${tenancy.tenantName} rather than billing it again`,
+      'Charge',
+      existingAdvance.id,
+      was,
+      tenancy.tenantName
+    );
+    return false;
+  }
+
+  if (!existingFirst) {
     /**
      * A mid-month move-in is billed the **whole** month, on purpose.
      *
@@ -1373,13 +1453,31 @@ function syncTenancy(
     monthlyRent: unit.monthlyRent,
     currency: unit.currency,
     rentDueDay: unit.rentDueDay || 1,
-    // Only a changeover genuinely starts today. The first time a tenant is
-    // recorded against a villa, the register is usually being filled in for
-    // people who already live there — stamping today invented a move-in date for
-    // tenants of several years, and then refused to backdate their move-out or
-    // eviction to the day it actually happened ("cannot fall before the move-in
-    // date"). Unknown is left unknown, exactly as the migration does, and staff
-    // can set the real date on the tenancy record.
+    /**
+     * Only a changeover genuinely starts today.
+     *
+     * The first time a tenant is recorded against a villa, the register is usually
+     * being filled in for people who already live there — stamping today invented a
+     * move-in date for tenants of several years, and then refused to backdate their
+     * move-out or eviction to the day it actually happened ("cannot fall before the
+     * move-in date"). Unknown is left unknown, exactly as the migration does, and
+     * staff can set the real date on the tenancy record.
+     *
+     * **A correction and a changeover are indistinguishable here, and that is a
+     * known gap.** Replacing the name because it was typed wrong looks identical to
+     * replacing it because somebody new moved in, so this stamps today for both. On
+     * a villa still being entered that invents a move-in date and — once the month
+     * is inside the books — bills first and last month's rent against it.
+     *
+     * Deriving the answer from the outgoing tenancy's own date was tried and
+     * reverted: a genuine changeover very often follows a tenant who never had a
+     * move-in date recorded either, so it suppressed the advance on real handovers
+     * across the whole scenario suite. The signal has to come from the person doing
+     * the entering, not be guessed at here.
+     *
+     * Until it does, what protects the books is `booksBeginOn` — a date stamped
+     * today is billed only if today is inside the books. See `raiseFirstAndLastRent`.
+     */
     startedOn: movedInOn || (current ? stamp : ''),
     status: 'active',
     recordedBy: staffName,
