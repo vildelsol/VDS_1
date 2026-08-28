@@ -26,15 +26,21 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,087 automated tests pass.** Typecheck clean, build clean, `npm audit` clean. A full run
+- **1,245 automated tests pass.** Typecheck clean, build clean, `npm audit` clean. A full run
   simulates **800 audited scenarios** (200 ledger + 200 whole-application on full data + 400
-  reporting), and the application now checks its own records at start-up as well.
+  reporting), and the application checks its own records at start-up as well.
 - **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. All work from the
-  2026-08-16 sessions is committed and on the remote.
-- **`main` and `origin/main` are level** at `70af15d` — verified against the remote with
+  2026-08-21 session is committed and on the remote.
+- **`main` and `origin/main` are level** at `b29b55d` — verified against the remote with
   `git ls-remote`, not from a local ref. **Keep verifying it that way.** This section has been stale
   twice before: once claiming `main` was a commit ahead when it was not, once claiming work was
   uncommitted after it had been pushed. A local `origin/main` ref only says what the last fetch saw.
+- One untracked file sits in the tree: **`docs/USER-GUIDE.html`** ("Villaggio Del Sol Handbook"),
+  dated 25 August and not written by any session recorded here. It has deliberately **not** been
+  committed — ask Ro whether it should be, rather than assuming either way.
+- **The version number is now on screen** (sidebar footer and sign-in, beside "Powered by ISPO"),
+  injected from `package.json` at build time. That is how you tell what the HP is actually running
+  without asking someone to open a console.
 - ⚠️ **The plan number fix does NOT travel in a release, and this is the trap.** The 2026-08-16
   session changed `defaultSettings()` in `server/db.ts`, and `db.json` is **gitignored** — it has
   never been tracked and cannot be. The Mac's own `db.json` was edited by hand (backed up to
@@ -44,18 +50,18 @@ next session from inside `pm-app`.
   The default only applies to a database that has never had the field. **Installing a new `.exe` on
   the HP will not correct its plan number. Someone has to set it in System Settings → General on the
   HP itself, and then check a printed letterhead.**
-- Latest release: **v1.8.2** — tagged and shipped on 2026-08-17. The Annual Report, property health
-  grade, integrity self-check, schema forward-version guard and CI dependency gate are all in it.
-  **The HP needs to be updated from v1.8.1 to v1.8.2** — see *Where to pick up*. Two commits sit
-  after the release tag (`83b41a6` and `70af15d`); both affect only the workflow runner and carry no
-  app changes.
+- Latest release: **v1.9.0**, shipped 2026-08-21, tag on `b29b55d`. Four releases went out that day
+  — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
+  intent), v1.9.0 (ownership history + tenant-removal intent). **The HP is still on v1.8.1 and needs
+  v1.9.0.** Every earlier release is superseded; install the latest and nothing else.
 
-**There is no known outstanding bug.** Everything found during 2026-08-16 was fixed in the same
-session and carries a regression test. What is genuinely open is *untested surface* and the Excel
-migration — both listed under *Where to pick up*. Do not go hunting for a bug list; there isn't one.
+**There is no known outstanding bug.** Everything found on 2026-08-21 was fixed the same day and
+carries a regression test. What is genuinely open is *untested surface*, the Excel migration, and
+two questions sitting with management — all under *Where to pick up*. Do not go hunting for a bug
+list; there isn't one.
 
-**The system is live.** The HP runs v1.8.1 and needs upgrading to v1.8.2 (see *Where to pick up*).
-Tailscale is installed and remote access from a phone is confirmed.
+**The system is live.** The HP runs **v1.8.1** and needs upgrading to **v1.9.0** (see *Where to pick
+up*). Tailscale is installed and remote access from a phone is confirmed.
 
 ### Migration from Excel — planned, partially enabled (2026-08-16)
 
@@ -69,12 +75,24 @@ and the enabling parts are built:
 Three things exist to make this safe:
 
 1. **"The books begin on"** — System Settings → General. Set it to `2026-09-01`.
-   Without it, entering a tenancy with its real start date (some tenants are years-standing) makes
-   `unbilledOccupancy` report *every month back to that date* as unbilled — hundreds of false
-   alerts that bury the real ones. It does **not** hide a month after the cutover that was
-   genuinely missed; that is tested.
+   It does two separate jobs, and the second one was added on 2026-08-21 after the first real data
+   went in:
+   - `unbilledOccupancy` stops reporting *every month back to a years-old start date* as unbilled —
+     hundreds of false alerts that would bury the real ones. It does **not** hide a month after the
+     cutover that was genuinely missed; that is tested.
+   - **`raiseFirstAndLastRent` refuses to bill a move-in month that falls before it.** A tenant of
+     several years settled their first and last month with whatever kept the records before this
+     system did.
 2. **`Opening balance`** one-off charge type — for keying each owner's carried-over arrears.
 3. **`Insurance share`** one-off charge type — for the annual apportionment, adjustable per villa.
+
+⚠️ **A previous version of this file said "enter tenancies with real start dates — that is now
+safe." That sentence was written as an assumption, was never tested, and was false.** It considered
+only the unbilled-occupancy alerts and not `raiseFirstAndLastRent`, which billed a long-standing
+tenant two months of rent dated years before the books open. Found on Ro's real migration data on
+2026-08-21, not by any of the 1,087 tests then passing — each feature was doing exactly what it had
+been built to do and nothing had ever asked what happens when they meet. **Fixed in v1.8.4. Do not
+write a claim like that into this file again without a test behind it.**
 
 **Tell whoever does the data entry:** date an opening balance to **when the debt actually fell
 due**, not to 1 September. The balance is the same either way; the *ageing* is only right if the
@@ -132,8 +150,12 @@ expenses are therefore **excluded** from what is recharged to an owner (`ownerSt
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (1,087 checks). Each test file boots its own server on a **temp
+- `npm test` — build + full suite (1,245 checks). Each test file boots its own server on a **temp
   data dir**, so tests never touch the real `db.json`.
+- **`test/corrections.test.mjs` is the one to read first if you are touching tenancies, ownership or
+  charge creation.** 158 checks on mistakes and their correction, and its header explains the real
+  failure it was written after. Run it alone with:
+  `node -e "import('./test/corrections.test.mjs').then(async m => { const r = await m.default({ port: 3941, projectRoot: process.cwd() }); console.log(r.pass + ' passed, ' + r.fail + ' failed'); r.failures.forEach(f => console.log('  - ' + f)); })"`
 - `npm run test:run` — tests only, skip the build.
 - `npm run build` — client + `dist/server.cjs`.
 - `npm run build:exe-prep` — everything needed for the single-file `.exe` (the `.exe` itself can
@@ -159,7 +181,7 @@ will spend twenty minutes debugging a fix that already works.
 Push a tag; GitHub Actions builds the `.exe` on a real Windows runner and publishes it.
 
 ```bash
-git tag -a v1.8.2 -m "…" && git push origin v1.8.2
+git tag -a v1.9.1 -m "…" && git push origin v1.9.1
 ```
 
 The workflow (`.github/workflows/build-exe.yml`) gates the release on: full test suite → assemble
@@ -173,6 +195,24 @@ Watch it with `gh run watch <id> --exit-status`.
 
 ## Things learned the hard way
 
+- **Two features can each be correct and still be wrong together.** The 2026-08-21 migration bug was
+  exactly this: `raiseFirstAndLastRent` correctly billed a new tenant, `booksBeginOn` correctly
+  silenced unbilled-month alerts, and 1,087 tests passed while the application invented two months
+  of debt. **When a setting is added for a specific situation, enumerate every code path that
+  situation touches** — do not assume the setting's own tests cover it. And never write "this is now
+  safe" into this file without a test behind it; that sentence was here, and it was false.
+- **Where the machine cannot infer intent, ask — do not guess.** Three edits look identical over the
+  wire and mean opposite things: a tenant name replaced (correction vs. changeover), an owner name
+  replaced (correction vs. sale), a tenant taken off a villa (mistake vs. moved out). All three now
+  refuse once with a `code` and let the screen offer a choice, the same shape as
+  `account-already-settled` and `currency-change-not-confirmed`. **Never preselect a default where
+  the two answers do different things to money.** Deriving the answer from the data was tried for
+  the tenant case and broke genuine changeovers across 400 scenarios.
+- **If a fix breaks existing tests, the tests are the more likely authority.** Investigate before
+  updating them. Two suites caught a reverted-fix regression that reading the code had not.
+- **Watch for tests that start passing for the wrong reason.** Adding a refusal upstream of an
+  existing assertion can satisfy it without exercising what it was written for — one in
+  `input-hardening` did exactly that on 2026-08-21.
 - **The single source of truth is `src/lib/finance.ts`.** Every screen derives balances through it.
   Never compute a balance in a component — that is what made screens disagree before.
 - **Every figure comes from `status === 'completed'` payments only.** That is what lets pending
@@ -207,7 +247,7 @@ Watch it with `gh run watch <id> --exit-status`.
 
 ---
 
-## Built so far (all tested; everything here is committed and on the remote as of `70af15d`, released as v1.8.2)
+## Built so far (all tested; everything here is committed and on the remote as of `b29b55d`, released as v1.9.0)
 
 **Money handling**
 - **Proprietor statements** — per villa, per currency, grouped by owner; itemised printable
@@ -237,6 +277,15 @@ Watch it with `gh run watch <id> --exit-status`.
 - Utility settling and booking deposits are *expected* until confirmed.
 
 **Operations**
+- **Ownership history** (`Ownership`, 2026-08-21) — append-only periods per villa, mirroring
+  `Tenancy`, with a reconciling migration that opens one for every villa already on the register. A
+  sale closes the seller's period and opens the buyer's; **the seller keeps their arrears**. In the
+  `/api/db` projection — check there first if it ever comes back empty.
+- **Correction vs. real change is asked, never guessed** (2026-08-21) — for a tenant name, an owner
+  name, and taking a tenant off a villa. Refusal codes `tenant-change-intent-required` and
+  `owner-change-intent-required`, kept in step between `server.ts` and `src/lib/api.ts`.
+- **Voiding a charge is reachable** — a labelled **Charges** button on every ledger row. It used to
+  live behind the "Billed" figure being silently clickable, and was reported as not existing.
 - **Lease end dates** + renewal warnings (60 days, and already-lapsed) on dashboard and hub.
 - **Maintenance work orders** — assign, progress, close with cost and outcome; the cost can be
   raised as a property expense **once**.
@@ -804,6 +853,109 @@ So there is no commission model to build and nothing to net off. Do not add one:
 commission that is not charged, or a gross figure that is never received, would make the ledger
 *less* true than it is now.
 
+## Session of 2026-08-21 — the first real data, and what it broke
+
+**The most important session in this file, because it is the only one where the application met
+Villaggio Del Sol's actual records rather than a seeded property.** Four releases went out:
+**v1.8.3, v1.8.4, v1.8.5, v1.9.0**. All committed and pushed; `main` is `b29b55d`.
+
+### How it started
+
+Ro set "The books begin on" to 1 September, entered a long-standing tenant on villa C13 with their
+real move-in date, mistyped the name, corrected it — and the villa showed outstanding rent that
+nobody owed. Reported as *"this should not have happened."*
+
+It was reproduced on a throwaway database rather than reasoned about, and there were **two** faults,
+not one:
+
+1. **`raiseFirstAndLastRent` billed first and last month's rent dated to a move-in month years
+   before the books open.** Correct for a new tenant; nonsense for a tenant migrating out of Excel
+   who settled that money in 2024. `booksBeginOn` had never been wired into charge creation — it
+   only silenced unbilled-occupancy alerts.
+2. **Correcting the mistyped name raised a *second* advance beside the first.** A name change closes
+   one tenancy and opens another; the new one carried no `advanceRentChargeId`, so the guard against
+   double-billing could not see the charge already standing. The villa ended up holding two
+   advances for one month, one of them in the name of a tenant who never existed. Outstanding went
+   2 → 3.
+
+**All 1,087 tests passed throughout both.** Each feature was doing exactly what it had been built to
+do. Nothing had ever asked what happens when they meet. See *Things learned the hard way*.
+
+Ro also reported *"there is no void option on the UI"* — and was right. Voiding a charge lived behind
+the **"Billed" money figure being secretly clickable**: a plain number, no underline, tooltip only.
+The correction path existed and could not be found.
+
+### What shipped
+
+**v1.8.3** — the version number now renders in the sidebar footer and on the sign-in screen, from
+`package.json` via a Vite `define`. Asked for by Ro so it is possible to tell what a machine is
+running. `README.md` and `SETUP-WINDOWS.md` were rewritten around the single-file `.exe` (they still
+described the old `.bat`) and gained an explicit "updating without losing your records" section.
+
+**v1.8.4** — the two migration faults:
+- `raiseFirstAndLastRent` returns early when the move-in month falls before `booksBeginOn`. Compared
+  **by month**, so a mid-month move-in inside the opening month still bills normally.
+- An advance already standing for that villa and month is **adopted** — payer renamed, tenancy bound
+  to it — rather than reissued. Same for the first month's charge.
+- A labelled **Charges** button on every ledger row, beside Statement. The modal also explains who to
+  ask when the viewer lacks `modify_settled`, rather than silently hiding the column.
+
+**v1.8.5** — a changed tenant name now asks whether it is a **correction** or a **new tenant**.
+
+**v1.9.0** — the same question in the two other places it was being guessed:
+- **Owner name**: correction, or has the villa been **sold**? New append-only `Ownership` record with
+  a reconciling migration. A sale closes the seller's period and opens the buyer's, **and what the
+  seller already owes stays with the seller** — which is what Form 13B requires. A correction edits
+  the open period and re-payers only the *open* maintenance charges, never a settled one whose
+  receipt has already gone out.
+- **Taking a tenant off a villa**: moved out, or entered by mistake? A move-out spends the advance
+  and writes off the final month. A correction takes the entry back — unpaid rent voided with the
+  reason recorded, advance left unspent, no departure recorded — and deliberately does **not** touch
+  a receipt already issued.
+
+### The pattern, and why it was not invented
+
+All three follow the house pattern that `account-already-settled` and `currency-change-not-confirmed`
+already used: **refuse once with a machine-readable `code`, let the screen turn it into a deliberate
+act.** The difference is that those have one right answer so the screen confirms, and these have two
+so the screen offers a choice with the consequence written on each. **Nothing is preselected** — a
+default would be the machine guessing again, which is the fault being removed.
+
+Codes: `tenant-change-intent-required`, `owner-change-intent-required`. Kept in step between
+`server.ts` and `src/lib/api.ts`, as the existing two are.
+
+### One fix was tried and reverted — do not re-attempt it
+
+Deriving the tenant answer from the outgoing tenancy's move-in date (blank date ⇒ correction) looked
+right and was wrong: **a genuine changeover very often follows a tenant who had no move-in date
+recorded either.** It suppressed the advance on real handovers throughout the scenario suite —
+`scenarios-400` never supplies a move-in date and relies entirely on the changeover stamp, so the
+advance path vanished from all 400 scenarios. Reverted, and the reasoning is written into
+`syncTenancy` so it is not tried a third time. The signal has to come from the person entering it.
+
+### Testing
+
+**1,245 pass, up from 1,087.** New suite `test/corrections.test.mjs` — **158 checks** covering
+mistakes and their correction: mistyped names, wrong rent figures, tenant against the wrong villa,
+charges voided, the books-begin date itself corrected, sales, take-backs, and the invariants that
+must survive all of it (no villa holding two open advances for one month, no two open ownership
+periods, every closed period saying why).
+
+**Every guard added was mutation-tested** — removed, and the suite confirmed to fail. Counts: 8, 11
+and 3 for the v1.8.4 fixes; 6 and 8 for v1.8.5; 5, 7 and 13 for v1.9.0.
+
+Updating the other suites turned up a test in `input-hardening` that had **started passing for the
+wrong reason**: the new owner refusal was firing before the number-grammar guard it was written to
+exercise. Fixed so it tests what it claims. Worth watching for whenever a new refusal is added
+upstream of existing assertions.
+
+### A constraint worth knowing before the cutover
+
+**A move-in date cannot be in the future.** With the books opening on 1 September and today in
+August, *every* enterable move-in date falls before the books — so nothing bills at all. That makes
+entering the register now safe, and it also means the billing path cannot be exercised until
+September actually arrives.
+
 ## Session of 2026-08-18
 
 Handover-only session. No code was changed.
@@ -1153,41 +1305,58 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-**1. Install v1.8.2 on the HP.** Everything from the 2026-08-16 sessions — Annual Report, property
-health grade, integrity self-check, schema forward-version guard, CI dependency gate — is released
-in v1.8.2 (2026-08-17). Download `Villaggio-Del-Sol.exe` from
-`https://github.com/vildelsol/VDS_1/releases/tag/v1.8.2` and run it on the HP in place of the
-current one. The first startup will print a self-check line; on a clean database it should say "no
-contradictions found". Clear the service worker and browser cache on the Kamrui and phones after
-the upgrade or they will serve the old bundle.
+**1. Install v1.9.0 on the HP. It is still on v1.8.1 and is eight releases behind.** Download
+`Villaggio-Del-Sol.exe` from `https://github.com/vildelsol/VDS_1/releases/latest`, close the running
+program, drop the new file in the same folder replacing the old one, double-click. The first startup
+prints a self-check line; on a clean database it says "no contradictions found". **The sidebar now
+shows the version** — confirm it reads v1.9.0 rather than trusting the upgrade happened.
 
-**`db.json` is gitignored and is never committed** — it holds the property's financial records. The
-strata plan number correction edited it directly on this machine (backed up first to
-`db-backups/db.json.pre-2324-*`), so that change is **local only**. **After installing v1.8.2 on
-the HP, set the plan number to 2324 in System Settings → General** — the new default does not
-touch an existing `db.json`. Check a printed letterhead to confirm.
+Then, on the Kamrui and any phones: **Ctrl+Shift+R**. If the old version persists, F12 → Application
+→ Service Workers → Unregister, then reload. Otherwise they serve the old bundle.
 
-**2. Nothing is known to be broken.** Every defect found on 2026-08-16 was fixed with a regression
-test — see the five session notes below for what they were and why they mattered. If the next
-session opens expecting a bug list, there is none. The real work is 3 and 4.
+**`db.json` is gitignored and is never committed** — it holds the property's financial records, and
+replacing the `.exe` never touches it. **This cuts both ways: after installing, set the strata plan
+number to 2324 in System Settings → General.** `loadDb()` merges stored settings *over* the
+defaults, so an existing `db.json` keeps whatever it already holds — a new build cannot correct it.
+Check a printed letterhead afterwards.
 
-**3. The untested surface is the honest risk, and no test here can close it.** Never exercised by
-anyone: the Windows `.exe` outside CI, the PWA and service worker, the offline queue under real
-network loss, a live Airbnb feed, the two-PC dry run, real print output on paper or in a PDF, and
-the Excel export actually opened in Excel. **And the largest: none of this has met real data.**
-Every figure demonstrated so far came from a seeded property. The Annual Report has never been run
-against Villaggio Del Sol's actual expenditure.
+**Also set "The books begin on" to `2026-09-01`** in the same screen. On v1.9.0 that setting now
+governs billing as well as alerts, so it is load-bearing for the migration rather than cosmetic.
 
-**4. The Excel migration is the live piece of work.** Cutover 1 September. See *Migration from
-Excel* under *State right now*. The enabling parts are built; the data entry and a dry run are not.
-Suggested order:
-   - Set **"The books begin on"** to `2026-09-01` in System Settings → General.
-   - Enter tenancies with **real start dates** — that is now safe.
+**2. Two questions are with management, and nothing should be built on a guess until they come
+back** (both raised 2026-08-21, Ro referred them on):
+   - **Do VDS-owned villas record a payment against their own maintenance charge?** Maintenance is
+     addressed to `unit.ownerName`, so on a villa VDS owns, VDS bills itself. If a payment is
+     recorded the books stay clean; if not, those lots sit permanently in arrears and appear on Form
+     13B as outstanding contributions. Both are defensible; the choice must be deliberate.
+   - **Does Ro want an out-of-pocket shortfall report?** Ro clarified the funding model: on villas
+     VDS lets long-term, the maintenance is funded from the rent collected, so a vacant villa means
+     VDS pays it out of pocket. The system bills maintenance on vacant villas correctly, but models
+     **no link** between rent received and maintenance owed, and has no such report.
+
+**3. The Excel migration is the live piece of work.** Cutover 1 September. See *Migration from
+Excel* under *State right now*. The enabling parts are built and now actually tested; the data entry
+and a dry run are not. Suggested order:
+   - Set **"The books begin on"** to `2026-09-01` in System Settings → General. Do this **first** —
+     it is what stops a long-standing tenant being billed first and last month's rent.
+   - Enter tenancies with **real start dates**. Safe on v1.9.0, and there are now 158 checks behind
+     that claim rather than an assumption.
    - Record security deposits on the tenancies that have them.
    - Key each owner's carried-over maintenance as an **Opening balance** charge, **dated to when it
-     actually fell due**.
+     actually fell due**, not to 1 September. The balance is the same either way; the ageing is only
+     right if the date is, and Form 13B depends on that ageing.
    - Then verify: arrears match Excel, the ageing buckets look right on the Charts tab, and
      **System Settings → Backup & recovery → Check now** reports no contradictions.
+   - **Correcting a mistake is now a supported path, not a hazard.** A mistyped tenant or owner name
+     asks whether it is a correction or a real change; a charge raised in error is voided from the
+     **Charges** button on its ledger row.
+
+**4. The untested surface is the honest risk, and no test here can close it.** Never exercised by
+anyone: the Windows `.exe` outside CI, the PWA and service worker, the offline queue under real
+network loss, a live Airbnb feed, the two-PC dry run, real print output on paper or in a PDF, and
+the Excel export actually opened in Excel. **Real data has now been met once — and it immediately
+found two faults no test had.** The Annual Report has still never been run against Villaggio Del
+Sol's actual expenditure.
 
 **5. Offered and not taken up** — build only if asked:
    - **The Forms 13B/13C export.** Deferred by Ro on 2026-08-21 — the statutory return is done by
@@ -1225,6 +1394,16 @@ Decisions already made — **do not re-litigate**:
   not rebuild it without being asked.
 - **Bank reconciliation is a tick, not a CSV import** (2026-08-09). Revisit only with a real
   statement file in hand to test against.
+- **Where intent cannot be inferred, the application asks** (2026-08-21). Tenant name, owner name,
+  and taking a tenant off a villa all refuse once with a `code` and offer a choice with the
+  consequence written on each. **Nothing is preselected.** Do not "simplify" any of these into a
+  default or a checkbox — the two answers do different things to money, and guessing is the fault
+  they were built to remove.
+- **On a sale, the seller keeps their arrears** (2026-08-21). Charges raised while the seller held
+  the lot keep their name and go on ageing under it. Form 13B reports what each proprietor owes
+  against their strata lot, and moving that debt to the buyer would misstate the return.
+- **The Forms 13B/13C export stays manual for now** (2026-08-21). The compute engines exist and are
+  tested; the UI and CSV assembly are not built. Ro's decision — do not build it unasked.
 - **The corporation does not collect rent for proprietors** (2026-08-16). They let their own villas
   entirely on their own account. The corporation collects maintenance and the insurance share, and
   recharges work it performs. The rent/booking machinery is for **VDS's own villas**.
