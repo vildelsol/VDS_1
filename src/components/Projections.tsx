@@ -29,7 +29,8 @@ import {
   expensesInPeriod,
   isBillable
 } from '../lib/finance';
-import { formatMoney, formatMoneyPlain, round2, sumMoney } from '../lib/money';
+import { formatMoney, round2, sumMoney } from '../lib/money';
+import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import {
   addMonths,
   currentMonth,
@@ -296,62 +297,68 @@ export default function Projections({ units, charges, payments, expenses, settin
    * accents and currency symbols intact.
    */
   const downloadSpreadsheet = () => {
-    const rows: string[][] = [];
-    rows.push(['VILLAGGIO DEL SOL — STRATA CORPORATION']);
-    rows.push(['Financial projection']);
-    rows.push(['Basis', `${formatDayLabel(basis.from)} to ${formatDayLabel(basis.to)}`, `${basis.months} month(s)`]);
-    rows.push(['Projected forward', `${horizon} month(s)`]);
-    rows.push(['Generated', formatDayLabel(today()), 'by', session.name]);
-    rows.push(['Note', 'Maintenance (HOA) contributions only. Rent and booking income belong to individual proprietors.']);
-    rows.push(['Note', 'USD and JMD are projected separately and are never combined.']);
+    const period = `${formatDayLabel(basis.from)} to ${formatDayLabel(basis.to)} (${basis.months} month basis), projected ${horizon} month(s) forward`;
 
-    for (const p of projections) {
-      rows.push([]);
-      rows.push([`=== ${p.currency} ===`]);
-      rows.push(['Measure', 'Amount']);
-      rows.push(['Current monthly assessment', formatMoneyPlain(p.contractedMonthly)]);
-      rows.push(['Contributing proprietors', String(p.contributingUnits)]);
-      rows.push([`Received over basis (${p.lookback} mo.)`, formatMoneyPlain(p.maintReceived)]);
-      rows.push([`Billed over basis (${p.lookback} mo.)`, formatMoneyPlain(p.maintBilled)]);
-      rows.push([`Expenses paid over basis (${p.lookback} mo.)`, formatMoneyPlain(p.expensesPaid)]);
-      rows.push(['Collection rate %', p.rate === null ? 'n/a' : String(p.rate)]);
-      rows.push(['Projected monthly contributions', formatMoneyPlain(p.projectedIncome)]);
-      rows.push(['Projected monthly expenditure', formatMoneyPlain(p.projectedExpense)]);
-      rows.push(['Projected monthly net', formatMoneyPlain(p.projectedNet)]);
-      rows.push(['Maintenance arrears outstanding today', formatMoneyPlain(p.arrears)]);
-      rows.push([]);
-      rows.push(['Month', 'Contributions', 'Expenditure', 'Net', 'Cumulative']);
+    const sheets = projections.map(p => {
+      const rows: XlsxCell[][] = [
+        ...documentHeader({
+          documentTitle: `Financial Projection — ${p.currency}`,
+          period,
+          generatedOn: formatDayLabel(today()),
+          generatedBy: session.name,
+          planNumber: settings.strataPlanNumber,
+          span: 5
+        }),
+        [cell.header('Measure'), cell.header('Amount', 'right')],
+        [cell.text('Current monthly assessment'), cell.money(p.contractedMonthly, p.currency)],
+        [cell.text('Contributing proprietors'), cell.number(p.contributingUnits)],
+        [cell.text(`Received over basis (${p.lookback} mo.)`), cell.money(p.maintReceived, p.currency)],
+        [cell.text(`Billed over basis (${p.lookback} mo.)`), cell.money(p.maintBilled, p.currency)],
+        [cell.text(`Expenses paid over basis (${p.lookback} mo.)`), cell.money(p.expensesPaid, p.currency)],
+        [cell.text('Collection rate %'), p.rate === null ? cell.muted('n/a') : cell.number(p.rate)],
+        [cell.text('Projected monthly contributions'), cell.money(p.projectedIncome, p.currency)],
+        [cell.text('Projected monthly expenditure'), cell.money(p.projectedExpense, p.currency)],
+        [cell.text('Projected monthly net'), cell.money(p.projectedNet, p.currency)],
+        [cell.text('Maintenance arrears outstanding today'), cell.money(p.arrears, p.currency)],
+        [cell.blank()],
+        [cell.section(`Forecast — next ${horizon} month(s)`, 5)],
+        [cell.header('Month'), cell.header('Contributions', 'right'), cell.header('Expenditure', 'right'), cell.header('Net', 'right'), cell.header('Cumulative', 'right')]
+      ];
+
       for (const row of p.forecast) {
         rows.push([
-          formatMonthLabel(row.month),
-          formatMoneyPlain(row.income),
-          formatMoneyPlain(row.expenditure),
-          formatMoneyPlain(row.net),
-          formatMoneyPlain(row.cumulative)
+          cell.text(formatMonthLabel(row.month)),
+          cell.money(row.income, p.currency),
+          cell.money(row.expenditure, p.currency),
+          cell.money(row.net, p.currency),
+          cell.money(row.cumulative, p.currency)
         ]);
       }
       rows.push([
-        `TOTAL (${horizon} months)`,
-        formatMoneyPlain(p.horizonIncome),
-        formatMoneyPlain(p.horizonExpense),
-        formatMoneyPlain(p.horizonNet),
-        formatMoneyPlain(p.horizonNet)
+        cell.total(`Total over ${horizon} months`),
+        cell.totalMoney(p.horizonIncome, p.currency),
+        cell.totalMoney(p.horizonExpense, p.currency),
+        cell.totalMoney(p.horizonNet, p.currency),
+        cell.totalMoney(p.horizonNet, p.currency)
       ]);
-      rows.push([]);
-      rows.push(['Summary']);
-      for (const line of analysisFor(p, horizon)) rows.push([line]);
-    }
 
-    const csv = rows.map(r => r.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `VDS_projection_${basis.from}_to_${basis.to}_plus${horizon}m.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+      rows.push([cell.blank()]);
+      rows.push([cell.section('What this projection says', 5)]);
+      for (const line of analysisFor(p, horizon)) rows.push([cell.note(line, 5)]);
+
+      rows.push([cell.blank()]);
+      rows.push([
+        cell.note(
+          'Maintenance (HOA) contributions only — rent and guest income belong to individual proprietors and never pass through the corporation. USD and JMD are projected separately and are never combined.',
+          5
+        )
+      ]);
+
+      return { name: `Projection ${p.currency}`, widths: [42, 20, 20, 20, 20], rows, freezeRows: 7, repeatRow: 7 };
+    });
+
+    if (sheets.length === 0) return;
+    downloadWorkbook(sheets, `VDS Financial Projection ${basis.from} to ${basis.to} plus ${horizon}m.xlsx`);
   };
 
   return (

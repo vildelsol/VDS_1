@@ -29,7 +29,8 @@ import React, { useMemo, useState } from 'react';
 import { AppSettings, Charge, Currency, Expense, Payment, Unit, AnnualReport as AnnualReportRecord, ANNUAL_REPORT_SECTIONS, AnnualReportSectionKey, EXPENSE_CATEGORIES, bodyCorporateName } from '../types';
 import { AnnualOwnersReport, annualOwnersReport } from '../lib/finance';
 import { formatMoney } from '../lib/money';
-import { formatDayLabel } from '../lib/dates';
+import { formatDayLabel, formatMonthLabel, today } from '../lib/dates';
+import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import { EmptyState, ErrorNote, InfoNote, SubmitButton, SecondaryButton, TableScroller, inputClass, monoInputClass, tableHeadRowClass, Badge } from './ui';
 
@@ -134,64 +135,125 @@ export default function AnnualReport({
    * Statements — Excel opens it directly with accents and symbols intact.
    */
   const downloadSpreadsheet = () => {
-    const rows: string[][] = [];
-    const money = (v: number) => String(v);
-    rows.push([`${bodyCorporateName(settings)} — ANNUAL REPORT`]);
-    rows.push([`Year reported`, String(report.reportYear), `Budget year`, String(report.budgetYear), 'Currency', report.currency]);
-    rows.push([]);
-    rows.push(['THE POSITION']);
-    rows.push(['Contributing villas', String(report.contributingUnits)]);
-    rows.push(['Total expenditure', money(report.expenditure)]);
-    rows.push(['Cost per villa, annual', money(report.perUnitAnnual)]);
-    rows.push(['Cost per villa, monthly', money(report.perUnitMonthly)]);
-    rows.push(['Contribution billed, monthly', money(report.feeBilled)]);
-    rows.push(['Monthly position per villa', money(report.monthlyPositionPerUnit)]);
-    rows.push(['Annual community position', money(report.annualCommunityPosition)]);
-    rows.push(['Contributions received', money(report.received)]);
-    rows.push(['Collection rate %', report.collectionRatePct === null ? '' : String(report.collectionRatePct)]);
-    rows.push([]);
-    rows.push([`BUDGET ${report.budgetYear}`]);
-    rows.push(['Category', `${report.reportYear - 1} actual`, `${report.reportYear} actual`, 'Change %', `${report.budgetYear} budget`, 'Budget change %', 'Share %']);
+    const cur = report.currency;
+    const pair = (label: string, value: number) => [cell.text(label), cell.money(value, cur)];
+    const period = `${report.reportYear} reported · ${report.budgetYear} budget`;
+
+    const positionRows: XlsxCell[][] = [
+      ...documentHeader({
+        documentTitle: `${bodyCorporateName(settings)} — Annual Report`,
+        period,
+        generatedOn: formatDayLabel(today()),
+        generatedBy: currentUserName,
+        planNumber: settings.strataPlanNumber,
+        span: 4
+      }),
+      [cell.section('The position', 4)],
+      [cell.header('Measure'), cell.header('Amount', 'right')],
+      [cell.text('Contributing villas'), cell.number(report.contributingUnits)],
+      pair('Total expenditure', report.expenditure),
+      pair('Cost per villa, annual', report.perUnitAnnual),
+      pair('Cost per villa, monthly', report.perUnitMonthly),
+      pair('Contribution billed, monthly', report.feeBilled),
+      pair('Monthly position per villa', report.monthlyPositionPerUnit),
+      pair('Annual community position', report.annualCommunityPosition),
+      pair('Contributions received', report.received),
+      [cell.text('Collection rate %'), report.collectionRatePct === null ? cell.muted('n/a') : cell.number(report.collectionRatePct)],
+      [cell.blank()],
+      [cell.section('Lever 1 — raise the contribution', 4)],
+      pair('Contribution needed to cover the budget', report.feeToCoverBudget),
+      pair('Contribution proposed', report.proposedFee),
+      pair('Reserve per villa, monthly', report.reservePerUnitMonthly),
+      pair('Reserve, annual', report.reserveAnnual),
+      [cell.blank()],
+      [cell.section('Lever 2 — cut the expenditure', 4)],
+      pair('Expenditure ceiling at the current contribution', report.expenditureCeiling),
+      pair('Reduction required', report.reductionRequired),
+      [cell.blank()],
+      [cell.note(`All amounts are in ${cur}. Figures are real numbers, so any column can be re-totalled.`, 4)]
+    ];
+
+    const budgetRows: XlsxCell[][] = [
+      ...documentHeader({ documentTitle: `Budget ${report.budgetYear}`, period, generatedOn: formatDayLabel(today()), generatedBy: currentUserName, planNumber: settings.strataPlanNumber, span: 7 }),
+      [
+        cell.header('Category'),
+        cell.header(`${report.reportYear - 1} actual`, 'right'),
+        cell.header(`${report.reportYear} actual`, 'right'),
+        cell.header('Change %', 'right'),
+        cell.header(`${report.budgetYear} budget`, 'right'),
+        cell.header('Budget change %', 'right'),
+        cell.header('Share %', 'right')
+      ]
+    ];
     for (const c of report.categories) {
-      rows.push([c.category, money(c.prior), money(c.actual), c.priorChangePct === null ? '' : String(c.priorChangePct), money(c.budget), c.budgetChangePct === null ? '' : String(c.budgetChangePct), String(c.budgetShare)]);
+      budgetRows.push([
+        cell.text(c.category),
+        cell.money(c.prior, cur),
+        cell.money(c.actual, cur),
+        c.priorChangePct === null ? cell.muted('n/a') : cell.number(c.priorChangePct),
+        cell.money(c.budget, cur),
+        c.budgetChangePct === null ? cell.muted('n/a') : cell.number(c.budgetChangePct),
+        cell.number(c.budgetShare)
+      ]);
     }
-    rows.push(['Total', money(report.priorExpenditure), money(report.expenditure), '', money(report.budgetExpenditure), '', '100']);
-    rows.push([]);
-    rows.push(['LEVER 1 — RAISE THE CONTRIBUTION']);
-    rows.push(['Contribution needed to cover the budget', money(report.feeToCoverBudget)]);
-    rows.push(['Contribution proposed', money(report.proposedFee)]);
-    rows.push(['Reserve per villa, monthly', money(report.reservePerUnitMonthly)]);
-    rows.push(['Reserve, annual', money(report.reserveAnnual)]);
-    rows.push([]);
-    rows.push(['LEVER 2 — CUT THE EXPENDITURE']);
-    rows.push(['Expenditure ceiling at the current contribution', money(report.expenditureCeiling)]);
-    rows.push(['Reduction required', money(report.reductionRequired)]);
-    rows.push([]);
-    rows.push(['MONTH BY MONTH']);
-    rows.push(['Month', 'Expenditure', 'Contribution', 'Received', 'Shortfall']);
+    budgetRows.push([
+      cell.total('Total'),
+      cell.totalMoney(report.priorExpenditure, cur),
+      cell.totalMoney(report.expenditure, cur),
+      cell.total(''),
+      cell.totalMoney(report.budgetExpenditure, cur),
+      cell.total(''),
+      cell.total('100')
+    ]);
+
+    const monthRows: XlsxCell[][] = [
+      ...documentHeader({ documentTitle: 'Month by month', period, generatedOn: formatDayLabel(today()), generatedBy: currentUserName, planNumber: settings.strataPlanNumber, span: 5 }),
+      [cell.header('Month'), cell.header('Expenditure', 'right'), cell.header('Contribution', 'right'), cell.header('Received', 'right'), cell.header('Shortfall', 'right')]
+    ];
     for (const m of report.months) {
-      rows.push([m.month, money(m.expenditure), money(m.income), money(m.received), money(m.shortfall)]);
+      monthRows.push([
+        cell.text(formatMonthLabel(m.month)),
+        cell.money(m.expenditure, cur),
+        cell.money(m.income, cur),
+        cell.money(m.received, cur),
+        cell.money(m.shortfall, cur)
+      ]);
     }
-    rows.push([]);
 
-    // The written sections travel with the figures, so the document can be
-    // finished outside the application without retyping it.
-    rows.push(['WRITTEN SECTIONS']);
+    /*
+     * The written sections travel with the figures so a committee can finish the
+     * document outside the application without retyping it — and retyping it is
+     * how wording gets changed by accident.
+     */
+    const narrativeRows: XlsxCell[][] = [
+      ...documentHeader({ documentTitle: 'Written sections', period, generatedOn: formatDayLabel(today()), generatedBy: currentUserName, planNumber: settings.strataPlanNumber, span: 2 }),
+      [cell.header('Section'), cell.header('Text')]
+    ];
     for (const section of ANNUAL_REPORT_SECTIONS) {
-      rows.push([section.label, (narrative[section.key] || '').trim()]);
+      narrativeRows.push([cell.text(section.label), cell.note((narrative[section.key] || '').trim(), 1)]);
     }
-    rows.push([]);
-    rows.push(['Figures are unformatted so Excel can sum them. All amounts are in ' + report.currency + '.']);
-    rows.push(['Generated ' + new Date().toISOString().slice(0, 10) + ' by ' + currentUserName + '.']);
 
-    const csv = rows.map(r => r.map(cell => (/[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell)).join(',')).join('\n');
-    const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `annual-report-${report.reportYear}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    /*
+     * The header row differs by sheet, so it is counted rather than assumed.
+     * "The position" carries a section band between the masthead and its column
+     * headers and the others do not — freezing the same row number on all four
+     * would freeze a data row on three of them and repeat the wrong line at the
+     * top of every printed page.
+     */
+    const headerRowOf = (rows: XlsxCell[][]) => {
+      const at = rows.findIndex(r => r.some(c => c.style === 'header' || c.style === 'headerRight'));
+      return at >= 0 ? at + 1 : 1;
+    };
+
+    downloadWorkbook(
+      [
+        { name: 'The position', widths: [46, 22], rows: positionRows, freezeRows: headerRowOf(positionRows), repeatRow: headerRowOf(positionRows) },
+        { name: `Budget ${report.budgetYear}`, widths: [26, 18, 18, 14, 18, 18, 12], rows: budgetRows, freezeRows: headerRowOf(budgetRows), repeatRow: headerRowOf(budgetRows), landscape: true },
+        { name: 'Month by month', widths: [20, 18, 18, 18, 18], rows: monthRows, freezeRows: headerRowOf(monthRows), repeatRow: headerRowOf(monthRows) },
+        { name: 'Written sections', widths: [30, 100], rows: narrativeRows, freezeRows: headerRowOf(narrativeRows), repeatRow: headerRowOf(narrativeRows), landscape: true }
+      ],
+      `VDS Annual Report ${report.reportYear}.xlsx`
+    );
   };
 
   const years = useMemo(() => {

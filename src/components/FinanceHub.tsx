@@ -1974,6 +1974,25 @@ function ChargeHistoryModal({
           </InfoNote>
         )}
 
+        {/*
+          The other half of the same fault, and the half that used to be silent.
+          A charge raised in the currency this account is not billed in is counted
+          by neither side: "Billed to date" reads nil and any matching-currency
+          receipt then shows as a credit, so a villa that owes money looks like a
+          villa in credit. Said out loud, with the amount, so it can be corrected.
+        */}
+        {account.mismatchedCurrencyCharges.length > 0 && (
+          <InfoNote tone="amber">
+            <strong>Billed in another currency and not counted above:</strong>{' '}
+            {account.mismatchedCurrencyCharges
+              .map(c => `${formatMoneyLong(c.amount, c.currency)} due ${c.dueDate}`)
+              .join(', ')}{' '}
+            — this account is billed in {account.currency}, so these charges are not in the balance and
+            anything paid against them will look like a credit. Void and re-raise them in {account.currency},
+            or change the currency on the villa.
+          </InfoNote>
+        )}
+
         <p className="flex items-start gap-1.5 font-mono text-[10px] leading-relaxed text-slate-400">
           <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" />
           Charges are never deleted. Voiding leaves the record in place and removes it from the balance, with the reason

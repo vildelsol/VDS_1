@@ -29,6 +29,7 @@ import {
   ownerBilledUnitIds
 } from '../lib/finance';
 import { formatMoney, formatMoneyPlain, round2, sumMoney } from '../lib/money';
+import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import {
   addDays,
   addMonths,
@@ -43,6 +44,8 @@ import {
   today
 } from '../lib/dates';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
+import OperationsStatement from './OperationsStatement';
+import OperatingStatement from './OperatingStatement';
 import { Badge, EmptyState, ErrorNote, Field, InfoNote, SecondaryButton, SubmitButton, TableScroller, monoInputClass, tableHeadRowClass } from './ui';
 import { BarChart3, Download, Printer, TrendingDown, TrendingUp } from 'lucide-react';
 
@@ -289,135 +292,195 @@ export default function Reports({ units, charges, payments, expenses, utilities,
 
   /* ---------------- CSV ---------------- */
 
-  const downloadCsv = () => {
-    // A structured, section-headed workbook-style export. Each block has its own
-    // column header row and, where relevant, a TOTAL line, so it opens cleanly in
-    // Excel/Sheets and reads as a professional statement rather than a raw dump.
-    const rows: string[][] = [];
-    const section = (title: string) => {
-      rows.push([]);
-      rows.push([`=== ${title} ===`]);
-    };
+  /**
+   * The operating statement as a real Excel workbook.
+   *
+   * This was a CSV, and a CSV cannot be made presentable: an accountant opened
+   * it to unlabelled narrow columns of raw text, and printing it produced pages
+   * with no headings on them. Each section is now its own sheet with its own
+   * headers, money is a *number* carrying its currency's format so a column can
+   * be re-totalled, and every sheet is set up to print.
+   */
+  const downloadWorkbookExport = () => {
+    const period = `${formatDayLabel(from)} to ${formatDayLabel(to)}`;
+    const head = (documentTitle: string, span: number) =>
+      documentHeader({
+        documentTitle,
+        period,
+        generatedOn: formatDayLabel(today()),
+        generatedBy: session.name,
+        planNumber: settings.strataPlanNumber,
+        span
+      });
 
-    rows.push(['VILLAGGIO DEL SOL — PROPERTY OPERATIONS']);
-    rows.push(['Ocho Rios, St. Ann, Jamaica']);
-    rows.push(['Consolidated Operating Statement']);
-    rows.push(['Period from', from, 'to', to]);
-    rows.push(['Generated', formatDayLabel(today()), 'by', session.name]);
-    rows.push(['Note', 'USD and JMD are reported separately and never combined. Amounts are in each row’s stated currency.']);
-
-    section('1. Period summary by currency');
-    rows.push([
-      'Currency',
-      'Opening receivable',
-      'Billed in period',
-      'Received in period',
-      'Closing receivable',
-      'Expenses paid',
-      'Expenses outstanding',
-      'Net cash movement',
-      'Collection rate %'
-    ]);
+    /* --- 1. the period, per currency --- */
+    const summaryRows: XlsxCell[][] = [
+      ...head('Period summary by currency', 9),
+      [
+        cell.header('Currency'),
+        cell.header('Opening receivable', 'right'),
+        cell.header('Billed in period', 'right'),
+        cell.header('Received in period', 'right'),
+        cell.header('Closing receivable', 'right'),
+        cell.header('Expenses paid', 'right'),
+        cell.header('Expenses outstanding', 'right'),
+        cell.header('Net cash movement', 'right'),
+        cell.header('Collection rate %', 'right')
+      ]
+    ];
     for (const entry of summary) {
-      rows.push([
-        entry.currency,
-        formatMoneyPlain(entry.openingReceivable),
-        formatMoneyPlain(entry.billed.total),
-        formatMoneyPlain(entry.collected.total),
-        formatMoneyPlain(entry.closingReceivable),
-        formatMoneyPlain(entry.spent),
-        formatMoneyPlain(sumMoney(entry.breakdown.map(b => b.outstanding))),
-        formatMoneyPlain(entry.net),
-        entry.rate === null ? 'n/a' : String(entry.rate)
+      summaryRows.push([
+        cell.text(entry.currency),
+        cell.money(entry.openingReceivable, entry.currency),
+        cell.money(entry.billed.total, entry.currency),
+        cell.money(entry.collected.total, entry.currency),
+        cell.money(entry.closingReceivable, entry.currency),
+        cell.money(entry.spent, entry.currency),
+        cell.money(sumMoney(entry.breakdown.map(b => b.outstanding)), entry.currency),
+        cell.money(entry.net, entry.currency),
+        entry.rate === null ? cell.muted('n/a') : cell.number(entry.rate)
+      ]);
+    }
+    summaryRows.push([cell.blank()]);
+    summaryRows.push([cell.note('USD and JMD are reported separately and are never combined. Each figure is in the currency of its own row.', 9)]);
+
+    /* --- 2. what was received, by category --- */
+    const incomeRows: XlsxCell[][] = [
+      ...head('Income received by category', 7),
+      [
+        cell.header('Currency'),
+        cell.header('Rent', 'right'),
+        cell.header('Maintenance', 'right'),
+        cell.header('Bookings', 'right'),
+        cell.header('Utilities', 'right'),
+        cell.header('Other', 'right'),
+        cell.header('Total received', 'right')
+      ]
+    ];
+    for (const entry of summary) {
+      incomeRows.push([
+        cell.text(entry.currency),
+        cell.money(entry.collected.rent, entry.currency),
+        cell.money(entry.collected.maintenance, entry.currency),
+        cell.money(entry.collected.booking, entry.currency),
+        cell.money(entry.collected.utility, entry.currency),
+        cell.money(entry.collected.other, entry.currency),
+        cell.totalMoney(entry.collected.total, entry.currency)
       ]);
     }
 
-    section('2. Income received by category');
-    rows.push(['Currency', 'Rent', 'Maintenance', 'Bookings', 'Utilities', 'Other', 'Total received']);
-    for (const entry of summary) {
-      rows.push([
-        entry.currency,
-        formatMoneyPlain(entry.collected.rent),
-        formatMoneyPlain(entry.collected.maintenance),
-        formatMoneyPlain(entry.collected.booking),
-        formatMoneyPlain(entry.collected.utility),
-        formatMoneyPlain(entry.collected.other),
-        formatMoneyPlain(entry.collected.total)
-      ]);
-    }
-
-    section('3. Expenses by category (paid and outstanding)');
-    rows.push(['Currency', 'Category', 'Paid', 'Outstanding', 'Total']);
+    /* --- 3. what it cost --- */
+    const expenseRows: XlsxCell[][] = [
+      ...head('Expenses by category', 5),
+      [cell.header('Currency'), cell.header('Category'), cell.header('Paid', 'right'), cell.header('Outstanding', 'right'), cell.header('Total', 'right')]
+    ];
     for (const entry of summary) {
       let paidTot = 0;
       let outTot = 0;
       for (const b of entry.breakdown) {
         paidTot = round2(paidTot + b.amount);
         outTot = round2(outTot + b.outstanding);
-        rows.push([entry.currency, b.category, formatMoneyPlain(b.amount), formatMoneyPlain(b.outstanding), formatMoneyPlain(round2(b.amount + b.outstanding))]);
+        expenseRows.push([
+          cell.text(entry.currency),
+          cell.text(b.category),
+          cell.money(b.amount, entry.currency),
+          cell.money(b.outstanding, entry.currency),
+          cell.money(round2(b.amount + b.outstanding), entry.currency)
+        ]);
       }
       if (entry.breakdown.length > 0) {
-        rows.push([entry.currency, 'TOTAL', formatMoneyPlain(paidTot), formatMoneyPlain(outTot), formatMoneyPlain(round2(paidTot + outTot))]);
+        expenseRows.push([
+          cell.total(entry.currency),
+          cell.total('Total'),
+          cell.totalMoney(paidTot, entry.currency),
+          cell.totalMoney(outTot, entry.currency),
+          cell.totalMoney(round2(paidTot + outTot), entry.currency)
+        ]);
       }
     }
 
-    section('4. Monthly cash movement');
-    rows.push(['Month', 'Currency', 'Billed', 'Received', 'Paid out', 'Net']);
+    /* --- 4. month by month --- */
+    const monthlyRows: XlsxCell[][] = [
+      ...head('Monthly cash movement', 6),
+      [cell.header('Month'), cell.header('Currency'), cell.header('Billed', 'right'), cell.header('Received', 'right'), cell.header('Paid out', 'right'), cell.header('Net', 'right')]
+    ];
     for (const row of series) {
       for (const currency of ['JMD', 'USD'] as Currency[]) {
         const billed = Number(row[`${currency}_billed`]);
         const received = Number(row[`${currency}_in`]);
         const paidOut = Number(row[`${currency}_out`]);
         if (billed === 0 && received === 0 && paidOut === 0) continue;
-        rows.push([
-          formatMonthLabel(String(row.month)),
-          currency,
-          formatMoneyPlain(billed),
-          formatMoneyPlain(received),
-          formatMoneyPlain(paidOut),
-          formatMoneyPlain(round2(received - paidOut))
+        monthlyRows.push([
+          cell.text(formatMonthLabel(String(row.month))),
+          cell.text(currency),
+          cell.money(billed, currency),
+          cell.money(received, currency),
+          cell.money(paidOut, currency),
+          cell.money(round2(received - paidOut), currency)
         ]);
       }
     }
 
-    section(`5. Account balances at ${to}`);
-    rows.push(['Villa', 'Account', 'Payer', 'Currency', 'Billed to date', 'Received to date', 'Balance', 'Oldest unpaid (days)']);
+    /* --- 5. where every account stands --- */
     const balanceRows = units
       .flatMap(unit => (['Rent', 'Maintenance'] as const).map(cat => ({ unit, account: accountBalance(unit, cat, charges, payments, to, units), cat })))
       .filter(r => r.account.charged !== 0 || r.account.paid !== 0)
       .sort((a, b) => b.account.balance - a.account.balance);
+
+    const balanceSheet: XlsxCell[][] = [
+      ...head(`Account balances at ${formatDayLabel(to)}`, 8),
+      [
+        cell.header('Villa'),
+        cell.header('Account'),
+        cell.header('Payer'),
+        cell.header('Currency'),
+        cell.header('Billed to date', 'right'),
+        cell.header('Received to date', 'right'),
+        cell.header('Balance', 'right'),
+        cell.header('Oldest unpaid (days)', 'right')
+      ]
+    ];
     const balByCurrency: Record<string, number> = { JMD: 0, USD: 0 };
     for (const { unit, account, cat } of balanceRows) {
       balByCurrency[account.currency] = round2(balByCurrency[account.currency] + account.balance);
-      rows.push([
-        unit.number,
-        cat,
-        cat === 'Maintenance' ? unit.ownerName : unit.tenantName || unit.ownerName,
-        account.currency,
-        formatMoneyPlain(account.charged),
-        formatMoneyPlain(account.paid),
-        formatMoneyPlain(account.balance),
-        String(account.oldestUnpaidDays)
+      balanceSheet.push([
+        cell.text(getUnitDisplayName(unit.number)),
+        cell.text(cat),
+        cell.text(cat === 'Maintenance' ? unit.ownerName : unit.tenantName || unit.ownerName),
+        cell.text(account.currency),
+        cell.money(account.charged, account.currency),
+        cell.money(account.paid, account.currency),
+        cell.money(account.balance, account.currency),
+        cell.number(account.oldestUnpaidDays)
       ]);
     }
     for (const currency of ['JMD', 'USD'] as Currency[]) {
       if (balByCurrency[currency] !== 0) {
-        rows.push(['TOTAL OUTSTANDING', '', '', currency, '', '', formatMoneyPlain(balByCurrency[currency]), '']);
+        balanceSheet.push([
+          cell.total('Total outstanding'),
+          cell.total(''),
+          cell.total(''),
+          cell.total(currency),
+          cell.total(''),
+          cell.total(''),
+          cell.totalMoney(balByCurrency[currency], currency),
+          cell.total('')
+        ]);
       }
     }
 
-    const csv = rows.map(r => r.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
-    // A Blob is used rather than a data: URI — encodeURI leaves "#" unescaped,
-    // which silently truncated exports containing that character.
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `VDS_statement_${from}_to_${to}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const headerRow = 7; // the six-row masthead, then the column headers
+
+    downloadWorkbook(
+      [
+        { name: 'Period summary', widths: [12, 18, 18, 18, 18, 16, 20, 18, 16], rows: summaryRows, freezeRows: headerRow, repeatRow: headerRow, landscape: true },
+        { name: 'Income received', widths: [12, 16, 16, 16, 16, 16, 18], rows: incomeRows, freezeRows: headerRow, repeatRow: headerRow, landscape: true },
+        { name: 'Expenses', widths: [12, 24, 16, 16, 16], rows: expenseRows, freezeRows: headerRow, repeatRow: headerRow },
+        { name: 'Monthly cash', widths: [18, 12, 16, 16, 16, 16], rows: monthlyRows, freezeRows: headerRow, repeatRow: headerRow },
+        { name: 'Account balances', widths: [18, 14, 26, 12, 18, 18, 18, 14], rows: balanceSheet, freezeRows: headerRow, repeatRow: headerRow, landscape: true }
+      ],
+      `VDS Operating Statement ${from} to ${to}.xlsx`
+    );
   };
 
   return (
@@ -433,8 +496,8 @@ export default function Reports({ units, charges, payments, expenses, utilities,
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <SecondaryButton onClick={downloadCsv} disabled={invalidRange} className="flex items-center gap-1.5">
-              <Download className="h-4 w-4" /> Export CSV
+            <SecondaryButton onClick={downloadWorkbookExport} disabled={invalidRange} className="flex items-center gap-1.5">
+              <Download className="h-4 w-4" /> Export for Excel
             </SecondaryButton>
             <SubmitButton
               type="button"
@@ -589,6 +652,22 @@ export default function Reports({ units, charges, payments, expenses, utilities,
           <AccountBalancesTable units={units} charges={charges} payments={payments} asOf={to} />
         </>
       )}
+
+      {/*
+        The proprietors' own monthly statement, kept beside the operating figures
+        it is drawn from rather than on a screen of its own. It carries its own
+        month, because it is issued for a completed month while the statement
+        above is read over whatever range someone is asking about.
+      */}
+      {/*
+        The statement carried to the strata corporation: income and expenditure,
+        every payment named, currencies apart. It holds its own period — a
+        council asks for a month, a quarter or the year, independently of
+        whatever range the management figures above are being read over.
+      */}
+      <OperatingStatement units={units} payments={payments} expenses={expenses} settings={settings} session={session} />
+
+      <OperationsStatement expenses={expenses} payments={payments} settings={settings} session={session} />
 
       {printing && (
         <StatementDocument

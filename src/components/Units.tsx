@@ -27,6 +27,7 @@ import {
   AccountBalance,
   AccountStatus,
   accountBalance,
+  chargeCurrency,
   entitlementShare,
   levyProportionality,
   bookingsForUnit,
@@ -273,6 +274,7 @@ export default function Units({
       {live && editing && (
         <UnitEditor
           unit={live}
+          charges={charges}
           settings={settings}
           isAdmin={isAdmin}
           onClose={() => setEditing(false)}
@@ -1002,12 +1004,14 @@ function BillingCard({
 
 function UnitEditor({
   unit,
+  charges,
   settings,
   isAdmin,
   onClose,
   onSave
 }: {
   unit: Unit;
+  charges: Charge[];
   settings: AppSettings;
   isAdmin: boolean;
   onClose: () => void;
@@ -1052,6 +1056,11 @@ function UnitEditor({
   const [ownerIntent, setOwnerIntent] = useState<'correction' | 'sale' | ''>('');
   /** The day the villa changed hands, asked for only when a sale is declared. */
   const [ownerAcquiredOn, setOwnerAcquiredOn] = useState('');
+  /**
+   * Acknowledgement that re-denominating this villa voids the charges already
+   * open in the currency it is billed in now. Never preselected.
+   */
+  const [currencyIntent, setCurrencyIntent] = useState(false);
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm(prev => ({ ...prev, [key]: value }));
 
@@ -1059,6 +1068,32 @@ function UnitEditor({
   const tenantApplies = form.status === 'long-term';
   const renaming = form.number.trim() !== unit.number;
   const currencyChanged = form.currency !== unit.currency || form.maintCurrency !== (unit.maintCurrency || unit.currency);
+
+  /**
+   * Charges that would be left stranded by re-denominating this villa.
+   *
+   * A balance is per unit, per category, *per currency*, and the two are never
+   * combined — so a charge open in the currency the villa is being changed away
+   * from stops counting towards anything the moment the change is saved. The
+   * villa then shows as owing less than it does, and the next payment in the new
+   * currency reads as a credit. This happened on the live books on 2026-09-01,
+   * when a villa's maintenance was moved to USD after the owner asked for it and
+   * the JMD charges already raised quietly dropped out of the balance.
+   *
+   * Computed here so the consequence is on screen *before* the save, with the
+   * count and the money named, rather than arriving as a server refusal.
+   */
+  const proposedUnit = { ...unit, currency: form.currency, maintCurrency: form.maintCurrency };
+  const strandedCharges = currencyChanged
+    ? (['Rent', 'Maintenance'] as const).flatMap(category => {
+        const before = chargeCurrency(unit, category);
+        const after = chargeCurrency(proposedUnit, category);
+        if (before === after) return [];
+        return chargesForUnit(charges, unit).filter(
+          ch => ch.category === category && ch.status === 'open' && ch.currency === before
+        );
+      })
+    : [];
 
   /**
    * A different tenant name against a villa that already had one. Asked here
@@ -1098,6 +1133,13 @@ function UnitEditor({
       setError('Say whether the owner name is being corrected or the villa has been sold.');
       return;
     }
+    if (strandedCharges.length > 0 && !currencyIntent) {
+      setError(
+        `${strandedCharges.length} charge(s) are still open in the currency this villa is billed in now. ` +
+          'Confirm what happens to them before changing the currency.'
+      );
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -1110,7 +1152,8 @@ function UnitEditor({
         maintDueDay: Number(form.maintDueDay),
         ...((tenantNameChanged || tenantRemoved) && tenantIntent ? { tenantChangeIntent: tenantIntent } : {}),
         ...(ownerNameChanged && ownerIntent ? { ownerChangeIntent: ownerIntent } : {}),
-        ...(ownerNameChanged && ownerIntent === 'sale' && ownerAcquiredOn ? { ownerAcquiredOn } : {})
+        ...(ownerNameChanged && ownerIntent === 'sale' && ownerAcquiredOn ? { ownerAcquiredOn } : {}),
+        ...(strandedCharges.length > 0 && currencyIntent ? { currencyChangeIntent: 'void-open-charges' } : {})
       });
     } catch (err) {
       setError(errorMessage(err, 'Could not save the unit.'));
@@ -1146,9 +1189,56 @@ function UnitEditor({
         {currencyChanged && (
           <InfoNote tone="amber">
             Changing the billing currency does <strong>not</strong> convert the amounts below — it changes which currency
-            they are billed in. Enter the correct figure in the new currency yourself. Charges already posted keep the
-            currency they were raised in.
+            they are billed in. Enter the correct figure in the new currency yourself.
           </InfoNote>
+        )}
+
+        {/*
+          * This note used to say charges already posted "keep the currency they
+          * were raised in", which is true and was the whole problem: they keep it
+          * and stop counting, because a balance never combines two currencies. The
+          * villa then reads as owing less than it does. The consequence is now
+          * stated with the money named, and the change cannot be saved until it is
+          * acknowledged.
+          */}
+        {strandedCharges.length > 0 && (
+          <div className="space-y-3 rounded-xl border border-amber-300 bg-amber-50 p-4">
+            <p className="text-xs leading-relaxed text-amber-900">
+              <strong>
+                {strandedCharges.length} charge{strandedCharges.length === 1 ? '' : 's'} on this villa{' '}
+                {strandedCharges.length === 1 ? 'is' : 'are'} still open in the currency it is billed in now.
+              </strong>{' '}
+              A balance is worked out separately for each currency and the two are never added together, so if these are
+              left as they are they will count towards nothing: the villa will show as owing less than it does, and the
+              next payment in the new currency will look like a credit rather than settling a debt.
+            </p>
+            <ul className="space-y-1 font-mono text-[11px] text-amber-900">
+              {strandedCharges.slice(0, 6).map(ch => (
+                <li key={ch.id}>
+                  {ch.category} · {formatMoneyLong(ch.amount, ch.currency)} · due {ch.dueDate}
+                </li>
+              ))}
+              {strandedCharges.length > 6 && <li>…and {strandedCharges.length - 6} more.</li>}
+            </ul>
+            <p className="text-xs leading-relaxed text-amber-900">
+              Nothing here can convert them — the same number in the other currency is not the same money, and no rate
+              this application holds is good enough to restate what somebody owes. Saving will <strong>void</strong> them
+              instead: the records stay, the reason is stored, and the audit trail keeps them. Re-post the month, or
+              raise the balance again in the new currency afterwards.
+            </p>
+            <label className="flex cursor-pointer items-start gap-2 text-xs font-medium text-amber-900">
+              <input
+                type="checkbox"
+                checked={currencyIntent}
+                onChange={e => setCurrencyIntent(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0"
+              />
+              <span>
+                I understand these {strandedCharges.length} charge{strandedCharges.length === 1 ? '' : 's'} will be
+                voided, and I will raise the balance again in {form.maintCurrency !== (unit.maintCurrency || unit.currency) ? form.maintCurrency : form.currency}.
+              </span>
+            </label>
+          </div>
         )}
 
         {/*
