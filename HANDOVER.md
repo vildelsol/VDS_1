@@ -1791,9 +1791,20 @@ changes what has to be done and in what order.
 
 **On the fresh database, before anything else:**
 
-   - **"The books begin on" `2026-09-01`**, in System Settings → General. It does not travel in a
-     release — `db.json` is gitignored, and `loadDb()` merges stored settings *over* the defaults,
-     so a new build can never set it. A brand-new database has it **empty**, so it must be entered.
+   - **"The books begin on" `2026-09-01`**, in System Settings → General. **Enter this before
+     creating a single villa.** A brand-new database has it **empty** — it is not defaulted, and
+     nothing prompts for it. ⚠️ **This cost Ro an evening on 2026-09-01.** He rebuilt the database,
+     entered a villa at J$80,000 and a tenancy with its real move-in date of 7 February 2009, and the
+     ledger read **J$160,000 outstanding**. Nothing was wrong: `raiseFirstAndLastRent` bills the first
+     month and the last month held in advance, and its only guard is
+     `if (booksBegin && month < monthOf(booksBegin)) return false` (`server.ts:1157`) — with the field
+     empty, the guard never fires and a 2009 tenant is billed two months dated 2009-02. Reproduced
+     both ways through the real API: empty gives 160,000, set to `2026-09-01` gives nothing.
+     **The remedy, if it happens again**, verified end to end: set the date, then void both charges
+     from the **Charges** button on the villa's ledger row. The tenancy keeps its real start date, the
+     self-check stays clean, and a later move-out copes with the voided advance — checked, because the
+     tenancy still references it. Voided charges cannot be un-raised any other way; setting the date
+     afterwards does not remove them.
    - **The strata plan number needs nothing done to it, and cannot have anything done to it.** A
      brand-new database takes the default `2324` on its own, and there is no field for it in the
      settings screen — see the state section above. **Print a letterhead and read the plan number
