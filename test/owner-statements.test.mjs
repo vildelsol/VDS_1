@@ -217,20 +217,41 @@ export default async function run({ port, projectRoot }) {
     );
     T.check(
       'the USD income is not credited against the JMD statement',
-      villa2Jmd?.collected === 0 && villa2Jmd?.net === -12000,
-      `collected ${villa2Jmd?.collected}, net ${villa2Jmd?.net}`
+      villa2Jmd?.collected === 0,
+      `collected ${villa2Jmd?.collected}`
     );
 
-    // --- the double-deduction disclosure ---
+    /* --- a proprietor who pays their own contribution owes nothing ---
+     *
+     * This is the fault real data found on 2026-09-01, and this suite used to
+     * assert it: the expectation here read `net === -12000` for a villa whose
+     * owner had paid the whole 12,000 in the period. Because the corporation
+     * collects no rent for a proprietor, `collected` is nil and the net was
+     * simply minus everything billed — so a proprietor who had settled in full
+     * was shown, on screen and on the printed statement, "Due from <name>" for
+     * the entire contribution, directly beside a line saying the money had been
+     * received. The statement contradicted itself and the wrong figure is the
+     * one an owner would have paid twice.
+     */
     T.check(
       'maintenance the owner paid themselves is disclosed',
       villa2Jmd?.maintenancePaid === 12000,
       `${villa2Jmd?.maintenancePaid}`
     );
     T.check(
+      'a contribution billed and paid in the period nets to nothing owed',
+      villa2Jmd?.net === 0,
+      `net ${villa2Jmd?.net} (billed 12000, paid 12000 — expected 0, not -12000)`
+    );
+    T.check(
       'and that villa then owes nothing at period end',
       villa2Jmd?.maintenanceOutstanding === 0,
       `${villa2Jmd?.maintenanceOutstanding}`
+    );
+    T.check(
+      'a contribution billed and left unpaid is still owed in full',
+      villa1?.maintenanceBilled === 10000 && villa1?.maintenancePaid === 0,
+      `billed ${villa1?.maintenanceBilled}, paid ${villa1?.maintenancePaid}`
     );
 
     // --- villas with nothing to say are dropped, not printed empty ---
@@ -258,7 +279,7 @@ export default async function run({ port, projectRoot }) {
     T.check('the owner holds both villas', alba?.statements.length === 3, `${alba?.statements.length} statements`);
     T.check(
       'the net position is totalled per currency and never across',
-      alba?.netByCurrency.find(r => r.currency === 'JMD')?.net === 20000 &&
+      alba?.netByCurrency.find(r => r.currency === 'JMD')?.net === 32000 &&
         alba?.netByCurrency.find(r => r.currency === 'USD')?.net === 1200,
       JSON.stringify(alba?.netByCurrency)
     );

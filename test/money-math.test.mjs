@@ -61,7 +61,7 @@ export default async function run({ projectRoot }) {
   const T = reporter(title);
   const { mod, cleanup } = await loadLib(projectRoot);
   try {
-    const { round2, sumMoney, addMoney, subtractMoney, parseMoneyInput, accountBalance, periodStatement, collectedInPeriod, chargedInPeriod, expensesInPeriod } = mod;
+    const { round2, sumMoney, addMoney, subtractMoney, parseMoneyInput, accountBalance, periodStatement, collectedInPeriod, chargedInPeriod, expensesInPeriod, currencyMismatchWarnings } = mod;
 
     /* ---------------------------------------------------------------- *
      * Money does not drift
@@ -142,6 +142,31 @@ export default async function run({ projectRoot }) {
     const jmdAccount = accountBalance(u, 'Rent', charges, mixedPayments, undefined, [u]);
     T.check('a USD receipt does not pay down a JMD account', jmdAccount.paid === 50000, String(jmdAccount.paid));
     T.check('and it is surfaced as a currency mismatch rather than ignored silently', jmdAccount.mismatchedCurrencyPayments.length === 1);
+
+    /*
+     * The other direction, which used to be entirely silent.
+     *
+     * Both sides of a balance are scoped to the account's billing currency, so a
+     * charge raised in the other currency is counted by neither. "Billed to date"
+     * read nil while the villa genuinely owed the money, and a correctly
+     * denominated receipt against it then showed the villa as being *in credit*.
+     * The books flattered themselves and warned nobody. The API refuses to raise
+     * such a charge, so the way in is changing the villa's currency after charges
+     * already exist — which is not a hypothetical, it is an edit anyone can make.
+     */
+    const strandedCharge = [charge({ id: 'c-usd-stranded', currency: 'USD', amount: 400 })];
+    const strandedAccount = accountBalance(u, 'Rent', strandedCharge, [], undefined, [u]);
+    T.check('a charge in the other currency is not counted as billed', strandedAccount.charged === 0, String(strandedAccount.charged));
+    T.check(
+      'and it is surfaced rather than silently dropped from the books',
+      strandedAccount.mismatchedCurrencyCharges.length === 1,
+      `${strandedAccount.mismatchedCurrencyCharges.length} reported`
+    );
+    T.check(
+      'so a villa that owes money never reads as being in credit unremarked',
+      currencyMismatchWarnings([u], strandedCharge, []).length === 1,
+      'the warning list did not report a stranded charge'
+    );
 
     const jmdCollected = collectedInPeriod(mixedPayments, 'JMD', '2026-07-01', '2026-07-31');
     const usdCollected = collectedInPeriod(mixedPayments, 'USD', '2026-07-01', '2026-07-31');

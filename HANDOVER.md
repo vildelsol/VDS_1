@@ -26,12 +26,13 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,245 automated tests pass.** Typecheck clean, build clean, `npm audit` clean. A full run
+- **1,418 automated tests pass**, including a 3000-scenario adversarial run and three 1000-simulation
+  expert suites (property manager, architect, security) against the live API. Typecheck and build clean. A full run
   simulates **800 audited scenarios** (200 ledger + 200 whole-application on full data + 400
   reporting), and the application checks its own records at start-up as well.
 - **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. All work from the
   2026-08-21 session is committed and on the remote.
-- **`main` and `origin/main` are level** at `b29b55d` — verified against the remote with
+- **`main` and `origin/main` are level** at `218bc1d` — verified against the remote with
   `git ls-remote`, not from a local ref. **Keep verifying it that way.** This section has been stale
   twice before: once claiming `main` was a commit ahead when it was not, once claiming work was
   uncommitted after it had been pushed. A local `origin/main` ref only says what the last fetch saw.
@@ -50,18 +51,376 @@ next session from inside `pm-app`.
   The default only applies to a database that has never had the field. **Installing a new `.exe` on
   the HP will not correct its plan number. Someone has to set it in System Settings → General on the
   HP itself, and then check a printed letterhead.**
-- Latest release: **v1.9.0**, shipped 2026-08-21, tag on `b29b55d`. Four releases went out that day
+- Latest release: **v1.10.0**, shipped 2026-09-01 — the owner-statement and currency fixes, the
+  adversarial and expert simulation suites, Excel workbooks in place of every CSV, and the two new
+  statements (owners' monthly operations, and the strata corporation's operating statement).
+  **The HP needs it: it is on v1.9.0.**
+- Previous release: **v1.9.0**, shipped 2026-08-21, tag on `b29b55d`. Four releases went out that day
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
-  intent), v1.9.0 (ownership history + tenant-removal intent). **The HP is still on v1.8.1 and needs
-  v1.9.0.** Every earlier release is superseded; install the latest and nothing else.
+  intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
+  2026-09-01 and now needs v1.10.0.** Every earlier release is superseded; install the latest only.
 
-**There is no known outstanding bug.** Everything found on 2026-08-21 was fixed the same day and
-carries a regression test. What is genuinely open is *untested surface*, the Excel migration, and
+## Session of 2026-09-01 — cutover day, and what real money broke
+
+The HP was confirmed on v1.9.0 with plan number **2324** and books-begin **2026-09-01** already set, so
+the whole upgrade path from the last session is closed. Tenancy entry with real start dates is in and
+behaving; billing correctly raises only the tenancies whose rent day has come and holds the rest at
+"Not yet billed". **Then the first real maintenance receipt went in and found a fault that 1,245 tests
+had not.** That is now three times running that real data has found what the suite could not.
+
+### The owner statement never subtracted maintenance the owner had paid — FIXED
+
+A proprietor who had paid his J$20,000 contribution in full was shown, **on screen and on the printed
+statement**, "Due from Fr. Howard James — J$20,000.00", directly beside a line confirming the money had
+been received. The statement contradicted itself on the one figure an owner acts on, and the failure
+mode is an owner paying twice.
+
+`ownerStatement()` computed `net = collected − maintenanceBilled − utilityBilled − expenses`, and
+`maintenancePaid` was **deliberately** excluded — there was a comment arguing the owner is liable for
+what was *billed* whether or not they have paid. That reasoning is a leftover from the **old, wrong
+business model** where the agent collected the rent and withheld maintenance out of it. Under the real
+arrangement the corporation collects nothing for a proprietor, so `collected` is always nil and the net
+sat at minus the entire contribution however much the owner paid.
+
+**The deduction is now the contribution still outstanding, `maintenanceBilled − maintenancePaid`.**
+Nothing is netted across currencies — both terms are already scoped to the statement's currency.
+
+⚠️ **The old suite asserted the bug.** `test/owner-statements.test.mjs` expected `net === -12000` for a
+villa whose owner had paid the whole 12,000, and the 400-scenario reporting-integrity check re-derived
+the same wrong identity. Both were written to match the code rather than the business, which is exactly
+how this survived 1,245 tests. Both now assert the corrected arithmetic and there is an explicit test
+that a contribution billed and paid in the same period nets to nothing owed.
+
+Wording followed the arithmetic: a nil position reads **"Settled in full"** rather than "Due to <name>
+J$0.00", the printed tile reads "Settled in full" instead of "Balance owing J$0.00", and the screen and
+print explanations no longer say contributions are deducted "as billed, whether or not they have been
+paid" — they say what the page now actually does.
+
+**One modelling assumption is written down here deliberately:** recording a Maintenance receipt is taken
+to mean the owner paid it. There is no "withheld from rent" mechanism anywhere in the software — no
+field, no path — so on a villa the corporation lets on its own account, a maintenance receipt funded out
+of rent it already holds would be counted twice. That cannot happen with the data entry that exists
+today. **If a withholding mechanism is ever built, this arithmetic must be revisited first.**
+
+### The Collected column is gone entirely — DONE
+
+It began as "take Bookings and the currency off that cell", and ended with the column removed, because
+the column itself was the error. **"Collected" meant rent or guest income taken in on the owner's
+behalf, and the corporation does not do that for any proprietor** — Ro confirmed it flatly on
+2026-09-01: *"we do not collect rent on any owner's behalf."* Every owner lets their own villa. So the
+column was permanently J$0.00, and sitting next to a contribution the owner *had* just paid it read as
+though the payment had been missed. That is precisely the question it was asked.
+
+Removed from the summary table, the printed statement (the whole "Collected on your behalf" section),
+the emailed draft and the CSV export. The "Less:" headings went with it — nothing is being deducted
+from a remittance, so the printed sections are now plainly "Maintenance contribution billed",
+"Utilities billed to your villa" and "Charged to your villa". The header tile no longer speaks of a
+"net position" at all: it is a balance, and a settled owner reads **"Settled in full"** rather than
+"Balance owing J$0.00". The screen's own blurb no longer claims rent is "collected on their behalf".
+
+⚠️ **The underlying fields — `collected`, `rentCollected`, `bookingCollected`, `refunded` — are still
+computed in `ownerStatement()` and are still correct.** Only the proprietor-facing presentation drops
+them. If a villa the corporation genuinely lets on its own account ever needs a remittance document,
+the arithmetic is there; do not rebuild it, and do not put it back on a proprietor's statement.
+
+### A test was reading a stopped clock — FIXED
+
+`corrections.test.mjs` failed on `main` **before any change this session**, so the previous entry's
+"1,245 tests pass, no outstanding bug" was already untrue by the time it was read. The application was
+right and the test was wrong: a move-out spends the advance on `monthOf(endedOn)`, and `endedOn` is
+today, but the test hardcoded `'2026-08'` as "the following month". It passed every day of August 2026
+and failed on 1 September. It now computes the month it is actually running in. **Look for this shape
+whenever a suite starts failing on the first of a month.**
+
+**1,247 tests now pass, typecheck and build clean.**
+
+### Still open from this session — NOT diagnosed, do not guess
+
+~~**A US$800 cash payment reads as a credit, and "Billed to date" reads 0.**~~ **DIAGNOSED AND FIXED
+the same day** — Ro confirmed he had moved villa C11's maintenance to USD after the JMD charges were
+already raised, because the owner asked for it. See *The currency trap* above. The original two
+candidate causes are kept below because the reasoning is worth having:
+
+1. **A currency split.** `accountBalance()` scopes both sides to `chargeCurrency(unit, category)` —
+   charges in any other currency are not counted, so `charged` reads 0 while a matching-currency
+   payment reads as a credit. `mismatchedCurrencyPayments` surfaces a payment in the wrong currency but
+   **there is no equivalent for a charge in the wrong currency**, so this state is silent. That gap is
+   real regardless of what caused this particular case.
+2. **Nothing has been billed yet.** If that tenancy's rent day has not come round, no charge exists, so
+   an advance payment genuinely is a credit and "Billed to date 0" is arithmetically right — just badly
+   worded for someone who knows the money was owed.
+
+**Which one it is has not been established, and the Mac's `db.json` holds no live records — the data is
+on the HP.** Ask which villa it was and whether a charge appears on that tenant's ledger before writing
+any fix.
+
+### The currency trap: money stranded where no balance counts it — FIXED, and guarded
+
+**This is the fault behind the US$800 that read as a credit, and it was the most dangerous thing
+found this session**, because it understates what a villa owes rather than mislaying a receipt.
+
+Ro moved villa C11's maintenance to USD **after** JMD contributions had already been raised against
+it, because the owner asked for it. Entirely legitimate, one dropdown on the register. But a balance
+is computed per unit, per category, **per currency**, and the two are never combined — so every
+charge already open in JMD stopped counting the moment the villa became a USD account. "Billed to
+date" read nil, and the US$800 that *did* match then showed as a **credit** on a villa that actually
+owed money. Nothing warned anybody: `accountBalance` surfaced a *payment* in the wrong currency and
+had no equivalent for a *charge* in the wrong currency.
+
+Four things now close it, at four different depths:
+
+1. **`accountBalance` reports it.** New `mismatchedCurrencyCharges`, the mirror of the payments
+   field, and `currencyMismatchWarnings` reports both directions. Surfaced on the ledger screen with
+   the amounts named and what to do about it.
+2. **The self-check catches it on the live machine.** New `charge-in-unbilled-currency` (**serious** —
+   money is misstated) and `payment-in-unbilled-currency` (warning). The integrity checker had no
+   currency checks at all before this. Voided charges are deliberately not reported: they are in no
+   balance by design, and noise trains people to ignore the check.
+3. **The server refuses the edit.** Re-denominating a villa with charges open in the old currency is
+   refused with `unit-currency-change-not-confirmed`, naming the count and the consequence. On
+   confirmation the stranded charges are **voided, never converted** — J$20,000 is not US$20,000 and
+   no rate this application holds is good enough to restate somebody's debt — with the reason stored
+   and the audit trail keeping them.
+4. **The register asks before it happens.** The edit screen lists the affected charges with their
+   amounts and due dates, and will not save until the consequence is ticked. ⚠️ It previously carried
+   a note saying charges already posted "keep the currency they were raised in" — true, and exactly
+   the problem, stated as though it were fine. That note is gone.
+
+**Afterwards: re-post the month, or raise the balance again in the new currency.** Nothing restates
+it for you, by design.
+
+### The 3000-scenario red team — `test/redteam-3000.test.mjs`
+
+Commissioned by Ro on 2026-09-01 before rebuilding the database. **Its rule is what makes it worth
+having: nothing in it touches the database behind the application's back.** Every action goes through
+the same HTTP API the screens use. So when the books end up contradicting themselves it is never "the
+test broke it" — it means a sequence of legitimate operations was allowed to leave the records in a
+state the application itself calls serious, and **the fix belongs at the point of entry as a guard.**
+
+It found the currency trap on scenario 25 of 3000, from ordinary API calls alone, before Ro's own
+account of what he had done to C11 arrived. Attack classes it carries that the older suites do not:
+re-denomination mid-life, the books-begin date moved after entry, rent due days of 29/30/31 across
+February in an ordinary and a leap year, months posted twice and out of order and from three machines
+at once, refunds larger than the receipt, refunds of voided receipts, charges voided after payment,
+deposits returned twice or over-returned, one-off charges dated outside the books, tenant churn
+inside one month, sub-cent and 1e999 amounts, and a year boundary so the receipt counter rolls.
+
+The whole run takes about 2m30s and it is wired into `npm test`. **If it ever fails, read the seed it
+names and reproduce it before changing anything.**
+
+⚠️ **One hypothesis it could not have caught was checked by hand and disproved:** `tenancy.currency`
+is a snapshot taken at move-in and eviction write-off filters open charges by it, which looked like a
+stranding waiting to happen. It is not — the tenancy currency is updated when the villa is
+re-denominated (`current.currency = unit.currency`), and a probe confirmed eviction wrote off the new
+USD charge correctly. Recorded here so nobody re-opens it.
+
+### Three thousand more, from three expert seats (2026-09-01)
+
+Ro asked whether the software is high performing, judged as a property manager, a software architect
+and a security reviewer would judge it, with a thousand simulations each. Three suites now do that,
+all wired into `npm test`.
+
+**`test/expert-property-manager.test.mjs` — 1000 operating events across a full year, 21 checks.**
+Judges what a manager is answerable for rather than whether the arithmetic closes: nobody billed
+twice, nothing billed before the books open, the arrears schedule matching the ledger to the cent in
+*both* directions, Form 13B agreeing with the ledger villa by villa, deposits never lost, every
+receipt attributable, occupancy inside the register, evictions recording what was written off.
+
+⚠️ **Two of its own assertions were caught passing vacuously and were rewritten** — worth knowing,
+because the same trap is easy to fall into again. "No settled account is reported as in arrears"
+passed over an *empty set*: after a year of billing every month, no account happens to sit at exactly
+zero. It now pays one off deliberately and reads the answer back. And the first attempt to do that
+dated the receipt 31 December, which the application refused — *"a payment cannot be dated in the
+future"*, the guard working correctly. That refusal is now its own assertion.
+
+**`test/expert-architect.test.mjs` — 1000 requests, 17 checks, with measured numbers.** No request may
+return 5xx (a 4xx is design, a 5xx is a defect); concurrent writes serialise with no lost updates;
+idempotency holds under six retries; the server is killed and restarted mid-life and everything
+acknowledged survives; a backup carries the whole ledger. **Measured on this hardware: full database
+read p95 6ms, writes p95 16ms, integrity check p95 2ms, store 728KB for 328 ledger rows.** Also
+confirms a `__proto__` payload does not pollute the prototype.
+
+**`test/expert-security.test.mjs` — 1000 hostile requests, 22 checks.** The threat model is the real
+one: an insider, or a laptop left signed in. Every route cold (all 401), forged and tampered cookies,
+each staff role attempting escalation, sign-out and password-reset session revocation, brute-force
+throttling and its audit entry, hostile text stored as text, and a scan of every response for password
+hashes, salts, session tokens, stack traces and internal paths.
+
+⚠️ **One security assertion was passing for the wrong reason and is now correct.** The escalation probe
+posted an empty body to the password-reset endpoint, which is refused on *validation* before the
+permission check ever runs — so it proved nothing about authorisation while being counted as coverage.
+It now sends a well-formed request, so only the permission gate can refuse it. A second one measured
+the suite's own interference: the cookie-flag check ran after the brute-force section had locked the
+sign-in throttle, so there was no cookie to inspect and it reported the header as missing.
+
+### Every export is now a real Excel workbook, not a CSV (2026-09-01)
+
+Ro: *"The excel csv printouts tended to be unformatted and unprofessional, they need to be polished and
+professional so we are able to print and give to accountants and owners."* He was right, and no amount
+of care with the CSV would have fixed it — **CSV carries no column widths, no bold, no number formats,
+no page setup.** An accountant opened one to `20000` in a narrow column beside a raw `2026-08-01`, and
+printing it produced pages with no headings on them.
+
+**`src/lib/xlsx.ts` writes genuine `.xlsx` files with no dependency added.** An xlsx is a ZIP of XML
+parts, and the entries are written **stored (uncompressed)** on purpose — that removes any need for a
+deflate implementation in the browser, and Excel reads stored entries happily. This matters because the
+application ships as a single Windows executable and every dependency is another thing that has to
+survive that.
+
+What the documents now carry:
+
+- **money as real numbers with a currency format** (`"J$"#,##0.00`, negatives red and parenthesised),
+  so a column can be selected and re-totalled by whoever receives it. **JMD and USD use different
+  formats**, so no column ever implies the two can be added;
+- **dates as real dates**, so they sort and filter;
+- bold white-on-slate headers, **frozen on screen and repeated at the top of every printed page**;
+- column widths, so nothing arrives as `####`;
+- page setup — landscape where it is needed, fit to one page wide, "Page 1 of 3" in the footer;
+- and a masthead on every sheet naming the property, the strata plan, the document and the period,
+  because these get printed and separated from each other.
+
+**All five exports were converted** and no CSV remains: the operating statement (Reports, now five
+sheets), proprietor statements, the monthly operations statement, the annual report (four sheets,
+carrying the written sections so a committee never retypes them) and the financial projection.
+
+Verified three ways: 33 checks in `test/xlsx-export.test.mjs` that open the archive and read the XML
+the way Excel does; opened with `openpyxl` outside the suite; and **driven end to end in a real
+browser** — the workbook the application actually produced was captured from the download, decoded and
+inspected.
+
+⚠️ **Two things to know before editing it.** Worksheet child elements must appear in schema order
+(`sheetPr, dimension, sheetViews, sheetFormatPr, cols, sheetData, mergeCells, pageMargins, pageSetup,
+headerFooter`) — get it wrong and **Excel simply refuses to open the file with no explanation of why**;
+there is a test asserting the order. And the header row is *found* rather than assumed when freezing
+and repeating it, because sheets with a section band above their headers sit a row lower than those
+without — a fixed constant froze a data row on three of the annual report's four sheets.
+
+### The Operating Statement for the strata corporation (2026-09-01)
+
+Ro asked for the document that gets carried into a council meeting: **income and expenditure, and
+nothing else.** The management report above it answers different questions — receivables ageing,
+collection rates, occupancy — and all of that is in the way when a council is being asked to approve
+a set of figures. `operatingStatement()` in `src/lib/finance.ts`, screen and printable document in
+`src/components/OperatingStatement.tsx`, at the foot of **Operational Reports**.
+
+Three requirements, all stated by Ro and all load-bearing:
+
+1. **Every expense is itemised with the payee named under its category.** His example, quoted because
+   it is the clearest statement of the rule: *"If Darryl Whyte is 20000, he should not be grouped with
+   Payroll, it should be classed at Payroll but the person's name should be there."* So the statement
+   reads `Payroll — J$54,500` as a heading, and under it `Darryl Whyte  Grounds — July  J$20,000`,
+   `Darryl Whyte  Grounds — August  J$20,000`, `Marcia Simpson  Housekeeping  J$14,500`. **A category
+   never appears as a bare lump**; there is a test asserting every line carries a payee and that each
+   category total is the sum of its own named lines.
+2. **The currencies are separated.** One statement per currency, computed independently, no combined
+   total anywhere on the page or in the workbook.
+3. **The period is chosen**: this month, last month, last 3, 6 or 12 months, year to date, or
+   "Choose months" — two month pickers, inclusive. Set both to the same month for a single month.
+   **Whole months only, deliberately**: a statement running from the 14th to the 13th is not something
+   anybody presents to a council. It holds its own period rather than inheriting the management
+   report's, because the two documents have different audiences.
+
+Expenditure includes work recharged to a villa — it is money that left the corporation's account —
+with the allocation named on the line (`General`, `Office`, or the villa), so the recovery on the
+income side can be matched against it. Cash basis both sides, so the surplus reconciles to the bank.
+A refund appears as **its own negative line** saying who it went back to and why, rather than quietly
+shrinking the receipt it came from.
+
+27 checks in `test/operating-statement.test.mjs`, including Ro's Darryl Whyte case by name, and the
+whole thing driven end to end in a browser against seeded data.
+
+⚠️ **A bug worth remembering, because it was mine and it was invisible.** The table originally chose
+its fourth column with `reference ?? allocation`, duck-typing the two sides of the ledger. An expense's
+reference is usually the *empty string*, and `??` only falls through on null — so every common cost
+displayed its allocation as "—" instead of "General". The components now take explicit `who` / `what`
+/ `extra` fields from the caller instead of guessing which shape they were handed.
+
+### Choosing what goes on the Operating Statement (2026-09-01)
+
+The same period is two legitimately different documents, and Ro said so plainly: *"typically the
+maintenance should not be itemized to send to strata corporation but internally we would like to see
+it. Short term rental is not supposed to be included but internally yes."*
+
+Each class of income and expenditure can now be **Itemised**, shown as a **Total only**, or **Left
+out**, with two presets:
+
+- **For the strata corporation** (the default) — maintenance contributions as one figure rather than
+  naming every proprietor on a document that circulates to the council, and short-stay rental left off.
+- **Internal — everything** — every class itemised.
+
+"Choose line by line" opens a three-way control per class. The expenditure classes are read from the
+data, so a category that did not exist when this was written still appears.
+
+**The selection lives in the engine, not the view.** `operatingStatement()` takes an
+`OperatingStatementOptions` and returns each group with an `itemised` flag — so a class shown as a
+total keeps its exact figure and the statement total never changes, and an excluded class genuinely
+leaves the totals rather than being hidden while still counted. Anything not named falls back to
+`itemised`, so a caller passing nothing gets the whole statement and a new class never vanishes
+silently.
+
+⚠️ **Exclusions are declared on the page, and this is not decoration.** A statement that quietly omits
+a class of income is not a narrower document, it is a misleading one — anybody reconciling it against
+the bank would find money they could not place. Every excluded class is named with its amount on
+screen, in print and in the workbook: *"Not included in this statement: Short-stay bookings $950.00."*
+For the same reason, an empty side no longer says "Nothing recorded in this period" when money *was*
+received and merely left off — it says so.
+
+### Known limits, none of them defects (2026-09-01)
+
+Stated so nobody has to rediscover them, and so "everything passes" is not mistaken for "there is
+nothing to know":
+
+- **The audit trail is trimmed oldest-first at 20,000 entries with no archive** (`server/db.ts:820`;
+  `addAudit` unshifts, so the trim drops the *beginning* of the record). At a few thousand entries a
+  year that ceiling is several years out, but the loss would be silent. The self-check now raises
+  **`audit-trail-near-capacity`** at 90% so it cannot be. **Archiving is still a decision nobody has
+  made** — nothing rotates the trail anywhere.
+- **The LAN is plain HTTP.** Kamrui → HP is unencrypted by design (the cookie is `Secure` only over
+  real TLS, or with `VDS_FORCE_SECURE_COOKIE`), so anyone on the property network could read a
+  session. Remote access over Tailscale is encrypted. Acceptable for a private LAN; worth knowing.
+- **The whole database is sent to the browser on every load.** Correct and fast at sixteen villas —
+  6ms — and the wrong shape at several hundred.
+- **One machine, one JSON file, no redundancy.** Backup and restore is the entire recovery story.
+- **No two-factor authentication**, and no rate limiting on endpoints other than sign-in.
+- The untested surface listed above (the `.exe` outside CI, PWA and service worker, offline queue
+  under real network loss, live Airbnb feed, two-PC dry run, real print output) is unchanged — **no
+  simulation can close any of it.**
+
+### The owners' monthly operations report — BUILT AND TESTED
+
+Ro asked for a monthly report to owners setting operating costs against maintenance collected, itemised
+line by line. Decisions taken with Ro on 2026-09-01: **common costs only** (fuel, grounds staff, pool
+chemicals — not personal villa work, which is recharged to that owner); **one identical communal
+statement** for all sixteen, not sixteen personalised ones; and costs on a **cash basis — paid in the
+month, with bills raised but unsettled shown as a memo below**, so the surplus reconciles to the bank
+while a large unpaid bill cannot hide.
+
+`operationsStatement()` in `src/lib/finance.ts` is the engine; `src/components/OperationsStatement.tsx`
+is the screen and the printable document, at the foot of **Operational Reports**. 19 checks in
+`test/operations-statement.test.mjs`, and it has been driven end to end in a browser against seeded
+data: contributions received, costs itemised by category with supplier and description, surplus,
+unpaid memo and excluded total all correct on screen and in print.
+
+A common cost is defined strictly: **no `unitId`, and an allocation that is blank or a
+`PROPERTY_LOCATION`.** Anything else falls to a `villaRecharged` memo that is counted and shown, so
+the statement always reconciles to the expense register — a cost miscategorised against a villa
+appears as a visible exclusion instead of vanishing from both sides. There is a test asserting exactly
+that: every paid cost in the period is either on the statement or declared as excluded.
+
+⚠️ **Two things to tell whoever keys the costs.** Fuel, grounds staff and pool chemicals must be
+recorded against **General** (or Office) rather than a villa, or the statement will not see them —
+they will land in the excluded total instead, which is at least visible. And **there is no `Fuel`
+category**: it goes in `Supplies` or `Other`.
+
+---
+
+**There is no known outstanding bug.** Everything found on 2026-08-21 and 2026-09-01 — including the
+US$800 that read as a credit — was fixed the same day and carries a regression test. What is genuinely open is *untested surface*, the Excel migration, and
 two questions sitting with management — all under *Where to pick up*. Do not go hunting for a bug
 list; there isn't one.
 
-**The system is live.** The HP runs **v1.8.1** and needs upgrading to **v1.9.0** (see *Where to pick
-up*). Tailscale is installed and remote access from a phone is confirmed.
+**The system is live and current.** The HP runs **v1.9.0** (Ro confirmed 2026-09-01). Tailscale is
+installed and remote access from a phone is confirmed.
 
 ### Migration from Excel — planned, partially enabled (2026-08-16)
 
@@ -1305,23 +1664,24 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-**1. Install v1.9.0 on the HP. It is still on v1.8.1 and is eight releases behind.** Download
-`Villaggio-Del-Sol.exe` from `https://github.com/vildelsol/VDS_1/releases/latest`, close the running
-program, drop the new file in the same folder replacing the old one, double-click. The first startup
-prints a self-check line; on a clean database it says "no contradictions found". **The sidebar now
-shows the version** — confirm it reads v1.9.0 rather than trusting the upgrade happened.
+**1. ~~Install v1.9.0 on the HP.~~ DONE — the HP is on v1.9.0** (Ro confirmed 2026-09-01). For any
+future upgrade: download `Villaggio-Del-Sol.exe` from
+`https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file in
+the same folder replacing the old one, double-click. The sidebar shows the version — confirm it
+rather than trusting the upgrade happened. Then on the Kamrui and any phones: **Ctrl+Shift+R**; if
+the old version persists, F12 → Application → Service Workers → Unregister, then reload.
 
-Then, on the Kamrui and any phones: **Ctrl+Shift+R**. If the old version persists, F12 → Application
-→ Service Workers → Unregister, then reload. Otherwise they serve the old bundle.
+**The two settings a release cannot carry are DONE too** — Ro confirmed on 2026-09-01 that on
+v1.9.0 the HP now holds strata plan number **2324** and "The books begin on" = **2026-09-01**.
+Remember why this needed doing by hand: **`db.json` is gitignored and is never committed** — it
+holds the property's financial records, replacing the `.exe` never touches it, and `loadDb()` merges
+stored settings *over* the defaults, so an existing `db.json` keeps whatever it already holds. A new
+build can never correct a stored setting. **Re-check both after any future upgrade, and check a
+printed letterhead for the plan number** — nobody has confirmed 2324 on paper yet.
 
-**`db.json` is gitignored and is never committed** — it holds the property's financial records, and
-replacing the `.exe` never touches it. **This cuts both ways: after installing, set the strata plan
-number to 2324 in System Settings → General.** `loadDb()` merges stored settings *over* the
-defaults, so an existing `db.json` keeps whatever it already holds — a new build cannot correct it.
-Check a printed letterhead afterwards.
-
-**Also set "The books begin on" to `2026-09-01`** in the same screen. On v1.9.0 that setting now
-governs billing as well as alerts, so it is load-bearing for the migration rather than cosmetic.
+The books-begin date is load-bearing, not cosmetic: on v1.9.0 it governs billing as well as alerts,
+and it is what stops `raiseFirstAndLastRent` billing a long-standing tenant for months dated before
+the books open. With it set, tenancy entry is safe to start.
 
 **2. Two questions are with management, and nothing should be built on a guess until they come
 back** (both raised 2026-08-21, Ro referred them on):

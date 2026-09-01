@@ -267,8 +267,17 @@ function auditReporting(db, fin, asOf) {
       if (isBadNumber(value)) problems.push(`statement ${s.unit.number} ${s.currency}: ${field} is not finite`);
     }
 
-    // The identity the whole page is built on.
-    const expected = cents(s.collected) - cents(s.maintenanceBilled) - cents(s.utilityBilled) - cents(s.expenses);
+    /*
+     * The identity the whole page is built on.
+     *
+     * What is deducted is the contribution still *outstanding* for the period,
+     * not the whole of what was billed. Deducting `maintenanceBilled` alone told
+     * a proprietor who had already paid that they still owed every penny of it —
+     * found on real data on 2026-09-01, when a settled owner's statement read
+     * "Due from <name>" beside a line confirming the money had been received.
+     */
+    const maintenanceOwed = cents(s.maintenanceBilled) - cents(s.maintenancePaid);
+    const expected = cents(s.collected) - maintenanceOwed - cents(s.utilityBilled) - cents(s.expenses);
     if (cents(s.net) !== expected) {
       problems.push(`statement ${s.unit.number} ${s.currency}: net ${cents(s.net)} does not equal ${expected}`);
     }

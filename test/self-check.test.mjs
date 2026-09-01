@@ -123,6 +123,102 @@ export default async function run({ port, projectRoot }) {
       'an expected payment holding a receipt number'
     );
     broken(db => (db.payments[0].amount = 0), 'impossible-payment-amount', 'a payment of nothing');
+
+    /*
+     * The audit trail is trimmed oldest-first at 20,000 entries and there is no
+     * archive, so the governance record would quietly lose its beginning. Warned
+     * about before the ceiling rather than after, when there would be nothing
+     * left to warn with.
+     */
+    {
+      const db = healthyDb();
+      db.auditLogs = Array.from({ length: 18500 }, (_, i) => ({ id: `a-${i}`, action: 'x', dateTime: '2026-01-01T00:00:00.000Z' }));
+      const r = checkIntegrity(db);
+      T.check(
+        'it warns before the audit trail starts dropping its oldest entries',
+        codesFrom(r).includes('audit-trail-near-capacity'),
+        JSON.stringify(codesFrom(r))
+      );
+      T.check(
+        'and that is a warning, not a misstatement of money',
+        r.findings.find(f => f.code === 'audit-trail-near-capacity')?.severity === 'warning',
+        'wrong severity'
+      );
+    }
+    {
+      const r = checkIntegrity(healthyDb());
+      T.check('an ordinary audit trail raises no such warning', !codesFrom(r).includes('audit-trail-near-capacity'), JSON.stringify(codesFrom(r)));
+    }
+
+    /*
+     * Money stranded in a currency the account is not billed in.
+     *
+     * Balances are computed per unit, per category, per currency, and nothing is
+     * ever combined across currencies — so a record in the other currency is
+     * counted by neither side. The API refuses to *raise* one, but changing the
+     * villa's own currency after charges exist strands every charge already on
+     * the books, and that edit is one keystroke on the register.
+     *
+     * The consequence is the dangerous direction: the villa still owes the money,
+     * "Billed to date" reads nil, and a correctly denominated receipt then shows
+     * the account as being in credit. Serious, because money is misstated.
+     */
+    broken(
+      db => (db.units[0].currency = 'USD'),
+      'charge-in-unbilled-currency',
+      'a villa re-denominated while charges were already open against it'
+    );
+    broken(
+      db => {
+        db.units[0].maintCurrency = 'USD';
+        db.charges.push({
+          id: 'chg-m',
+          unitId: 'unit-1',
+          unitNumber: '1',
+          category: 'Maintenance',
+          periodMonth: '2026-07',
+          dueDate: '2026-07-01',
+          amount: 20000,
+          currency: 'JMD',
+          status: 'open'
+        });
+      },
+      'charge-in-unbilled-currency',
+      'a maintenance charge left behind when the maintenance currency changed'
+    );
+    {
+      // The receipt side of the same fault, reported but not as a misstatement:
+      // the money exists and is recorded, it just settles nothing here.
+      const r = broken(
+        db => (db.units[0].maintCurrency = 'USD') && db.payments.push({
+          ...db.payments[0],
+          id: 'p-m',
+          category: 'Maintenance',
+          receiptNo: 'REC-2026-0007'
+        }),
+        'payment-in-unbilled-currency',
+        'a receipt recorded in a currency the account is not billed in'
+      );
+      T.check(
+        'and a stranded receipt is a warning rather than a misstatement of money',
+        r.findings.find(f => f.code === 'payment-in-unbilled-currency')?.severity === 'warning',
+        JSON.stringify(r.findings.map(f => [f.code, f.severity]))
+      );
+    }
+    {
+      // A charge voided before the currency changed is not stranded — it is not
+      // in any balance by design, so reporting it would be noise that trains
+      // people to ignore the check.
+      const db = healthyDb();
+      db.charges[0].status = 'void';
+      db.units[0].currency = 'USD';
+      const r = checkIntegrity(db);
+      T.check(
+        'a voided charge left in the other currency is not reported',
+        !codesFrom(r).includes('charge-in-unbilled-currency'),
+        JSON.stringify(codesFrom(r))
+      );
+    }
     broken(db => (db.payments[0].amount = Number.NaN), 'impossible-payment-amount', 'a payment that is not a number');
     broken(db => (db.payments[0].refundedAmount = 60000), 'refunded-beyond-worth', 'more refunded than was ever received');
 

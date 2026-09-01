@@ -46,6 +46,21 @@ const PRE = '2026-06-30';
 const IN = '2026-07-01';
 const IN_LATER = '2026-07-15';
 
+/**
+ * The month the clock is actually in.
+ *
+ * A move-out spends the advance on `monthOf(endedOn)`, and `endedOn` is today —
+ * so the month the final charge falls in is whatever month the test is run in,
+ * not a month written down when the test was authored. This was literally
+ * '2026-08' and passed every day of August 2026 and failed on 1 September, when
+ * the advance correctly landed on September and the August charge stayed open.
+ * The application was right and the test was reading a stopped clock.
+ */
+const currentMonthString = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
 const villa = (over = {}) => ({
   number: '1',
   ownerName: 'A Proprietor',
@@ -411,14 +426,15 @@ export default async function run({ port, projectRoot }) {
     // The genuine direction still works exactly as it did.
     await c.put('/api/units/unit-4', villa({ number: '4', status: 'vacant', tenantName: '', monthlyRent: 0, tenantChangeIntent: 'correction' }));
     await c.put('/api/units/unit-4', villa({ number: '4', tenantName: 'Real Leaver', tenantMovedInOn: IN }));
-    await c.post('/api/charges/post-month', { monthString: '2026-08' });
+    const finalMonth = currentMonthString();
+    await c.post('/api/charges/post-month', { monthString: finalMonth });
     db = (await c.get('/api/db')).body;
-    T.check('the leaver is billed the following month too', openRent(db, 'unit-4').some(x => x.periodMonth === '2026-08'));
+    T.check('the leaver is billed for the month they leave in', openRent(db, 'unit-4').some(x => x.periodMonth === finalMonth), finalMonth);
 
     await c.put('/api/units/unit-4', villa({ number: '4', status: 'vacant', tenantName: '', monthlyRent: 0, tenantChangeIntent: 'moved-out' }));
     db = (await c.get('/api/db')).body;
-    const augLeaver = db.charges.filter(x => x.unitId === 'unit-4' && x.category === 'Rent' && x.periodMonth === '2026-08' && x.status === 'open' && x.kind !== 'advance-final-month');
-    T.check('a genuine move-out spends the advance on the final month', augLeaver.length === 0, `${augLeaver.length} still open`);
+    const leaverFinal = db.charges.filter(x => x.unitId === 'unit-4' && x.category === 'Rent' && x.periodMonth === finalMonth && x.status === 'open' && x.kind !== 'advance-final-month');
+    T.check('a genuine move-out spends the advance on the final month', leaverFinal.length === 0, `${leaverFinal.length} still open for ${finalMonth}`);
     T.check('and the tenancy is closed and kept', allTenancies(db, 'unit-4').some(t => t.status === 'ended' && !/error/i.test(t.endReason || '')));
 
     /* ================================================================
