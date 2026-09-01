@@ -169,6 +169,36 @@ async function serverReachable(): Promise<boolean> {
   }
 }
 
+/**
+ * Ask the server which version it is running.
+ *
+ * `__APP_VERSION__` is compiled into this bundle, and this bundle is delivered
+ * through a service worker — so the number on screen is the version of the *page*,
+ * which after an upgrade can be a release behind the program serving it. Nothing
+ * on screen could tell the two apart, so an upgrade that had worked looked exactly
+ * like an upgrade that had not.
+ *
+ * Cache-busted deliberately: a cached answer here would defeat the whole point.
+ * Returns null rather than throwing — an old server has no `version` field, and
+ * not knowing must never be louder than knowing.
+ */
+export async function fetchServerVersion(): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+    const res = await fetch('/api/health', { signal: controller.signal, cache: 'no-store' });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    if (body && typeof body === 'object' && typeof (body as { version?: unknown }).version === 'string') {
+      return (body as { version: string }).version;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Resolve once the server answers /api/health again, or throw after the cap. */
 async function waitForServer(deadline: number): Promise<void> {
   setConnection('reconnecting');

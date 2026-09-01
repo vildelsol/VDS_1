@@ -14,6 +14,7 @@
 
 import 'dotenv/config';
 import express from 'express';
+import pkg from './package.json';
 import path from 'path';
 import fs from 'fs';
 import { execFileSync, spawn } from 'child_process';
@@ -129,12 +130,30 @@ if (!TRUST_PROXY || TRUST_PROXY === 'false') {
 }
 
 /**
+ * The version this server was built from, taken from package.json at build time.
+ *
+ * The number shown in the sidebar comes from the *client* bundle, and the client
+ * is a PWA served through a service worker — so after an upgrade a browser can
+ * keep showing the previous version's screen indefinitely while a new server runs
+ * behind it. That happened on the HP on the v1.10.0 upgrade: the release was
+ * correct, the machine had it, and every way of checking said v1.9.0. There was
+ * no way to ask the server what it was, because nothing it printed or served said
+ * so. This is that answer, in the two places somebody can reach it without a
+ * browser cache in the way: /api/health, and the console window on start-up.
+ */
+export const APP_VERSION: string = pkg.version;
+
+/**
  * Liveness probe. Deliberately unauthenticated and dependency-free, so the client
  * can tell "the server is reachable" apart from "my session expired" when a
  * connection drops. Used by the reconnect logic to know when the network is back.
+ *
+ * It also states the server's own version. Unauthenticated on purpose: knowing
+ * which build is running is not a secret, and the moment it is most needed is a
+ * half-finished upgrade, when nobody may be able to sign in to find out.
  */
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
+  res.json({ ok: true, time: new Date().toISOString(), version: APP_VERSION });
 });
 
 /**
@@ -4788,7 +4807,14 @@ async function startServer() {
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Villaggio Del Sol operations server running at http://localhost:${PORT}`);
+    // Both of these answer a question that has been asked the hard way. The
+    // version, because the sidebar reads from a cache that can be a release
+    // behind. The folder, because the records live in the *working directory*
+    // (server/db.ts) rather than beside the executable — so a copy started from
+    // the wrong place opens an empty set of books, and nothing said which set
+    // was open.
+    console.log(`Villaggio Del Sol operations server v${APP_VERSION} running at http://localhost:${PORT}`);
+    console.log(`  Records folder: ${DATA_DIR}`);
 
     /*
      * Check the books on the machine that holds them.

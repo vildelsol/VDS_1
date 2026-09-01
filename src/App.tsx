@@ -36,6 +36,7 @@ import SystemSettings from './components/SystemSettings';
 import PrintReceipt from './components/PrintReceipt';
 import NotificationsTab from './components/NotificationsTab';
 import Login, { ChangePasswordGate } from './components/Login';
+import { VersionFooter, VersionMismatchBanner } from './components/VersionCheck';
 import {
   ApiError,
   ConnectionState,
@@ -579,7 +580,7 @@ export default function App() {
             <LogOut className="h-3.5 w-3.5" />
             Sign out
           </button>
-          <p className="pt-1 text-center font-mono text-[9px] uppercase tracking-[0.2em] text-slate-600">Powered by ISPO · v{__APP_VERSION__}</p>
+          <VersionFooter className="pt-1" />
         </div>
       </aside>
 
@@ -601,6 +602,8 @@ export default function App() {
             {loading ? 'Refreshing…' : 'Refresh'}
           </button>
         </header>
+
+        <VersionMismatchBanner />
 
         {apiError && (
           <div role="alert" className="flex items-center gap-1.5 rounded-xl border border-red-100 bg-red-50 p-3 text-xs text-red-800 print:hidden">

@@ -26,25 +26,26 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,418 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,433 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, and three **1,000-simulation expert suites** (property manager, architect,
   security). The application also checks its own records at start-up. A full `npm test` takes roughly
   six minutes now — the red team alone is about 2m30s. That is the price of the coverage; do not trim
   it to make the suite faster.
 - **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. All work from the
-  2026-09-01 session is committed, pushed, and released as v1.10.0.
-- **`main` and `origin/main` are level** at `7b2d21f` — verified against the remote with
-  `git ls-remote`, not from a local ref. **Keep verifying it that way.** This section has been stale
-  three times before: once claiming `main` was a commit ahead when it was not, once claiming work was
-  uncommitted after it had been pushed, and once naming a commit two sessions old. A local
-  `origin/main` ref only says what the last fetch saw.
+  2026-09-01 session is committed, pushed, and released as v1.10.1.
+- **`main` and `origin/main` are level, at the commit tagged `v1.10.1`.** Check that with two
+  commands rather than against a hash copied into this file — `git ls-remote origin main` and
+  `git rev-list -n1 v1.10.1` must print the same thing. A hash was written here by hand and was
+  wrong three times running: once claiming `main` was a commit ahead when it was not, once claiming
+  work was uncommitted after it had been pushed, and once naming a commit two sessions old. **Ask the
+  remote, never a local `origin/main` ref** — that only says what the last fetch saw.
 - One untracked file sits in the tree: **`docs/USER-GUIDE.html`** ("Villaggio Del Sol Handbook"),
   dated 25 August and not written by any session recorded here. It has deliberately **not** been
   committed — ask Ro whether it should be, rather than assuming either way.
-- **The version number is now on screen** (sidebar footer and sign-in, beside "Powered by ISPO"),
-  injected from `package.json` at build time. That is how you tell what the HP is actually running
-  without asking someone to open a console.
+- **The version number is on screen** (sidebar footer and sign-in, beside "Powered by ISPO"),
+  injected from `package.json` at build time — **and from v1.10.1 the server's own version is shown
+  beside it whenever the two differ.** Read the next bullet before trusting either number.
 - ⚠️ **The plan number fix does NOT travel in a release, and this is the trap.** The 2026-08-16
   session changed `defaultSettings()` in `server/db.ts`, and `db.json` is **gitignored** — it has
   never been tracked and cannot be. The Mac's own `db.json` was edited by hand (backed up to
@@ -54,16 +55,86 @@ next session from inside `pm-app`.
   The default only applies to a database that has never had the field. **Installing a new `.exe` on
   the HP will not correct its plan number. Someone has to set it in System Settings → General on the
   HP itself, and then check a printed letterhead.**
-- Latest release: **v1.10.0**, tagged 2026-09-01 on `7b2d21f` — the owner-statement and currency
+- ⚠️ **The version in the sidebar is the version of the *page*, not of the program — and until
+  v1.10.1 nothing on the machine could tell you the difference.** The number is compiled into the
+  browser bundle, and the bundle is delivered by a service worker that may serve a cached copy for as
+  long as it likes. On the v1.10.0 upgrade this produced the worst possible outcome: the release was
+  built from the right commit, the HP had it, and every visible check still read v1.9.0. **The
+  previous version of this file told you to "confirm the sidebar reads v1.10.0" — that instruction
+  could lie, and did.** From v1.10.1 the server states its own version in two places a cache cannot
+  reach: `GET /api/health` returns it, and the console window prints it (with the records folder)
+  on start-up. The screen shows both numbers and raises a banner when they disagree.
+- Latest release: **v1.10.1**, tagged 2026-09-01 — the version-visibility fix above. Supersedes
+  v1.10.0 in every respect. **The HP needs v1.10.1.**
+- Previous release: **v1.10.0**, tagged 2026-09-01 on `7b2d21f` — the owner-statement and currency
   fixes, the adversarial and expert simulation suites, Excel workbooks in place of every CSV, and the
   two new statements (owners' monthly operations, and the strata corporation's operating statement).
   The Windows workflow passed every gate (full suite → assemble the `.exe` → **start it and serve a
   real request** → verify the Desktop shortcut) and `Villaggio-Del-Sol.exe` (91MB) is published on the
-  release. **The HP is on v1.9.0 and needs v1.10.0.**
-- Previous release: **v1.9.0**, shipped 2026-08-21, tag on `b29b55d`. Four releases went out that day
+  release.
+- Older release: **v1.9.0**, shipped 2026-08-21, tag on `b29b55d`. Four releases went out that day
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
-  2026-09-01 and now needs v1.10.0.** Every earlier release is superseded; install the latest only.
+  2026-09-01 and needs v1.10.1.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-09-01 (later) — the upgrade that worked and looked like it had not
+
+Ro installed v1.10.0 on the HP and the screen still said v1.9.0, missing the new strata Operating
+Statement. He asked for the cut and the release to be checked. **They were correct**, and that is the
+whole point of this entry: the release was fine, and every way of checking it was broken.
+
+Verified against the remote, not from memory: tag `v1.10.0` points at `7b2d21f`, `package.json` **at
+that commit** reads `1.10.0`, and the build log shows `checkout refs/tags/v1.10.0` followed by
+`react-example@1.10.0 lint/test/build`. The full suite passed, the `.exe` was assembled, smoke-tested
+and uploaded — 95,368,704 bytes against v1.9.0's 95,311,360. Different binaries. Nothing was
+mis-tagged and nothing stale was published.
+
+### The real fault: nothing on the machine could state its own version — FIXED in v1.10.1
+
+`__APP_VERSION__` is compiled into the **browser bundle**, and the bundle is delivered by a service
+worker. So the number in the sidebar is the version of the *page*, which after an upgrade can be a
+release behind the program that served it. Meanwhile `/api/health` returned `{ok, time}` and the
+console window printed only "running at http://localhost:…" — **neither said what was running.**
+
+That made two completely different situations identical on screen: the upgrade did not happen, and
+the upgrade happened and this browser has not noticed. There was no third source of truth short of
+comparing the byte size of the `.exe` in Explorer.
+
+Four things now answer it:
+
+1. **`GET /api/health` reports the version** (`server.ts`, `APP_VERSION` from `package.json`).
+   Unauthenticated on purpose — the moment it is most needed is a half-finished upgrade, when nobody
+   may be able to sign in to ask.
+2. **The console window prints the version on start-up, and the records folder with it.** The second
+   line matters as much as the first: `DATA_DIR` is the **working directory** (`server/db.ts:75`), not
+   the folder the executable sits in, so a copy started from the wrong place opens a different — or
+   empty — set of books, and nothing used to say which set was open.
+3. **The screen shows both numbers** when they differ (`src/components/VersionCheck.tsx`), so the
+   footer reads `v1.9.0 · server v1.10.1` rather than quietly reporting the cached one.
+4. **A banner appears on a genuine mismatch**, on the sign-in screen and inside the app, saying which
+   version the program is and telling the reader to press Ctrl+Shift+R. Worded as an instruction, not
+   a diagnosis.
+
+⚠️ **Not knowing is deliberately not a mismatch.** `versionMismatch()` in `src/lib/version.ts` returns
+false when the server is unreachable or too old to report a version. A warning that fires on "no
+answer" is one people learn to dismiss, and it would then be dismissed on the day it was right.
+
+The health request is made **once per page load** and shared. Both the footer and the banner use the
+same hook and both are rendered twice per screen, which fired four identical requests before anybody
+had typed a password; a running program's version cannot change underneath it, so the one answer is
+kept for the life of the page.
+
+**15 checks in `test/version.test.mjs`** — the endpoint's value against `package.json`, the liveness
+contract the reconnect logic depends on left intact, the mismatch rule in all four states, and the
+banner rendered through `react-dom/server` asserting it names both versions and says what to do.
+1,433 tests now pass. Verified in a real browser as well: the sign-in screen reads v1.10.1 and exactly
+one `/api/health` request is made per load. **The banner itself has been asserted through server-side
+rendering but has not yet been seen in a live browser** — there is no way to produce a genuine
+mismatch against a dev server that serves both halves.
+
+⚠️ **This is why the handover's own upgrade instruction has changed.** "Confirm the sidebar reads
+v1.10.0" was advice that could lie. The check is now: **open the black console window and read the
+version line**, or visit `/api/health`. The sidebar is a second opinion, not the answer.
 
 ## Session of 2026-09-01 — cutover day, and what real money broke
 
@@ -1677,12 +1748,25 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-**1. Install v1.10.0 on the HP. It is on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
-`https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file in
-the same folder replacing the old one, double-click. **The sidebar shows the version — confirm it
-reads v1.10.0** rather than trusting the upgrade happened. Then on the Kamrui and any phones:
-**Ctrl+Shift+R**; if the old version persists, F12 → Application → Service Workers → Unregister, then
-reload.
+**1. Install v1.10.1 on the HP. It is on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
+`https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
+**in the same folder**, replacing the old one, and double-click it.
+
+**Then confirm it took — and confirm it the right way.** The v1.10.0 upgrade was correct and looked
+like a failure because the only check available read from a browser cache. In order of trust:
+
+   - **The black console window** now prints `Villaggio Del Sol operations server v1.10.1 running
+     at …` and, underneath, `Records folder: …`. This is the program speaking; nothing caches it.
+     **Read the folder line too** — if it is not the folder the records have always been in, the
+     program is looking at a different (probably empty) set of books, because the data folder is the
+     working directory and not the executable's folder. Close it and start it from the right place.
+   - **`http://localhost:PORT/api/health`** in a browser returns the version as well.
+   - **The sidebar and sign-in screen** show the page's own version, and from v1.10.1 the server's
+     beside it when they differ, plus a banner saying so. Trust this *last*: it is the thing that was
+     lying.
+
+Then on the Kamrui and any phones: **Ctrl+Shift+R**; if the old version persists, F12 → Application →
+Service Workers → Unregister, then reload. The banner will tell you when this is needed.
 
 **2. Ro is rebuilding the database from scratch, with a start date of 1 September 2026.** Decided on
 2026-09-01, after the currency and owner-statement faults were found in the first real data. This
