@@ -34,12 +34,13 @@ next session from inside `pm-app`.
   it to make the suite faster.
 - **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. All work from the
   2026-09-01 session is committed, pushed, and released as v1.10.1.
-- **`main` and `origin/main` are level, at the commit tagged `v1.10.1`.** Check that with two
-  commands rather than against a hash copied into this file — `git ls-remote origin main` and
-  `git rev-list -n1 v1.10.1` must print the same thing. A hash was written here by hand and was
-  wrong three times running: once claiming `main` was a commit ahead when it was not, once claiming
-  work was uncommitted after it had been pushed, and once naming a commit two sessions old. **Ask the
-  remote, never a local `origin/main` ref** — that only says what the last fetch saw.
+- **`main` and `origin/main` are level.** Check that with `git ls-remote origin main` against your
+  own `git rev-parse main` — not against a hash copied into this file, and not against a local
+  `origin/main` ref, which only says what the last fetch saw. **`main` sits a documentation commit
+  or two ahead of the tag `v1.10.1`, and that is expected**: the released binary is built from the
+  tag, so docs written after a release do not move it. Nothing is unpushed. A hash was written here
+  by hand and was wrong three times running: once claiming `main` was a commit ahead when it was not, once claiming
+  work was uncommitted after it had been pushed, and once naming a commit two sessions old.
 - One untracked file sits in the tree: **`docs/USER-GUIDE.html`** ("Villaggio Del Sol Handbook"),
   dated 25 August and not written by any session recorded here. It has deliberately **not** been
   committed — ask Ro whether it should be, rather than assuming either way.
