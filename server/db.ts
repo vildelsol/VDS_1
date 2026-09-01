@@ -419,8 +419,13 @@ function defaultSettings(): AppSettings {
     // Villaggio Del Sol is registered as strata plan 2324, confirmed by Ro on
     // 2026-08-16 against the owners' AGM report, which carries it on every page.
     // It read 2724 here until then — wrong on the letterhead and on every
-    // statutory return header. Editable in System Settings; the Commission's
-    // return forms ask for it in their headers.
+    // statutory return header, which the Commission's return forms ask for.
+    //
+    // NOT editable from the application: this setting has never had a field in
+    // System Settings, though POST /api/settings accepts it. A database that
+    // already holds a value keeps it (loadDb merges stored settings over these
+    // defaults), so on an existing db.json a wrong number cannot be corrected
+    // without adding that field. A new database takes this value and is right.
     strataPlanNumber: '2324',
     trn: '',
     rolePermissions: defaultRolePermissions(),

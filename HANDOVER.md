@@ -53,8 +53,24 @@ next session from inside `pm-app`.
   as `{ ...defaultSettings(), ...parsed.settings }` (`server/db.ts:726`), so **a stored value always
   beats the new default** — an existing `db.json` holding `2724` keeps `2724` through any upgrade.
   The default only applies to a database that has never had the field. **Installing a new `.exe` on
-  the HP will not correct its plan number. Someone has to set it in System Settings → General on the
-  HP itself, and then check a printed letterhead.**
+  the HP will not correct its plan number.**
+- ⚠️ **And there is no field to correct it with. `strataPlanNumber` has never had a UI** — checked in
+  the code on 2026-09-01 after Ro went looking for it and could not find it. The setting is real
+  everywhere else: it is in `AppSettings` (`src/types.ts:174`), it defaults to `2324`
+  (`server/db.ts:424`), `POST /api/settings` accepts it (`server.ts:1044`), and it prints on the
+  letterhead of every statement, the operating statement, the annual report and the projections.
+  Only the input box is missing — `GeneralPanel` (`src/components/SystemSettings.tsx:1209`) has the
+  exchange rate, the books-begin date, the health grade and the vendor list, and nothing else. `trn`
+  has no field either. **Three earlier versions of this file said "set it in System Settings →
+  General". That was never possible.** Do not repeat it.
+- **What saves this in practice: a brand-new database takes the default, which is already `2324`** —
+  confirmed by creating one and reading `db.json` back on 2026-09-01. So the rebuilt books come up
+  correct with nobody touching anything. **Changing it still needs a release.** Ro was offered the
+  field on 2026-09-01 and declined it — *"if its already built in, let it be"* — having been told
+  plainly that the value is built in and the field is not. Build it if the number ever turns out to
+  be wrong, or if the TRN is needed on a statutory return; do not build it unasked.
+- **Nobody has ever checked the plan number on a printed letterhead.** That is still the only
+  confirmation that exists, and it is still outstanding.
 - ⚠️ **The version in the sidebar is the version of the *page*, not of the program — and until
   v1.10.1 nothing on the machine could tell you the difference.** The number is compiled into the
   browser bundle, and the bundle is delivered by a service worker that may serve a cached copy for as
@@ -1774,11 +1790,13 @@ changes what has to be done and in what order.
 
 **On the fresh database, before anything else:**
 
-   - **Strata plan number `2324`** and **"The books begin on" `2026-09-01`**, in System Settings →
-     General. Neither travels in a release — `db.json` is gitignored, and `loadDb()` merges stored
-     settings *over* the defaults, so a new build can never set them. **A brand-new database takes
-     the defaults, so check both rather than assuming.** Then **print a letterhead and look at the
-     plan number** — nobody has ever confirmed 2324 on paper.
+   - **"The books begin on" `2026-09-01`**, in System Settings → General. It does not travel in a
+     release — `db.json` is gitignored, and `loadDb()` merges stored settings *over* the defaults,
+     so a new build can never set it. A brand-new database has it **empty**, so it must be entered.
+   - **The strata plan number needs nothing done to it, and cannot have anything done to it.** A
+     brand-new database takes the default `2324` on its own, and there is no field for it in the
+     settings screen — see the state section above. **Print a letterhead and read the plan number
+     off the paper**; that is the only check available, and nobody has ever done it.
    - **Set each villa's currency correctly before posting the first month.** This is the fault that
      bit C11: re-denominating a villa after charges exist strands every one of them. v1.10.0 refuses
      that edit unless the consequence is acknowledged, so it can no longer happen silently — but
@@ -1845,6 +1863,9 @@ by v1.10.0 but still real:
    - **Somewhere to archive the audit trail.** It is trimmed oldest-first at 20,000 entries and the
      self-check now warns at 90%, but nothing rotates it anywhere. Several years out; still nobody's
      decision yet.
+   - **A settings field for the strata plan number and the TRN.** Neither has ever had one. Offered
+     on 2026-09-01 and declined — the value defaults correctly on a fresh database, so nothing is
+     blocked. Needed the moment the number has to change, or a statutory return needs the TRN.
 
 Otherwise: **no backlog.** No bug is outstanding. Resist finding work here — ask what problem it
 solves at this property first.
