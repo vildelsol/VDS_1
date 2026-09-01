@@ -2112,6 +2112,83 @@ app.put(
       const currency = requireCurrency(body.currency ?? original.currency, 'Base currency');
       const maintCurrency = requireCurrency(body.maintCurrency ?? original.maintCurrency ?? currency, 'Maintenance currency');
 
+      /*
+       * Re-denominating a villa that already has charges open against it.
+       *
+       * A balance is computed per unit, per category, *per currency*, and nothing
+       * is ever combined across currencies. So the moment this villa's billing
+       * currency changes, every charge already raised in the old one belongs to
+       * an account that is no longer billed in it — counted by neither side of
+       * the balance. "Billed to date" drops to nil while the money is still
+       * genuinely owed, and the next receipt in the new currency then shows the
+       * villa as being *in credit*. The books flatter themselves and warn nobody.
+       *
+       * Found on the live records on 2026-09-01 (a US$800 receipt reading as a
+       * credit against an account showing nothing billed), and reproduced from
+       * legitimate API calls alone by the adversarial simulation. The register
+       * offered this as an ordinary dropdown, so a stray click could silently
+       * misstate what a villa owes.
+       *
+       * Refused unless the consequence is acknowledged — the same shape as the
+       * receipt currency guard above. On acknowledgement the stranded charges are
+       * **voided, never converted**: J$20,000 is not US$20,000, and no rate this
+       * application holds is authoritative enough to restate somebody's debt.
+       * They are voided with the reason recorded, and the month is re-posted or
+       * the balance re-raised by hand in the new currency.
+       */
+      const currencyChangeIntent = optionalString(body.currencyChangeIntent, 40);
+      const redenominated: { category: ChargeCategory; from: Currency; to: Currency }[] = [];
+      if (chargeCurrency(original, 'Rent') !== chargeCurrency({ ...original, currency, maintCurrency }, 'Rent')) {
+        redenominated.push({ category: 'Rent', from: chargeCurrency(original, 'Rent'), to: currency });
+      }
+      if (chargeCurrency(original, 'Maintenance') !== chargeCurrency({ ...original, currency, maintCurrency }, 'Maintenance')) {
+        redenominated.push({ category: 'Maintenance', from: chargeCurrency(original, 'Maintenance'), to: maintCurrency });
+      }
+
+      const stranded = redenominated.flatMap(change =>
+        db.charges.filter(
+          ch => ch.unitId === original.id && ch.category === change.category && ch.status === 'open' && ch.currency === change.from
+        )
+      );
+
+      if (stranded.length > 0 && currencyChangeIntent !== 'void-open-charges') {
+        const villa = getUnitDisplayName(original.number);
+        const detail = redenominated
+          .map(ch => `${ch.category.toLowerCase()} from ${ch.from} to ${ch.to}`)
+          .join(' and ');
+        throw new ApiError(
+          400,
+          `${villa} has ${stranded.length} charge(s) still open in the currency it is billed in now. ` +
+            `Changing the ${detail} would leave them on an account that is no longer billed in that currency, ` +
+            `so they would count towards nothing: the villa would show as owing less than it does, and the next ` +
+            `payment would look like a credit. Nothing here can convert them — ${stranded[0].currency} ` +
+            `${stranded[0].amount} is not the same money in the other currency. Confirm to void the open charges ` +
+            `(the records are kept and the reason stored), then re-post the month or raise the balance again in the new currency.`,
+          UNIT_CURRENCY_CHANGE
+        );
+      }
+
+      if (stranded.length > 0) {
+        const who = actor(req);
+        const stamp = new Date().toISOString();
+        for (const charge of stranded) {
+          charge.status = 'void';
+          charge.voidedBy = who.name;
+          charge.voidedAt = stamp;
+          charge.voidReason = `${original.number} was re-denominated to ${charge.category === 'Maintenance' ? maintCurrency : currency}; this ${charge.currency} charge could no longer be settled against the account.`;
+        }
+        addAudit(
+          db,
+          who.name,
+          who.role,
+          `Re-denominated ${getUnitDisplayName(original.number)} and voided ${stranded.length} charge(s) left in the previous currency`,
+          'Unit',
+          original.id,
+          redenominated.map(ch => `${ch.category} ${ch.from}`).join(', '),
+          redenominated.map(ch => `${ch.category} ${ch.to}`).join(', ')
+        );
+      }
+
       const rentApplies = status === 'long-term' || status === 'short-term';
       const monthlyRent = rentApplies ? optionalAmount(body.monthlyRent, 'The monthly rent', original.monthlyRent) : 0;
       const monthlyMaintenance =
@@ -2814,6 +2891,13 @@ const ALREADY_SETTLED = 'account-already-settled';
  * consequence stated.
  */
 const CURRENCY_CHANGE = 'currency-change-not-confirmed';
+
+/**
+ * Re-denominating a villa that still has charges open in the currency it is
+ * being changed away from. The screen recognises this code and asks before
+ * repeating the request with `currencyChangeIntent: 'void-open-charges'`.
+ */
+const UNIT_CURRENCY_CHANGE = 'unit-currency-change-not-confirmed';
 
 function assertAccountStillOwes(
   db: Database,

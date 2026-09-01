@@ -196,6 +196,92 @@ export function checkIntegrity(db: Database): IntegrityReport {
       charges.filter(c => isBadNumber(c.amount) || c.amount <= 0).map(c => `${c.id} (${c.amount})`)
     );
 
+    /* ---------------- the audit trail approaching its ceiling ---------------- */
+
+    /*
+     * The audit trail is held in the same JSON file as the books and is trimmed
+     * at a high-water mark so one file cannot grow without limit. `addAudit`
+     * unshifts, so the entries dropped are the **oldest** ones — and there is no
+     * archive. For a strata corporation that trail is a governance record, and
+     * losing the start of it silently is not acceptable even when the loss is
+     * years away.
+     *
+     * Reported before it happens rather than after, because afterwards there is
+     * nothing to report *with*. At this property's volume (a few thousand entries
+     * a year) the ceiling is several years out; this is a prompt to archive, not
+     * an emergency. Nothing here deletes or rotates anything — that is a decision
+     * about where the history should live, and a person makes it.
+     */
+    const auditCap = 20000;
+    const auditCount = (db.auditLogs || []).length;
+    if (auditCount >= auditCap * 0.9) {
+      add(
+        'warning',
+        'audit-trail-near-capacity',
+        `The audit trail holds ${auditCount} entries and is trimmed at ${auditCap}, oldest first. Export and archive it before the earliest entries are dropped.`,
+        [`${auditCount} of ${auditCap}`]
+      );
+    }
+
+    /* ---------------- money in a currency the account is not billed in ---------------- */
+
+    /*
+     * A balance is computed per unit, per category, *per currency*: both charges
+     * and receipts are scoped to the currency that account is billed in, and
+     * nothing is ever combined across currencies. So a record raised in the other
+     * currency is counted by neither side of the balance.
+     *
+     * A receipt in the wrong currency was already surfaced on the ledger screen.
+     * A **charge** in the wrong currency was surfaced nowhere: "Billed to date"
+     * read nil, and any correctly-denominated payment against it then appeared as
+     * a credit — a villa that owed money looked like a villa in credit. This is
+     * therefore a misstatement of money, not a tidiness complaint.
+     *
+     * Reported, never repaired. Which side is wrong — the villa's currency or the
+     * record's — is a question about what actually happened, and only a person
+     * knows that.
+     */
+    const billingCurrency = (unit: { currency?: string; maintCurrency?: string }, category: string) =>
+      category === 'Maintenance' ? unit.maintCurrency || unit.currency : unit.currency;
+
+    const unitById = new Map((db.units || []).map(u => [u.id, u]));
+    const strandedCharges: string[] = [];
+    for (const c of charges) {
+      if (c.status !== 'open') continue;
+      const unit = unitById.get(c.unitId);
+      if (!unit) continue;
+      const expected = billingCurrency(unit, c.category);
+      // Only compare when the villa actually states a currency; a blank one is
+      // its own, separate finding rather than a mismatch with everything.
+      if (expected && c.currency && c.currency !== expected) {
+        strandedCharges.push(`${c.id} — ${c.unitNumber || c.unitId} ${c.category} raised in ${c.currency}, billed in ${expected}`);
+      }
+    }
+    add(
+      'serious',
+      'charge-in-unbilled-currency',
+      'A charge is raised in a currency the account is not billed in, so it is in no balance — the villa owes this money but does not appear to.',
+      strandedCharges
+    );
+
+    const strandedPayments: string[] = [];
+    for (const p of payments) {
+      if (p.status !== 'completed') continue;
+      if (p.category !== 'Rent' && p.category !== 'Maintenance') continue;
+      const unit = unitById.get(p.unitId);
+      if (!unit) continue;
+      const expected = billingCurrency(unit, p.category);
+      if (expected && p.currency && p.currency !== expected) {
+        strandedPayments.push(`${p.receiptNo || p.id} — ${p.unitNumber || p.unitId} ${p.category} received in ${p.currency}, billed in ${expected}`);
+      }
+    }
+    add(
+      'warning',
+      'payment-in-unbilled-currency',
+      'A receipt is recorded in a currency the account is not billed in, so it settles nothing on that account.',
+      strandedPayments
+    );
+
     /* ---------------- receipt counter ---------------- */
 
     // If the counter has fallen behind the receipts already issued, the next

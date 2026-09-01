@@ -27,7 +27,9 @@ import {
   UtilityReading,
   Expense,
   ExpenseCategory,
-  Booking
+  Booking,
+  PROPERTY_LOCATIONS,
+  getUnitDisplayName
 } from '../types';
 import { round2, sumMoney, subtractMoney } from './money';
 import { currentMonth, daysSince, daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, addDays, today } from './dates';
@@ -232,6 +234,21 @@ export interface AccountBalance {
    * staff can correct the record rather than have the money silently vanish.
    */
   mismatchedCurrencyPayments: Payment[];
+  /**
+   * Open charges raised against this account in the *other* currency.
+   *
+   * The mirror image of `mismatchedCurrencyPayments`, and it was missing. Both
+   * sides of the balance are scoped to `chargeCurrency(unit, category)`, so a
+   * charge raised in the currency the villa is *not* billed in was counted by
+   * nothing and warned about by nothing: "Billed to date" read 0, and a payment
+   * that did match the account currency then showed as a pure credit — the villa
+   * appeared to be in credit for money it actually owed. Silent, and in the one
+   * direction that flatters the books.
+   *
+   * Not netted, for the same reason as the payments: nothing is ever combined
+   * across currencies. Surfaced so the record can be corrected.
+   */
+  mismatchedCurrencyCharges: Charge[];
 }
 
 /**
@@ -247,10 +264,13 @@ export function accountBalance(
 ): AccountBalance {
   const currency = chargeCurrency(unit, category);
 
-  const unitCharges = chargesForUnit(charges, unit, allUnits)
-    .filter(c => c.category === category && c.status === 'open' && c.currency === currency)
+  const openCharges = chargesForUnit(charges, unit, allUnits)
+    .filter(c => c.category === category && c.status === 'open')
     .filter(c => !asOf || c.dueDate <= asOf)
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  const unitCharges = openCharges.filter(c => c.currency === currency);
+  const mismatchedCharges = openCharges.filter(c => c.currency !== currency);
 
   const unitPayments = paymentsForUnit(payments, unit, allUnits)
     .filter(p => p.category === category && p.status === 'completed')
@@ -304,7 +324,8 @@ export function accountBalance(
     balance,
     unpaidCharges,
     oldestUnpaidDays,
-    mismatchedCurrencyPayments: mismatched
+    mismatchedCurrencyPayments: mismatched,
+    mismatchedCurrencyCharges: mismatchedCharges
   };
 }
 
@@ -445,13 +466,22 @@ export function creditAccounts(units: Unit[], charges: Charge[], payments: Payme
   return accounts;
 }
 
-/** Accounts whose payments were recorded in the wrong currency — a data-integrity warning. */
+/**
+ * Accounts holding money or debt in a currency the account is not billed in — a
+ * data-integrity warning.
+ *
+ * Both directions count. A charge in the wrong currency is if anything the worse
+ * of the two, because it understates what is owed rather than mislaying a
+ * receipt, and it used to be reported by nothing at all.
+ */
 export function currencyMismatchWarnings(units: Unit[], charges: Charge[], payments: Payment[]): AccountBalance[] {
   const out: AccountBalance[] = [];
   for (const unit of units) {
     for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
       const account = accountBalance(unit, category, charges, payments, undefined, units);
-      if (account.mismatchedCurrencyPayments.length > 0) out.push(account);
+      if (account.mismatchedCurrencyPayments.length > 0 || account.mismatchedCurrencyCharges.length > 0) {
+        out.push(account);
+      }
     }
   }
   return out;
@@ -900,12 +930,19 @@ export interface OwnerStatement {
   /**
    * Maintenance contributions actually received in the period.
    *
-   * Not part of the arithmetic — the deduction above is what was *billed*, which
-   * is what the owner is liable for whether or not they have paid it yet. It is
-   * carried so the statement can say so out loud: an owner who settled their
-   * maintenance by their own bank transfer, and whose agent then also withheld it
-   * from their rent, has been charged twice, and nothing else on the page would
-   * show that.
+   * **Part of the arithmetic.** This was previously excluded on the reasoning
+   * that an owner is liable for what was *billed* whether or not they have paid
+   * — which was inherited from the old, wrong model where the agent collected
+   * the rent and withheld maintenance out of it. Under the real arrangement the
+   * corporation collects nothing for a proprietor, so `collected` is always
+   * zero and the net sat at minus the full contribution however much the owner
+   * paid. A proprietor who had settled in full was shown "Due from ..." for the
+   * whole amount on screen and on the printed statement, directly beside a note
+   * saying the money had been received. Found on real data, 2026-09-01.
+   *
+   * What is deducted is therefore the contribution still *outstanding* for the
+   * period, `maintenanceBilled - maintenancePaid`. Nothing is netted across
+   * currencies: both figures are already scoped to this statement's currency.
    */
   maintenancePaid: number;
   /**
@@ -921,7 +958,11 @@ export interface OwnerStatement {
   utilityBilled: number;
   /** Property expenses charged to this villa in the period. */
   expenses: number;
-  /** collected − maintenanceBilled − utilityBilled − expenses. Negative means the owner owes. */
+  /**
+   * collected − (maintenanceBilled − maintenancePaid) − utilityBilled − expenses.
+   * Negative means the owner owes. A contribution billed and paid in the same
+   * period nets to nothing here, which is the arithmetic the owner can follow.
+   */
   net: number;
   /** Maintenance still outstanding at the end of the period, across all time. */
   maintenanceOutstanding: number;
@@ -1046,7 +1087,17 @@ export function ownerStatement(
   const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, to, units);
   const maintenanceOutstanding = maintAccount.currency === currency ? maintAccount.balance : 0;
 
-  const net = round2(collected - maintenanceBilled - utilityBilled - unitExpenses);
+  /*
+   * The contribution still owed for this period, not the whole contribution.
+   *
+   * Subtracting `maintenanceBilled` alone told a proprietor who had paid in full
+   * that they still owed all of it — see the note on `maintenancePaid`. Both
+   * terms are in this statement's currency already, so this nets nothing across
+   * currencies.
+   */
+  const maintenanceOwedForPeriod = subtractMoney(maintenanceBilled, maintenancePaid);
+
+  const net = round2(collected - maintenanceOwedForPeriod - utilityBilled - unitExpenses);
 
   return {
     unit,
@@ -2018,4 +2069,419 @@ function formatPct(v: number): string {
 
 function formatPlain(v: number): string {
   return round2(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/* ------------------------------------------------------------------ *
+ * Owners' monthly operations statement
+ * ------------------------------------------------------------------ */
+
+/** One common cost, as it appears on the statement sent to owners. */
+export interface OperationsCostLine {
+  id: string;
+  date: string;
+  vendor: string;
+  description: string;
+  reference: string;
+  amount: number;
+}
+
+/** Common costs of one category, itemised. */
+export interface OperationsCostGroup {
+  category: ExpenseCategory;
+  lines: OperationsCostLine[];
+  total: number;
+}
+
+export interface OperationsStatement {
+  currency: Currency;
+  from: string;
+  to: string;
+  /** Maintenance contributions actually received in the period, net of refunds. */
+  maintenanceCollected: number;
+  /** Common costs settled in the period, grouped by category and itemised. */
+  groups: OperationsCostGroup[];
+  costsPaid: number;
+  /** Money in less money out. Negative means the fund spent more than it took. */
+  surplus: number;
+  /**
+   * Memo only, never netted into `surplus`: common bills falling due in the
+   * period that were still unsettled. A month with a large unpaid bill would
+   * otherwise read as a good month.
+   */
+  unpaidLines: OperationsCostLine[];
+  costsUnpaid: number;
+  /**
+   * Memo only: spend excluded because it is tied to a specific villa and is
+   * recharged to that owner. Reported as a total so that a cost miscategorised
+   * against a villa shows up as a visible exclusion rather than vanishing.
+   */
+  villaRecharged: number;
+  villaRechargedCount: number;
+  /** True when nothing at all — no contributions, no costs — falls in the period. */
+  empty: boolean;
+}
+
+/**
+ * Is this a common cost of running the property, as opposed to work on one
+ * villa that is recharged to its owner?
+ *
+ * Deliberately strict. An expense is common only when it is tied to no villa
+ * (`unitId` empty) *and* its allocation is a property location or blank.
+ * Anything else — including the contradictory state of an empty `unitId` beside
+ * a villa number — falls to the recharged memo, where it is counted and shown
+ * rather than silently dropped from both sides of the statement.
+ */
+function isCommonCost(expense: Expense): boolean {
+  if (expense.unitId) return false;
+  const where = expense.unitNumber || '';
+  return where === '' || (PROPERTY_LOCATIONS as readonly string[]).includes(where);
+}
+
+function toCostLine(expense: Expense, date: string): OperationsCostLine {
+  return {
+    id: expense.id,
+    date,
+    vendor: expense.vendor,
+    description: expense.description,
+    reference: expense.reference,
+    amount: expense.amount
+  };
+}
+
+/**
+ * What the owners are told each month: the maintenance collected, every common
+ * cost it paid for, and what is left.
+ *
+ * Cash in, cash out, both on the same basis, so the surplus reconciles to the
+ * bank. Costs incurred but unpaid are carried as a memo instead of being mixed
+ * into that figure — see `unpaidLines`.
+ *
+ * Villa-specific work is excluded: it is recharged to the owner concerned and
+ * appears on that owner's own statement, and itemising it here would show all
+ * sixteen owners what was done to each other's villas.
+ */
+export function operationsStatement(
+  expenses: Expense[],
+  payments: Payment[],
+  currency: Currency,
+  start: string,
+  end: string
+): OperationsStatement {
+  const maintenanceCollected = collectedInPeriod(payments, currency, start, end).maintenance;
+
+  const inCurrency = expenses.filter(e => e.currency === currency);
+  const paidInPeriod = inCurrency.filter(e => e.status === 'paid' && isWithin(e.datePaid || e.date, start, end));
+  const pendingInPeriod = inCurrency.filter(e => e.status === 'pending' && isWithin(e.dueDate || e.date, start, end));
+
+  const commonPaid = paidInPeriod.filter(isCommonCost);
+  const rechargedPaid = paidInPeriod.filter(e => !isCommonCost(e));
+
+  const byCategory = new Map<ExpenseCategory, OperationsCostLine[]>();
+  for (const expense of commonPaid) {
+    const lines = byCategory.get(expense.category) || [];
+    lines.push(toCostLine(expense, expense.datePaid || expense.date));
+    byCategory.set(expense.category, lines);
+  }
+
+  const groups: OperationsCostGroup[] = Array.from(byCategory.entries())
+    .map(([category, lines]) => ({
+      category,
+      lines: lines.slice().sort((a, b) => a.date.localeCompare(b.date) || a.vendor.localeCompare(b.vendor)),
+      total: sumMoney(lines.map(l => l.amount))
+    }))
+    .sort((a, b) => b.total - a.total || a.category.localeCompare(b.category));
+
+  const costsPaid = sumMoney(groups.map(g => g.total));
+
+  const unpaidLines = pendingInPeriod
+    .filter(isCommonCost)
+    .map(e => toCostLine(e, e.dueDate || e.date))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.vendor.localeCompare(b.vendor));
+
+  const villaRecharged = sumMoney(rechargedPaid.map(e => e.amount));
+
+  return {
+    currency,
+    from: start,
+    to: end,
+    maintenanceCollected,
+    groups,
+    costsPaid,
+    surplus: subtractMoney(maintenanceCollected, costsPaid),
+    unpaidLines,
+    costsUnpaid: sumMoney(unpaidLines.map(l => l.amount)),
+    villaRecharged,
+    villaRechargedCount: rechargedPaid.length,
+    empty: maintenanceCollected === 0 && costsPaid === 0 && unpaidLines.length === 0 && rechargedPaid.length === 0
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Operating statement — income and expenditure
+ * ------------------------------------------------------------------ */
+
+/** One receipt, as it appears on the income side. */
+export interface IncomeLine {
+  id: string;
+  date: string;
+  /** Who paid. Named, because "Maintenance 20,000" answers nothing at a meeting. */
+  payer: string;
+  villa: string;
+  reference: string;
+  amount: number;
+}
+
+/** One payment out, as it appears on the expenditure side. */
+export interface ExpenditureLine {
+  id: string;
+  date: string;
+  /**
+   * Who was paid.
+   *
+   * This is the whole point of the document. A line reading "Payroll 20,000"
+   * tells the strata corporation nothing; "Payroll — Darryl Whyte 20,000" is a
+   * figure somebody can question, verify, or approve. The category classes it;
+   * the name identifies it.
+   */
+  payee: string;
+  description: string;
+  /** Villa, or General / Office, so it is clear what the money was spent on. */
+  allocation: string;
+  reference: string;
+  amount: number;
+}
+
+export interface StatementGroup<T> {
+  label: string;
+  /** Empty when the class is shown as a total only. */
+  lines: T[];
+  total: number;
+  /**
+   * Whether the individual payments are shown, or only the total for the class.
+   *
+   * Maintenance contributions are the case that forced this: internally the
+   * office wants to see who paid what, but the statement that goes to the strata
+   * corporation should show one figure for contributions — naming every
+   * proprietor and their payment on a document circulated to the council is more
+   * disclosure than the meeting needs.
+   */
+  itemised: boolean;
+}
+
+/** How a class of income or expenditure appears on the statement. */
+export type LineVisibility = 'itemised' | 'total' | 'excluded';
+
+/**
+ * What goes on the statement.
+ *
+ * The same period produces two legitimately different documents: the one carried
+ * to the strata corporation, and the one the office reads. Short-stay rental is
+ * the clearest example — on villas the corporation lets on its own account it is
+ * real income the office must see, and it has no place on a council statement
+ * about the corporation's common finances.
+ *
+ * Anything not named here falls to the defaults, which are `itemised` on both
+ * sides — so a caller passing nothing gets the whole statement, and a class that
+ * did not exist when the options were written appears rather than silently
+ * vanishing.
+ */
+export interface OperatingStatementOptions {
+  income?: Partial<Record<PaymentCategory, LineVisibility>>;
+  expenditure?: Record<string, LineVisibility>;
+  defaultIncome?: LineVisibility;
+  defaultExpenditure?: LineVisibility;
+}
+
+export interface OperatingStatement {
+  currency: Currency;
+  from: string;
+  to: string;
+  income: StatementGroup<IncomeLine>[];
+  totalIncome: number;
+  expenditure: StatementGroup<ExpenditureLine>[];
+  totalExpenditure: number;
+  /** Income less expenditure. Negative is a deficit for the period. */
+  surplus: number;
+  /** True when neither side has a single line in this currency. */
+  empty: boolean;
+  /**
+   * Classes deliberately left off this statement, and what they came to.
+   *
+   * Named on the document rather than silently dropped. A statement that quietly
+   * omits a class of income is not a narrower statement, it is a misleading one:
+   * anyone reconciling it against the bank would find money they cannot account
+   * for. Saying "short-stay bookings, excluded" costs one line and makes the
+   * scope of the document explicit.
+   */
+  excludedIncome: { label: string; total: number }[];
+  excludedExpenditure: { label: string; total: number }[];
+}
+
+/**
+ * The document the strata corporation is given: what came in, what went out.
+ *
+ * Deliberately narrower than the management statement beside it. A council
+ * meeting wants income and expenditure and nothing else — no receivables ageing,
+ * no collection rates, no occupancy. Those belong in the management pack and get
+ * in the way here.
+ *
+ * Two rules shape it:
+ *
+ *   1. **Every figure is itemised and named.** Expenditure is classed by
+ *      category and then listed line by line with the payee on each line, so
+ *      "Payroll" is a heading rather than a lump. Nothing is presented only as a
+ *      total.
+ *   2. **The currencies never meet.** One statement per currency, computed
+ *      independently. Nothing here converts, adds across, or shows a combined
+ *      total, because the corporation genuinely holds two separate pots.
+ *
+ * Cash basis on both sides — money actually received against money actually
+ * paid — so the surplus is a figure that reconciles to the bank rather than an
+ * accrual that has to be explained.
+ */
+export function operatingStatement(
+  payments: Payment[],
+  expenses: Expense[],
+  units: Unit[],
+  currency: Currency,
+  start: string,
+  end: string,
+  options: OperatingStatementOptions = {}
+): OperatingStatement {
+  const incomeVisibility = (category: PaymentCategory): LineVisibility =>
+    options.income?.[category] ?? options.defaultIncome ?? 'itemised';
+  const expenditureVisibility = (category: string): LineVisibility =>
+    options.expenditure?.[category] ?? options.defaultExpenditure ?? 'itemised';
+
+  const excludedIncome: { label: string; total: number }[] = [];
+  const excludedExpenditure: { label: string; total: number }[] = [];
+
+  const villaOf = (unitId: string, unitNumber: string) => {
+    const unit = units.find(u => u.id === unitId);
+    const number = unit?.number || unitNumber || '';
+    return number ? getUnitDisplayName(number) : '';
+  };
+
+  /* ---------------- income ---------------- */
+
+  const completed = payments.filter(p => p.status === 'completed' && p.currency === currency);
+  const received = completed.filter(p => isWithin(p.date, start, end));
+
+  /*
+   * Refunds are shown as their own negative lines, dated when the money went
+   * back out, rather than quietly reducing the receipt they came from. A council
+   * reading a smaller figure than last month should be able to see why on the
+   * page instead of having to ask.
+   */
+  const refunded = completed.filter(p => p.refundedOn && isWithin(p.refundedOn, start, end));
+
+  const INCOME_LABELS: { category: PaymentCategory; label: string }[] = [
+    { category: 'Maintenance', label: 'Maintenance contributions' },
+    { category: 'Rent', label: 'Rent' },
+    { category: 'Booking', label: 'Short-stay bookings' },
+    { category: 'Utility', label: 'Utilities recovered' },
+    { category: 'Other', label: 'Other income' }
+  ];
+
+  const income: StatementGroup<IncomeLine>[] = [];
+  for (const { category, label } of INCOME_LABELS) {
+    const lines: IncomeLine[] = received
+      .filter(p => p.category === category)
+      .map(p => ({
+        id: p.id,
+        date: p.date,
+        payer: p.payerName || 'not recorded',
+        villa: villaOf(p.unitId, p.unitNumber),
+        reference: p.receiptNo || '',
+        amount: p.amount
+      }));
+
+    for (const p of refunded.filter(r => r.category === category)) {
+      lines.push({
+        id: `${p.id}-refund`,
+        date: p.refundedOn || p.date,
+        payer: `${p.payerName || 'payer'} — refunded${p.refundReason ? ` (${p.refundReason})` : ''}`,
+        villa: villaOf(p.unitId, p.unitNumber),
+        reference: p.receiptNo || '',
+        amount: -refundedAsOf(p)
+      });
+    }
+
+    if (lines.length === 0) continue;
+    lines.sort((a, b) => a.date.localeCompare(b.date) || a.payer.localeCompare(b.payer));
+    const total = sumMoney(lines.map(l => l.amount));
+
+    const visibility = incomeVisibility(category);
+    if (visibility === 'excluded') {
+      excludedIncome.push({ label, total });
+      continue;
+    }
+    income.push({ label, lines: visibility === 'itemised' ? lines : [], total, itemised: visibility === 'itemised' });
+  }
+
+  const totalIncome = sumMoney(income.map(g => g.total));
+
+  /* ---------------- expenditure ---------------- */
+
+  /*
+   * Everything the corporation actually paid in the period, whatever it was
+   * spent on. Work recharged to a villa is included — it is money that left the
+   * corporation's account — and its allocation is named on the line, so the
+   * recovery appearing on the income side can be matched against it.
+   */
+  const paid = expenses.filter(e => e.status === 'paid' && e.currency === currency && isWithin(e.datePaid || e.date, start, end));
+
+  const byCategory = new Map<string, ExpenditureLine[]>();
+  for (const e of paid) {
+    const lines = byCategory.get(e.category) || [];
+    lines.push({
+      id: e.id,
+      date: e.datePaid || e.date,
+      payee: e.vendor || 'not recorded',
+      description: e.description || '',
+      allocation: e.unitId ? villaOf(e.unitId, e.unitNumber) : e.unitNumber || 'General',
+      reference: e.reference || '',
+      amount: e.amount
+    });
+    byCategory.set(e.category, lines);
+  }
+
+  const expenditure: StatementGroup<ExpenditureLine>[] = Array.from(byCategory.entries())
+    .map(([label, lines]) => {
+      const total = sumMoney(lines.map(l => l.amount));
+      const visibility = expenditureVisibility(label);
+      return {
+        label,
+        lines:
+          visibility === 'itemised'
+            ? lines.slice().sort((a, b) => a.date.localeCompare(b.date) || a.payee.localeCompare(b.payee))
+            : [],
+        total,
+        itemised: visibility === 'itemised',
+        visibility
+      };
+    })
+    .filter(g => {
+      if (g.visibility !== 'excluded') return true;
+      excludedExpenditure.push({ label: g.label, total: g.total });
+      return false;
+    })
+    .map(({ visibility: _visibility, ...group }) => group)
+    .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+
+  const totalExpenditure = sumMoney(expenditure.map(g => g.total));
+
+  return {
+    currency,
+    from: start,
+    to: end,
+    income,
+    totalIncome,
+    expenditure,
+    totalExpenditure,
+    surplus: subtractMoney(totalIncome, totalExpenditure),
+    empty: income.length === 0 && expenditure.length === 0 && excludedIncome.length === 0 && excludedExpenditure.length === 0,
+    excludedIncome,
+    excludedExpenditure
+  };
 }
