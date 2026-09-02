@@ -33,12 +33,9 @@ next session from inside `pm-app`.
   also checks its own records at start-up. A full `npm test` takes about **six and a half minutes** —
   the 3,000 red team is about 2m30s and the 5,000 run about 3m. That is the price of the coverage; do not trim
   it to make the suite faster.
-- ⚠️ **The out-of-pocket shortfall report is built and uncommitted.** Everything up to and including
-  v1.10.4 is committed, pushed and released. The shortfall work (2026-09-02, third session) sits in
-  the working tree only — see its section below. **It is not in v1.10.4**, so dropping the v1.10.4
-  `.exe` on the HP does not bring it: it needs a commit, a tag and a release first.
-- **Nothing else is uncommitted.** No stashes, no unpushed tags. All work from the 2026-09-01 and
-  earlier 2026-09-02 sessions is committed, pushed, and released as v1.10.4.
+- **Nothing is uncommitted.** No stashes, no unpushed tags. All work from the 2026-09-01 and
+  2026-09-02 sessions is committed, pushed, and released — the out-of-pocket shortfall report as
+  **v1.11.0**, everything before it as v1.10.4.
 - **`main` and `origin/main` are level.** Check that with `git ls-remote origin main` against your
   own `git rev-parse main` — not against a hash copied into this file, and not against a local
   `origin/main` ref, which only says what the last fetch saw. **`main` sits a documentation commit
@@ -279,10 +276,15 @@ that is a change to make on purpose rather than in passing.
 
 ### Still to do
 
-**It has not been released.** The working tree holds it; `main` does not. To get it onto the HP:
-commit, tag **v1.11.0**, let the workflow build and publish the `.exe`, then drop that file in the
-same folder — **not the v1.10.4 one, which does not contain any of this.** No data is re-entered;
-the existing `db.json` is untouched and simply gains a field that is absent until Ro ticks it.
+**Released as v1.11.0 on 2026-09-02.** Drop that `.exe` in the same folder as the old one and confirm
+the version from the console window, not the sidebar. **No data is re-entered** — the existing
+`db.json` is untouched and simply gains a field that is absent until somebody ticks it.
+
+**Then the one manual step, and the report is empty until it is done:** open each villa VDS lets in
+the Units Register and tick **"Let on the corporation's own account"**. Nothing is ticked by default
+and nothing is guessed from the owner name, so before this the report correctly says *"No villa is
+marked as let on the corporation's own account"* rather than reporting zero. It is a different
+message from "nothing to report", deliberately.
 
 ## Session of 2026-09-02 (later) — five thousand operations, then read the paperwork
 
@@ -2159,13 +2161,11 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-⚠️ **Read this first: the shortfall report is not in v1.10.4.** It is built and tested but sits in
-the working tree, uncommitted. If the point of the upgrade is to get the shortfall report onto the
-HP, cut **v1.11.0** first and install that instead — the steps below are otherwise identical, with
-the version number changed. Installing v1.10.4 still fixes everything v1.10.0–v1.10.4 fixed, and
-loses nothing.
+⚠️ **Install v1.11.0, not v1.10.4.** v1.11.0 is the current release and contains everything v1.10.4
+did plus the out-of-pocket shortfall report. The steps below were written for v1.10.4 and are
+otherwise identical — read `v1.11.0` wherever they say `v1.10.4`, including on the console line.
 
-**1. Install v1.10.4 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
+**1. Install v1.11.0 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
 **in the same folder**, replacing the old one, and double-click it.
 
