@@ -3171,6 +3171,18 @@ export function outOfPocketShortfall(
  * owed contributions at month end, and how much in total. That is a fact about
  * the fund every proprietor is entitled to, and it is the boundary: a count and
  * a total, never a list.
+ *
+ * ⚠️ **Rent never appears here, in any form.** Ro, 2026-09-02: *"rent should not
+ * be included as it is not apart of the report, only maintenance contributions
+ * and the expenses, including payroll vendors utilities and all other
+ * expenses."* Rent is a landlord's business between an owner and their tenant;
+ * the corporation's fund is owed contributions and nothing else. So the income
+ * side reads `collectedInPeriod(...).maintenance` alone — never `.total`, which
+ * would sweep in rent, short-stay receipts and utility recoveries — and the
+ * arrears count is over the Maintenance account only, so a tenant who has not
+ * paid their rent can never put a lot on this document. A test banks rent, a
+ * booking and a utility recovery in the month and asserts **not one figure
+ * moves.**
  */
 export interface MonthlyOwnersReport {
   currency: Currency;

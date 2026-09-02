@@ -174,9 +174,11 @@ export default function MonthlyOwnersReport({ units, charges, payments, expenses
       )}
 
       <InfoNote>
-        Identical for every proprietor. It reports <strong>the fund</strong> &mdash; contributions received and what the
-        property spent &mdash; and carries nothing about any individual lot: no balances, and the arrears line is a
-        count and a total with nobody named. Costs are shown by category; the itemised statement naming every payee is
+        Identical for every proprietor. It reports <strong>the fund</strong> &mdash; maintenance contributions received
+        and what the property spent on payroll, vendors, utilities and everything else &mdash; and carries nothing
+        about any individual lot: no balances, and the arrears line is a count and a total with nobody named.{' '}
+        <strong>Rent is not on it</strong>, nor short-stay income: that is a landlord&rsquo;s business between an owner
+        and their tenant, and the corporation&rsquo;s fund is owed contributions and nothing else. Costs are shown by category; the itemised statement naming every payee is
         the operating statement, under Operational Reports. Prepared on a cash basis.{' '}
         <strong>Each currency is a separate report</strong> and no figure combines them.
       </InfoNote>
@@ -331,8 +333,10 @@ export function MonthlyReportDocument({
 
       <p className="mb-4 text-[11px] leading-relaxed">
         This report is circulated to the proprietors of <strong>{bodyCorporateName(settings)}</strong> and is the same
-        for every owner. It sets out how the property was run in the month stated: the contributions the fund received
-        and what it spent. Prepared on a cash basis &mdash; contributions counted when received and costs when paid.{' '}
+        for every owner. It sets out how the property was run in the month stated: the maintenance contributions the
+        fund received, and what it spent running the property. Prepared on a cash basis &mdash; contributions counted
+        when received and costs when paid. <strong>Rent and short-stay income do not form part of it</strong>, being a
+        matter between an owner and their tenant rather than the corporation&rsquo;s.{' '}
         <strong>It carries nothing about any individual lot.</strong>
       </p>
 

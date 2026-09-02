@@ -184,6 +184,98 @@ export default async function run({ port, projectRoot }) {
     );
 
     /* ================================================================
+     * Rent is not the corporation's money, and never reaches this report
+     * ================================================================ */
+
+    /*
+     * Ro, 2026-09-02: "rent should not be included as it is not apart of the
+     * report, only maintenance contributions and the expenses, including payroll
+     * vendors utilities and all other expenses."
+     *
+     * Asserted by putting the money through and checking that nothing moves,
+     * rather than by reading the code: rent, a short-stay receipt and a utility
+     * recovery all land in the same month, in the same currency, against the
+     * same lots. If any of them ever reaches this document, every figure below
+     * changes and this fails.
+     */
+    const before = JSON.stringify(monthlyOwnersReport(db.units, db.charges, db.payments, db.expenses, 'JMD', MONTH));
+
+    await c.put('/api/units/unit-4', {
+      number: '4',
+      ownerName: 'Owner Four',
+      tenantName: 'A Tenant',
+      tenantChangeIntent: 'changeover',
+      tenantMovedInOn: '2026-06-01',
+      status: 'long-term',
+      monthlyRent: 90000,
+      monthlyMaintenance: 20000,
+      currency: 'JMD',
+      maintCurrency: 'JMD',
+      rentDueDay: 1,
+      maintDueDay: 1
+    });
+    await recordAndConfirmPayment(c, {
+      unitId: 'unit-4',
+      category: 'Rent',
+      amount: 90000,
+      currency: 'JMD',
+      payerName: 'A Tenant',
+      method: 'Bank Transfer',
+      date: '2026-06-07',
+      confirmNoOpenCharge: true
+    });
+    await recordAndConfirmPayment(c, {
+      unitId: 'unit-4',
+      category: 'Booking',
+      amount: 15000,
+      currency: 'JMD',
+      payerName: 'A Guest',
+      method: 'Credit Card',
+      date: '2026-06-08',
+      confirmNoOpenCharge: true
+    });
+    await recordAndConfirmPayment(c, {
+      unitId: 'unit-4',
+      category: 'Utility',
+      amount: 6000,
+      currency: 'JMD',
+      payerName: 'Owner Four',
+      method: 'Cash',
+      date: '2026-06-09',
+      confirmNoOpenCharge: true
+    });
+
+    const withRent = (await c.get('/api/db')).body;
+    const after = monthlyOwnersReport(withRent.units, withRent.charges, withRent.payments, withRent.expenses, 'JMD', MONTH);
+
+    T.check(
+      'J$90,000 of rent received in the month changes nothing on this report',
+      after.contributionsReceived === 40000,
+      `contributions read ${after.contributionsReceived} after rent was banked`
+    );
+    T.check('nor does a short-stay receipt', after.contributionsReceived === 40000 && after.surplus === 5000, JSON.stringify([after.contributionsReceived, after.surplus]));
+    T.check('nor a utility recovery from an owner', after.costsPaid === 35000, String(after.costsPaid));
+    T.check(
+      'the arrears count is over contributions only, never rent',
+      after.lotsInArrears === 1,
+      `${after.lotsInArrears} lots — a tenant owing rent must not appear as a lot in arrears`
+    );
+
+    /*
+     * A tenant who pays no rent at all is a matter between that owner and their
+     * tenant. The corporation's fund is owed maintenance and nothing else, so
+     * the arrears line must not stir when rent goes unpaid.
+     */
+    await c.post('/api/charges/post-month', { monthString: MONTH });
+    const withUnpaidRent = (await c.get('/api/db')).body;
+    const unpaidRent = monthlyOwnersReport(withUnpaidRent.units, withUnpaidRent.charges, withUnpaidRent.payments, withUnpaidRent.expenses, 'JMD', MONTH);
+    T.check(
+      'and unpaid rent does not put a lot into arrears on the proprietors’ report',
+      unpaidRent.lotsInArrears <= 2,
+      `${unpaidRent.lotsInArrears} lots in arrears — rent has leaked into the contributions figure`
+    );
+
+    /* ================================================================
      * Currencies stay apart
      * ================================================================ */
 

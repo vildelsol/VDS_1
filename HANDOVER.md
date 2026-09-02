@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,650 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,655 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
@@ -134,6 +134,18 @@ not, on a document that goes to all of them.
 **No payee is named either.** The itemised statement naming every contractor is the operating
 statement, and that is the council's document. A circular to sixteen households is not the place.
 
+⚠️ **Rent is not on it, in any form, and this is now asserted rather than assumed.** Ro, 2026-09-02:
+*"rent should not be included as it is not apart of the report, only maintenance contributions and
+the expenses, including payroll vendors utilities and all other expenses."* Rent is a landlord's
+business between an owner and their tenant; the corporation's fund is owed contributions and nothing
+else. The income side reads `collectedInPeriod(...).maintenance` alone — **never `.total`**, which
+would sweep in rent, short-stay receipts and utility recoveries — and the arrears count is over the
+Maintenance account only, so a tenant who has not paid rent can never put a lot on this document.
+**A test banks rent, a booking and a utility recovery into the month and asserts that not one figure
+moves**, and another leaves a month's rent unpaid and asserts no lot appears in arrears because of
+it. The page and the printed document both say so in words, because a proprietor reading a report of
+a property they know is let will otherwise wonder where the rent went.
+
 Built on `operationsStatement()` rather than a new engine — it already computes contributions
 received, common costs by category, the surplus, and the unpaid and recharged memos. `monthlyOwnersReport()`
 composes that with the arrears count, which is **contributions only**: rent arrears are a landlord's
@@ -144,7 +156,7 @@ whose money the document is about.
 handed to an owner is one they will be held to. Choosing the current month is allowed and says so on
 the page rather than being refused.
 
-⚠️ **The test that matters most here is the one that reads the finished page.** 26 checks in
+⚠️ **The test that matters most here is the one that reads the finished page.** 31 checks in
 `test/monthly-owners-report.test.mjs`, and the last five render the printed document and fail if a
 proprietor's name, a villa, a payee or a personal balance has found its way onto it. This is the one
 document in the application that goes to sixteen households, and a balance leaking onto it cannot be
