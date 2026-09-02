@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,461 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,489 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, and three **1,000-simulation expert suites** (property manager, architect,
   security). The application also checks its own records at start-up. A full `npm test` takes roughly
@@ -81,8 +81,9 @@ next session from inside `pm-app`.
   could lie, and did.** From v1.10.1 the server states its own version in two places a cache cannot
   reach: `GET /api/health` returns it, and the console window prints it (with the records folder)
   on start-up. The screen shows both numbers and raises a banner when they disagree.
-- Latest release: **v1.10.2**, tagged 2026-09-01 — posted is no longer the same as due (below).
-  **The HP needs v1.10.2.**
+- Latest release: **v1.10.3**, tagged 2026-09-02 — the printed records carry every record (below).
+  **The HP needs v1.10.3.**
+- Previous release: **v1.10.2**, tagged 2026-09-01 — posted is no longer the same as due (below).
 - Previous release: **v1.10.1**, tagged 2026-09-01 — the version-visibility fix above. Supersedes
   v1.10.0 in every respect.
 - Previous release: **v1.10.0**, tagged 2026-09-01 on `7b2d21f` — the owner-statement and currency
@@ -95,6 +96,78 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.10.1.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-09-02 — a printed record that left half the money off
+
+Ro recorded a rent payment and a maintenance payment against C11, opened the villa in the register,
+pressed **Print record**, and found only the rent. *"this is a major gap that needs to be fixed."*
+
+**Reproduced before anything was changed**, by rendering the two documents and asking what each
+contained. The result:
+
+| | rent receipt | maintenance receipt |
+|---|---|---|
+| **Print unit ledger** (unit detail, bottom) | shown | shown |
+| **Print record** (beside a tenancy) | shown | **absent, and unmentioned** |
+
+The button opens `TenancyRecordDocument`, which filters both charges and payments to
+`category === 'Rent'`. That is **correct by design** — a tenant is not handed the proprietor's
+maintenance account, and maintenance is the owner's liability, never the tenant's. The document is
+even titled "Tenant Record" with a table headed "Rent account for this occupancy".
+
+⚠️ **The fault was not the omission. It was that nothing declared it.** A document that looks like the
+villa's complete record and silently drops a class of money is indistinguishable, to whoever is
+reading it, from data that was never saved — and that is exactly the conclusion Ro drew. This
+property's own rule was already written down for the operating statement and simply had not been
+applied here: *a statement that quietly omits a class of money is not a narrower document, it is a
+misleading one.*
+
+### What changed
+
+1. **The tenant record declares what it leaves out**, in the same shape the operating statement uses:
+   *"Not included on this record: maintenance contributions for this villa — J$20,000.00 billed and
+   J$20,000.00 received across 1 receipt. That is the proprietor's account, not the tenant's. It is
+   recorded, and it appears on the villa's unit ledger and on the owner's statement."* It appears only
+   when there is something to declare, so it never becomes noise on a document with no maintenance on
+   it. A standing line under the heading also states that the record covers rent only, and why.
+2. **The button is now "Print tenant record"**, not "Print record". It was one word away from being
+   read correctly.
+3. ⚠️ **A second, larger gap the audit found: the unit ledger listed every receipt and not one
+   charge.** The villa's own record showed money coming in with nothing to reconcile it against — a
+   proprietor querying a balance could be handed it and still not see what they had been billed. A
+   new **"II. Charges raised"** section itemises every charge with its due date, period, category,
+   who it was billed to, description and status. **Voided charges are kept and struck through with
+   the reason**: they are in no balance by design, but a record that quietly drops a cancelled charge
+   invites the question of what else it dropped.
+
+### Printed documents could not be tested at all until now — that was the real hole
+
+Every printed document in this application lives inside `PrintPortal`, which called
+`document.createElement` and returned a `createPortal`. Neither works under `react-dom/server`, so
+**not one printed document could be rendered by a test.** The figures feeding them were covered by
+hundreds of checks; the documents themselves by none. That is why a whole class of record could go
+missing from one and nothing noticed.
+
+`PrintPortal` now holds a null host when there is no DOM and returns the same tree inline. In a
+browser nothing changes — the portal is still used, still attached to `<body>`, still paginating the
+same way.
+
+**`test/printed-records.test.mjs` — 28 checks.** Every class of record the application can hold
+against a villa is seeded with a unique marker, both documents are rendered, and each is asked what it
+shows: rent and maintenance charges, a voided charge and its reason, rent and maintenance receipts,
+utility readings, reservations, expenses and the vendor paid, logged activity and its note, occupancy
+history, the owner. Plus the empty case — a villa with nothing on it must *say* nothing was recorded
+rather than dropping the section — and the negative case, that the exclusion notice does not appear
+when there is no maintenance to exclude.
+
+⚠️ **A trap in the test files themselves, worth knowing.** The first version of the activity fixture
+invented field names (`summary`, `occurredOn`) and the suite duly reported that the unit ledger was
+dropping recorded activity. It was not — the fixture was wrong. **These files are plain `.mjs` and
+nothing typechecks them**, so a fixture that does not match the interface produces a confident, wrong
+answer in either direction. When a check here fails, read the type in `src/types.ts` before believing
+it.
+
+**1,489 tests pass.**
 
 ## Session of 2026-09-01 (later still) — posted is not due, and a test reading a UTC clock
 

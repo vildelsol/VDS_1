@@ -593,7 +593,7 @@ function UnitDetail({
                         title="Print this tenant's own record"
                         className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-600 hover:bg-slate-50"
                       >
-                        <Printer className="h-3 w-3" /> Print record
+                        <Printer className="h-3 w-3" /> Print tenant record
                       </button>
                       {tenancy.status === 'active' && canEvict && (
                         <button
@@ -1907,7 +1907,7 @@ function LogActivityModal({
 
 /* ------------------------------------------------------------------ */
 
-function UnitLedgerDocument({
+export function UnitLedgerDocument({
   unit,
   units,
   charges,
@@ -1949,6 +1949,23 @@ function UnitLedgerDocument({
     [expenses, unit, units]
   );
   const activities = unitActivities.filter(a => a.unitId === unit.id);
+  /*
+   * What was billed, itemised.
+   *
+   * This document listed every receipt and not one charge, so it showed money
+   * coming in with nothing to reconcile it against: a proprietor querying their
+   * balance could be handed the villa's own record and still not see what they
+   * had been billed for. The account cards above give the totals; this is what
+   * makes those totals checkable.
+   *
+   * Voided charges are kept, marked as void. They are in no balance by design,
+   * but a charge that was raised and cancelled is part of the villa's history and
+   * a record that quietly drops it invites the question of what else it dropped.
+   */
+  const unitCharges = useMemo(
+    () => chargesForUnit(charges, unit, units).sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
+    [charges, unit, units]
+  );
   const rent = accountBalance(unit, 'Rent', charges, payments, undefined, units);
   const maint = accountBalance(unit, 'Maintenance', charges, payments, undefined, units);
 
@@ -2029,7 +2046,44 @@ function UnitLedgerDocument({
         </PrintSection>
       )}
 
-      <PrintSection title="II. Payments received">
+      <PrintSection title="II. Charges raised">
+        {unitCharges.length === 0 ? (
+          <p className="text-xs italic text-slate-500">No charges have been raised against this villa.</p>
+        ) : (
+          <TableScroller>
+            <table className="w-full text-left text-[10px]">
+              <thead>
+                <tr className="font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Due</th>
+                  <th className="p-2">Period</th>
+                  <th className="p-2">Category</th>
+                  <th className="p-2">Billed to</th>
+                  <th className="p-2">Description</th>
+                  <th className="p-2">Status</th>
+                  <th className="p-2 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {unitCharges.map(c => (
+                  <tr key={c.id} className={c.status === 'void' ? 'text-slate-400 line-through' : ''}>
+                    <td className="p-2">{formatDayLabel(c.dueDate)}</td>
+                    <td className="p-2">{formatMonthLabel(c.periodMonth)}</td>
+                    <td className="p-2 font-sans">{c.category}</td>
+                    <td className="p-2 font-sans">{c.payerName}</td>
+                    <td className="p-2 font-sans">{c.description || '—'}</td>
+                    <td className="p-2 font-sans">{c.status === 'void' ? `Void${c.voidReason ? ` — ${c.voidReason}` : ''}` : 'Open'}</td>
+                    <td className="p-2 text-right">
+                      {formatMoney(c.amount, c.currency)} {c.currency}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        )}
+      </PrintSection>
+
+      <PrintSection title="III. Payments received">
         {unitPayments.length === 0 ? (
           <p className="text-xs italic text-slate-500">No payments recorded for this villa.</p>
         ) : (
@@ -2064,7 +2118,7 @@ function UnitLedgerDocument({
         )}
       </PrintSection>
 
-      <PrintSection title="III. Utility meter readings">
+      <PrintSection title="IV. Utility meter readings">
         {unitUtilities.length === 0 ? (
           <p className="text-xs italic text-slate-500">No meter readings recorded for this villa.</p>
         ) : (
@@ -2098,7 +2152,7 @@ function UnitLedgerDocument({
       </PrintSection>
 
       {unitExpenses.length > 0 && (
-        <PrintSection title="IV. Expenses charged to this villa">
+        <PrintSection title="V. Expenses charged to this villa">
           <TableScroller>
             <table className="w-full text-left text-[10px]">
               <thead>
@@ -2129,7 +2183,7 @@ function UnitLedgerDocument({
       )}
 
       {unitBookings.length > 0 && (
-        <PrintSection title="V. Guest reservations">
+        <PrintSection title="VI. Guest reservations">
           <TableScroller>
             <table className="w-full text-left text-[10px]">
               <thead>
@@ -2162,7 +2216,7 @@ function UnitLedgerDocument({
       )}
 
       {activities.length > 0 && (
-        <PrintSection title="VI. Resident &amp; property activity">
+        <PrintSection title="VII. Resident &amp; property activity">
           <TableScroller>
             <table className="w-full text-left text-[10px]">
               <thead>
@@ -2215,7 +2269,7 @@ function PrintSection({ title, children }: { title: string; children: React.Reac
  * money. Charges and receipts are therefore filtered to the tenancy's own dates,
  * so a previous or subsequent tenant's figures can never appear on it.
  */
-function TenancyRecordDocument({
+export function TenancyRecordDocument({
   tenancy,
   unit,
   units,
@@ -2262,6 +2316,40 @@ function TenancyRecordDocument({
         currency: p.currency
       }));
     return [...debits, ...credits].sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'charge' ? -1 : 1));
+  }, [charges, payments, unit, units, start, end]);
+
+  /*
+   * What this document deliberately leaves out, measured so it can be declared.
+   *
+   * A tenant record is a record of the tenant's own account, and maintenance is
+   * the proprietor's liability — so rent is the whole of it, by design. What was
+   * missing was saying so. On 2026-09-02 Ro recorded a rent payment and a
+   * maintenance payment against C11, printed this document, and found only the
+   * rent: the reasonable conclusion is that the maintenance receipt was never
+   * saved. It was. It is simply not a tenant's business, and nothing on the page
+   * said that.
+   *
+   * The rule this now follows is the property's own, already written down for the
+   * operating statement: a document that quietly omits a class of money is not a
+   * narrower document, it is a misleading one. So the amount is named, with where
+   * to find it.
+   */
+  const excludedMaintenance = useMemo(() => {
+    if (!unit) return null;
+    const paid = paymentsForUnit(payments, unit, units).filter(
+      p => p.category === 'Maintenance' && p.status === 'completed' && inWindow(p.date)
+    );
+    const billed = chargesForUnit(charges, unit, units).filter(
+      c => c.category === 'Maintenance' && c.status === 'open' && inWindow(c.dueDate)
+    );
+    if (paid.length === 0 && billed.length === 0) return null;
+    const cur = billed[0]?.currency || paid[0]?.currency || 'JMD';
+    return {
+      currency: cur,
+      billed: sumMoney(billed.filter(c => c.currency === cur).map(c => c.amount)),
+      paid: sumMoney(paid.filter(p => p.currency === cur).map(p => p.amount)),
+      receipts: paid.length
+    };
   }, [charges, payments, unit, units, start, end]);
 
   const currency = tenancy.currency || unit?.currency || 'JMD';
@@ -2321,6 +2409,10 @@ function TenancyRecordDocument({
       <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
         Rent account for this occupancy
       </h3>
+      <p className="mb-2 text-[10px] italic text-slate-600">
+        This is the tenant&rsquo;s own account and covers rent only. Maintenance contributions are the
+        proprietor&rsquo;s liability, not the tenant&rsquo;s, and are never charged to this account.
+      </p>
 
       {rows.length === 0 ? (
         <p className="text-xs italic text-slate-500">No rent charges or receipts fall inside this occupancy period.</p>
@@ -2366,10 +2458,26 @@ function TenancyRecordDocument({
         </strong>
       </p>
 
+      {excludedMaintenance && (
+        <p className="mt-4 rounded-lg border border-slate-300 bg-slate-50 p-3 text-[11px] text-slate-700 print-outline">
+          <strong>Not included on this record:</strong> maintenance contributions for this villa —{' '}
+          {formatMoney(excludedMaintenance.billed, excludedMaintenance.currency)} billed
+          {excludedMaintenance.receipts > 0 && (
+            <>
+              {' '}and {formatMoney(excludedMaintenance.paid, excludedMaintenance.currency)} received across{' '}
+              {excludedMaintenance.receipts} receipt{excludedMaintenance.receipts === 1 ? '' : 's'}
+            </>
+          )}
+          . That is the proprietor&rsquo;s account, not the tenant&rsquo;s. It is recorded, and it appears on the
+          villa&rsquo;s unit ledger and on the owner&rsquo;s statement.
+        </p>
+      )}
+
       <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
         This record covers {tenancy.tenantName} only, for the occupancy dates shown above. Rent charged and received
         outside those dates belongs to another occupancy and is deliberately excluded. For everything that has happened
-        to this villa across all occupants, print the unit ledger instead.
+        to this villa across all occupants — every charge, every receipt in every category, utilities, expenses and
+        activity — print the unit ledger instead.
       </p>
 
       <PrintSignatures left="Prepared by" leftName={generatedBy} right="Tenant acknowledgement" rightName={tenancy.tenantName} />

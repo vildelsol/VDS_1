@@ -41,11 +41,24 @@ export default function PrintPortal({
   maxWidthClass = 'max-w-4xl',
   children
 }: PrintPortalProps) {
-  const [host] = useState(() => document.createElement('div'));
+  /*
+   * Null where there is no DOM.
+   *
+   * Every printed document in this application lives inside this component, and
+   * a portal cannot be rendered by react-dom/server — which meant not one of
+   * these documents could be asserted on by a test. That is not a small gap: the
+   * printed record is the artefact that leaves the property and is handed to an
+   * owner, a tenant or an accountant, and until now the suite could only check
+   * the figures that fed it, never the document itself. Rendering the same tree
+   * inline when there is no document object costs nothing in a browser — where
+   * the portal is still used, unchanged — and makes every one of them testable.
+   */
+  const [host] = useState<HTMLElement | null>(() => (typeof document === 'undefined' ? null : document.createElement('div')));
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
   useEffect(() => {
+    if (!host) return;
     host.className = 'vds-print-root';
     document.body.appendChild(host);
     // Stop the page behind the preview from scrolling.
@@ -70,7 +83,7 @@ export default function PrintPortal({
     window.setTimeout(() => window.print(), 0);
   };
 
-  return createPortal(
+  const sheet = (
     <div className="vds-print-overlay fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-slate-900/60 p-4 backdrop-blur-xs">
       <div className={`vds-print-sheet w-full ${maxWidthClass} my-4 flex flex-col rounded-2xl border border-slate-100 bg-white shadow-2xl`}>
         <div className="vds-print-toolbar sticky top-0 z-10 flex items-center justify-between gap-3 rounded-t-2xl border-b border-slate-100 bg-slate-50 p-4">
@@ -117,9 +130,13 @@ export default function PrintPortal({
           </p>
         </div>
       </div>
-    </div>,
-    host
+    </div>
   );
+
+  // In a browser the document is portalled to <body>, outside the React root, so
+  // the print stylesheet can hide the app and let the sheet paginate. With no DOM
+  // there is nothing to portal into, and the same tree is returned directly.
+  return host ? createPortal(sheet, host) : sheet;
 }
 
 /**
