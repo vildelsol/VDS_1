@@ -275,6 +275,17 @@ function PermissionsPanel({
                         Financial control — grant sparingly and review it in the audit trail.
                       </span>
                     )}
+                    {/*
+                      Said here so nobody withdraws this expecting it to be a
+                      lock. It hides a screen; it does not hide the receipts the
+                      screen is built from, which are on the ledger already.
+                    */}
+                    {key === 'viewShortfall' && (
+                      <span className="mt-0.5 block text-[10px] text-slate-500">
+                        VDS&rsquo;s own position as a landlord, never an owner or council document. On for everyone by default.
+                        Withdrawing it hides the screen, not the receipts underneath.
+                      </span>
+                    )}
                   </td>
                   {EDITABLE_ROLES.map(role => (
                     <td key={role} className="p-4 text-center">

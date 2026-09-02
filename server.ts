@@ -2255,6 +2255,17 @@ app.put(
         monthlyMaintenance,
         entitlement: readEntitlement(),
         strataLotNumber: optionalString(body.strataLotNumber ?? original.strataLotNumber, 40),
+        /*
+         * Whether VDS lets this villa on its own account — the flag the
+         * out-of-pocket shortfall report is scoped by.
+         *
+         * Only a genuine boolean moves it, and an absent field leaves it
+         * exactly as it was, so a client that does not know about this field
+         * cannot clear it by omission. The same rule `hidePropertyHealth`
+         * follows, and for the same reason: live databases exist that were
+         * written before the field.
+         */
+        letOnOwnAccount: body.letOnOwnAccount === undefined ? original.letOnOwnAccount : body.letOnOwnAccount === true,
         currency,
         maintCurrency,
         meterNumber,
@@ -2333,6 +2344,12 @@ app.put(
       if (original.monthlyMaintenance !== monthlyMaintenance) parts.push('maintenance fee changed');
       if (original.entitlement !== updatedUnit.entitlement) parts.push('unit entitlement changed');
       if (original.strataLotNumber !== updatedUnit.strataLotNumber) parts.push('strata lot number changed');
+      if ((original.letOnOwnAccount === true) !== (updatedUnit.letOnOwnAccount === true))
+        parts.push(
+          updatedUnit.letOnOwnAccount === true
+            ? 'now let on the corporation\u2019s own account'
+            : 'no longer let on the corporation\u2019s own account'
+        );
 
       addAudit(
         db,

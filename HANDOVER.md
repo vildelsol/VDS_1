@@ -26,15 +26,19 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,503 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,575 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
   also checks its own records at start-up. A full `npm test` takes about **six and a half minutes** —
   the 3,000 red team is about 2m30s and the 5,000 run about 3m. That is the price of the coverage; do not trim
   it to make the suite faster.
-- **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. All work from the
-  2026-09-01 and 2026-09-02 sessions is committed, pushed, and released as v1.10.4.
+- ⚠️ **The out-of-pocket shortfall report is built and uncommitted.** Everything up to and including
+  v1.10.4 is committed, pushed and released. The shortfall work (2026-09-02, third session) sits in
+  the working tree only — see its section below. **It is not in v1.10.4**, so dropping the v1.10.4
+  `.exe` on the HP does not bring it: it needs a commit, a tag and a release first.
+- **Nothing else is uncommitted.** No stashes, no unpushed tags. All work from the 2026-09-01 and
+  earlier 2026-09-02 sessions is committed, pushed, and released as v1.10.4.
 - **`main` and `origin/main` are level.** Check that with `git ls-remote origin main` against your
   own `git rev-parse main` — not against a hash copied into this file, and not against a local
   `origin/main` ref, which only says what the last fetch saw. **`main` sits a documentation commit
@@ -104,6 +108,181 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.10.4.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-09-02 (latest) — the out-of-pocket shortfall report
+
+Ro: *"Build the shortfall report since it is ready to be built. The system is up and running so
+these will be updates as I am not reinputting information from scratch once more."*
+
+Built to the design recorded in this file on 2026-09-02 and **not redesigned**. Nothing about it
+requires re-entering data: the one new field is optional and absent on every existing record.
+
+### What it is
+
+**Operational Reports → Out-of-pocket shortfall**, the last thing on the screen, under the operating
+statement, badged **INTERNAL**. It answers a question the books have never been able to: on the
+villas VDS lets on its own account the maintenance contribution is funded out of the rent that villa
+collects, so **a month with no tenant is a month VDS paid the contribution out of its own pocket**.
+The system bills a vacant villa perfectly correctly and has never modelled any link between the two.
+
+**It is not a strata document, and the placement is load-bearing.** The operating statement above it
+is the corporation's income and expenditure; this is VDS's own trading position as a landlord. On
+one page they would be read as one set of books, which is why the report carries the internal badge
+on screen, on the printed page and on the Excel sheet.
+
+**Two views off one engine**, because there are two questions: **by villa** (is this villa worth
+letting?) and **by month** (how much cash did we need to find?). Both fold from the same villa-month
+grain and a test asserts they agree.
+
+**The headline is a sentence, not a column total:** *"VDS funded J$80,000.00 from its own account
+across 4 vacant villa-months"* — with those months **named** underneath it, villa by villa, with
+what each one cost. A figure with no list behind it is not something anybody can act on.
+
+### The one decision that could not be guessed, and how it was answered
+
+**How does the system know which villas are VDS's own?** There was no such field, and `unit.ownerName`
+is free text — matching on a name breaks silently the day somebody types "Villaggio Del Sol Ltd."
+instead of "VDS", and a dropped villa *understates* the only figure the report exists to state.
+
+The answer put to Ro on 2026-09-02 and built: **a tick box on the villa register** — *"Let on the
+corporation's own account"*, in the edit dialog under the entitlement and strata lot fields.
+Explicit, survives a rename, one field.
+
+⚠️ **Nothing is ticked on the live database, and nothing guesses.** `letOnOwnAccount` is optional and
+**absent means no**, deliberately — a register written before the field existed cannot be assumed to
+hold VDS's own villas, and claiming villas that are not ours would overstate the shortfall. So on
+first run the report says *"No villa is marked as let on the corporation's own account"* and tells
+the reader where to tick. **That is a one-off setup step Ro does by hand, and until it is done the
+report is correctly empty.** It is deliberately a different message from "nothing to report".
+
+The flag follows the `hidePropertyHealth` rule on the server: **only a genuine boolean moves it, and
+an absent field leaves it alone**, so a client that does not know about it cannot clear it by
+omission. Both directions are written to the audit trail.
+
+### What the figures mean
+
+- **Cash basis**, matching the operating statement: earnings counted when **received**, the
+  contribution when **paid**, refunds subtracted on the day the money went **back out**.
+- **Shortfall = maintenance paid − what the villa earned, floored at zero, per villa per month.** Never
+  netted: a villa that earned more than its contribution does not subsidise one that earned
+  nothing, and the total is summed from the villa-months rather than taken as the difference
+  of two totals. A test asserts those two are different numbers on the seeded data, so the cheaper
+  arithmetic cannot creep back in.
+- **Occupied days come from tenancies and bookings, never from `unit.status`** — a status flag has no
+  history and would answer every past month with today's answer.
+- **The vacant-month count is over months that actually cost something**, not over every empty month.
+  Found in the browser before release: the headline read "J$80,000 across 13 vacant villa-months"
+  above a list of four, because eight of those months predated any payment and cost nothing. The
+  sentence and the list have to describe the same months.
+- **Currencies never meet.** One report per currency, and a villa taking rent in one currency while
+  billed its contribution in another is **given no shortfall at all** — it is kept off the rows
+  entirely and **named** in a "no shortfall computed" note, because a subtraction across two moneys
+  invents a figure and half a row puts a meaningless number into a total.
+- ⚠️ **Short-stay income counts towards the contribution, and this was corrected after the first
+  cut.** The engine originally offset the contribution with long-term rent alone and carried booking
+  receipts as a declared memo, which is how the design was written. Ro, reading it: *"when a unit is
+  vacant or under short term/airbnb Villaggio still has to cover that cost"*. A villa that earned
+  US$900 on Airbnb in a month its contribution was US$200 cost VDS nothing, and the first engine said
+  it cost US$200 — **overstating the shortfall on exactly the villas the report exists to judge.**
+  **Earnings are now rent plus short-stay receipts**, each in its own column with an `Earned` column
+  between them and the contribution, because *how* a villa was let is a separate question from
+  whether it paid for itself.
+- **The headline counts every villa-month that cost money, not only the empty ones.** That follows
+  from the above: a villa let cheaply on short stay that did not cover its contribution cost VDS
+  money too, and a headline counting only wholly-empty months would leave it out of the figure it
+  belongs in. It reads *"VDS funded $950.00 from its own account across 5 villa-months. 4 of them
+  stood empty for the whole month, accounting for $800.00."* Each month in the list underneath is
+  named as either **"empty all month"** or **"let, earned less than the contribution"**.
+
+### Where it lives
+
+`outOfPocketShortfall()` in `src/lib/finance.ts`; `letOnOwnAccount` on `Unit` in `src/types.ts`;
+the tick box in `src/components/Units.tsx`; the screen, the Excel export and the printed document in
+`src/components/ShortfallReport.tsx` (`ShortfallDocument` is exported so the printed page can be
+rendered and asserted); mounted in `src/components/Reports.tsx`, which now also takes `tenancies`.
+The server accepts the flag on `PUT /api/units/:id`. **No new top-level collection**, so the `/api/db`
+projection trap does not apply — the flag rides on the unit record that is already returned.
+
+### Tests — 1,503 → 1,575
+
+**`test/shortfall-report.test.mjs`**, 72 checks: the tick box round trip (including that an unrelated
+edit which omits the field does not clear it, that a string is not a tick, and that both directions
+are audited), the arithmetic, occupancy from dated records, refunds landing in the month the money
+left, unconfirmed money counting for nothing, the two views reconciling, the currencies staying
+apart, the villa with two currencies being named rather than computed, and **the printed document
+rendered and asked what it shows** — the headline, both views, the named vacant months, the internal
+banner, the declared short-stay receipts and the named uncomputed villa.
+
+**The 400-scenario reporting audit now audits this engine after every scenario**, the way
+`annualOwnersReport` and `operationalHealth` are. Nothing in the simulation ticks the flag, so the
+audit flags **every third villa on a copy of the register** and asserts against real tenancies,
+bookings and receipts — with a guard that fails if it ever runs against an empty report. That guard
+is the annual-report lesson, restated: *a green assertion that ran against nothing is not coverage.*
+
+### Internal only — every member of staff, and nothing an owner sees
+
+Ro, 2026-09-02: *"The shortfall is for internal uses only, it should not be reflected in any public
+facing reports whatsoever, that includes owners. this is just for us as admin."* Then, when it was
+first built for administrators alone: *"just for us as admin means every staff member who has an
+account so ensure every role can see it, not just adminstrators. Or make it an access checkbox in
+the settings."*
+
+**So internal means internal to the office, not to one login**, and it is both: every role sees it,
+and the choice lives in System Settings.
+
+- **`viewShortfall` is a role permission, granted to every role by default** and editable in the
+  System Settings permission grid like every other one. Administrators are never gated, as
+  everywhere else. **Absent means granted** — a database written before the field must not read the
+  missing value as a denial and take the report off the team on the next restart, which is the rule
+  `recordPayments` already follows for the same reason.
+- **The section is a switch, and it is closed by default.** Ro: *"make it a toggle switch as it is
+  not something we need to have open permanently."* Operational Reports is a screen people leave
+  open in front of whoever is at the desk. Nothing is computed while it is shut — which is also the
+  cheapest state, since the engine walks every day in the period across every villa.
+
+- **`outOfPocketShortfall` has exactly one caller in the whole application**, and it is this screen.
+  No owner statement, board pack, annual report, operating statement or operations statement touches
+  it, and none ever should. **A test walks every component file and fails if a second caller
+  appears** — the wiring is asserted, not trusted.
+- **The screen renders for every role that holds `viewShortfall`** (`maySeeShortfall()` in
+  `ShortfallReport.tsx`). A role it has been withdrawn from gets nothing at all — not a stub, not an
+  empty card. Asserted for all four roles, for a withdrawn permission, for an administrator (never
+  gated), and for a session that predates the field.
+- **The owner-statement screen is rendered from live data and searched** for this report's language.
+  It says nothing about it.
+- ⚠️ **This is a visibility rule, not a security boundary, and it must not be described to Ro as
+  one.** It is said on the settings row itself, too, so nobody withdraws it expecting a lock. Every screen computes from `/api/db`, which any signed-in session can fetch, and the
+  receipts underneath are already on the ledger. Hiding the screen keeps VDS's trading position off a
+  colleague's page; it does not put it behind a lock. A real boundary needs the figures computed on
+  the server behind a permission — a different piece of work, not yet asked for.
+- **`letOnOwnAccount` does travel inside the `OwnerStatement` object**, because that object embeds
+  the whole unit record — exactly as the owner's email, the meter number and the internal notes
+  always have. **Nothing renders it.** The test asserts on what is rendered rather than on the JSON,
+  because a failing assertion about a field nobody can see would say nothing about what an owner
+  reads.
+- **Unrelated older uses of the word "shortfall" exist and are not this.** The annual report's
+  shortfall is the corporation's contributions-versus-expenditure gap; the operations statement's is
+  the fund's monthly deficit. Both predate this work, both are the corporation's own figures, and
+  neither has anything to do with VDS's trading position.
+
+### A finding on the way past, not fixed
+
+**There is no `GET` or `PUT /api/settings`.** Settings are read from `/api/db` and written with
+`POST /api/settings`. Several suites carry a copied pair of lines —
+`const s = (await c.get('/api/settings')).body; await c.put('/api/settings', { ...s, booksBeginOn: … })`
+— which **404s in silence and configures nothing**; `operating-statement.test.mjs` is one of them, and
+it is where the idiom was copied from. Those suites still pass, so nothing depended on the setting,
+but a test that quietly does nothing is a test that will mislead somebody later. The shortfall suite
+now uses the real endpoints. **The others were left alone deliberately** — changing a books-begin
+date from "never set" to "set" could move results in suites this session did not otherwise touch, and
+that is a change to make on purpose rather than in passing.
+
+### Still to do
+
+**It has not been released.** The working tree holds it; `main` does not. To get it onto the HP:
+commit, tag **v1.11.0**, let the workflow build and publish the `.exe`, then drop that file in the
+same folder — **not the v1.10.4 one, which does not contain any of this.** No data is re-entered;
+the existing `db.json` is untouched and simply gains a field that is absent until Ro ticks it.
 
 ## Session of 2026-09-02 (later) — five thousand operations, then read the paperwork
 
@@ -1980,6 +2159,12 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
+⚠️ **Read this first: the shortfall report is not in v1.10.4.** It is built and tested but sits in
+the working tree, uncommitted. If the point of the upgrade is to get the shortfall report onto the
+HP, cut **v1.11.0** first and install that instead — the steps below are otherwise identical, with
+the version number changed. Installing v1.10.4 still fixes everything v1.10.0–v1.10.4 fixed, and
+loses nothing.
+
 **1. Install v1.10.4 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
 **in the same folder**, replacing the old one, and double-click it.
@@ -2064,9 +2249,11 @@ back** (both raised 2026-08-21, Ro referred them on):
      no permanent arrears against those lots. **Nothing to build, and nothing to change** — this is
      recorded so the question is not asked a fourth time. It also means a VDS-owned villa sitting in
      arrears on the ledger is a real unpaid contribution, not an artefact of the model.
-   - **Does Ro want an out-of-pocket shortfall report?** Still open, but **designed on 2026-09-02**
-     when Ro asked what it would look like — build only on his yes, and do not redesign it from
-     scratch. The funding model: on villas VDS lets long-term the maintenance is funded from the rent
+   - ~~**Does Ro want an out-of-pocket shortfall report?**~~ **ANSWERED 2026-09-02 — yes, and it is
+     built.** Ro: *"Build the shortfall report since it is ready to be built."* Built to the design
+     recorded here, unchanged. See **"The out-of-pocket shortfall report — built 2026-09-02"** below
+     for what shipped. The design is left in place because it is the specification the code was
+     written against. The funding model: on villas VDS lets long-term the maintenance is funded from the rent
      collected, so a vacant villa means VDS pays it out of pocket. The system bills maintenance on
      vacant villas correctly but models **no link** between rent received and maintenance owed.
 

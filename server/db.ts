@@ -372,7 +372,8 @@ export function fullPermissions(): RolePermissions {
     enterUtilities: true,
     recordExpenses: true,
     modifySettledRecords: true,
-    postCharges: true
+    postCharges: true,
+    viewShortfall: true
   };
 }
 
@@ -387,7 +388,10 @@ export function noPermissions(): RolePermissions {
     enterUtilities: false,
     recordExpenses: false,
     modifySettledRecords: false,
-    postCharges: false
+    postCharges: false,
+    // Granted even in the "nothing" set: every member of staff sees this report
+    // by default, and a role built up from no permissions is still office staff.
+    viewShortfall: true
   };
 }
 
@@ -1013,6 +1017,10 @@ function migrate(db: Database): boolean {
     // taking the till away from the whole team on the next restart. Absence means
     // "as it was", so grant it. Withdrawing it is a deliberate act in Settings.
     if (base.recordPayments === undefined) merged.recordPayments = true;
+    // Same rule, same reason: a database written before the shortfall report
+    // existed carries no value here, and reading that absence as "denied" would
+    // hide the report from the whole team on the next restart.
+    if (base.viewShortfall === undefined) merged.viewShortfall = true;
     if (JSON.stringify(base) !== JSON.stringify(merged)) {
       settings.rolePermissions[role] = merged;
       changed = true;

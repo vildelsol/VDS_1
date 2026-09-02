@@ -736,6 +736,7 @@ export default function App() {
             expenses={data.expenses}
             utilities={data.utilities}
             bookings={data.bookings}
+            tenancies={data.tenancies}
             settings={settings}
             session={session}
           />

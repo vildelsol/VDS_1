@@ -13,6 +13,7 @@ import {
   Expense,
   Payment,
   SessionUser,
+  Tenancy,
   Unit,
   UtilityReading,
   getAllocationLabel,
@@ -46,6 +47,7 @@ import {
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import OperationsStatement from './OperationsStatement';
 import OperatingStatement from './OperatingStatement';
+import ShortfallReport from './ShortfallReport';
 import { Badge, EmptyState, ErrorNote, Field, InfoNote, SecondaryButton, SubmitButton, TableScroller, monoInputClass, tableHeadRowClass } from './ui';
 import { BarChart3, Download, Printer, TrendingDown, TrendingUp } from 'lucide-react';
 
@@ -56,6 +58,8 @@ interface ReportsProps {
   expenses: Expense[];
   utilities: UtilityReading[];
   bookings: Booking[];
+  /** Needed by the shortfall report: occupied days come from dated records, not `unit.status`. */
+  tenancies: Tenancy[];
   settings: AppSettings;
   session: SessionUser;
 }
@@ -94,7 +98,7 @@ function rangeForPreset(preset: Preset, custom: { from: string; to: string }): {
   }
 }
 
-export default function Reports({ units, charges, payments, expenses, utilities, bookings, settings, session }: ReportsProps) {
+export default function Reports({ units, charges, payments, expenses, utilities, bookings, tenancies, settings, session }: ReportsProps) {
   // Adopt the period chosen on Charts, if one was, so the statement and the
   // charts beside it in a pack cover the same period.
   const shared = getReportRange();
@@ -668,6 +672,21 @@ export default function Reports({ units, charges, payments, expenses, utilities,
       <OperatingStatement units={units} payments={payments} expenses={expenses} settings={settings} session={session} />
 
       <OperationsStatement expenses={expenses} payments={payments} settings={settings} session={session} />
+
+      {/*
+        VDS's own trading position on the villas it lets — deliberately the last
+        thing on the screen and badged internal, because it is not the strata
+        corporation's money. It carries its own period for the same reason the
+        statements above do.
+
+        Administrators only. The component enforces that itself and renders
+        nothing for anyone else — the check is repeated here so that whoever
+        reads this file can see the rule without opening the other one. Do not
+        mount this anywhere an owner or the council can reach.
+      */}
+      {session.role === 'ADMINISTRATOR' && (
+        <ShortfallReport units={units} tenancies={tenancies} bookings={bookings} payments={payments} session={session} />
+      )}
 
       {printing && (
         <StatementDocument

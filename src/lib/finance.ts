@@ -31,7 +31,7 @@ import {
   PROPERTY_LOCATIONS,
   getUnitDisplayName
 } from '../types';
-import { round2, sumMoney, subtractMoney } from './money';
+import { round2, sumMoney, addMoney, subtractMoney } from './money';
 import { currentMonth, daysSince, daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, addDays, today } from './dates';
 
 /** A record that points at a unit. */
@@ -2566,5 +2566,340 @@ export function operatingStatement(
     empty: income.length === 0 && expenditure.length === 0 && excludedIncome.length === 0 && excludedExpenditure.length === 0,
     excludedIncome,
     excludedExpenditure
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * The out-of-pocket shortfall — VDS's own trading position
+ * ------------------------------------------------------------------ */
+
+/**
+ * What VDS funded out of its own pocket on the villas it lets.
+ *
+ * Designed 2026-09-02 and built on Ro's yes. The funding model it measures is
+ * not in the ledger anywhere: on the villas VDS lets on its own account the
+ * maintenance contribution is paid out of what that villa earns, so a month
+ * that earns nothing is a month VDS finds the contribution from somewhere else.
+ * The application bills maintenance on a vacant villa perfectly correctly — it
+ * simply has no concept that the letting income was what paid it.
+ *
+ * **Short-stay income counts, and it counts because Ro said so.** The first cut
+ * of this engine offset the contribution with long-term rent alone and carried
+ * booking receipts as a memo, which is how the design was written. Ro, reading
+ * it: *"when a unit is vacant or under short term/airbnb Villaggio still has to
+ * cover that cost"* — a villa that earned US$900 on Airbnb in a month its
+ * contribution was US$200 did not cost VDS anything, and a report saying
+ * otherwise overstates the shortfall on exactly the villas the report exists to
+ * judge. **What the villa earned is rent plus short-stay receipts.** The two are
+ * still shown in their own columns, because "is this villa worth letting?" is a
+ * different question from "how was it let?".
+ *
+ * **This is not a strata document.** The operating statement is the
+ * corporation's income and expenditure; this is VDS's own position as a
+ * landlord, and the two must not appear on one page. They are different
+ * entities and a reader who conflates them has been misled.
+ *
+ * Cash basis on both sides, matching the operating statement: rent counted when
+ * it was received, the contribution counted when it was paid, refunds
+ * subtracted on the day the money went back out. An accrual would answer a
+ * different question ("what was owed?"); the question here is "how much cash
+ * did we have to find?".
+ *
+ * One currency per report and never combined, for the same reason as
+ * everywhere else in this system: J$ and US$ are not the same money and
+ * subtracting one from the other would invent a number. A villa whose rent and
+ * contribution are denominated differently cannot have a shortfall computed at
+ * all, so it is named in `currencyNotes` rather than quietly given one.
+ */
+export interface ShortfallLine {
+  unitId: string;
+  villa: string;
+  month: string;
+  /** Days in this month, within the reported period, that the villa was let. */
+  occupiedDays: number;
+  /** Days of this month that fall inside the period — the denominator. */
+  daysCounted: number;
+  rentReceived: number;
+  /** Short-stay and Airbnb receipts. Earnings like any other — see the note above. */
+  shortStayReceived: number;
+  /** Rent plus short-stay: everything the villa earned VDS in the month. */
+  earned: number;
+  maintenancePaid: number;
+  /** What VDS funded: the contribution paid over and above what the villa earned. */
+  shortfall: number;
+  /** No let at all in this month, which is the case the report was asked for. */
+  vacant: boolean;
+}
+
+export interface ShortfallVillaRow {
+  unitId: string;
+  villa: string;
+  months: number;
+  occupiedDays: number;
+  daysCounted: number;
+  rentReceived: number;
+  shortStayReceived: number;
+  earned: number;
+  maintenancePaid: number;
+  shortfall: number;
+  vacantMonths: string[];
+}
+
+export interface ShortfallMonthRow {
+  month: string;
+  rentReceived: number;
+  shortStayReceived: number;
+  earned: number;
+  maintenancePaid: number;
+  shortfall: number;
+  /** Which villas were empty that month, named — a count alone is not actionable. */
+  vacantVillas: string[];
+}
+
+export interface ShortfallReport {
+  currency: Currency;
+  from: string;
+  to: string;
+  months: string[];
+  /** Every villa-month, the grain both views are folded from. */
+  lines: ShortfallLine[];
+  byVilla: ShortfallVillaRow[];
+  byMonth: ShortfallMonthRow[];
+  totalRentReceived: number;
+  totalShortStayReceived: number;
+  totalEarned: number;
+  totalMaintenancePaid: number;
+  totalShortfall: number;
+  /**
+   * Every villa-month that cost VDS something, named, whether the villa stood
+   * empty all month or was let and simply did not earn its contribution.
+   *
+   * The headline figure is useless without this list, and restricting the list
+   * to wholly-empty months would hide the short-let month that earned less than
+   * it cost — which is the case Ro raised when he asked whether short-stay
+   * income was counted at all.
+   */
+  fundedMonths: { unitId: string; villa: string; month: string; shortfall: number; vacant: boolean }[];
+  /**
+   * How many villa-months produced the total, counted over the months that
+   * actually cost something rather than over every month in the period. A month
+   * in which no contribution was paid cost nothing, and counting it made the
+   * headline read "J$80,000 across 13 villa-months" above a list of four — the
+   * sentence and the list have to describe the same months.
+   */
+  fundedVillaMonths: number;
+  /** The subset of the above where the villa was empty for the whole month. */
+  vacantShortfall: number;
+  vacantVillaMonths: number;
+  /**
+   * Villas whose rent and contribution are in different currencies.
+   *
+   * Deliberately given no shortfall rather than a converted one. Stated on the
+   * page and in the export so a villa cannot drop out of the report in silence.
+   */
+  currencyNotes: { unitId: string; villa: string; rentCurrency: Currency; maintCurrency: Currency }[];
+  /** No villa is let on VDS's own account in this currency at all. */
+  noneFlagged: boolean;
+  empty: boolean;
+}
+
+/**
+ * Money actually received for one villa, in one category, in one month.
+ *
+ * Refunds are subtracted on the day they went back out, not against the receipt
+ * they came from, so the figure agrees with the bank for the month in question —
+ * the same treatment the operating statement gives them.
+ */
+function receivedInMonth(payments: Payment[], category: PaymentCategory, month: string, start: string, end: string): number {
+  let total = 0;
+  for (const p of payments) {
+    if (p.status !== 'completed' || p.category !== category) continue;
+    if (isWithin(p.date, start, end) && monthOf(p.date) === month) total = addMoney(total, p.amount);
+    if (p.refundedOn && isWithin(p.refundedOn, start, end) && monthOf(p.refundedOn) === month) {
+      total = subtractMoney(total, refundedAsOf(p));
+    }
+  }
+  return round2(total);
+}
+
+export function outOfPocketShortfall(
+  units: Unit[],
+  tenancies: Tenancy[],
+  bookings: Booking[],
+  payments: Payment[],
+  currency: Currency,
+  start: string,
+  end: string
+): ShortfallReport {
+  const months = monthsBetween(start, end);
+
+  /*
+   * Only villas VDS lets on its own account, and only where this currency is
+   * one the villa actually deals in. A villa billed entirely in US dollars has
+   * no place on the Jamaican dollar report, and padding it in with zeroes would
+   * read as a villa that cost nothing.
+   */
+  const flagged = units.filter(u => u.letOnOwnAccount === true);
+  const mine = flagged.filter(u => u.currency === currency || (u.maintCurrency || u.currency) === currency);
+
+  const currencyNotes = mine
+    .filter(u => (u.maintCurrency || u.currency) !== u.currency)
+    .map(u => ({
+      unitId: u.id,
+      villa: getUnitDisplayName(u.number),
+      rentCurrency: u.currency,
+      maintCurrency: (u.maintCurrency || u.currency) as Currency
+    }));
+  /*
+   * A villa whose rent and contribution are denominated differently is left off
+   * the rows entirely rather than given half a row. Counting its rent while its
+   * contribution is invisible would put a figure into the totals that answers no
+   * question, and computing a shortfall across two currencies would invent one.
+   * It is named in `currencyNotes` instead, so it cannot drop out in silence.
+   */
+  const mismatched = new Set(currencyNotes.map(n => n.unitId));
+  const usable = mine.filter(u => !mismatched.has(u.id));
+
+  /*
+   * Occupied days are counted from the dated records, one day at a time, rather
+   * than from `unit.status` — a status flag has no history and would answer
+   * every past month with today's answer. `occupiedUnitIdsOn` counts a villa as
+   * let when a tenancy covers the day or a guest is in residence that night.
+   */
+  const occupiedDays = new Map<string, number>(); // `${unitId}|${month}`
+  for (let day = start; day <= end; day = addDays(day, 1)) {
+    const occupied = occupiedUnitIdsOn(units, tenancies, bookings, day);
+    const month = monthOf(day);
+    for (const unit of usable) {
+      if (!occupied.has(unit.id)) continue;
+      const key = `${unit.id}|${month}`;
+      occupiedDays.set(key, (occupiedDays.get(key) || 0) + 1);
+    }
+  }
+
+  // Computed once per month, not once per villa-month: the same span of days
+  // for every villa, and the period can run to a full year.
+  const daysCounted = new Map<string, number>();
+  for (const month of months) {
+    let days = 0;
+    for (let day = monthStart(month); day <= monthEnd(month); day = addDays(day, 1)) {
+      if (isWithin(day, start, end)) days++;
+    }
+    daysCounted.set(month, days);
+  }
+
+  const lines: ShortfallLine[] = [];
+  for (const unit of usable) {
+    const villa = getUnitDisplayName(unit.number);
+    const forUnit = paymentsForUnit(payments, unit, units).filter(p => p.currency === currency);
+    for (const month of months) {
+      const rentReceived = unit.currency === currency ? receivedInMonth(forUnit, 'Rent', month, start, end) : 0;
+      const maintenancePaid =
+        (unit.maintCurrency || unit.currency) === currency ? receivedInMonth(forUnit, 'Maintenance', month, start, end) : 0;
+      const shortStayReceived = unit.currency === currency ? receivedInMonth(forUnit, 'Booking', month, start, end) : 0;
+      const days = occupiedDays.get(`${unit.id}|${month}`) || 0;
+      /*
+       * Everything the villa earned VDS in the month, whichever way it was let.
+       * A short-let month that covered its own contribution cost VDS nothing,
+       * and counting only the rent would report money VDS never had to find.
+       */
+      const earned = addMoney(rentReceived, shortStayReceived);
+      const gap = subtractMoney(maintenancePaid, earned);
+      lines.push({
+        unitId: unit.id,
+        villa,
+        month,
+        occupiedDays: days,
+        daysCounted: daysCounted.get(month) || 0,
+        rentReceived,
+        shortStayReceived,
+        earned,
+        maintenancePaid,
+        shortfall: gap > 0 ? round2(gap) : 0,
+        vacant: days === 0
+      });
+    }
+  }
+
+  const byVilla: ShortfallVillaRow[] = usable.map(unit => {
+    const rows = lines.filter(l => l.unitId === unit.id);
+    return {
+      unitId: unit.id,
+      villa: getUnitDisplayName(unit.number),
+      months: rows.length,
+      occupiedDays: rows.reduce((a, l) => a + l.occupiedDays, 0),
+      daysCounted: rows.reduce((a, l) => a + l.daysCounted, 0),
+      rentReceived: sumMoney(rows.map(l => l.rentReceived)),
+      shortStayReceived: sumMoney(rows.map(l => l.shortStayReceived)),
+      earned: sumMoney(rows.map(l => l.earned)),
+      maintenancePaid: sumMoney(rows.map(l => l.maintenancePaid)),
+      shortfall: sumMoney(rows.map(l => l.shortfall)),
+      vacantMonths: rows.filter(l => l.vacant).map(l => l.month)
+    };
+  });
+  byVilla.sort((a, b) => b.shortfall - a.shortfall || a.villa.localeCompare(b.villa, undefined, { numeric: true }));
+
+  const byMonth: ShortfallMonthRow[] = months.map(month => {
+    const rows = lines.filter(l => l.month === month);
+    return {
+      month,
+      rentReceived: sumMoney(rows.map(l => l.rentReceived)),
+      shortStayReceived: sumMoney(rows.map(l => l.shortStayReceived)),
+      earned: sumMoney(rows.map(l => l.earned)),
+      maintenancePaid: sumMoney(rows.map(l => l.maintenancePaid)),
+      shortfall: sumMoney(rows.map(l => l.shortfall)),
+      vacantVillas: rows.filter(l => l.vacant).map(l => l.villa)
+    };
+  });
+
+  /*
+   * Every month that cost something, empty or not. A villa let for a fortnight
+   * that earned less than its contribution belongs on this list as much as one
+   * that stood empty — leaving it off would hide the very case that made
+   * short-stay income count in the first place.
+   */
+  const fundedMonths = lines
+    .filter(l => l.shortfall > 0)
+    .map(l => ({ unitId: l.unitId, villa: l.villa, month: l.month, shortfall: l.shortfall, vacant: l.vacant }))
+    .sort((a, b) => a.month.localeCompare(b.month) || a.villa.localeCompare(b.villa, undefined, { numeric: true }));
+
+  const totalRentReceived = sumMoney(lines.map(l => l.rentReceived));
+  const totalShortStayReceived = sumMoney(lines.map(l => l.shortStayReceived));
+  const totalMaintenancePaid = sumMoney(lines.map(l => l.maintenancePaid));
+
+  return {
+    currency,
+    from: start,
+    to: end,
+    months,
+    lines,
+    byVilla,
+    byMonth,
+    totalRentReceived,
+    totalShortStayReceived,
+    totalEarned: sumMoney(lines.map(l => l.earned)),
+    totalMaintenancePaid,
+    /*
+     * Summed from the villa-months rather than taken as the difference of the
+     * two totals. A villa that earned more than its contribution does not
+     * subsidise a villa that earned nothing — netting them would report a
+     * property that funded itself while VDS was writing cheques.
+     */
+    totalShortfall: sumMoney(lines.map(l => l.shortfall)),
+    fundedMonths,
+    fundedVillaMonths: fundedMonths.length,
+    vacantShortfall: sumMoney(fundedMonths.filter(m => m.vacant).map(m => m.shortfall)),
+    vacantVillaMonths: fundedMonths.filter(m => m.vacant).length,
+    currencyNotes,
+    noneFlagged: flagged.length === 0,
+    /*
+     * A villa named in `currencyNotes` keeps the report on screen even when
+     * there is nothing to total. It was deliberately given no shortfall, and a
+     * report that hid itself would take that statement with it — leaving a
+     * villa VDS lets silently unaccounted for.
+     */
+    empty:
+      currencyNotes.length === 0 &&
+      (lines.length === 0 || (totalRentReceived === 0 && totalShortStayReceived === 0 && totalMaintenancePaid === 0))
   };
 }

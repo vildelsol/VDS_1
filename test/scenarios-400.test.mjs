@@ -426,6 +426,91 @@ function auditReporting(db, fin, asOf) {
     }
   }
 
+  /* --- the out-of-pocket shortfall holds together --- */
+
+  /*
+   * Nothing in the simulation ticks "let on the corporation's own account", so
+   * the engine would otherwise be audited against an empty report on every one
+   * of the 400 scenarios — a green assertion that means nothing, which is the
+   * failure mode this suite has already been caught by twice. Every third villa
+   * is flagged on a *copy* of the register, so the engine sees real tenancies,
+   * bookings and receipts without the simulation itself being changed.
+   */
+  {
+    const flagged = units.map((u, i) => (i % 3 === 0 ? { ...u, letOnOwnAccount: true } : u));
+    let linesSeen = 0;
+
+    for (const currency of ['JMD', 'USD']) {
+      const r = fin.outOfPocketShortfall(flagged, tenancies, bookings, payments, currency, '2026-01-01', asOf);
+      linesSeen += r.lines.length;
+
+      const named = new Set(r.currencyNotes.map(n => n.unitId));
+      for (const line of r.lines) {
+        if (isBadNumber(line.rentReceived) || isBadNumber(line.maintenancePaid) || isBadNumber(line.shortfall)) {
+          problems.push(`${currency} shortfall line ${line.villa} ${line.month} carries a non-finite figure`);
+        }
+        if (line.shortfall < 0) problems.push(`${currency} shortfall for ${line.villa} ${line.month} is negative`);
+        // Earnings are rent and short-stay together — a villa let on Airbnb pays
+        // towards its own contribution, which is the correction Ro made on
+        // 2026-09-02 after reading the first cut of this report.
+        if (cents(line.earned) !== cents(line.rentReceived) + cents(line.shortStayReceived)) {
+          problems.push(`${currency} ${line.villa} ${line.month} earned ${cents(line.earned)}, not rent plus short stay`);
+        }
+        // The definition, restated: what was paid over and above what came in.
+        const expected = Math.max(0, cents(line.maintenancePaid) - cents(line.earned));
+        if (cents(line.shortfall) !== expected) {
+          problems.push(`${currency} shortfall for ${line.villa} ${line.month} is ${cents(line.shortfall)}, not ${expected}`);
+        }
+        if (line.occupiedDays > line.daysCounted) {
+          problems.push(`${currency} ${line.villa} ${line.month} was let for ${line.occupiedDays} of ${line.daysCounted} days`);
+        }
+        if (line.vacant !== (line.occupiedDays === 0)) {
+          problems.push(`${currency} ${line.villa} ${line.month} is marked vacant against ${line.occupiedDays} let day(s)`);
+        }
+        if (named.has(line.unitId)) {
+          problems.push(`${currency} ${line.villa} was given a row and declared uncomputable at the same time`);
+        }
+      }
+
+      // Two views off one engine: they have to agree, and with the totals.
+      const fromLines = r.lines.reduce((t, l) => t + cents(l.shortfall), 0);
+      const fromVillas = r.byVilla.reduce((t, v) => t + cents(v.shortfall), 0);
+      const fromMonths = r.byMonth.reduce((t, m) => t + cents(m.shortfall), 0);
+      if (fromLines !== fromVillas || fromLines !== fromMonths || fromLines !== cents(r.totalShortfall)) {
+        problems.push(`${currency} shortfall views disagree: lines ${fromLines}, villas ${fromVillas}, months ${fromMonths}, total ${cents(r.totalShortfall)}`);
+      }
+
+      // The headline names every month that cost something — the empty ones are
+      // a subset of it and can never be larger than the whole.
+      const fundedLines = r.lines.filter(l => l.shortfall > 0);
+      if (r.fundedVillaMonths !== fundedLines.length) {
+        problems.push(`${currency} headline counts ${r.fundedVillaMonths} funded villa-months against ${fundedLines.length}`);
+      }
+      if (cents(r.vacantShortfall) > cents(r.totalShortfall) || r.vacantVillaMonths > r.fundedVillaMonths) {
+        problems.push(`${currency} the empty-month subset is larger than the whole`);
+      }
+      if (cents(r.vacantShortfall) !== fundedLines.filter(l => l.vacant).reduce((t, l) => t + cents(l.shortfall), 0)) {
+        problems.push(`${currency} vacant shortfall does not sum its own empty months`);
+      }
+      // Named, not merely counted — the figure is useless without the list.
+      for (const v of r.fundedMonths) {
+        const line = r.lines.find(l => l.unitId === v.unitId && l.month === v.month);
+        if (!line || cents(line.shortfall) !== cents(v.shortfall) || line.vacant !== v.vacant) {
+          problems.push(`${currency} named month ${v.villa} ${v.month} does not match its own line`);
+        }
+      }
+      // A villa that is not VDS's own has no business on this report.
+      const own = new Set(flagged.filter(u => u.letOnOwnAccount === true).map(u => u.id));
+      for (const v of r.byVilla) {
+        if (!own.has(v.unitId)) problems.push(`${currency} shortfall reports ${v.villa}, which is not let on the corporation's own account`);
+      }
+    }
+
+    // The guard the annual-report lesson bought: assertions that ran against
+    // nothing are not coverage.
+    if (linesSeen === 0) problems.push('the shortfall audit ran against an empty report');
+  }
+
   return problems;
 }
 

@@ -113,6 +113,21 @@ export interface RolePermissions {
   recordExpenses: boolean;
   modifySettledRecords: boolean;
   postCharges: boolean;
+  /**
+   * See the out-of-pocket shortfall report under Operational Reports.
+   *
+   * Ro, 2026-09-02: *"just for us as admin means every staff member who has an
+   * account so ensure every role can see it"* — so this is **granted to every
+   * role by default**, and is here as a permission rather than an open door
+   * because he asked for the choice to live in System Settings. "Internal" means
+   * internal to the office: not owners, not the council, not a public document.
+   *
+   * **Absent means granted.** A database written before this field existed must
+   * not read the missing value as a denial and take the report away from the
+   * team on the next restart — the same rule `recordPayments` follows, and for
+   * the same reason.
+   */
+  viewShortfall: boolean;
   hasVetoPower?: boolean;
 }
 
@@ -126,7 +141,8 @@ export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
   'recordExpenses',
   'postCharges',
   'reversePayments',
-  'modifySettledRecords'
+  'modifySettledRecords',
+  'viewShortfall'
 ];
 
 export const PERMISSION_LABELS: Record<string, string> = {
@@ -139,7 +155,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   recordExpenses: 'Record property expenses',
   postCharges: 'Post monthly rent & maintenance charges',
   reversePayments: 'Reverse payments & void receipts',
-  modifySettledRecords: 'Modify settled ledger records'
+  modifySettledRecords: 'Modify settled ledger records',
+  viewShortfall: 'See the out-of-pocket shortfall report (internal)'
 };
 
 export interface StaffProfile {
@@ -294,6 +311,22 @@ export interface Unit {
    * **strata lot numbers**, and there is no guarantee the two agree.
    */
   strataLotNumber?: string;
+  /**
+   * Does VDS let this villa on its own account?
+   *
+   * On the villas VDS lets, the maintenance contribution is funded out of the
+   * rent that villa collects — so a month with no tenant in it is a month VDS
+   * pays the contribution out of its own pocket. Sizing that is the whole
+   * purpose of the shortfall report, and nothing else in the register can
+   * answer it: `ownerName` is free text, and matching a name breaks silently
+   * the day somebody types "Villaggio Del Sol Ltd." instead of "VDS".
+   *
+   * Optional, and **absent means no**. A register written before this field
+   * existed cannot be assumed to be VDS's own — claiming villas that are not
+   * ours would overstate the shortfall, which is the one number this report
+   * exists to state honestly. The boxes are ticked by hand once.
+   */
+  letOnOwnAccount?: boolean;
   currency: Currency;
   maintCurrency?: Currency;
   meterNumber: string;
