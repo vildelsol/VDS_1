@@ -32,7 +32,7 @@ import {
   getUnitDisplayName
 } from '../types';
 import { round2, sumMoney, addMoney, subtractMoney } from './money';
-import { currentMonth, daysSince, daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, addDays, today } from './dates';
+import { currentMonth, daysSince, daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, nightsBetween, addDays, today } from './dates';
 
 /** A record that points at a unit. */
 interface UnitLinked {
@@ -744,6 +744,172 @@ export interface OccupancyToday {
   total: number;
   /** occupied ÷ (total − unavailable), or null when nothing could be let. */
   rate: number | null;
+}
+
+/**
+ * The two lettings businesses, counted apart.
+ *
+ * Ro, 2026-09-02, after the blended figure was fixed: *"the dashboard occupancy
+ * chart will now only use long term lease, vacancy and unavailable status. Short
+ * term rental should have its own chart."* He is right, and the reason is
+ * sharper than housekeeping: **the two are measured in different units.**
+ *
+ *   - **Residential occupancy is a state.** Twelve of sixteen villas leased,
+ *     true for months at a time, and a snapshot answers it honestly.
+ *   - **Short-let occupancy is a proportion of a pool that turns over nightly.**
+ *
+ * One percentage covering both is a state and a rate blended together, which is
+ * the same fault as counting a villa as occupied because of how it is let.
+ *
+ * **The short-let rule is Ro's own, stated in his words:** *"If 4 units are short
+ * term, and 1 is occupied from short term rental, only 25% occupied."* A villa is
+ * occupied or it is not — there are no part-month fractions in that figure —
+ * because the question it answers is "what can I sell tonight?". Nights sold
+ * across the month is a genuinely different measure and is carried beside it,
+ * labelled, never folded in.
+ */
+export interface ResidentialOccupancy {
+  /** Villas with a tenancy covering the day. */
+  leased: number;
+  /** Villas in the long-term pool with nobody in them. */
+  vacant: number;
+  /** The pool: villas that are available to be leased long-term, let or not. */
+  pool: number;
+  /** leased ÷ pool, or null when there is no long-term pool at all. */
+  rate: number | null;
+  /** Context lines, never counted as let: the proprietor's own home. */
+  ownerOccupied: number;
+  /** Committed to the other business — not vacant, just not this one's. */
+  shortLet: number;
+  /** Off the market entirely. */
+  unavailable: number;
+  /**
+   * Villas whose status says long-term but which have no tenancy covering the
+   * day.
+   *
+   * Named rather than silently counted either way. The register and the dated
+   * records disagreeing is a fact worth seeing — it is how a tenant occupies a
+   * villa for a month that nobody ever bills.
+   */
+  markedLeasedWithoutTenancy: string[];
+}
+
+export function residentialOccupancy(units: Unit[], tenancies: Tenancy[], day: string = today()): ResidentialOccupancy {
+  const covered = new Set(
+    tenancies
+      .filter(t => t.startedOn && t.startedOn <= day && (!t.endedOn || day < t.endedOn))
+      .map(t => t.unitId)
+  );
+
+  let leased = 0;
+  let vacant = 0;
+  let ownerOccupied = 0;
+  let shortLet = 0;
+  let unavailable = 0;
+  const markedLeasedWithoutTenancy: string[] = [];
+
+  for (const unit of units) {
+    if (unit.status === 'unavailable') {
+      unavailable++;
+      continue;
+    }
+    if (unit.status === 'owner-occupied') {
+      ownerOccupied++;
+      continue;
+    }
+    if (unit.status === 'short-term') {
+      shortLet++;
+      continue;
+    }
+    // What is left is the long-term pool: leased, or waiting for a tenant.
+    if (covered.has(unit.id)) {
+      leased++;
+    } else {
+      vacant++;
+      if (unit.status === 'long-term') markedLeasedWithoutTenancy.push(getUnitDisplayName(unit.number));
+    }
+  }
+
+  const pool = leased + vacant;
+  return {
+    leased,
+    vacant,
+    pool,
+    rate: pool > 0 ? Math.round((leased / pool) * 100) : null,
+    ownerOccupied,
+    shortLet,
+    unavailable,
+    markedLeasedWithoutTenancy
+  };
+}
+
+export interface ShortLetOccupancy {
+  /** Villas listed for short stays. The denominator, and Ro's "4 units". */
+  villas: number;
+  /** Of those, how many have a guest in them on the day. Ro's "1 is occupied". */
+  occupied: number;
+  /** Free to sell tonight. */
+  available: number;
+  /** occupied ÷ villas — 1 of 4 is 25%. Null when nothing is listed. */
+  rate: number | null;
+  /** Guest nights sold in the month, across those villas. */
+  nightsSold: number;
+  /** Villas × nights in the month: what there was to sell. */
+  nightsAvailable: number;
+  /**
+   * nightsSold ÷ nightsAvailable. A **different measure** from `rate` and never
+   * substituted for it: one asks what can be sold tonight, the other how much of
+   * the month was sold. Both are shown, each labelled.
+   */
+  nightsRate: number | null;
+  /** The month these night figures cover, so the figure cannot travel without it. */
+  month: string;
+}
+
+/**
+ * Short-let occupancy: villas taken, out of villas listed.
+ *
+ * `day` decides what is occupied *now*; `month` scopes the nights sold. They are
+ * separate on purpose — the headline is about tonight's availability and the
+ * nights are about how the month went.
+ */
+export function shortLetOccupancy(
+  units: Unit[],
+  bookings: Booking[],
+  day: string = today(),
+  month: string = monthOf(day)
+): ShortLetOccupancy {
+  const listed = units.filter(u => u.status === 'short-term');
+  const ids = new Set(listed.map(u => u.id));
+
+  // Blocked and Unavailable are calendar holds, not guests — the same rule the
+  // operating statement and `occupiedUnitIdsOn` follow.
+  const stays = bookings.filter(b => b.status !== 'cancelled' && b.source !== 'Blocked' && b.source !== 'Unavailable' && ids.has(b.unitId));
+
+  const occupied = new Set(stays.filter(b => bookingCoversNight(b, day)).map(b => b.unitId)).size;
+
+  const from = monthStart(month);
+  const end = addDays(monthEnd(month), 1);
+  let nightsSold = 0;
+  for (const b of stays) {
+    const start = b.checkIn > from ? b.checkIn : from;
+    const finish = b.checkOut < end ? b.checkOut : end;
+    nightsSold += Math.max(0, nightsBetween(start, finish));
+  }
+
+  const nightsInMonth = nightsBetween(from, end);
+  const nightsAvailable = listed.length * nightsInMonth;
+
+  return {
+    villas: listed.length,
+    occupied,
+    available: Math.max(0, listed.length - occupied),
+    rate: listed.length > 0 ? Math.round((occupied / listed.length) * 100) : null,
+    nightsSold,
+    nightsAvailable,
+    nightsRate: nightsAvailable > 0 ? Math.round((nightsSold / nightsAvailable) * 100) : null,
+    month
+  };
 }
 
 export function occupancyOn(units: Unit[], tenancies: Tenancy[], bookings: Booking[], day: string = today()): OccupancyToday {

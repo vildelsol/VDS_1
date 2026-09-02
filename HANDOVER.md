@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,607 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,624 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
@@ -106,11 +106,11 @@ next session from inside `pm-app`.
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.10.4.** Every earlier release is superseded; install the latest only.
 
-## Session of 2026-09-02 (last) — four faults real data found in an hour
+## Session of 2026-09-02 (last) — five faults real data found in an hour
 
-All four came from Ro opening v1.11.0 on real data. **None was found by 1,575 tests**, and the
+All of them came from Ro opening v1.11.0 on real data. **None was found by 1,575 tests**, and the
 reason is the same in every case, so it is written down at the end of this section rather than
-four times over.
+five times over.
 
 ### 1. A nightly rate that did not reach the total
 
@@ -191,6 +191,34 @@ names the register, rather than showing an empty dropdown.
 **Two simulations had to be corrected, and they were wrong, not the rule.** Two scenarios in
 `scenarios.test.mjs` booked whatever villa they were handed without ever listing it for short stays.
 They now set the status first, as the third booking scenario always did.
+
+### 5. One occupancy figure became two, because they are different measures
+
+Ro, reading the fix: *"the dashboard occupancy chart will now only use long term lease, vacancy and
+unavailable status. Short term rental should have its own chart."* Agreed and built, and the reason
+is worth keeping: **a long-term lease is a state and a short let is a rate.** One percentage over
+both blends the two and answers neither.
+
+**Long-term occupancy** — `residentialOccupancy()`. Leased ÷ the long-term pool, where the pool is
+the villas that could be leased long-term: **short-lets, the proprietor's own home and anything off
+the market are excluded from the denominator and named beside it instead.** A short-let villa is not
+vacant, it is committed to the other business. Leased is counted from **tenancies covering the day**,
+never from the status flag.
+
+⚠️ **A villa marked long-term with no tenancy on file is named, not guessed at** — it counts as
+waiting for a tenant, and the card says how many are in that state. The register and the dated
+records disagreeing is exactly how a villa gets occupied for a month nobody ever bills.
+
+**Short-let occupancy** — `shortLetOccupancy()`. **Ro's own rule, in his words:** *"If 4 units are
+short term, and 1 is occupied from short term rental, only 25% occupied for short term rental."*
+Villas taken tonight ÷ villas listed. A villa is occupied or it is not — no part-month fractions —
+because the question is what can be sold tonight. **Nights sold across the current month is carried
+beside it, labelled, and never folded in**: 1 of 4 villas taken is 25% while 5 of 120 nights sold is
+4%, and both are true of the same property. The month travels with the night figures so they cannot
+be read against the wrong one.
+
+Half that engine existed already, written inline in `Reports.tsx` where nothing else could use it and
+no test could reach it. It lives in `finance.ts` now.
 
 ### Why 1,575 tests missed all of this
 

@@ -59,7 +59,7 @@ export default async function run({ port, projectRoot }) {
   const srv = await startServer({ port, adminPassword: 'Occupancy-1234!', projectRoot });
   const T = reporter(title);
   const { mod: fin, cleanup } = await loadFinance(projectRoot);
-  const { occupancyOn, isOccupied } = fin;
+  const { occupancyOn, isOccupied, residentialOccupancy, shortLetOccupancy } = fin;
 
   try {
     const c = makeClient(srv.baseUrl);
@@ -314,6 +314,95 @@ export default async function run({ port, projectRoot }) {
     );
     const nowRefused = await tryBooking('unit-4', '4');
     T.check('while a new reservation on it is refused', nowRefused.status === 400, String(nowRefused.status));
+    /* ================================================================
+     * The two businesses, counted apart
+     * ================================================================ */
+
+    /*
+     * Ro, 2026-09-02: "the dashboard occupancy chart will now only use long term
+     * lease, vacancy and unavailable status. Short term rental should have its
+     * own chart … If 4 units are short term, and 1 is occupied from short term
+     * rental, only 25% occupied for short term rental."
+     *
+     * His arithmetic is the specification, and it is asserted literally below.
+     */
+
+    /*
+     * Exactly four villas listed for short stays: unit-2 and unit-3 from the
+     * setup above, plus two clean ones. Not unit-4 — it was moved to a long-term
+     * lease earlier in this file and carries a tenancy, and moving it back would
+     * be a tenant removal rather than the simple change this case is about.
+     */
+    await c.put('/api/units/unit-7', { number: '7', ownerName: 'Owner', status: 'short-term', currency: 'USD', maintCurrency: 'USD' });
+    await c.put('/api/units/unit-8', { number: '8', ownerName: 'Owner', status: 'short-term', currency: 'USD', maintCurrency: 'USD' });
+    db = (await c.get('/api/db')).body;
+
+    const shortLetVillas = db.units.filter(u => u.status === 'short-term');
+    T.check('four villas are listed for short stays', shortLetVillas.length === 4, `${shortLetVillas.length} listed`);
+
+    const sl = shortLetOccupancy(db.units, db.bookings, TODAY, '2026-09');
+    T.check('one of them has a guest in it tonight', sl.occupied === 1, `${sl.occupied} occupied`);
+    T.check('so short-let occupancy is 25% — one of four', sl.rate === 25, `${sl.rate}%`);
+    T.check('and the other three are there to sell', sl.available === 3, `${sl.available} available`);
+    T.check(
+      'nights sold across the month is a different measure, carried beside it and not folded in',
+      sl.nightsSold === 4 && sl.nightsAvailable === 4 * 30 && sl.nightsRate !== sl.rate,
+      `${sl.nightsSold} of ${sl.nightsAvailable} nights, ${sl.nightsRate}% against a ${sl.rate}% headline`
+    );
+    T.check('and the month those nights belong to travels with them', sl.month === '2026-09', sl.month);
+
+    /* --- the long-term picture leaves the other business out of it --- */
+
+    const res = residentialOccupancy(db.units, db.tenancies, TODAY);
+    T.check(
+      'the long-term pool excludes short-lets, the owner’s own home and anything off the market',
+      res.pool === db.units.length - res.shortLet - res.ownerOccupied - res.unavailable,
+      `pool ${res.pool} of ${db.units.length} — ${res.shortLet} short-let, ${res.ownerOccupied} owner-occupied, ${res.unavailable} off the market`
+    );
+    T.check(
+      'the villas with a tenancy covering today are the leased ones',
+      res.leased === db.tenancies.filter(t => t.status === 'active' && t.startedOn && t.startedOn <= TODAY).length,
+      `${res.leased} leased`
+    );
+    T.check('and the rest of the pool is waiting for a tenant', res.vacant === res.pool - res.leased, `${res.vacant} vacant of a pool of ${res.pool}`);
+    T.check(
+      'the owner’s own home is named but never counted as let',
+      res.ownerOccupied === 1 && !Number.isNaN(res.leased),
+      `${res.ownerOccupied} owner-occupied`
+    );
+    T.check('the short-lets are named as committed elsewhere, not as vacant', res.shortLet === 4, `${res.shortLet} on short-let`);
+    T.check('and the villa off the market is its own line', res.unavailable === 1, `${res.unavailable} unavailable`);
+    T.check(
+      'so the long-term rate is leased over the long-term pool and nothing else',
+      res.rate === Math.round((res.leased / res.pool) * 100),
+      `${res.rate}%`
+    );
+    T.check(
+      'the two figures are different questions and do not have to agree',
+      res.rate !== sl.rate,
+      `long-term ${res.rate}% vs short-let ${sl.rate}%`
+    );
+
+    /* --- a villa marked long-term with no tenancy is named, not guessed at --- */
+
+    await c.put('/api/units/unit-10', { number: '10', ownerName: 'Owner', status: 'long-term', monthlyRent: 50000, currency: 'JMD', maintCurrency: 'JMD' });
+    db = (await c.get('/api/db')).body;
+    const flagged = residentialOccupancy(db.units, db.tenancies, TODAY);
+    T.check(
+      'a villa whose status says leased but which has no tenancy is not counted as leased',
+      flagged.leased === res.leased,
+      `${flagged.leased} leased, was ${res.leased} before the villa was marked`
+    );
+    T.check(
+      'it is named instead, because the register and the records disagreeing is worth seeing',
+      flagged.markedLeasedWithoutTenancy.includes('Villa Unit 10'),
+      JSON.stringify(flagged.markedLeasedWithoutTenancy)
+    );
+
+    /* --- nothing listed says nothing rather than dividing by zero --- */
+
+    const none = shortLetOccupancy(db.units.map(u => ({ ...u, status: 'vacant' })), db.bookings, TODAY, '2026-09');
+    T.check('with no villa listed for short stays there is no rate', none.rate === null && none.villas === 0, JSON.stringify(none));
   } finally {
     cleanup();
     await srv.stop();

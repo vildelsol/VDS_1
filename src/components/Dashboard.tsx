@@ -23,7 +23,8 @@ import {
   collectionRate,
   delinquentAccounts,
   expensesInPeriod,
-  occupancyOn,
+  residentialOccupancy,
+  shortLetOccupancy,
   ownerBilledUnitIds,
   leasesNeedingAttention,
   unbilledAccounts,
@@ -117,9 +118,16 @@ export default function Dashboard({
    * dated records, so the application disagreed with itself on the same screenful.
    */
   const totalUnits = units.length;
-  const occupancy = useMemo(() => occupancyOn(units, tenancies, bookings, today()), [units, tenancies, bookings]);
-  const occupiedUnits = occupancy.occupied;
-  const occupancyRate = occupancy.rate;
+
+  /*
+   * Two businesses, counted apart. Ro, 2026-09-02: *"the dashboard occupancy
+   * chart will now only use long term lease, vacancy and unavailable status.
+   * Short term rental should have its own chart."* A long-term lease is a state
+   * that holds for months; a short let is a villa that is either taken tonight
+   * or on sale. One percentage over both blends a state with a rate.
+   */
+  const residential = useMemo(() => residentialOccupancy(units, tenancies, today()), [units, tenancies]);
+  const shortLet = useMemo(() => shortLetOccupancy(units, bookings, today(), month), [units, bookings, month]);
 
   /* ---------------- arrears ---------------- */
 
@@ -277,22 +285,43 @@ export default function Dashboard({
       {/* Overview */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         <StatCard
-          label="Occupancy"
-          value={occupancyRate === null ? '—' : `${occupancyRate}%`}
+          label="Long-term occupancy"
+          value={residential.rate === null ? 'n/a' : `${residential.rate}%`}
           hint={
-            totalUnits > 0
-              ? `${occupiedUnits} of ${totalUnits - occupancy.unavailable} lettable villas occupied today` +
-                (occupancy.unavailable > 0 ? ` · ${occupancy.unavailable} off the market` : '')
-              : 'No villas in the register'
+            residential.pool > 0
+              ? `${residential.leased} of ${residential.pool} villas leased · ${residential.vacant} to let` +
+                [
+                  residential.ownerOccupied > 0 ? `${residential.ownerOccupied} owner-occupied` : null,
+                  residential.shortLet > 0 ? `${residential.shortLet} on short-let` : null,
+                  residential.unavailable > 0 ? `${residential.unavailable} off the market` : null,
+                  // The register and the dated records disagreeing is a fact
+                  // worth seeing: it is how a villa gets occupied for a month
+                  // that nobody ever bills.
+                  residential.markedLeasedWithoutTenancy.length > 0
+                    ? `${residential.markedLeasedWithoutTenancy.length} marked long-term with no tenancy on file`
+                    : null
+                ]
+                  .filter(Boolean)
+                  .reduce((line, part) => `${line} · ${part}`, '')
+              : totalUnits > 0
+                ? 'No villa is in the long-term pool'
+                : 'No villas in the register'
           }
           icon={<Key className="h-6 w-6" />}
           tone="emerald"
         />
         <StatCard
-          label="Available villas"
-          value={String(occupancy.available)}
-          hint="Empty tonight — free to lease or let"
-          icon={<TrendingDown className="h-6 w-6" />}
+          label="Short-let occupancy"
+          value={shortLet.rate === null ? 'n/a' : `${shortLet.rate}%`}
+          hint={
+            shortLet.villas > 0
+              ? `${shortLet.occupied} of ${shortLet.villas} short-let villas taken tonight · ${shortLet.available} to sell` +
+                (shortLet.nightsRate !== null
+                  ? ` · ${shortLet.nightsSold} of ${shortLet.nightsAvailable} nights sold in ${formatMonthLabel(shortLet.month)} (${shortLet.nightsRate}%)`
+                  : '')
+              : 'No villa is listed for short stays'
+          }
+          icon={<CalendarDays className="h-6 w-6" />}
           tone="teal"
         />
         <StatCard
