@@ -1919,10 +1919,13 @@ changes what has to be done and in what order.
 
 **4. Two questions are still with management, and nothing should be built on a guess until they come
 back** (both raised 2026-08-21, Ro referred them on):
-   - **Do VDS-owned villas record a payment against their own maintenance charge?** Maintenance is
-     addressed to `unit.ownerName`, so on a villa VDS owns, VDS bills itself. If a payment is
-     recorded the books stay clean; if not, those lots sit permanently in arrears and appear on Form
-     13B as outstanding contributions. Both are defensible; the choice must be deliberate.
+   - ~~**Do VDS-owned villas record a payment against their own maintenance charge?**~~ **ANSWERED
+     2026-09-02 — yes, and the system already works that way.** Ro: *"we do record a payment against
+     our own maintenance charge. the system as is is already setup that way."* So a villa VDS owns is
+     billed like any other lot and settles like any other lot; the books stay clean and Form 13B shows
+     no permanent arrears against those lots. **Nothing to build, and nothing to change** — this is
+     recorded so the question is not asked a fourth time. It also means a VDS-owned villa sitting in
+     arrears on the ledger is a real unpaid contribution, not an artefact of the model.
    - **Does Ro want an out-of-pocket shortfall report?** Ro clarified the funding model: on villas
      VDS lets long-term, the maintenance is funded from the rent collected, so a vacant villa means
      VDS pays it out of pocket. The system bills maintenance on vacant villas correctly, but models
