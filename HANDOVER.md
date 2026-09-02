@@ -82,8 +82,11 @@ next session from inside `pm-app`.
   could lie, and did.** From v1.10.1 the server states its own version in two places a cache cannot
   reach: `GET /api/health` returns it, and the console window prints it (with the records folder)
   on start-up. The screen shows both numbers and raises a banner when they disagree.
-- Latest release: **v1.10.3**, tagged 2026-09-02 — the printed records carry every record (below).
-  **The HP needs v1.10.3.**
+- Latest release: **v1.10.4**, tagged 2026-09-02. **The HP needs v1.10.4.** It carries no behaviour
+  change over v1.10.3 — the difference is that this is the first binary built and published *after*
+  the 5,000-operation paperwork suite existed, so the published `.exe` is gated by it. Install this
+  one; v1.10.3 is superseded.
+- Previous release: **v1.10.3**, tagged 2026-09-02 — the printed records carry every record (below).
 - Previous release: **v1.10.2**, tagged 2026-09-01 — posted is no longer the same as due (below).
 - Previous release: **v1.10.1**, tagged 2026-09-01 — the version-visibility fix above. Supersedes
   v1.10.0 in every respect.
@@ -148,8 +151,10 @@ NUL makes git treat the whole file as binary, so `git show`/`git diff`/`git blam
 unreviewable history, and `grep` skipped them silently, which is how it was noticed. Both now use a
 unicode escape: byte-for-byte the same string at run time, and the files are text again.
 
-**No application code changed in this entry, so no release was cut** - v1.10.3 is still the binary to
-install.
+**No application code changed in this entry.** v1.10.4 was nevertheless cut at Ro's instruction, and
+the reason is a good one: the release workflow runs the whole suite as a gate, so a binary published
+before this suite existed had never been tested against it. v1.10.4 is the same application as
+v1.10.3, proven against 1,503 checks instead of 1,489.
 
 ## Session of 2026-09-02 — a printed record that left half the money off
 
