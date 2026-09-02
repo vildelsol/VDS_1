@@ -34,11 +34,11 @@ next session from inside `pm-app`.
   the 3,000 red team is about 2m30s and the 5,000 run about 3m. That is the price of the coverage; do not trim
   it to make the suite faster.
 - **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. All work from the
-  2026-09-01 session is committed, pushed, and released as v1.10.1.
+  2026-09-01 and 2026-09-02 sessions is committed, pushed, and released as v1.10.4.
 - **`main` and `origin/main` are level.** Check that with `git ls-remote origin main` against your
   own `git rev-parse main` — not against a hash copied into this file, and not against a local
   `origin/main` ref, which only says what the last fetch saw. **`main` sits a documentation commit
-  or two ahead of the tag `v1.10.1`, and that is expected**: the released binary is built from the
+  or two ahead of the tag `v1.10.4`, and that is expected**: the released binary is built from the
   tag, so docs written after a release do not move it. Nothing is unpushed. A hash was written here
   by hand and was wrong three times running: once claiming `main` was a commit ahead when it was not, once claiming
   work was uncommitted after it had been pushed, and once naming a commit two sessions old.
@@ -82,10 +82,14 @@ next session from inside `pm-app`.
   could lie, and did.** From v1.10.1 the server states its own version in two places a cache cannot
   reach: `GET /api/health` returns it, and the console window prints it (with the records folder)
   on start-up. The screen shows both numbers and raises a banner when they disagree.
-- Latest release: **v1.10.4**, tagged 2026-09-02. **The HP needs v1.10.4.** It carries no behaviour
-  change over v1.10.3 — the difference is that this is the first binary built and published *after*
-  the 5,000-operation paperwork suite existed, so the published `.exe` is gated by it. Install this
-  one; v1.10.3 is superseded.
+- Latest release: **v1.10.4**, tagged 2026-09-02, built and published — the Windows workflow passed
+  every gate (**1,503 tests, 0 failed** → assemble the `.exe` → start it and serve a real request →
+  verify the Desktop shortcut) and `Villaggio-Del-Sol.exe` (**95,379,968 bytes**, 93,144 KB in
+  Explorer) is on the release. **The HP needs v1.10.4.**
+  ⚠️ It carries **no behaviour change** over v1.10.3, and is byte-identical in size — the difference
+  is that this is the first binary built *after* the 5,000-operation paperwork suite existed, so the
+  published `.exe` is gated by it. **Tell them apart by the version on the console line and in the
+  sidebar, never by the file size.** Install this one; v1.10.3 is superseded.
 - Previous release: **v1.10.3**, tagged 2026-09-02 — the printed records carry every record (below).
 - Previous release: **v1.10.2**, tagged 2026-09-01 — posted is no longer the same as due (below).
 - Previous release: **v1.10.1**, tagged 2026-09-01 — the version-visibility fix above. Supersedes
@@ -99,7 +103,7 @@ next session from inside `pm-app`.
 - Older release: **v1.9.0**, shipped 2026-08-21, tag on `b29b55d`. Four releases went out that day
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
-  2026-09-01 and needs v1.10.1.** Every earlier release is superseded; install the latest only.
+  2026-09-01 and needs v1.10.4.** Every earlier release is superseded; install the latest only.
 
 ## Session of 2026-09-02 (later) — five thousand operations, then read the paperwork
 
@@ -721,8 +725,10 @@ US$800 that read as a credit — was fixed the same day and carries a regression
 two questions sitting with management — all under *Where to pick up*. Do not go hunting for a bug
 list; there isn't one.
 
-**The system is live and current.** The HP runs **v1.9.0** (Ro confirmed 2026-09-01). Tailscale is
-installed and remote access from a phone is confirmed.
+**The system is live.** The HP was last confirmed on **v1.9.0** (Ro, 2026-09-01) and **has not been
+confirmed on any later build** — five releases went out on 1–2 September and the upgrade has not been
+reported back. Do not assume it is current: read the version off the console window, or
+`/api/health`. Tailscale is installed and remote access from a phone is confirmed.
 
 ### Migration from Excel — planned, partially enabled (2026-08-16)
 
@@ -916,7 +922,7 @@ Watch it with `gh run watch <id> --exit-status`.
 
 ---
 
-## Built so far (all tested; everything here is committed and on the remote as of `7b2d21f`, released as v1.10.0)
+## Built so far (all tested; everything here is committed and on the remote, released as v1.10.4)
 
 **Money handling**
 - **Proprietor statements** — per villa, per currency, grouped by owner; itemised printable
@@ -1974,20 +1980,20 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-**1. Install v1.10.1 on the HP. It is on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
+**1. Install v1.10.4 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
 **in the same folder**, replacing the old one, and double-click it.
 
 **Then confirm it took — and confirm it the right way.** The v1.10.0 upgrade was correct and looked
 like a failure because the only check available read from a browser cache. In order of trust:
 
-   - **The black console window** now prints `Villaggio Del Sol operations server v1.10.1 running
+   - **The black console window** now prints `Villaggio Del Sol operations server v1.10.4 running
      at …` and, underneath, `Records folder: …`. This is the program speaking; nothing caches it.
      **Read the folder line too** — if it is not the folder the records have always been in, the
      program is looking at a different (probably empty) set of books, because the data folder is the
      working directory and not the executable's folder. Close it and start it from the right place.
    - **`http://localhost:PORT/api/health`** in a browser returns the version as well.
-   - **The sidebar and sign-in screen** show the page's own version, and from v1.10.1 the server's
+   - **The sidebar and sign-in screen** show the page's own version, and from v1.10.1 onwards the server's
      beside it when they differ, plus a banner saying so. Trust this *last*: it is the thing that was
      lying.
 
@@ -2058,13 +2064,35 @@ back** (both raised 2026-08-21, Ro referred them on):
      no permanent arrears against those lots. **Nothing to build, and nothing to change** — this is
      recorded so the question is not asked a fourth time. It also means a VDS-owned villa sitting in
      arrears on the ledger is a real unpaid contribution, not an artefact of the model.
-   - **Does Ro want an out-of-pocket shortfall report?** Ro clarified the funding model: on villas
-     VDS lets long-term, the maintenance is funded from the rent collected, so a vacant villa means
-     VDS pays it out of pocket. The system bills maintenance on vacant villas correctly, but models
-     **no link** between rent received and maintenance owed, and has no such report.
+   - **Does Ro want an out-of-pocket shortfall report?** Still open, but **designed on 2026-09-02**
+     when Ro asked what it would look like — build only on his yes, and do not redesign it from
+     scratch. The funding model: on villas VDS lets long-term the maintenance is funded from the rent
+     collected, so a vacant villa means VDS pays it out of pocket. The system bills maintenance on
+     vacant villas correctly but models **no link** between rent received and maintenance owed.
 
-**5. The untested surface is the honest risk, and no simulation closes any of it.** Narrowed a little
-by v1.10.0 but still real:
+     **Where it goes:** Operational Reports, below the operating statement, badged **internal**. It is
+     *not* a strata document — the operating statement is the corporation's income and expenditure,
+     this is VDS's own trading position as a landlord, and putting them on one page confuses two
+     entities that must stay apart.
+
+     **What it shows:** one row per villa VDS lets on its own account, per month, **cash basis** —
+     occupied days, rent received, maintenance paid, and the shortfall where maintenance paid exceeds
+     rent received. Under it, per currency and never combined: *"VDS funded J$X from its own account
+     across N vacant villa-months"*, with the vacant months **named**, because the figure is only
+     actionable if you can see which villas produced it. Two views off one engine: **by villa** (is
+     this villa worth letting?) and **by month** (how much cash did we need to find?).
+
+     ⚠️ **One decision has to come first and cannot be guessed: how does the system know which villas
+     are VDS's own?** There is no such field — `unit.ownerName` is free text, and matching on a name
+     breaks silently the day somebody types "Villaggio Del Sol Ltd." instead of "VDS". The answer put
+     to Ro was **a tick box on the villa register** ("Let on the corporation's own account"): explicit,
+     survives a rename, one field. About a day's work all in — the flag, an engine function, a screen,
+     an Excel export and tests.
+
+**5. The untested surface is the honest risk, and no simulation closes any of it.** Narrowed again on
+2026-09-02 — printed documents can now be rendered and asserted, and 223 of them are, under the
+5,000-operation suite — but **no test has ever put ink on paper**, and that is where a regression
+slipped through once before:
    - **The `.exe` on the HP itself.** The release workflow now assembles it, **starts it, serves a
      real request and verifies the Desktop shortcut** on a Windows runner — which is much closer than
      before, but a GitHub runner is not a desktop in Ocho Rios.
