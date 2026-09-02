@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,433 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,461 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, and three **1,000-simulation expert suites** (property manager, architect,
   security). The application also checks its own records at start-up. A full `npm test` takes roughly
@@ -81,8 +81,10 @@ next session from inside `pm-app`.
   could lie, and did.** From v1.10.1 the server states its own version in two places a cache cannot
   reach: `GET /api/health` returns it, and the console window prints it (with the records folder)
   on start-up. The screen shows both numbers and raises a banner when they disagree.
-- Latest release: **v1.10.1**, tagged 2026-09-01 — the version-visibility fix above. Supersedes
-  v1.10.0 in every respect. **The HP needs v1.10.1.**
+- Latest release: **v1.10.2**, tagged 2026-09-01 — posted is no longer the same as due (below).
+  **The HP needs v1.10.2.**
+- Previous release: **v1.10.1**, tagged 2026-09-01 — the version-visibility fix above. Supersedes
+  v1.10.0 in every respect.
 - Previous release: **v1.10.0**, tagged 2026-09-01 on `7b2d21f` — the owner-statement and currency
   fixes, the adversarial and expert simulation suites, Excel workbooks in place of every CSV, and the
   two new statements (owners' monthly operations, and the strata corporation's operating statement).
@@ -93,6 +95,81 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.10.1.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-09-01 (later still) — posted is not due, and a test reading a UTC clock
+
+### Rent was called arrears from the moment the month was posted — FIXED in v1.10.2
+
+Ro, having set a rent due day of the 7th: *"if rent is due on the 7th, and when i click post month on
+the 1st of every month it generates an alert in the notifications hub for rent due on the 7th, it
+defeats the purpose and unneccessarily posts a rent thats not yet due."* He was right, and the
+objection is the sharp one: **if a charge is treated as late from the day it is posted, recording a
+due date at all is pointless.**
+
+`accountBalance()` has always taken an optional as-of date and correctly ignores charges not yet due
+(`.filter(c => !asOf || c.dueDate <= asOf)`). **Three screens called `delinquentAccounts()` without
+it** — the notifications hub, the dashboard arrears card, and the outstanding count on the sidebar —
+so every open charge counted regardless of when it fell due. The hub read *"Rent outstanding — 1
+unpaid month"* about money nobody owed for another six days.
+
+⚠️ **The reports were never wrong.** Reports, the board pack and the finance hub all pass a date, so
+the arrears schedule, the ageing buckets and Form 13B were correct throughout. Nothing that left the
+property misstated anything. This was a screen fault, and it is worth knowing the boundary.
+
+**`scheduledCharges()` in `src/lib/finance.ts`** is the new engine call: open charges whose due date
+has not arrived, with the amount still to find after any credit already held, the earliest due date
+and the days until it. The hub shows them **grey, headed "Rent due 7 September", badged "Not yet
+due"**, kept out of the open-items count and out of every money total, and sorted below everything
+real. On the due day the charge becomes arrears with nothing to re-post and nothing for anyone to do.
+
+Two judgements worth keeping:
+
+- **The due date comes from the charge, not from the register.** A charge stores the due date it was
+  raised with, so changing a villa's rent day in April does not retroactively make March early or
+  late.
+- **Paying early still works, and had to.** The payment screen deliberately asks for the *unrestricted*
+  balance — a tenant who pays on the 1st for the 7th must have somewhere to put the money — and the
+  scheduled row offers "Receive early payment" for exactly that. **"What is owed today" and "what is
+  open on this account" are two different questions, and only the first drives an alert.** Do not
+  "tidy" this by making them one.
+
+The villa profile and the printed unit ledger were deliberately left showing the full open balance:
+they answer the second question.
+
+### Two refinements that came with it
+
+- **A month can be posted from the notifications hub.** The "not yet billed" alert used to send you
+  to the ledger to do the thing it was asking for; it now posts the months itself, oldest first. Safe
+  to press twice — the endpoint skips a villa already billed for that month.
+- **`oldestUnpaidDays` aged against the wall clock, not against the date being asked about.** It
+  called `daysSince()`, so an arrears schedule run *as of* a past quarter printed a days-overdue
+  column measured from this morning, **beside ageing buckets on the same page measured correctly from
+  the quarter end** (`ageAccountArrears` has always used `daysSinceOn`). Two numbers on one document
+  describing the same debt and disagreeing. Now `daysSinceOn(dueDate, asOf || today())`; ordinary
+  screens are unchanged.
+
+**28 checks in `test/due-dates.test.mjs`**, including the boundary in both directions (the day before,
+the day itself), a charge due on the day it is posted staying due immediately, an August arrear and a
+September scheduled charge not cancelling out, and the hub rendered through `react-dom/server` to
+assert the row is genuinely grey and the due one genuinely amber.
+
+### ⚠️ A test was reading a UTC clock — FIXED, and this is the second one
+
+`test/expert-property-manager.test.mjs` failed on `main` **before any change this session**, exactly
+as `corrections.test.mjs` had a few hours earlier. It dated a receipt with
+`new Date().toISOString().slice(0, 10)` — the **UTC** day — while the application works in **local**
+time (`toDayString`). For the last four or five hours of every Jamaican day those are different, so
+the receipt was dated *tomorrow* and the server refused it: *"a payment cannot be dated in the
+future."* The guard was working. The test was wrong.
+
+It passed on the CI runner an hour before, because **CI runs in UTC, where the two never differ** —
+so this class of failure cannot be caught by the release workflow. Found at 21:33 EDT; it would have
+passed again after midnight.
+
+`localToday()` now lives in `test/harness.mjs` with the explanation. **Never build a "now" date in a
+test from `toISOString()`.** `test/first-and-last-rent.test.mjs` had the same call and was corrected
+with it; the two remaining uses build a fixed UTC date and read it back as UTC, which is
+self-consistent and was left alone.
 
 ## Session of 2026-09-01 (later) — the upgrade that worked and looked like it had not
 

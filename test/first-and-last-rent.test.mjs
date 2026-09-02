@@ -11,7 +11,7 @@
  * appeared at the start.
  */
 
-import { startServer, makeClient, reporter, activateAdmin } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
 
 export const title = "First and last month's rent";
 
@@ -109,7 +109,7 @@ export default async function run({ port, projectRoot }) {
     T.check('dated to the month they actually moved in, not today', back.every(x => x.periodMonth === backMonth), back.map(x => x.periodMonth).join(','));
     T.check(
       'and dated due in the past, so it reads as overdue rather than upcoming',
-      back.every(x => x.dueDate < new Date().toISOString().slice(0, 10)),
+      back.every(x => x.dueDate < localToday()),
       back.map(x => x.dueDate).join(',')
     );
 

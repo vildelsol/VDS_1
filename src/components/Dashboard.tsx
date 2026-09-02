@@ -114,7 +114,9 @@ export default function Dashboard({
 
   /* ---------------- arrears ---------------- */
 
-  const arrears = useMemo(() => delinquentAccounts(units, charges, payments), [units, charges, payments]);
+  // As of today: a charge whose due date has not arrived is not arrears, however
+  // long ago the month was posted. See scheduledCharges() in lib/finance.
+  const arrears = useMemo(() => delinquentAccounts(units, charges, payments, today()), [units, charges, payments]);
   /**
    * Accounts set up to be billed that have never had a charge raised. They owe
    * nothing, so they never appear in arrears — which is exactly why an unbilled

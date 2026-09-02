@@ -50,6 +50,7 @@ import {
   subscribeSync
 } from './lib/api';
 import { countBookingOverlaps, delinquentAccounts } from './lib/finance';
+import { today } from './lib/dates';
 import { clearSnapshot, loadSnapshot, saveSnapshot } from './lib/snapshot';
 import {
   AlertTriangle,
@@ -354,7 +355,10 @@ export default function App() {
 
   const outstandingCount = useMemo(() => {
     if (!session) return 0;
-    const accounts = delinquentAccounts(data.units, data.charges, data.payments);
+    // As of today, so a charge posted for a month but not yet due does not
+    // count against the badge. Posting the month is not the same as the money
+    // falling due, and the badge is a count of things needing doing now.
+    const accounts = delinquentAccounts(data.units, data.charges, data.payments, today());
     const unpaidUtilities = data.utilities.filter(u => u.status === 'unpaid').length;
     const pendingExpenses = data.expenses.filter(e => e.status === 'pending').length;
     return accounts.length + unpaidUtilities + pendingExpenses + countBookingOverlaps(data.bookings);
@@ -643,6 +647,7 @@ export default function App() {
             onRecordPayment={recordPayment}
             onSettleUtility={(id, payload) => mutate(() => api.post(`/api/utilities/${id}/settle`, payload))}
             onUpdateExpense={(id, fields) => mutate(() => api.put(`/api/expenses/${id}`, fields))}
+            onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}
           />
         )}
 

@@ -37,7 +37,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
 
 export const title = 'A property manager judging a thousand operating events';
 
@@ -330,7 +330,10 @@ export default async function run({ port, projectRoot }) {
      * not a fault. Money is receipted on the day it arrives, so the balance being
      * cleared has to be the balance that stands today.
      */
-    const todayStr = new Date().toISOString().slice(0, 10);
+    // Local, not UTC — see localToday() in the harness. Dating this with the UTC
+    // day made the receipt tomorrow's every evening, and the application refused
+    // it exactly as it should.
+    const todayStr = localToday();
     const owingToday = [];
     for (const unit of units) {
       for (const category of ['Rent', 'Maintenance']) {

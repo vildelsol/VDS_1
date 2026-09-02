@@ -297,7 +297,19 @@ export function accountBalance(
     }
   }
 
-  const oldestUnpaidDays = unpaidCharges.length > 0 ? Math.max(0, daysSince(unpaidCharges[0].dueDate)) : 0;
+  /*
+   * Aged against the date being asked about, not against the wall clock.
+   *
+   * This used to call daysSince(), which always measures from today — so an
+   * arrears schedule run "as of" the end of last quarter printed a days-overdue
+   * column measured from this morning, beside ageing buckets on the same page
+   * that were correctly measured from the quarter end (see ageAccountArrears,
+   * which has always used daysSinceOn). Two numbers on one document, describing
+   * the same debt, disagreeing. Where no date is asked for, today is the date
+   * being asked about, so ordinary screens are unchanged.
+   */
+  const oldestUnpaidDays =
+    unpaidCharges.length > 0 ? Math.max(0, daysSinceOn(unpaidCharges[0].dueDate, asOf || today())) : 0;
 
   const billable = isBillable(unit, category);
   const status: AccountStatus =
@@ -452,6 +464,77 @@ export function delinquentAccounts(
     }
   }
   return accounts.sort((a, b) => b.oldestUnpaidDays - a.oldestUnpaidDays || b.balance - a.balance);
+}
+
+/**
+ * Rent and maintenance that has been posted but is not owed yet.
+ *
+ * Posting a month raises every charge in it at once, each carrying the due date
+ * built from the villa's own rent or maintenance day. So a month posted on the
+ * 1st with rent due on the 7th creates a real, open charge six days before
+ * anybody is late — and `delinquentAccounts` counted it, because it was called
+ * without an "as of" date and therefore weighed every open charge regardless of
+ * when it falls due. The notifications hub read "Rent outstanding — 1 unpaid
+ * month" about money that was not yet due, which is the alert that teaches people
+ * to stop reading alerts. Ro put it plainly on 2026-09-01: it defeated the point
+ * of recording a due date at all.
+ *
+ * These are not warnings. They are what is coming, and they exist to be shown
+ * quietly — so that the same screen can say "nothing is overdue" and still show
+ * the 7th approaching.
+ *
+ * A credit already sitting on the account is applied first, so a tenant who paid
+ * ahead does not appear on a list of money still to be found; if that covers the
+ * whole of what is scheduled, nothing is reported for that account at all.
+ */
+export interface ScheduledCharge {
+  unit: Unit;
+  category: ChargeCategory;
+  currency: Currency;
+  /** The open charges not yet due, earliest first. */
+  charges: Charge[];
+  /** What is still to be found, after any credit already held. Always above nil. */
+  amount: number;
+  /** The earliest due date among them. */
+  nextDueDate: string;
+  /** Whole days until that date. Never negative — a charge that is due is not scheduled. */
+  daysUntilDue: number;
+}
+
+export function scheduledCharges(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  asOf: string = today()
+): ScheduledCharge[] {
+  const out: ScheduledCharge[] = [];
+  for (const unit of units) {
+    for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
+      const currency = chargeCurrency(unit, category);
+      const upcoming = chargesForUnit(charges, unit, units)
+        .filter(c => c.category === category && c.status === 'open' && c.currency === currency && c.dueDate > asOf)
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+      if (upcoming.length === 0) continue;
+
+      // What the account looks like today. A negative balance is money held
+      // against charges that have not been raised against it yet.
+      const dueNow = accountBalance(unit, category, charges, payments, asOf, units);
+      const creditHeld = dueNow.balance < 0 ? -dueNow.balance : 0;
+      const amount = round2(Math.max(0, subtractMoney(sumMoney(upcoming.map(c => c.amount)), creditHeld)));
+      if (amount <= 0) continue;
+
+      out.push({
+        unit,
+        category,
+        currency,
+        charges: upcoming,
+        amount,
+        nextDueDate: upcoming[0].dueDate,
+        daysUntilDue: Math.max(0, -daysSinceOn(upcoming[0].dueDate, asOf))
+      });
+    }
+  }
+  return out.sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
 }
 
 /** Every account holding a credit (paid more than billed). */

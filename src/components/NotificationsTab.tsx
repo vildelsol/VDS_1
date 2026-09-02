@@ -20,7 +20,7 @@ import {
   Tenancy,
   AppSettings
 } from '../types';
-import { AccountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, unbilledOccupancy } from '../lib/finance';
+import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, scheduledCharges, unbilledOccupancy } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
 import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
@@ -56,6 +56,8 @@ interface NotificationsTabProps {
   onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
   onSettleUtility: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateExpense: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
+  /** Post a billing month. Lets an unbilled month be fixed here rather than sending someone to the ledger. */
+  onPostMonth: (month: string) => Promise<unknown>;
 }
 
 type Filter = 'all' | 'rent' | 'maintenance' | 'unbilled' | 'lease' | 'utility' | 'expense' | 'booking';
@@ -67,11 +69,18 @@ interface Item {
   description: string;
   amount: number;
   currency: Currency;
-  severity: 'high' | 'medium';
+  /**
+   * 'scheduled' is money posted but not yet due. It is shown, quietly, and is
+   * deliberately kept out of every count and total of what is owed — see the
+   * note on scheduledCharges() in lib/finance.
+   */
+  severity: 'high' | 'medium' | 'scheduled';
   ageDays: number;
   account?: AccountBalance;
   utility?: UtilityReading;
   expense?: Expense;
+  /** The day a scheduled charge falls due, for the items that have one. */
+  dueOn?: string;
   /** Months a tenant has occupied that were never billed. */
   unbilledMonths?: string[];
   isBooking?: boolean;
@@ -90,11 +99,15 @@ export default function NotificationsTab({
   onNavigateToTab,
   onRecordPayment,
   onSettleUtility,
-  onUpdateExpense
+  onUpdateExpense,
+  onPostMonth
 }: NotificationsTabProps) {
   const [filter, setFilter] = useState<Filter>('all');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  /** The id of the item whose months are being posted, so only its button spins. */
+  const [posting, setPosting] = useState<string | null>(null);
 
   const [settleAccount, setSettleAccount] = useState<AccountBalance | null>(null);
   const [settleUtility, setSettleUtility] = useState<UtilityReading | null>(null);
@@ -102,8 +115,41 @@ export default function NotificationsTab({
 
   const perms = session.permissions;
 
+  /**
+   * Post the months an occupied villa was never billed for, from here.
+   *
+   * One request per month, in order, oldest first — the endpoint takes a single
+   * month and posts every billable villa in it, skipping any already billed. So
+   * this is safe to press twice, and safe when two villas report the same missing
+   * month: the second press bills nothing.
+   */
+  const handlePostMissingMonths = async (item: Item) => {
+    const months = item.unbilledMonths || [];
+    if (months.length === 0) return;
+    setPosting(item.id);
+    setError('');
+    setSuccess('');
+    try {
+      for (const month of [...months].sort()) {
+        await onPostMonth(month);
+      }
+      setSuccess(
+        months.length === 1
+          ? `${formatMonthLabel(months[0])} has been posted. The rent is now owed and can be collected.`
+          : `${months.length} months have been posted (${months.map(formatMonthLabel).join(', ')}). The rent is now owed and can be collected.`
+      );
+    } catch (err) {
+      setError(errorMessage(err, 'The month could not be posted.'));
+    } finally {
+      setPosting(null);
+    }
+  };
+
   const items = useMemo<Item[]>(() => {
-    const accounts = delinquentAccounts(units, charges, payments).map<Item>(account => ({
+    // As of today. Without this every open charge counted, so a month posted on
+    // the 1st with rent due on the 7th read as an unpaid month from the moment it
+    // was posted — see scheduledCharges() in lib/finance.
+    const accounts = delinquentAccounts(units, charges, payments, today()).map<Item>(account => ({
       id: `${account.category.toLowerCase()}-${account.unit.id}`,
       type: account.category === 'Rent' ? 'rent' : 'maintenance',
       title: `${account.category === 'Rent' ? 'Rent' : 'HOA maintenance'} outstanding — ${getUnitDisplayName(account.unit.number)}`,
@@ -116,6 +162,30 @@ export default function NotificationsTab({
       severity: account.oldestUnpaidDays > 30 ? 'high' : 'medium',
       ageDays: account.oldestUnpaidDays,
       account
+    }));
+
+    // Posted, but not owed yet. Shown so the coming week is visible, and kept out
+    // of every count and total of money owed so it can never read as a debt.
+    const scheduledItems = scheduledCharges(units, charges, payments, today()).map<Item>(row => ({
+      id: `scheduled-${row.category.toLowerCase()}-${row.unit.id}`,
+      type: row.category === 'Rent' ? 'rent' : 'maintenance',
+      title: `${row.category === 'Rent' ? 'Rent' : 'HOA maintenance'} due ${formatDayLabel(row.nextDueDate)} — ${getUnitDisplayName(row.unit.number)}`,
+      description:
+        `${row.charges[0].payerName || 'The account holder'} — posted and not yet due` +
+        `${row.daysUntilDue === 1 ? ', due tomorrow' : `, due in ${row.daysUntilDue} days`}. ` +
+        'Nothing is late. It moves to the list above on the day itself.',
+      amount: row.amount,
+      currency: row.currency,
+      severity: 'scheduled',
+      ageDays: -1, // sorts below everything that is actually due
+      dueOn: row.nextDueDate,
+      /*
+       * Deliberately the *unrestricted* balance, with no as-of date: a tenant who
+       * walks in on the 1st to pay rent due on the 7th must have somewhere to put
+       * the money. What is owed today and what is open on the account are two
+       * different questions, and only the first one drives an alert.
+       */
+      account: accountBalance(row.unit, row.category, charges, payments, undefined, units)
     }));
 
     // Occupied months that were never billed — most often a tenant recorded
@@ -203,15 +273,29 @@ export default function NotificationsTab({
       isBooking: true
     }));
 
-    return [...overlapItems, ...leaseItems, ...unbilledItems, ...accounts, ...utilityItems, ...expenseItems].sort((a, b) => b.ageDays - a.ageDays);
+    return [...overlapItems, ...leaseItems, ...unbilledItems, ...accounts, ...utilityItems, ...expenseItems, ...scheduledItems].sort(
+      (a, b) => b.ageDays - a.ageDays
+    );
   }, [units, charges, payments, utilities, expenses, bookings, tenancies]);
 
   const visible = items.filter(i => filter === 'all' || i.type === filter);
   const highCount = items.filter(i => i.severity === 'high').length;
 
+  /*
+   * Everything below counts what is *owed*, so scheduled items are excluded from
+   * all of it. Including them would put the same lie back in a different place:
+   * a headline total that a manager reads as debt, made partly of rent that is
+   * not due until next week.
+   */
+  const owedItems = items.filter(i => i.severity !== 'scheduled');
+  const scheduledCount = items.length - owedItems.length;
+
   const totals = useMemo(() => {
     const out: Record<Currency, number> = { USD: 0, JMD: 0 };
-    for (const item of items) out[item.currency] = sumMoney([out[item.currency], item.amount]);
+    for (const item of items) {
+      if (item.severity === 'scheduled') continue;
+      out[item.currency] = sumMoney([out[item.currency], item.amount]);
+    }
     return out;
   }, [items]);
 
@@ -232,8 +316,18 @@ export default function NotificationsTab({
         <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-white p-5 shadow-xs">
           <div>
             <p className="font-mono text-xs uppercase text-slate-500">Open items</p>
-            <h3 className="mt-1 font-display text-2xl font-semibold text-slate-950">{items.length}</h3>
-            <p className="mt-1 text-xs text-slate-400">Money owed to and by the property</p>
+            <h3 className="mt-1 font-display text-2xl font-semibold text-slate-950">{owedItems.length}</h3>
+            <p className="mt-1 text-xs text-slate-400">
+              Money owed to and by the property
+              {scheduledCount > 0 && (
+                <>
+                  {' · '}
+                  <span className="text-slate-500">
+                    {scheduledCount} more posted, not yet due
+                  </span>
+                </>
+              )}
+            </p>
           </div>
           <div className="rounded-xl bg-teal-50 p-3 text-teal-600">
             <Bell className="h-6 w-6" />
@@ -258,7 +352,7 @@ export default function NotificationsTab({
               <p className="font-mono text-sm font-bold text-slate-800">{formatMoney(totals.JMD, 'JMD')} JMD</p>
               <p className="font-mono text-sm font-bold text-slate-800">{formatMoney(totals.USD, 'USD')} USD</p>
             </div>
-            <p className="mt-1 text-xs text-slate-400">Currencies reported separately</p>
+            <p className="mt-1 text-xs text-slate-400">Currencies reported separately · owed now, excluding what is not yet due</p>
           </div>
           <div className="rounded-xl bg-slate-50 p-3 text-slate-600">
             <DollarSign className="h-6 w-6" />
@@ -298,8 +392,8 @@ export default function NotificationsTab({
           title={items.length === 0 ? 'Nothing outstanding' : 'Nothing outstanding in this category'}
           hint={
             charges.length === 0
-              ? 'No charges have been posted yet. Rent and maintenance arrears only appear once a billing month is posted from the ledger.'
-              : 'Every billed account is settled, all utility bills are paid, and no expenses are pending.'
+              ? 'No charges have been posted yet. Rent and maintenance only appear here once a billing month is posted — from the ledger, or from the "not yet billed" alerts on this page.'
+              : 'Nothing is overdue, all utility bills are paid, and no expenses are pending. Rent posted for a month but not yet due is shown in grey rather than counted here.'
           }
           icon={<CheckCircle className="h-6 w-6" />}
         />
@@ -310,20 +404,26 @@ export default function NotificationsTab({
               key={item.id}
               className={`flex flex-col gap-3 rounded-2xl border bg-white p-5 shadow-xs sm:flex-row sm:items-center sm:justify-between ${
                 item.severity === 'high' ? 'border-red-100' : 'border-slate-100'
+              } ${
+                // Posted but not owed. Held back visually on purpose: it must be
+                // readable as "coming", never as "late".
+                item.severity === 'scheduled' ? 'bg-slate-50/60' : ''
               }`}
             >
               <div className="flex min-w-0 gap-3">
                 <span
                   className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
-                    item.type === 'booking'
-                      ? 'bg-red-50 text-red-600'
-                      : item.type === 'utility'
-                        ? 'bg-sky-50 text-sky-600'
-                        : item.type === 'expense'
-                          ? 'bg-slate-100 text-slate-600'
-                          : item.severity === 'high'
-                            ? 'bg-red-50 text-red-600'
-                            : 'bg-amber-50 text-amber-600'
+                    item.severity === 'scheduled'
+                      ? 'bg-slate-100 text-slate-500'
+                      : item.type === 'booking'
+                        ? 'bg-red-50 text-red-600'
+                        : item.type === 'utility'
+                          ? 'bg-sky-50 text-sky-600'
+                          : item.type === 'expense'
+                            ? 'bg-slate-100 text-slate-600'
+                            : item.severity === 'high'
+                              ? 'bg-red-50 text-red-600'
+                              : 'bg-amber-50 text-amber-600'
                   }`}
                 >
                   {item.type === 'booking' ? (
@@ -338,8 +438,11 @@ export default function NotificationsTab({
                 </span>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                    <p className={`text-sm font-semibold ${item.severity === 'scheduled' ? 'text-slate-600' : 'text-slate-900'}`}>
+                      {item.title}
+                    </p>
                     {item.severity === 'high' && <Badge tone="red">Needs attention</Badge>}
+                    {item.severity === 'scheduled' && <Badge tone="slate">Not yet due</Badge>}
                     {item.type !== 'booking' && item.ageDays > 0 && (
                       <Badge tone={item.ageDays > 60 ? 'red' : 'amber'}>{item.ageDays} days</Badge>
                     )}
@@ -352,9 +455,13 @@ export default function NotificationsTab({
                 {item.type !== 'booking' && item.amount > 0 && (
                   <div className="text-right">
                     <span className="block font-mono text-[9px] uppercase text-slate-400">
-                      {item.type === 'expense' ? 'To pay' : 'Outstanding'}
+                      {item.severity === 'scheduled' ? 'Due' : item.type === 'expense' ? 'To pay' : 'Outstanding'}
                     </span>
-                    <span className={`font-mono text-base font-bold ${item.type === 'expense' ? 'text-slate-800' : 'text-red-600'}`}>
+                    <span
+                      className={`font-mono text-base font-bold ${
+                        item.severity === 'scheduled' ? 'text-slate-500' : item.type === 'expense' ? 'text-slate-800' : 'text-red-600'
+                      }`}
+                    >
                       {formatMoney(item.amount, item.currency)}
                     </span>
                     <span className="block font-mono text-[9px] text-slate-400">{item.currency}</span>
@@ -368,7 +475,8 @@ export default function NotificationsTab({
                   onSettleExpense={() => item.expense && setSettleExpense(item.expense)}
                   onOpenBookings={() => onNavigateToTab('bookings')}
                   onOpenUnits={() => onNavigateToTab('units')}
-                  onOpenLedger={() => onNavigateToTab('finance')}
+                  onPostMissingMonths={() => void handlePostMissingMonths(item)}
+                  posting={posting === item.id}
                 />
               </div>
             </li>
@@ -430,7 +538,8 @@ function ItemAction({
   onSettleExpense,
   onOpenBookings,
   onOpenUnits,
-  onOpenLedger
+  onPostMissingMonths,
+  posting
 }: {
   item: Item;
   perms: SessionUser['permissions'];
@@ -439,7 +548,8 @@ function ItemAction({
   onSettleExpense: () => void;
   onOpenBookings: () => void;
   onOpenUnits: () => void;
-  onOpenLedger: () => void;
+  onPostMissingMonths: () => void;
+  posting: boolean;
 }) {
   if (item.type === 'booking') {
     return (
@@ -482,9 +592,23 @@ function ItemAction({
   }
   if (item.type === 'unbilled') {
     if (!perms.postCharges) return <span className="text-[10px] text-slate-400">Requires the post-charges permission</span>;
+    // Posts from here rather than navigating to the ledger. The work is one
+    // click away from the alert that asked for it, and posting is idempotent per
+    // month per villa — a month already billed is skipped, not billed twice.
     return (
-      <SecondaryButton onClick={onOpenLedger} className="whitespace-nowrap px-3 py-2 text-[11px]">
-        Post the missing months
+      <SubmitButton type="button" busy={posting} busyLabel="Posting…" onClick={onPostMissingMonths} className="whitespace-nowrap px-3 py-2 text-[11px]">
+        Post {item.unbilledMonths && item.unbilledMonths.length === 1 ? 'the month' : `the ${item.unbilledMonths?.length} months`}
+      </SubmitButton>
+    );
+  }
+
+  // Posted but not due. Money can still be taken early — a tenant who pays on the
+  // 1st for the 7th is not doing anything unusual — but it is offered quietly.
+  if (item.severity === 'scheduled') {
+    if (!perms.recordPayments) return <span className="text-[10px] text-slate-400">Nothing to do yet</span>;
+    return (
+      <SecondaryButton onClick={onSettleAccount} className="whitespace-nowrap px-3 py-2 text-[11px]">
+        Receive early payment
       </SecondaryButton>
     );
   }

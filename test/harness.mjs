@@ -191,6 +191,28 @@ export async function makeLongTermUnit(client, id = 'unit-1', over = {}) {
   });
 }
 
+/**
+ * Today, the way the application means it: local time.
+ *
+ * `new Date().toISOString().slice(0, 10)` is the UTC day, and the server works in
+ * local time (`toDayString` in src/lib/dates.ts). Those are the same string for
+ * most of the day and different for the last few hours of it — five in Jamaica,
+ * four on daylight time. A test that dates a receipt with the UTC day is
+ * therefore dating it *tomorrow* every evening after about eight o'clock, and the
+ * application correctly refuses it: "a payment cannot be dated in the future."
+ *
+ * That is what broke the property-manager suite on the evening of 2026-09-01,
+ * having passed on the CI runner an hour earlier — because CI runs in UTC, where
+ * the two never differ. The same shape as the hardcoded '2026-08' that failed on
+ * the first of September: a test that agrees with the application only some of
+ * the time. **Never build a "now" date in a test from toISOString().**
+ */
+export function localToday() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function reporter(title) {
   const failures = [];
   let pass = 0;
