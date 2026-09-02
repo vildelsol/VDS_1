@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,624 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,650 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
@@ -105,6 +105,56 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.10.4.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-09-02 — the owners' monthly report
+
+Ro: *"Include a section for monthly report that we may be able to give our owners should they ask …
+we can include a tab section within that area that gives the option for a monthly report."*
+
+**Annual Report now has two tabs: Annual report | Monthly report.** They belong on one screen because
+they obey the same rule, and that rule is the design: **identical for every owner, carrying nothing
+personal.** Ro, 2026-08-16, on the annual report: *"it has to do with how the property is run, not
+their unit nor their finances."* A shorter period does not relax it.
+
+**Everything on it is generated; nothing is typed.** The annual report carries eight narrative boxes
+because it argues a case to a meeting. This reports a month, so there is no wording to drift out of
+step with a figure, **nothing to save, and no new collection** — which also means the `/api/db`
+projection trap does not apply. A corrected receipt reaches it without anyone reopening anything.
+
+**What is on it:** contributions received, common costs paid, the surplus a proprietor can check by
+subtraction, and where the money went **by category**. Then the three facts that stop the month
+reading better than it was — bills that fell due and were not settled, work on individual villas
+recharged to those owners, and the arrears position.
+
+**The arrears line is the boundary, and it is deliberately narrow: a count and a total, never a
+list.** *"1 of 16 lots had contributions outstanding at the end of the month, totalling J$20,000.00.
+No lot is named on this report."* The fund's health is every proprietor's business; who owes it is
+not, on a document that goes to all of them.
+
+**No payee is named either.** The itemised statement naming every contractor is the operating
+statement, and that is the council's document. A circular to sixteen households is not the place.
+
+Built on `operationsStatement()` rather than a new engine — it already computes contributions
+received, common costs by category, the surplus, and the unpaid and recharged memos. `monthlyOwnersReport()`
+composes that with the arrears count, which is **contributions only**: rent arrears are a landlord's
+business between an owner and their tenant, and putting rent on a proprietors' circular would misstate
+whose money the document is about.
+
+**Defaults to last month**, because a month still running is a partial figure and a partial figure
+handed to an owner is one they will be held to. Choosing the current month is allowed and says so on
+the page rather than being refused.
+
+⚠️ **The test that matters most here is the one that reads the finished page.** 26 checks in
+`test/monthly-owners-report.test.mjs`, and the last five render the printed document and fail if a
+proprietor's name, a villa, a payee or a personal balance has found its way onto it. This is the one
+document in the application that goes to sixteen households, and a balance leaking onto it cannot be
+recalled once it is in the post.
+
+**Still to decide, and it was built without it:** no narrative. If Ro wants a covering paragraph, it
+needs a stored record per month and the same discipline the annual report has — generated figures in
+fixed slots, wording in named boxes, nobody typing over a number.
+
+---
 
 ## Session of 2026-09-02 (last) — five faults real data found in an hour
 

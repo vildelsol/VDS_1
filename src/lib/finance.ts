@@ -3139,3 +3139,126 @@ export function outOfPocketShortfall(
       (lines.length === 0 || (totalRentReceived === 0 && totalShortStayReceived === 0 && totalMaintenancePaid === 0))
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * The owners' monthly report
+ * ------------------------------------------------------------------ */
+
+/**
+ * How the property ran in one month, for circulation to proprietors on request.
+ *
+ * Asked for by Ro on 2026-09-02: *"a monthly report that we may be able to give
+ * our owners should they ask"*, as a tab beside the annual report — which is
+ * where it belongs, because **it obeys the annual report's rule.** It is
+ * identical for every owner and carries nothing personal: no lot balances, no
+ * proprietor named, nothing about anybody's villa. Ro, 2026-08-16, on the annual
+ * report: *"it has to do with how the property is run, not their unit nor their
+ * finances."* That rule is not relaxed by making the period shorter.
+ *
+ * **It is generated and nothing on it is typed.** The annual report carries eight
+ * narrative boxes; this carries none, so there is no wording to keep in step with
+ * a figure and nothing to save. Every number comes from the ledger each time it
+ * is opened, which also means a corrected receipt reaches it without anyone
+ * reopening anything.
+ *
+ * **What it is not:** not the operating statement, which names every payee for
+ * the council; not an owner statement, which is one proprietor's own account;
+ * and not the shortfall report, which is VDS's trading position and internal.
+ * Costs appear here as **category totals**, because a circular to sixteen
+ * proprietors is not the place to name every contractor paid.
+ *
+ * Arrears appear as **one aggregate line and no lot is named** — how many lots
+ * owed contributions at month end, and how much in total. That is a fact about
+ * the fund every proprietor is entitled to, and it is the boundary: a count and
+ * a total, never a list.
+ */
+export interface MonthlyOwnersReport {
+  currency: Currency;
+  month: string;
+  from: string;
+  to: string;
+  /** Contributions actually received in the month, net of refunds. */
+  contributionsReceived: number;
+  /** Common costs of running the property, settled in the month. */
+  costsPaid: number;
+  /** Received less paid. Negative means the fund spent more than it took in. */
+  surplus: number;
+  /** Where the money went, by category. Totals only — no payee is named. */
+  categories: { label: string; total: number }[];
+  /**
+   * Memo, never netted into the surplus: common bills that fell due in the month
+   * and were still unsettled at the end of it. A month with a large unpaid bill
+   * would otherwise read as a good month.
+   */
+  unpaidAtMonthEnd: number;
+  unpaidCount: number;
+  /**
+   * Memo: work on individual villas, recharged to those owners and therefore not
+   * a common cost. Stated as a total so that a cost put against the wrong villa
+   * shows as a visible exclusion instead of vanishing from both sides.
+   */
+  villaRecharged: number;
+  villaRechargedCount: number;
+  /** Lots with contributions outstanding at month end. A count, never a list. */
+  lotsInArrears: number;
+  lotsTotal: number;
+  arrearsOutstanding: number;
+  /** Nothing at all happened in this month, in this currency. */
+  empty: boolean;
+}
+
+export function monthlyOwnersReport(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  expenses: Expense[],
+  currency: Currency,
+  month: string
+): MonthlyOwnersReport {
+  const from = monthStart(month);
+  const to = monthEnd(month);
+
+  const ops = operationsStatement(expenses, payments, currency, from, to);
+
+  /*
+   * Contributions only. Rent arrears are a landlord's business between an owner
+   * and their tenant; the corporation's fund is owed maintenance and nothing
+   * else, and putting rent on a proprietors' circular would misstate whose money
+   * this document is about.
+   */
+  let lotsInArrears = 0;
+  let arrearsOutstanding = 0;
+  let lotsTotal = 0;
+  for (const unit of units) {
+    if (chargeCurrency(unit, 'Maintenance') !== currency) continue;
+    lotsTotal++;
+    const account = accountBalance(unit, 'Maintenance', charges, payments, to, units);
+    if (account.balance > 0) {
+      lotsInArrears++;
+      arrearsOutstanding = addMoney(arrearsOutstanding, account.balance);
+    }
+  }
+
+  return {
+    currency,
+    month,
+    from,
+    to,
+    contributionsReceived: ops.maintenanceCollected,
+    costsPaid: ops.costsPaid,
+    surplus: ops.surplus,
+    // Largest first: the question a proprietor asks of this table is "what did
+    // most of it go on?", and alphabetical order answers a different one.
+    categories: ops.groups
+      .map(g => ({ label: g.category, total: g.total }))
+      .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label)),
+    unpaidAtMonthEnd: ops.costsUnpaid,
+    unpaidCount: ops.unpaidLines.length,
+    villaRecharged: ops.villaRecharged,
+    villaRechargedCount: ops.villaRechargedCount,
+    lotsInArrears,
+    lotsTotal,
+    arrearsOutstanding: round2(arrearsOutstanding),
+    empty: ops.empty && lotsInArrears === 0
+  };
+}

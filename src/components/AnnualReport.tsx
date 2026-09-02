@@ -32,6 +32,7 @@ import { formatMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, today } from '../lib/dates';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
+import MonthlyOwnersReport from './MonthlyOwnersReport';
 import { EmptyState, ErrorNote, InfoNote, SubmitButton, SecondaryButton, TableScroller, inputClass, monoInputClass, tableHeadRowClass, Badge } from './ui';
 
 interface AnnualReportProps {
@@ -60,6 +61,14 @@ export default function AnnualReport({
   onSave
 }: AnnualReportProps) {
   // Default to last year: the report is written about a year that has finished.
+  /*
+   * Two documents to proprietors live on this screen. Ro, 2026-09-02: *"we can
+   * include a tab section within that area that gives the option for a monthly
+   * report."* They belong together because they obey the same rule — identical
+   * for every owner, nothing personal — and differ only in the period they
+   * cover and whether anything on them is written by hand.
+   */
+  const [view, setView] = useState<'annual' | 'monthly'>('annual');
   const [year, setYear] = useState(() => new Date().getFullYear() - 1);
   const [currency, setCurrency] = useState<Currency>('JMD');
   const [printing, setPrinting] = useState(false);
@@ -263,9 +272,47 @@ export default function AnnualReport({
 
   const hasFigures = report.expenditure > 0 || report.contributingUnits > 0;
 
+  const tabClass = (active: boolean) =>
+    `rounded-lg px-3 py-1.5 font-mono text-xs font-semibold transition-colors ${
+      active ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+    }`;
+
+  if (view === 'monthly') {
+    return (
+      <div className="space-y-6">
+        <section className="space-y-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => setView('annual')} aria-pressed={false} className={tabClass(false)}>
+              Annual report
+            </button>
+            <button type="button" onClick={() => setView('monthly')} aria-pressed className={tabClass(true)}>
+              Monthly report
+            </button>
+          </div>
+          <MonthlyOwnersReport
+            units={units}
+            charges={charges}
+            payments={payments}
+            expenses={expenses}
+            settings={settings}
+            generatedBy={currentUserName}
+          />
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <section className="space-y-4 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => setView('annual')} aria-pressed className={tabClass(true)}>
+            Annual report
+          </button>
+          <button type="button" onClick={() => setView('monthly')} aria-pressed={false} className={tabClass(false)}>
+            Monthly report
+          </button>
+        </div>
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h2 className="font-display text-lg font-semibold text-slate-900">Annual report</h2>
