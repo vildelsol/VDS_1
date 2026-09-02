@@ -89,6 +89,26 @@ export default function Bookings({
   );
 
   /**
+   * The villas this screen is about: the ones actually on the short-let market.
+   *
+   * Every villa used to appear here — the availability search, the scheduler
+   * grid, the villa dropdown — so a long-term let and the proprietor's own home
+   * sat in a list of things a guest could be booked into. Ro, 2026-09-02: *"if a
+   * villa isnt listed in its status as short term rental it should not be listed
+   * under short term bookings … this is a huge gap."*
+   *
+   * A villa that **carries a reservation** stays on the list whatever its status
+   * is now, because a villa moved to a long-term lease still has last winter's
+   * stays against it and a record that disappears is worse than one out of
+   * place. It is shown, and cannot be chosen for a new booking — the server
+   * refuses it too, so the filter is a courtesy rather than the control.
+   */
+  const shortLetUnits = useMemo(() => {
+    const hasBookings = new Set(bookings.map(b => b.unitId));
+    return sortedUnits.filter(u => u.status === 'short-term' || hasBookings.has(u.id));
+  }, [sortedUnits, bookings]);
+
+  /**
    * Safety net: the create/edit forms already refuse overlapping dates, but an
    * import, a data restore, or an edit on another device could still leave two
    * live reservations sharing nights on the same villa. Surface any such clash
@@ -237,7 +257,7 @@ export default function Bookings({
             <Field label="Villa" htmlFor="av-unit" required>
               <select id="av-unit" value={searchUnitId} onChange={e => setSearchUnitId(e.target.value)} required className={inputClass}>
                 <option value="">Select villa</option>
-                {sortedUnits.map(u => (
+                {shortLetUnits.map(u => (
                   <option key={u.id} value={u.id}>
                     {getUnitDisplayName(u.number)} — {u.status}
                   </option>
@@ -414,7 +434,7 @@ export default function Bookings({
                 </tr>
               </thead>
               <tbody>
-                {sortedUnits.map(unit => (
+                {shortLetUnits.map(unit => (
                   <tr key={unit.id}>
                     <th scope="row" className="sticky left-0 z-10 border-b border-r border-slate-100 bg-white p-2 text-left font-mono text-[10px] font-semibold text-slate-700">
                       {getUnitDisplayName(unit.number)}
@@ -588,7 +608,7 @@ export default function Bookings({
       {adding && (
         <BookingForm
           mode="create"
-          units={sortedUnits}
+          units={shortLetUnits}
           bookings={bookings}
           initialUnitId={adding.unitId}
           initialCheckIn={adding.checkIn}
@@ -605,7 +625,7 @@ export default function Bookings({
       {editing && (
         <BookingForm
           mode="edit"
-          units={sortedUnits}
+          units={shortLetUnits}
           bookings={bookings}
           booking={editing}
           canCancel={!!perms.cancelBookings}
@@ -767,6 +787,25 @@ function GuestStayReceipt({
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * The total a nightly rate implies, or `null` when it implies nothing.
+ *
+ * Pulled out of the component so the rule can be asserted without a DOM — the
+ * suite renders components with `react-dom/server`, which cannot type into a
+ * field or run an effect, so a rule left inside a handler is a rule no test can
+ * reach. This one had a real fault in it (see `changeNightlyRate` below), and
+ * the fault was invisible to every test that existed.
+ *
+ * `null` means "leave the total as it is": no dates yet, or a rate that has been
+ * cleared. An empty rate says "I am not pricing it that way", not "the stay is
+ * worth nothing", so it must never wipe a figure somebody typed.
+ */
+export function stayValueForRate(rate: string | number, nights: number): string | null {
+  const value = Number(rate);
+  if (!(nights > 0) || !Number.isFinite(value) || !(value > 0)) return null;
+  return String(round2(value * nights));
+}
+
 function BookingForm({
   mode,
   units,
@@ -788,7 +827,13 @@ function BookingForm({
   onClose: () => void;
   onSubmit: (payload: Record<string, unknown>) => Promise<void>;
 }) {
-  const bookableUnits = units.filter(u => u.status !== 'unavailable' && u.status !== 'long-term');
+  /*
+   * Only villas on the short-let market can take a new reservation — the server
+   * enforces the same rule and will refuse anything else. An existing booking
+   * keeps its own villa in the list whatever the status is now, so editing a
+   * guest's phone number cannot silently move their stay to another villa.
+   */
+  const bookableUnits = units.filter(u => u.status === 'short-term' || (booking && u.id === booking.unitId));
   const [unitId, setUnitId] = useState(booking?.unitId || initialUnitId || bookableUnits[0]?.id || '');
   const [guestName, setGuestName] = useState(booking?.guestName || '');
   const [guestEmail, setGuestEmail] = useState(booking?.guestEmail || '');
@@ -813,13 +858,46 @@ function BookingForm({
     if (mode === 'create' && unit) setCurrency(unit.currency);
   }, [unitId, mode, unit]);
 
-  // Derive the stay value from rate × nights, but never silently overwrite a
-  // figure the user typed themselves.
+  /**
+   * The stay value follows rate × nights, and typing a total by hand overrides it.
+   *
+   * The override used to latch for the life of the form: one touch of the total
+   * field and the nightly rate never drove it again. Ro, 2026-09-02: *"when i
+   * input the nightly rate, the total is not automatically calculated in the
+   * total stay value field … if the nightly rate is populated, it should
+   * automatically reflect in the total stay value."*
+   *
+   * The worst shape of it was silent. Typing a figure into the total and then
+   * deleting it leaves the field looking untouched — and latched — so entering a
+   * nightly rate afterwards did nothing at all and the total stayed empty. The
+   * only way out was to close the reservation and start again.
+   *
+   * So the latch is released by the rate itself: **changing the nightly rate
+   * always recomputes the total**, because that is an explicit act on the field
+   * the total is derived from and nobody types a rate expecting the total to
+   * ignore it. Changing the dates still respects a hand-typed total, which is
+   * what the guard was for — a stay negotiated at a flat price keeps that price
+   * when a date moves.
+   *
+   * Clearing the rate leaves the total alone. An empty rate says "I am not
+   * pricing it that way", not "the stay is worth nothing", and wiping a figure
+   * somebody may have typed would be the same silent overwrite in the other
+   * direction.
+   */
   const [amountTouched, setAmountTouched] = useState(false);
   React.useEffect(() => {
     if (amountTouched) return;
     if (nights > 0 && Number(nightlyRate) > 0) setAmount(String(round2(Number(nightlyRate) * nights)));
   }, [nights, nightlyRate, amountTouched]);
+
+  const changeNightlyRate = (next: string) => {
+    setNightlyRate(next);
+    const derived = stayValueForRate(next, nights);
+    if (derived !== null) {
+      setAmount(derived);
+      setAmountTouched(false);
+    }
+  };
 
   const balance = round2(Math.max(0, (Number(amount) || 0) - (Number(deposit) || 0)));
 
@@ -906,6 +984,19 @@ function BookingForm({
           </ErrorNote>
         )}
 
+        {/*
+          Without this the dropdown is simply empty and the reason is invisible.
+          A villa has to be declared a short let before a guest can be booked
+          into it, and the place to declare it is the register.
+        */}
+        {bookableUnits.length === 0 && (
+          <ErrorNote>
+            No villa is set to <strong>Short-term / Airbnb</strong> in the Units Register, so there is nothing to book.
+            Set a villa&rsquo;s status there first — a long-term let, an owner&rsquo;s own home or a villa off the market
+            cannot take a guest reservation.
+          </ErrorNote>
+        )}
+
         <div className="grid grid-cols-2 gap-3">
           <Field label="Villa" htmlFor="bf-unit" required>
             <select id="bf-unit" value={unitId} onChange={e => setUnitId(e.target.value)} required className={inputClass}>
@@ -951,8 +1042,16 @@ function BookingForm({
         </div>
 
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Nightly rate" htmlFor="bf-rate">
-            <input id="bf-rate" type="number" min="0" step="0.01" value={nightlyRate} onChange={e => setNightlyRate(e.target.value)} className={monoInputClass} />
+          <Field label="Nightly rate" htmlFor="bf-rate" hint="Optional. Set it and the total below follows rate × nights.">
+            <input
+              id="bf-rate"
+              type="number"
+              min="0"
+              step="0.01"
+              value={nightlyRate}
+              onChange={e => changeNightlyRate(e.target.value)}
+              className={monoInputClass}
+            />
           </Field>
           <Field label="Total stay value" htmlFor="bf-amount" required>
             <input

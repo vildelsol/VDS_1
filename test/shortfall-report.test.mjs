@@ -142,10 +142,11 @@ export default async function run({ port, projectRoot }) {
     });
 
     // Villa 3 — VDS's own, in US dollars, standing empty but for one short stay.
+    // Listed for short stays, because only such a villa can take a guest.
     await c.put('/api/units/unit-3', {
       number: '3',
       ownerName: 'Villaggio Del Sol Ltd.',
-      status: 'vacant',
+      status: 'short-term',
       monthlyRent: 0,
       monthlyMaintenance: 200,
       currency: 'USD',

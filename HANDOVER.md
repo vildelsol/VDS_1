@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,575 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,607 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
@@ -105,6 +105,120 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.10.4.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-09-02 (last) — four faults real data found in an hour
+
+All four came from Ro opening v1.11.0 on real data. **None was found by 1,575 tests**, and the
+reason is the same in every case, so it is written down at the end of this section rather than
+four times over.
+
+### 1. A nightly rate that did not reach the total
+
+Ro: *"when i input the nightly rate, the total is not automatically calculated in the total stay
+value field … if the nightly rate is populated, it should automatically reflect in the total stay
+value."*
+
+The total is derived from rate × nights, and typing a total by hand overrode it — but **the override
+latched for the life of the form**. Once that field had been touched, the nightly rate never drove it
+again. The silent shape, reproduced in the browser: **type a figure into the total and delete it, and
+the field looks untouched but is latched** — enter a rate afterwards and nothing happens at all, with
+no way out but closing the reservation and starting again.
+
+Now: **changing the rate always recomputes the total** and releases the latch, because that is an
+explicit act on the field the total is derived from. Changing the *dates* still respects a hand-typed
+total — a stay agreed at a flat price keeps it when a date moves. Clearing the rate leaves the total
+alone; an empty rate says "not pricing it that way", not "worth nothing".
+
+The rule is `stayValueForRate()`, exported from `Bookings.tsx` **so a test can reach it** —
+`renderToStaticMarkup` cannot type into a field or run an effect, which is exactly why the fault was
+invisible. Seven checks in `components.test.mjs`.
+
+### 2. Occupancy 100% on a property that was almost entirely empty
+
+Ro: *"Occupancy cannot be 100% because the villas that are not on long term lease are for short term
+vacation rentals. Currently, they are available not occupied."*
+
+The dashboard counted **`unit.status`**, which is how a villa is *let*, not whether anybody is in it.
+A villa offered on Airbnb counted as occupied whether or not a guest was in residence, and "Vacant
+villas" counted only the ones explicitly marked vacant — so the card read **Occupancy 100%, Vacant
+villas 0** while the property stood empty and available.
+
+⚠️ **The application already disagreed with itself about this on one screenful.** `Charts` and
+`BoardPack` had always used `occupiedUnitIdsOn()`, the dated version. Only the dashboard and the
+management report read the status flag. No test compared the two.
+
+Now `occupancyOn()` in `finance.ts` is the one answer: a villa is occupied when **a tenancy covers
+the day, a guest is in residence that night, or the owner lives there** — the last because an
+owner-occupied villa files neither a tenancy nor a booking and would otherwise read as empty.
+Everything else is **available**. Villas marked `unavailable` are counted separately and **left out
+of the rate's denominator**, since a villa that cannot be let is not a letting being missed. The card
+now reads "N of M lettable villas occupied today" and the second card is **Available villas**, not
+Vacant.
+
+`isOccupied()` survives with a warning on it, for the question it does answer — how is this villa
+let — which is what billing keys off. **Do not use it to count occupancy.**
+
+### 3. "+11 vs August 2026" on books that begin on 1 September
+
+A month that falls entirely before `booksBeginOn` is not a quiet month, it is a month this system has
+no standing to describe — and comparing against it reports **every opening balance as growth**. The
+dashboard now suppresses the comparison and says *"no comparison — the books begin 1 Sep 2026"* on
+the arrears card and on the money tiles. Same class as calling rent arrears before its due date: a
+figure stated about a period the records do not cover.
+
+### 4. Any villa could take a guest reservation
+
+Ro: *"if a villa isnt listed in its status as short term rental it should not be listed under short
+term bookings. Long Term leases and owner occupied should not be listed under short term rental, this
+is a huge gap."*
+
+`assertBookableUnit` refused `unavailable` and `long-term` **and allowed everything else** — so a
+guest could be booked into the villa the **proprietor lives in**, or one simply standing vacant, and
+nothing objected. The villa dropdown, the availability search and the scheduler grid listed every
+villa on the property.
+
+Now **only `short-term` villas can be booked**, enforced on the server (the refusal names the status
+the villa is actually in and points at the Units Register) and reflected in every list on the screen.
+
+⚠️ **A villa that carries a reservation stays on the screen whatever its status is now.** A villa
+moved to a long-term lease still has last winter's stays against it, and a record that disappears is
+worse than one out of place. Editing an existing booking keeps its own villa in the dropdown, so
+changing a guest's phone number cannot silently move their stay. Asserted.
+
+⚠️ **If no villa is set to Short-term / Airbnb, there is nothing to book** — the form says so and
+names the register, rather than showing an empty dropdown.
+
+**Two simulations had to be corrected, and they were wrong, not the rule.** Two scenarios in
+`scenarios.test.mjs` booked whatever villa they were handed without ever listing it for short stays.
+They now set the status first, as the third booking scenario always did.
+
+### Why 1,575 tests missed all of this
+
+**Every one of them asserted the code's own definition.** The dashboard counted `unit.status`; the
+simulations counted `unit.status` through the same helper; the two agreed perfectly. **A wrong
+definition is entirely self-consistent**, and internal consistency is the only thing a suite can
+check unless somebody writes the meaning down. Nothing in 6,800 audited scenarios ever asked *should
+a villa nobody is staying in be counted as occupied?* — because that rule lived in Ro's head, not in
+a file.
+
+The same for the rest. No suite set `booksBeginOn` near its data, so no comparison ever reached
+before the books. The booking rule was asserted as "refuses long-term and unavailable" — which is
+what the code did, faithfully. And the nightly-rate fault lived in a React state handler that
+`react-dom/server` cannot reach at all: **the suite can render a component but cannot type into one.**
+
+**What to do about it, and it is not "write more tests":**
+
+1. **Write the property's rules down as sentences before asserting them.** `occupancy-truth.test.mjs`
+   is phrased the way Ro phrases them — *"a villa offered on Airbnb with nobody in it is not
+   occupied"* — and each check fails on the old behaviour. A test named after a function tests the
+   function; a test named after the rule tests the rule.
+2. **When two parts of the application answer the same question, make a test compare them.** Charts
+   and the dashboard disagreed for weeks and nothing noticed.
+3. **Pull rules out of handlers so they can be reached.** `stayValueForRate` exists for that reason.
+4. **Real data on a real screen is still finding what 6,800 scenarios cannot.** That is not a failure
+   of the suite; it is the limit of what any suite proves. Keep opening the application.
+
+---
 
 ## Session of 2026-09-02 (latest) — the out-of-pocket shortfall report
 

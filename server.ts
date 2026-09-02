@@ -2565,16 +2565,35 @@ app.post(
  * Bookings
  * ------------------------------------------------------------------ */
 
+/**
+ * Only a villa actually offered for short stays can take a reservation.
+ *
+ * This used to refuse `unavailable` and `long-term` and allow everything else,
+ * which let a guest be booked into a villa the **owner lives in** or one simply
+ * standing vacant. Ro, 2026-09-02: *"if a villa isnt listed in its status as
+ * short term rental it should not be listed under short term bookings. Long
+ * Term leases and owner occupied should not be listed under short term rental,
+ * this is a huge gap."*
+ *
+ * The status is the declaration that a villa is on the short-let market, so it
+ * is the whole of the test. The refusal names the status the villa is actually
+ * in and says where to change it, because "cannot accept reservations" with no
+ * reason is the kind of message people work around rather than act on.
+ */
 function assertBookableUnit(unit: Unit) {
-  if (unit.status === 'unavailable') {
-    throw new ApiError(400, `${unit.number} is marked Unavailable and cannot accept reservations.`);
-  }
-  if (unit.status === 'long-term') {
-    throw new ApiError(
-      400,
-      `${unit.number} is under a long-term lease and is not available for short stays. Change the unit status first if this is intended.`
-    );
-  }
+  if (unit.status === 'short-term') return;
+
+  const because: Record<string, string> = {
+    'long-term': 'is under a long-term lease',
+    'owner-occupied': 'is the proprietor’s own home',
+    vacant: 'is vacant and not listed for short stays',
+    unavailable: 'is marked Unavailable and off the market'
+  };
+  throw new ApiError(
+    400,
+    `${getUnitDisplayName(unit.number)} ${because[unit.status] || `is set to ${unit.status}`}, so it cannot take a guest reservation. ` +
+      `Only villas whose status is "Short-term / Airbnb" can be booked — change it in the Units Register first if that is intended.`
+  );
 }
 
 function assertNoOverlap(db: Database, unitId: string, checkIn: string, checkOut: string, ignoreId?: string) {

@@ -26,7 +26,7 @@ import {
   collectionRate,
   expenseBreakdown,
   expensesInPeriod,
-  isOccupied,
+  occupancyOn,
   ownerBilledUnitIds
 } from '../lib/finance';
 import { formatMoney, formatMoneyPlain, round2, sumMoney } from '../lib/money';
@@ -282,9 +282,20 @@ export default function Reports({ units, charges, payments, expenses, utilities,
     const unpaidUtilities = utilities.filter(u => u.status === 'unpaid').length;
     if (unpaidUtilities > 0) say(URGENT, `${unpaidUtilities} utility bill(s) remain unsettled at the report date.`);
 
-    const occupied = units.filter(isOccupied).length;
+    /*
+     * Who was in a villa on the report date, not how the villas are set up to be
+     * let. This counted `unit.status`, so a villa merely offered on Airbnb was
+     * reported as occupied whether or not anyone was in it — the same fault the
+     * dashboard carried (Ro, 2026-09-02).
+     */
     if (units.length > 0) {
-      say(CONTEXT, `${occupied} of ${units.length} villas are occupied (long-term, short-let or owner-occupied) at the report date.`);
+      const occ = occupancyOn(units, tenancies, bookings, to);
+      say(
+        CONTEXT,
+        `${occ.occupied} of ${occ.total - occ.unavailable} lettable villas had somebody in them on the report date ` +
+          `(a tenancy, a guest in residence, or the owner's own home); ${occ.available} stood empty and available` +
+          `${occ.unavailable > 0 ? `, and ${occ.unavailable} were off the market` : ''}.`
+      );
     }
 
     // A stable sort: equal ranks keep the order they were computed in.

@@ -23,7 +23,7 @@ import {
   collectionRate,
   delinquentAccounts,
   expensesInPeriod,
-  isOccupied,
+  occupancyOn,
   ownerBilledUnitIds,
   leasesNeedingAttention,
   unbilledAccounts,
@@ -106,11 +106,20 @@ export default function Dashboard({
 
   /* ---------------- occupancy ---------------- */
 
+  /*
+   * Who is actually in a villa today, not how the villas are set up to be let.
+   *
+   * This card used to count `unit.status`, so every villa offered on Airbnb was
+   * counted as occupied whether or not a guest was in it, and "Vacant villas"
+   * counted only the ones explicitly marked vacant. On a property whose short-let
+   * villas were all empty and available it read **Occupancy 100%, Vacant villas
+   * 0** — Ro, 2026-09-02. Worse, the charts and the board pack already used the
+   * dated records, so the application disagreed with itself on the same screenful.
+   */
   const totalUnits = units.length;
-  const occupiedUnits = units.filter(isOccupied).length;
-  const vacantUnits = units.filter(u => u.status === 'vacant').length;
-  // Guard against dividing by zero on an empty register, which rendered "NaN%".
-  const occupancyRate = totalUnits > 0 ? Math.round((occupiedUnits / totalUnits) * 100) : null;
+  const occupancy = useMemo(() => occupancyOn(units, tenancies, bookings, today()), [units, tenancies, bookings]);
+  const occupiedUnits = occupancy.occupied;
+  const occupancyRate = occupancy.rate;
 
   /* ---------------- arrears ---------------- */
 
@@ -156,6 +165,24 @@ export default function Dashboard({
   const previousMonth = addMonths(month, -1);
   const previousStart = monthStart(previousMonth);
   const previousEnd = monthEnd(previousMonth);
+
+  /**
+   * Whether there is anything to compare against.
+   *
+   * A month that falls entirely before the books began is not a quiet month, it
+   * is a month this system has no standing to describe. Comparing to it reads
+   * every opening balance as growth: on a database whose books begin on 1
+   * September, eleven accounts in arrears on the 2nd showed as **"+11 vs August
+   * 2026"** — a trend invented out of a month that never existed here (Ro,
+   * 2026-09-02). The same class of fault as calling rent arrears before its due
+   * date: a figure stated about a period the records do not cover.
+   *
+   * When there is nothing to compare against the cards say so instead, naming
+   * the date the books begin, so the absence is explained rather than hidden.
+   */
+  const booksBeginOn = settings.booksBeginOn || '';
+  const hasComparison = !booksBeginOn || previousEnd >= booksBeginOn;
+  const noComparisonLabel = `no comparison — the books begin ${formatDayLabel(booksBeginOn)}`;
 
   /** Arrears as they stood at the end of the previous month. */
   const previousArrears = useMemo(
@@ -252,14 +279,19 @@ export default function Dashboard({
         <StatCard
           label="Occupancy"
           value={occupancyRate === null ? '—' : `${occupancyRate}%`}
-          hint={totalUnits > 0 ? `${occupiedUnits} of ${totalUnits} villas occupied` : 'No villas in the register'}
+          hint={
+            totalUnits > 0
+              ? `${occupiedUnits} of ${totalUnits - occupancy.unavailable} lettable villas occupied today` +
+                (occupancy.unavailable > 0 ? ` · ${occupancy.unavailable} off the market` : '')
+              : 'No villas in the register'
+          }
           icon={<Key className="h-6 w-6" />}
           tone="emerald"
         />
         <StatCard
-          label="Vacant villas"
-          value={String(vacantUnits)}
-          hint="Available to lease or let"
+          label="Available villas"
+          value={String(occupancy.available)}
+          hint="Empty tonight — free to lease or let"
           icon={<TrendingDown className="h-6 w-6" />}
           tone="teal"
         />
@@ -287,12 +319,14 @@ export default function Dashboard({
           // the moment anything was in arrears — exactly when nobody would notice
           // they had gone. They carry their own warning below now.
           delta={
-            arrearsDelta === 0
-              ? { direction: 'flat', label: `unchanged from ${formatMonthLabel(previousMonth)}` }
-              : {
-                  direction: arrearsDelta > 0 ? 'worse' : 'better',
-                  label: `${arrearsDelta > 0 ? '+' : ''}${arrearsDelta} vs ${formatMonthLabel(previousMonth)}`
-                }
+            !hasComparison
+              ? { direction: 'flat', label: noComparisonLabel }
+              : arrearsDelta === 0
+                ? { direction: 'flat', label: `unchanged from ${formatMonthLabel(previousMonth)}` }
+                : {
+                    direction: arrearsDelta > 0 ? 'worse' : 'better',
+                    label: `${arrearsDelta > 0 ? '+' : ''}${arrearsDelta} vs ${formatMonthLabel(previousMonth)}`
+                  }
           }
           icon={<AlertTriangle className="h-6 w-6" />}
           tone={arrears.length > 0 ? 'red' : 'slate'}
@@ -533,7 +567,7 @@ export default function Dashboard({
                       <dt>Collection rate</dt>
                       <dd className="font-mono font-medium">{entry.rate === null ? 'n/a' : `${entry.rate}%`}</dd>
                     </div>
-                    {entry.rate !== null && entry.priorRate !== null && (
+                    {entry.rate !== null && entry.priorRate !== null && hasComparison && (
                       <div className="flex justify-between gap-2 text-[10px] text-slate-400">
                         <dt>vs {formatMonthLabel(previousMonth)}</dt>
                         <dd
@@ -567,10 +601,14 @@ export default function Dashboard({
                         {formatMoney(entry.net, entry.currency)}
                       </dd>
                     </div>
-                    <div className="flex justify-between gap-2 text-[10px] text-slate-400">
-                      <dt>vs {formatMonthLabel(previousMonth)}</dt>
-                      <dd className="font-mono">{formatMoney(entry.priorNet, entry.currency)}</dd>
-                    </div>
+                    {hasComparison ? (
+                      <div className="flex justify-between gap-2 text-[10px] text-slate-400">
+                        <dt>vs {formatMonthLabel(previousMonth)}</dt>
+                        <dd className="font-mono">{formatMoney(entry.priorNet, entry.currency)}</dd>
+                      </div>
+                    ) : (
+                      <p className="font-mono text-[10px] text-slate-400">{noComparisonLabel}</p>
+                    )}
                   </dl>
                 </div>
               </div>

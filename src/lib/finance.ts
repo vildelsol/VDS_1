@@ -695,9 +695,79 @@ export function collectionRate(charged: number, collected: number): number | nul
   return round2((collected / charged) * 100);
 }
 
-/** Whether the unit is occupied for occupancy-rate purposes. */
+/**
+ * Whether the villa's **letting mode** implies somebody lives there.
+ *
+ * ⚠️ **This is not occupancy, and it must not be used to answer "how many
+ * villas are occupied?".** `unit.status` is how the villa is *let* — a villa set
+ * to `short-term` is one offered on Airbnb, whether or not a guest is in it
+ * tonight. Reading it as occupancy is what put **"Occupancy 100%, Vacant villas
+ * 0"** on the dashboard of a property whose short-let villas were all standing
+ * empty and available (Ro, 2026-09-02). Use `occupancyOn()` below.
+ *
+ * It survives for the questions it does answer — is this villa let long-term, is
+ * it the owner's own home — which is what billing keys off.
+ */
 export function isOccupied(unit: Unit): boolean {
   return unit.status === 'long-term' || unit.status === 'short-term' || unit.status === 'owner-occupied';
+}
+
+/**
+ * How many villas actually have somebody in them, on a given day.
+ *
+ * The honest counterpart to `isOccupied`, and the one every screen that says the
+ * word "occupancy" should call. A villa counts as occupied when a **tenancy
+ * covers the day**, when a **guest is in residence that night**, or when it is
+ * the **owner's own home** — the last because an owner-occupied villa files
+ * neither a tenancy nor a booking and would otherwise read as empty, which is
+ * the mirror of the fault this function exists to fix.
+ *
+ * Everything else is **available**: a short-let villa with no guest tonight is
+ * not occupied, it is for sale to the next guest. Ro, 2026-09-02: *"the villas
+ * that are not on long term lease are for short term vacation rentals.
+ * Currently, they are available not occupied."*
+ *
+ * `unavailable` villas — off the market for renovation or repair — are counted
+ * separately and **left out of the rate's denominator**, because a villa that
+ * cannot be let is not a letting opportunity being missed. The rate is therefore
+ * "of the villas that could be let, how many are", and the card states the
+ * breakdown beside it rather than making the reader take that on trust.
+ */
+export interface OccupancyToday {
+  /** Villas with somebody in them: a tenancy, a guest tonight, or the owner. */
+  occupied: number;
+  /** Villas that could take somebody tonight and have not. */
+  available: number;
+  /** Off the market — not counted as a missed letting. */
+  unavailable: number;
+  /** Every villa on the register. */
+  total: number;
+  /** occupied ÷ (total − unavailable), or null when nothing could be let. */
+  rate: number | null;
+}
+
+export function occupancyOn(units: Unit[], tenancies: Tenancy[], bookings: Booking[], day: string = today()): OccupancyToday {
+  const inResidence = occupiedUnitIdsOn(units, tenancies, bookings, day);
+
+  let occupied = 0;
+  let unavailable = 0;
+  for (const unit of units) {
+    if (unit.status === 'unavailable') {
+      unavailable++;
+      continue;
+    }
+    // The owner living in their own villa files no tenancy and no booking.
+    if (inResidence.has(unit.id) || unit.status === 'owner-occupied') occupied++;
+  }
+
+  const lettable = units.length - unavailable;
+  return {
+    occupied,
+    available: Math.max(0, lettable - occupied),
+    unavailable,
+    total: units.length,
+    rate: lettable > 0 ? Math.round((occupied / lettable) * 100) : null
+  };
 }
 
 /**

@@ -63,6 +63,7 @@ async function loadComponents(projectRoot) {
         } from './src/components/Charts';
         export { PrintLetterhead, PrintSignatures } from './src/components/PrintPortal';
         export { HealthCard } from './src/components/Dashboard';
+        export { stayValueForRate } from './src/components/Bookings';
         export { default as React } from 'react';
       `,
       resolveDir: projectRoot,
@@ -265,6 +266,41 @@ export default async function run({ projectRoot }) {
     T.check('a JMD chart is denominated in JMD', /J\$/.test(textOf(jmd)));
     T.check('and never carries a dollar figure from the other currency', !/(^|[^J])\$\d/.test(textOf(jmd).replace(/J\$/g, 'J')), 'a USD amount appeared on a JMD chart');
     T.check('while the USD chart is denominated in USD', /\$/.test(textOf(usd)) && !/J\$/.test(textOf(usd)));
+
+    /* ---------------- a nightly rate has to reach the total ---------------- */
+
+    /*
+     * Ro, 2026-09-02: "when i input the nightly rate, the total is not
+     * automatically calculated in the total stay value field … if the nightly
+     * rate is populated, it should automatically reflect in the total stay
+     * value."
+     *
+     * The override on the total used to latch for the life of the reservation,
+     * so one touch of that field and the rate never drove it again. The silent
+     * shape of it: type a figure into the total and delete it, and the field
+     * looks untouched but is latched — entering a rate afterwards did nothing at
+     * all and the total stayed empty, with no way out but closing the form.
+     *
+     * The rule lives in `stayValueForRate` precisely so it can be asserted here.
+     * `renderToStaticMarkup` cannot type into a field or run an effect, which is
+     * why the fault was invisible to every test that existed.
+     */
+    const { stayValueForRate } = mod;
+    T.check('a rate over a stay gives the total', stayValueForRate('250', 4) === '1000', String(stayValueForRate('250', 4)));
+    T.check('and it is rounded to the cent, not left long', stayValueForRate('33.333', 3) === '100', String(stayValueForRate('33.333', 3)));
+    T.check('a single night is still a stay', stayValueForRate('180', 1) === '180', String(stayValueForRate('180', 1)));
+    T.check(
+      'a cleared rate leaves the total alone rather than wiping it',
+      stayValueForRate('', 4) === null,
+      String(stayValueForRate('', 4))
+    );
+    T.check('and so does a rate with no dates behind it yet', stayValueForRate('250', 0) === null, String(stayValueForRate('250', 0)));
+    T.check('a rate of nothing implies nothing', stayValueForRate('0', 4) === null, String(stayValueForRate('0', 4)));
+    T.check(
+      'and neither a negative rate nor a typed comma produces a figure',
+      stayValueForRate('-50', 4) === null && stayValueForRate('1,500', 4) === null,
+      `${stayValueForRate('-50', 4)} / ${stayValueForRate('1,500', 4)}`
+    );
   } finally {
     cleanup();
   }

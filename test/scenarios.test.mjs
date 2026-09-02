@@ -257,6 +257,10 @@ export default async function run({ port, projectRoot }) {
 
       // A stay that is cancelled after a deposit was taken.
       async ({ unitId, month, rand, i }) => {
+        // Listed for short stays first: from 2026-09-02 only a villa whose
+        // status says so can take a guest, and this scenario used to book
+        // whatever villa it was handed.
+        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', status: 'short-term', monthlyMaintenance: money(rand, 2000, 9000), currency: 'USD', maintCurrency: 'USD' });
         const start = 1 + (i % 18);
         const b = await c.post('/api/bookings', { unitId, guestName: `Cancelling guest ${i}`, checkIn: dayIn(month, start), checkOut: dayIn(month, start + 2), amount: money(rand, 300, 2000), depositPaid: money(rand, 100, 300), currency: 'USD', source: 'Direct' });
         const id = b.body?.booking?.id;
@@ -265,6 +269,7 @@ export default async function run({ port, projectRoot }) {
 
       // Overlapping stays: the second must be refused.
       async ({ unitId, month, i }) => {
+        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', status: 'short-term', currency: 'USD', maintCurrency: 'USD' });
         const start = 1 + (i % 15);
         await c.post('/api/bookings', { unitId, guestName: `First ${i}`, checkIn: dayIn(month, start), checkOut: dayIn(month, start + 3), amount: 500, depositPaid: 0, currency: 'USD', source: 'Direct' });
         await c.post('/api/bookings', { unitId, guestName: `Clashing ${i}`, checkIn: dayIn(month, start + 1), checkOut: dayIn(month, start + 4), amount: 500, depositPaid: 0, currency: 'USD', source: 'Direct' });
