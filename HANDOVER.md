@@ -26,11 +26,12 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,489 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,503 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
-  adversarial red team**, and three **1,000-simulation expert suites** (property manager, architect,
-  security). The application also checks its own records at start-up. A full `npm test` takes roughly
-  six minutes now — the red team alone is about 2m30s. That is the price of the coverage; do not trim
+  adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
+  three **1,000-simulation expert suites** (property manager, architect, security). The application
+  also checks its own records at start-up. A full `npm test` takes about **six and a half minutes** —
+  the 3,000 red team is about 2m30s and the 5,000 run about 3m. That is the price of the coverage; do not trim
   it to make the suite faster.
 - **Nothing is uncommitted.** Working tree clean, no stashes, no unpushed tags. All work from the
   2026-09-01 session is committed, pushed, and released as v1.10.1.
@@ -96,6 +97,59 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.10.1.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-09-02 (later) — five thousand operations, then read the paperwork
+
+Ro, straight after the printed-record fault: *"Test 5000 simulations of different types of payments,
+modifications, possible human actions to see if they all pass, include prints, included and omitted
+records that are not to be ommitted, connected and disconnected functions."*
+
+**`test/redteam-5000.test.mjs`** — 5,000 operations through the real HTTP API, with the printed
+documents rendered from live data every 250 operations and read back. Same founding rule as the
+3,000-scenario red team: nothing touches the database behind the application's back, so a failure is
+never "the test broke it".
+
+What makes it different from every suite before it: **the others prove the books survive; this one
+asks whether the document you hand somebody contains what the books hold.** That question could not
+be asked at all until `PrintPortal` was made to render without a DOM earlier the same day.
+
+It covers, per the brief: payments full, part, over, early, in the wrong currency, duplicated under
+one idempotency key, confirmed, reversed, refunded in part, over-refunded, refunded after reversal;
+modifications to rent, due days, currency (with and without acknowledgement), owner and tenant names
+as corrections and as changes, move-in dates moved backwards to 2009, deposits taken, over-returned
+and returned twice, charges voided and voided again, one-off charges, the books-begin date moved
+underneath live data; and human actions - the same request twice, an action abandoned unconfirmed, a
+month posted three times and once for 2099.
+
+Then, on the documents: **every completed receipt and every charge the books hold must appear on the
+villa's own ledger**; a villa with charges must never print "no charges have been raised";
+**maintenance receipts must never appear on a tenant's record**, and where maintenance falls inside
+the occupancy the record must *declare* it rather than drop it. Plus the connected/disconnected
+question: no receipt, charge or tenancy may belong to a villa that does not exist, and money stranded
+in another currency must be reported by `currencyMismatchWarnings` rather than sitting silent.
+
+**223 documents rendered, no server error in 5,000 operations, no serious integrity finding, every
+balance finite and to the cent, no duplicate receipt numbers.** 1,503 tests now pass.
+
+WARNING: **It failed on its first run, and the fault was the test's.** It reported a tenant record
+omitting maintenance without declaring it. The document was right: for a tenancy still running, the
+record covers move-in **to today**, the same window it uses for the rent lines, and the check had run
+its window out to the end of 2027 - so it counted a charge dated next month, which is not yet part of
+that tenant's account and, since v1.10.2, not even owed. **Which side was wrong was established before
+either was changed**, because a test bent to agree with the code is exactly how the owner-statement
+fault survived 1,245 checks.
+
+### Two test files were binary as far as git was concerned - FIXED
+
+`test/redteam-3000.test.mjs` and `test/expert-security.test.mjs` each contained a **raw NUL byte**,
+written directly into a hostile-input payload. The payloads are deliberate and worth keeping - but a
+NUL makes git treat the whole file as binary, so `git show`/`git diff`/`git blame` produce
+**`Bin 0 -> 18633 bytes`** and nothing else. Two of the largest test files in the project had
+unreviewable history, and `grep` skipped them silently, which is how it was noticed. Both now use a
+unicode escape: byte-for-byte the same string at run time, and the files are text again.
+
+**No application code changed in this entry, so no release was cut** - v1.10.3 is still the binary to
+install.
 
 ## Session of 2026-09-02 — a printed record that left half the money off
 

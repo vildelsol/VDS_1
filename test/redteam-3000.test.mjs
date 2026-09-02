@@ -580,7 +580,7 @@ export default async function run({ port, projectRoot }) {
         if (!unit) return;
         await c.put(`/api/units/${unitId}`, {
           number: unit.number,
-          ownerName: pick(rand, ['<script>alert(1)</script>', 'Ω'.repeat(500), '   ', 'Robert Tables', `Owner ${i}`]),
+          ownerName: pick(rand, ['<script>alert(1)</script>', 'Ω'.repeat(500), '   ', 'Robert\u0000Tables', `Owner ${i}`]),
           status: unit.status,
           monthlyRent: unit.monthlyRent,
           monthlyMaintenance: unit.monthlyMaintenance,
