@@ -39,8 +39,8 @@ next session from inside `pm-app`.
   v1.11.0 carried the shortfall report; everything before it is v1.10.4.
 - **`main` and `origin/main` are level.** Check that with `git ls-remote origin main` against your
   own `git rev-parse main` — not against a hash copied into this file, and not against a local
-  `origin/main` ref, which only says what the last fetch saw. **`main` sits a documentation commit
-  or two ahead of the tag `v1.10.4`, and that is expected**: the released binary is built from the
+  `origin/main` ref, which only says what the last fetch saw. **`main` may sit a documentation commit
+  or two ahead of the tag `v1.11.1`, and that is expected**: the released binary is built from the
   tag, so docs written after a release do not move it. Nothing is unpushed. A hash was written here
   by hand and was wrong three times running: once claiming `main` was a commit ahead when it was not, once claiming
   work was uncommitted after it had been pushed, and once naming a commit two sessions old.
@@ -84,10 +84,13 @@ next session from inside `pm-app`.
   could lie, and did.** From v1.10.1 the server states its own version in two places a cache cannot
   reach: `GET /api/health` returns it, and the console window prints it (with the records folder)
   on start-up. The screen shows both numbers and raises a banner when they disagree.
-- Latest release: **v1.10.4**, tagged 2026-09-02, built and published — the Windows workflow passed
-  every gate (**1,503 tests, 0 failed** → assemble the `.exe` → start it and serve a real request →
-  verify the Desktop shortcut) and `Villaggio-Del-Sol.exe` (**95,379,968 bytes**, 93,144 KB in
-  Explorer) is on the release. **The HP needs v1.10.4.**
+- Latest release: **v1.11.1**, tagged 2026-09-03, built and published — the Windows workflow passed
+  every gate (**1,655 tests, 0 failed** → assemble the `.exe` → start it and serve a real request →
+  verify the Desktop shortcut) and `Villaggio-Del-Sol.exe` (**95,428,608 bytes**) is on the release.
+  **The HP needs v1.11.1**; it was last *confirmed* on v1.9.0. It carries the five faults real data
+  found on 2026-09-02, the split occupancy figures and the proprietors' monthly report, on top of
+  v1.11.0's shortfall report.
+- Superseded: **v1.10.4**, tagged 2026-09-02 (`Villaggio-Del-Sol.exe` **95,379,968 bytes**).
   ⚠️ It carries **no behaviour change** over v1.10.3, and is byte-identical in size — the difference
   is that this is the first binary built *after* the 5,000-operation paperwork suite existed, so the
   published `.exe` is gated by it. **Tell them apart by the version on the console line and in the
@@ -105,7 +108,19 @@ next session from inside `pm-app`.
 - Older release: **v1.9.0**, shipped 2026-08-21, tag on `b29b55d`. Four releases went out that day
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
-  2026-09-01 and needs v1.10.4.** Every earlier release is superseded; install the latest only.
+  2026-09-01 and needs v1.11.1.** Every earlier release is superseded; install the latest only.
+
+## Released as v1.11.1 — 2026-09-03
+
+Tag `v1.11.1` on `342a850`, `Villaggio-Del-Sol.exe` **95,428,608 bytes**, published by the workflow
+after the full suite passed on the Windows runner. It carries everything in the three sessions below:
+the shortfall report from v1.11.0, the five faults real data found, the split occupancy figures and
+the proprietors' monthly report.
+
+**Read "Where to pick up" before installing** — two setup steps are Ro's and two screens look wrong
+until he does them.
+
+---
 
 ## Session of 2026-09-02 — the owners' monthly report
 
@@ -1203,7 +1218,7 @@ expenses are therefore **excluded** from what is recharged to an owner (`ownerSt
 cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
 ```
 
-- `npm test` — build + full suite (**1,418 checks, roughly six minutes**). Each test file boots its
+- `npm test` — build + full suite (**1,655 checks, 6m25s measured on 2026-09-03**). Each test file boots its
   own server on a **temp data dir**, so tests never touch the real `db.json`. The runtime is mostly
   `redteam-3000` (~2m30s) and the three expert suites; that is the cost of the coverage and it is
   worth paying.
@@ -2368,8 +2383,7 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ⚠️ **Install v1.11.1.** It is the current release and contains everything before it: the shortfall
 report (v1.11.0), the five faults found on real data, the split occupancy figures and the
-proprietors' monthly report. The steps below were written for v1.10.4 and are otherwise identical —
-read `v1.11.1` wherever they say `v1.10.4`, including on the console line.
+proprietors' monthly report.
 
 **1. Install v1.11.1 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
@@ -2378,7 +2392,7 @@ read `v1.11.1` wherever they say `v1.10.4`, including on the console line.
 **Then confirm it took — and confirm it the right way.** The v1.10.0 upgrade was correct and looked
 like a failure because the only check available read from a browser cache. In order of trust:
 
-   - **The black console window** now prints `Villaggio Del Sol operations server v1.10.4 running
+   - **The black console window** now prints `Villaggio Del Sol operations server v1.11.1 running
      at …` and, underneath, `Records folder: …`. This is the program speaking; nothing caches it.
      **Read the folder line too** — if it is not the folder the records have always been in, the
      program is looking at a different (probably empty) set of books, because the data folder is the
@@ -2391,7 +2405,25 @@ like a failure because the only check available read from a browser cache. In or
 Then on the Kamrui and any phones: **Ctrl+Shift+R**; if the old version persists, F12 → Application →
 Service Workers → Unregister, then reload. The banner will tell you when this is needed.
 
-**2. Ro is rebuilding the database from scratch, with a start date of 1 September 2026.** Decided on
+**2. Two setup steps only Ro can do, and two screens are wrong-looking until he does.** Neither is a
+defect and both are deliberate — nothing is guessed from a name or a status — but both are invisible
+unless somebody says so.
+
+   - ⚠️ **Tick the villas VDS lets on its own account.** Units Register → open the villa → **"Let on
+     the corporation's own account"**. Nothing is ticked by default, and until at least one is, the
+     out-of-pocket shortfall report correctly says *"No villa is marked as let on the corporation's
+     own account"* rather than reporting zero. That is a different message from "nothing to report",
+     deliberately. `letOnOwnAccount` is absent on every record written before v1.11.0, and **absent
+     means no** — claiming villas that are not VDS's would overstate the one figure the report exists
+     to state.
+   - ⚠️ **Set every villa VDS rents out short-term to "Short-term / Airbnb".** From v1.11.1 that
+     status decides **three** things at once: whether the villa can take a guest reservation (the
+     server refuses anything else, naming the status it is actually in), whether it appears anywhere
+     under Short-Term Bookings, and whether it counts in the short-let occupancy figure. **A villa
+     left as `vacant` will refuse reservations** — which is correct, and will look like a bug to
+     anybody who has not been told.
+
+**3. Ro is rebuilding the database from scratch, with a start date of 1 September 2026.** Decided on
 2026-09-01, after the currency and owner-statement faults were found in the first real data. This
 changes what has to be done and in what order.
 
@@ -2436,7 +2468,7 @@ changes what has to be done and in what order.
      whether it is a correction or a real change; a charge raised in error is voided from the
      **Charges** button on its ledger row.
 
-**3. Tell whoever keys the costs two things**, or the operations statement will not see them:
+**4. Tell whoever keys the costs two things**, or the operations statement will not see them:
 
    - **Fuel, grounds staff and pool chemicals must be allocated to `General`** (or `Office`), not to a
      villa. Anything tied to a villa is treated as recharged to that proprietor — it is still counted
@@ -2446,8 +2478,8 @@ changes what has to be done and in what order.
      electricity, water and phone/internet all go under `Utilities`, which is itemised by supplier on
      the operating statement. If the corporation wants those split out, that is a category addition.
 
-**4. Two questions are still with management, and nothing should be built on a guess until they come
-back** (both raised 2026-08-21, Ro referred them on):
+**5. Both questions that were with management are now answered** (raised 2026-08-21, answered
+2026-09-02). Nothing is outstanding with anybody outside the office:
    - ~~**Do VDS-owned villas record a payment against their own maintenance charge?**~~ **ANSWERED
      2026-09-02 — yes, and the system already works that way.** Ro: *"we do record a payment against
      our own maintenance charge. the system as is is already setup that way."* So a villa VDS owns is
@@ -2482,7 +2514,7 @@ back** (both raised 2026-08-21, Ro referred them on):
      survives a rename, one field. About a day's work all in — the flag, an engine function, a screen,
      an Excel export and tests.
 
-**5. The untested surface is the honest risk, and no simulation closes any of it.** Narrowed again on
+**6. The untested surface is the honest risk, and no simulation closes any of it.** Narrowed again on
 2026-09-02 — printed documents can now be rendered and asserted, and 223 of them are, under the
 5,000-operation suite — but **no test has ever put ink on paper**, and that is where a regression
 slipped through once before:
@@ -2499,7 +2531,7 @@ slipped through once before:
      the two-PC dry run.
    - The Annual Report has still never been run against Villaggio Del Sol's actual expenditure.
 
-**6. Offered and not taken up** — build only if asked:
+**7. Offered and not taken up** — build only if asked:
    - **The Forms 13B/13C export.** Deferred by Ro on 2026-08-21 — the statutory return is done by
      hand for now. Engines are built and tested; only the UI and assembly are missing, and it would
      now produce an Excel workbook rather than a CSV.
@@ -2511,6 +2543,20 @@ slipped through once before:
    - **A settings field for the strata plan number and the TRN.** Neither has ever had one. Offered
      on 2026-09-01 and declined — the value defaults correctly on a fresh database, so nothing is
      blocked. Needed the moment the number has to change, or a statutory return needs the TRN.
+   - **A grey "not yet due" line on the Dashboard.** Offered 2026-09-02. The dashboard already keeps
+     not-yet-due charges out of the arrears card (it passes `today()` to `delinquentAccounts`), so
+     nothing reads red that should not — but unlike the Notifications Hub it does not show the
+     figure at all. Nothing is wrong; the dashboard is simply silent about what is coming.
+   - **A narrative box on the proprietors' monthly report.** It is generated-only today. Adding one
+     means a stored record per month and the annual report's discipline: figures in fixed slots,
+     wording in named boxes, nobody typing over a number.
+   - **Fixing the dead `c.put('/api/settings', …)` idiom** in `operating-statement.test.mjs` and its
+     siblings. **There is no GET or PUT on that path** — settings are read from `/api/db` and written
+     with `POST /api/settings` — so those lines 404 in silence and configure nothing. The suites still
+     pass, because nothing depended on the setting; the shortfall and occupancy suites use the real
+     endpoints. Left alone deliberately on 2026-09-02: making a books-begin date actually apply could
+     move results in suites that session did not otherwise touch, and that is a change to make on
+     purpose.
 
 Otherwise: **no backlog.** No bug is outstanding. Resist finding work here — ask what problem it
 solves at this property first.
