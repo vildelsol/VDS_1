@@ -47,6 +47,7 @@ import {
 } from '../lib/dates';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import OperationsStatement from './OperationsStatement';
+import IspoOperations from './IspoOperations';
 import OperatingStatement from './OperatingStatement';
 import ShortfallReport from './ShortfallReport';
 import { Badge, EmptyState, ErrorNote, Field, InfoNote, SecondaryButton, SubmitButton, TableScroller, monoInputClass, tableHeadRowClass } from './ui';
@@ -684,6 +685,23 @@ export default function Reports({ units, charges, payments, expenses, utilities,
       <OperatingStatement units={units} payments={payments} expenses={expenses} settings={settings} session={session} />
 
       <OperationsStatement expenses={expenses} payments={payments} settings={settings} session={session} />
+
+      {/*
+        The other side of the same register: ISPO's own income and costs.
+
+        Ro, 2026-09-03 — the phone, the company vehicle and its insurance come out
+        of rental income, not out of the proprietors' contributions, and until the
+        two books existed they were counted as the corporation's. Between this and
+        the owners' statement above, every cost in the register is counted exactly
+        once.
+
+        Gated the same way the shortfall report below it is gated. It is the
+        company's own trading position and does not belong in front of anyone who
+        would not be shown its bank statement.
+      */}
+      {session.role === 'ADMINISTRATOR' && (
+        <IspoOperations units={units} expenses={expenses} payments={payments} settings={settings} session={session} />
+      )}
 
       {/*
         VDS's own trading position on the villas it lets — deliberately the last

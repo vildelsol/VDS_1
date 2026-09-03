@@ -388,6 +388,38 @@ export function checkIntegrity(db: Database): IntegrityReport {
      * operation as the void; if one is ever missing, something wrote the status
      * directly.
      */
+    /*
+     * The one double count the two books cannot prevent on their own.
+     *
+     * The maintenance ISPO pays on the villas it lets is a **receipt** against
+     * that villa's maintenance account, and the ISPO statement reads it from the
+     * payment ledger. If somebody also types it into the expense register as an
+     * ISPO cost, the same money is counted twice on that statement — once from
+     * the receipt and once from the cost — and the letting business reads as
+     * worse than it is.
+     *
+     * Not refused at entry, because a genuine ISPO cost against one of its own
+     * villas (a plumber, a locksmith) is a real and ordinary thing. This finds
+     * the specific shape that is never right: a Maintenance-category ISPO cost
+     * allocated to a villa VDS lets on its own account.
+     */
+    const ownAccountVillas = new Set(units.filter(u => u.letOnOwnAccount === true).map(u => u.id));
+    add(
+      'warning',
+      'contribution-entered-as-a-cost',
+      'A maintenance contribution on a villa VDS lets looks to have been entered in the expense register as well as receipted. It would be counted twice on the ISPO statement.',
+      expenses
+        .filter(
+          e =>
+            e.status !== 'void' &&
+            e.fund === 'ispo' &&
+            e.category === 'Maintenance' &&
+            !!e.unitId &&
+            ownAccountVillas.has(e.unitId)
+        )
+        .map(e => `${e.id} (${e.unitNumber}, ${e.currency} ${e.amount})`)
+    );
+
     add(
       'serious',
       'void-cost-without-a-reason',

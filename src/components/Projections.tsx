@@ -27,6 +27,7 @@ import {
   collectedInPeriod,
   collectionRate,
   expensesInPeriod,
+  strataExpenses,
   isBillable
 } from '../lib/finance';
 import { formatMoney, round2, sumMoney } from '../lib/money';
@@ -125,7 +126,17 @@ function buildProjection(
 
   const maintReceived = collectedInPeriod(payments, currency, from, to).maintenance;
   const maintBilled = chargedInPeriod(charges, currency, from, to).maintenance;
-  const expensesPaid = expensesInPeriod(expenses, currency, from, to);
+  /*
+   * The corporation's costs only.
+   *
+   * This projection already excludes rent and booking income "because they
+   * belong to individual proprietors, not to the corporation" — see the note at
+   * the head of this file. Counting ISPO's costs against contributions while
+   * excluding ISPO's income would project a deficit for the fund out of money
+   * that was never the fund's, which is the same fault as the annual report's
+   * and worse for being on a page that says what it excludes.
+   */
+  const expensesPaid = expensesInPeriod(strataExpenses(expenses), currency, from, to);
 
   const avgReceived = round2(maintReceived / lookback);
   const avgExpense = round2(expensesPaid / lookback);

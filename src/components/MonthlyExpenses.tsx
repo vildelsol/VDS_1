@@ -22,12 +22,16 @@ import React, { useMemo, useState } from 'react';
 import {
   Currency,
   EXPENSE_CATEGORIES,
+  EXPENSE_FUND_LABELS,
   Expense,
   ExpenseCategory,
+  ExpenseFund,
+  MANAGING_COMPANY_NAME,
   PAYMENT_METHODS,
   PaymentMethod,
   RecurringExpense,
   Unit,
+  fundOf,
   getUnitDisplayName
 } from '../types';
 import { formatMoney, sumMoney } from '../lib/money';
@@ -39,6 +43,8 @@ import {
   EmptyState,
   ErrorNote,
   Field,
+  FundBadge,
+  FundChoice,
   InfoNote,
   Modal,
   SecondaryButton,
@@ -82,6 +88,7 @@ interface ExtraLine {
   amount: string;
   currency: Currency;
   paymentMethod: PaymentMethod;
+  fund: ExpenseFund;
 }
 
 function blankExtra(): ExtraLine {
@@ -93,7 +100,8 @@ function blankExtra(): ExtraLine {
     allocation: 'general',
     amount: '',
     currency: 'JMD',
-    paymentMethod: 'Bank Transfer'
+    paymentMethod: 'Bank Transfer',
+    fund: 'strata'
   };
 }
 
@@ -201,6 +209,25 @@ export default function MonthlyExpenses({
     return acc;
   }, [selected, readyExtras]);
 
+  /*
+   * The same run, split between the two books. A month's run now raises costs
+   * for both entities in one action, so the person posting it should be able to
+   * see how much of what they are about to raise is the corporation's and how
+   * much is ISPO's, before they press the button rather than afterwards.
+   */
+  const runByFund = useMemo(() => {
+    const acc: Record<ExpenseFund, Record<Currency, number>> = {
+      strata: { JMD: 0, USD: 0 },
+      ispo: { JMD: 0, USD: 0 }
+    };
+    for (const r of selected) acc[fundOf(r.template)][r.template.currency] += Number(r.amount) || 0;
+    for (const x of readyExtras) acc[x.fund][x.currency] += Number(x.amount) || 0;
+    return acc;
+  }, [selected, readyExtras]);
+
+  const runTouchesBothBooks =
+    (runByFund.ispo.JMD > 0 || runByFund.ispo.USD > 0) && (runByFund.strata.JMD > 0 || runByFund.strata.USD > 0);
+
   const setOverride = (id: string, patch: Partial<{ include: boolean; amount: string }>) => {
     setOverrides(prev => {
       const current = prev[id] ?? { include: true, amount: String(templates.find(t => t.id === id)?.amount ?? '') };
@@ -231,6 +258,7 @@ export default function MonthlyExpenses({
           amount: Number(x.amount),
           currency: x.currency,
           paymentMethod: x.paymentMethod,
+          fund: x.fund,
           dueDay: 1
         }))
       ];
@@ -320,9 +348,12 @@ export default function MonthlyExpenses({
                       </td>
                       <td className="px-4 py-3">
                         <div className="font-medium text-slate-800">{row.template.vendor}</div>
-                        <div className="text-[11px] text-slate-500">
-                          {row.template.category}
-                          {row.template.description ? ` — ${row.template.description}` : ''} · due day {row.template.dueDay}
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          <FundBadge fund={fundOf(row.template)} />
+                          <span className="text-[11px] text-slate-500">
+                            {row.template.category}
+                            {row.template.description ? ` — ${row.template.description}` : ''} · due day {row.template.dueDay}
+                          </span>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-slate-600">{allocationLabel(allocationOf(row.template), units)}</td>
@@ -407,6 +438,19 @@ export default function MonthlyExpenses({
                               {c}
                             </option>
                           ))}
+                        </select>
+                        <select
+                          aria-label="Paid from, for the added item"
+                          value={extra.fund}
+                          onChange={e =>
+                            setExtras(prev =>
+                              prev.map(x => (x.key === extra.key ? { ...x, fund: e.target.value as ExpenseFund } : x))
+                            )
+                          }
+                          className={`${inputClass} mt-2`}
+                        >
+                          <option value="strata">{EXPENSE_FUND_LABELS.strata}</option>
+                          <option value="ispo">{EXPENSE_FUND_LABELS.ispo}</option>
                         </select>
                       </td>
                       <td className="px-4 py-3">
@@ -498,6 +542,17 @@ export default function MonthlyExpenses({
                     {totals.USD > 0 ? formatMoney(totals.USD, 'USD') : ''}
                     {totals.JMD === 0 && totals.USD === 0 ? '—' : ''}
                   </span>
+                  {runTouchesBothBooks && (
+                    <span className="mt-1 block text-[11px] text-slate-400">
+                      {(['JMD', 'USD'] as Currency[])
+                        .filter(c => runByFund.strata[c] > 0 || runByFund.ispo[c] > 0)
+                        .map(
+                          c =>
+                            `${c}: ${formatMoney(runByFund.strata[c], c)} strata + ${formatMoney(runByFund.ispo[c], c)} ${MANAGING_COMPANY_NAME}`
+                        )
+                        .join(' · ')}
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-3">
@@ -558,6 +613,7 @@ export default function MonthlyExpenses({
               <thead>
                 <tr className={tableHeadRowClass}>
                   <th className="px-4 py-3 text-left">Vendor</th>
+                  <th className="px-4 py-3 text-left">Paid from</th>
                   <th className="px-4 py-3 text-left">Category</th>
                   <th className="px-4 py-3 text-left">Allocation</th>
                   <th className="px-4 py-3 text-right">Usual amount</th>
@@ -570,6 +626,9 @@ export default function MonthlyExpenses({
                 {[...active, ...retired].map(t => (
                   <tr key={t.id} className={t.active ? '' : 'text-slate-400'}>
                     <td className="px-4 py-3 font-medium text-slate-800">{t.vendor}</td>
+                    <td className="px-4 py-3">
+                      <FundBadge fund={fundOf(t)} />
+                    </td>
                     <td className="px-4 py-3 text-slate-600">{t.category}</td>
                     <td className="px-4 py-3 text-slate-600">{allocationLabel(allocationOf(t), units)}</td>
                     <td className="px-4 py-3 text-right font-mono">{formatMoney(t.amount, t.currency)}</td>
@@ -779,6 +838,7 @@ function RecurringForm({
   const [currency, setCurrency] = useState<Currency>(template?.currency || 'JMD');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(template?.paymentMethod || 'Bank Transfer');
   const [dueDay, setDueDay] = useState(String(template?.dueDay ?? 1));
+  const [fund, setFund] = useState<ExpenseFund>(template ? fundOf(template) : 'strata');
   const [notes, setNotes] = useState(template?.notes || '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -798,6 +858,7 @@ function RecurringForm({
         currency,
         paymentMethod,
         dueDay: Number(dueDay),
+        fund,
         active: template ? template.active : true,
         notes
       });
@@ -851,6 +912,9 @@ function RecurringForm({
             </select>
           </Field>
         </div>
+
+        {/* Set once here, carried onto every cost the run raises from now on. */}
+        <FundChoice value={fund} onChange={setFund} idPrefix="rf-fund" />
 
         <Field label="Vendor or payee" htmlFor="rf-vendor" required>
           <input id="rf-vendor" type="text" list="vds-vendors" value={vendor} onChange={e => setVendor(e.target.value)} required className={inputClass} />

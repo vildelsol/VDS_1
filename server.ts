@@ -33,6 +33,9 @@ import {
   PaymentCategory,
   PaymentMethod,
   PROPERTY_LOCATIONS,
+  EXPENSE_FUNDS,
+  fundOf,
+  ExpenseFund,
   RecurringExpense,
   Tenancy,
   Unit,
@@ -3844,6 +3847,10 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
   const location: string = unit ? unit.number : isNamedLocation ? rawLocation : 'General';
 
   const status = requireEnum(body.status ?? existing?.status ?? 'paid', ['paid', 'pending'] as const, 'Expense status');
+  // Defaulted rather than required: every cost written before the two books
+  // existed is the corporation's, and so is the great majority of what is
+  // written from now on. Only the exceptions are marked.
+  const fund = requireEnum(body.fund ?? existing?.fund ?? 'strata', EXPENSE_FUNDS, 'Which pot pays for this') as ExpenseFund;
   const date = requireDay(body.date ?? existing?.date ?? today(), 'Expense date');
   const dueDate = body.dueDate || existing?.dueDate ? requireDay(body.dueDate ?? existing?.dueDate, 'Due date') : date;
   const datePaidRaw = body.datePaid ?? existing?.datePaid;
@@ -3862,6 +3869,7 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
     datePaid,
     paymentMethod: requireEnum(body.paymentMethod ?? existing?.paymentMethod ?? 'Bank Transfer', PAYMENT_METHODS, 'Payment method') as PaymentMethod,
     status,
+    fund,
     reference: optionalString(body.reference ?? existing?.reference, 120),
     notes: optionalString(body.notes ?? existing?.notes, 2000)
   };
@@ -4118,6 +4126,7 @@ function readRecurringFields(db: Database, body: Record<string, unknown>, existi
       'Payment method'
     ) as PaymentMethod,
     dueDay: dueDayRaw,
+    fund: requireEnum(body.fund ?? existing?.fund ?? 'strata', EXPENSE_FUNDS, 'Which pot pays for this') as ExpenseFund,
     active: body.active === undefined ? (existing?.active ?? true) : body.active === true,
     notes: optionalString(body.notes ?? existing?.notes, 2000)
   };
@@ -4412,6 +4421,10 @@ app.post(
               currency: requireCurrency(item.currency ?? template.currency),
               paymentMethod: template.paymentMethod,
               dueDay: template.dueDay,
+              // The book is the template's, never the run's. A person correcting
+              // an electricity figure at month end is not deciding whose money
+              // pays for it; that was decided when the cost was set up.
+              fund: fundOf(template),
               notes: optionalString(item.notes ?? template.notes, 2000)
             }
           : (() => {
@@ -4428,6 +4441,7 @@ app.post(
                 e.periodMonth === monthString &&
                 e.status !== 'void' &&
                 !e.recurringId &&
+                fundOf(e) === fields.fund &&
                 e.vendor.toLowerCase() === fields.vendor.toLowerCase() &&
                 e.category === fields.category &&
                 e.unitNumber === fields.unitNumber &&
@@ -4457,6 +4471,7 @@ app.post(
           status: 'pending',
           reference: '',
           notes: fields.notes,
+          fund: fields.fund,
           periodMonth: monthString,
           ...(template ? { recurringId: template.id } : {})
         };

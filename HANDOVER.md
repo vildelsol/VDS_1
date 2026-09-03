@@ -26,10 +26,13 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **⚠️ Unreleased work is in the tree: taking a cost back** (2026-09-03, below). A posted expense can
-  now be recalled and a mistaken monthly cost removed outright. Committed but **not released** — the
-  HP is still on v1.9.0 and needs whatever ships next.
-- **1,655 automated tests pass**, plus the 56 new checks in `taking-a-cost-back`. Typecheck and build clean. A full run now simulates **6,800 audited
+- **⚠️ Two unreleased pieces of work are in the tree** (both 2026-09-03, both below):
+  **taking a cost back** — a posted expense can be recalled and a mistaken monthly cost removed
+  outright; and **the two books** — the corporation's money and ISPO's are separated, which stops
+  ISPO's vehicle and phone costs inflating the maintenance contribution put to the AGM. The stray rule
+  above every printed signature block is gone too. Committed but **not released** — the HP is still on
+  v1.9.0 and needs whatever ships next.
+- **1,761 automated tests pass** (1,655 before this session, plus 56 in `taking-a-cost-back` and 50 in `two-books`). Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
@@ -122,6 +125,103 @@ the proprietors' monthly report.
 
 **Read "Where to pick up" before installing** — two setup steps are Ro's and two screens look wrong
 until he does them.
+
+---
+
+## Session of 2026-09-03 (second half) — the two books (UNRELEASED)
+
+Ro, still on the live system: *"Ispo, the company that owns VDS is the company who collects the Rent
+payments, there are certain expenses, such as Cell phone bills, company vehicle expenses and insurance
+and other expenses that are paid from the rental income. This has not yet been accounted for … how can
+i separate the two?"* And, while it was being built: *"ensure there's no double counting anywhere."*
+
+### The fault this was hiding
+
+Every cost was the corporation's. `isCommonCost` accepted **General and Office alike**, so a cell phone
+bill or a vehicle invoice was a common cost of the property — and from there it ran into
+`budgetExpenditure` and then into `feeToCoverBudget`, **which is the maintenance contribution the annual
+report puts to the AGM.** ISPO's vehicle insurance was being charged to sixteen proprietors through the
+one number they vote on. Mutation-tested, so the size is known rather than asserted: on the test's own
+figures the contribution goes from **J$7,333.34 to J$10,000 per villa per month** when the filter is
+removed. It also reached the proprietors' monthly report and would have reached Form 13C.
+
+### The design
+
+**`ExpenseFund = 'strata' | 'ispo'` on `Expense` and `RecurringExpense`. Absent means `strata`** — which
+is what every existing record is, what the reports already say, and what the great majority of costs
+genuinely are. Nothing moved on the upgrade; only the exceptions get marked. Ro confirmed the scope
+himself: *"office costs, property electricty grounds staff, pool mainentance, painting, etc are covered
+by Maintenance payments are all strata."* All of those still count exactly as before.
+
+**Where the filter lives is the load-bearing decision.** A document that is a strata document *by
+identity* filters **inside the function**, the same way it already decides for itself that only
+`status === 'paid'` counts: `operationsStatement`, `annualOwnersReport`, `form13CDebts`, `ownerStatement`.
+Left to the caller, a screen written next year forgets and puts the vehicle insurance back into the AGM
+figure, silently and self-consistently. `Projections` and `BoardPack` filter at their own boundary
+(they call the general helpers) and are asserted in the suite for that reason.
+
+**The combined views keep both books**, because Ro asked for that explicitly. The Operating Statement
+stays his *"all in view for the entire business"* — but it now **names the split on its face and on the
+printed page**, since it carries the corporation's letterhead and a reader otherwise cannot tell whose
+costs are whose.
+
+**`ispoOperations`** is the mirror of the owners' statement: rent and short-stay receipts against ISPO's
+own costs, plus the contribution ISPO pays on the villas it lets. Under Operational Reports, badged
+internal, gated exactly as the shortfall report is gated there.
+
+### No double counting — the four rules, and the one that was only a claim
+
+1. **Every cost is in exactly one book.** `strata + ISPO = the whole`, asserted directly over three
+   periods and both currencies. It fails if anything is counted twice *or* lost.
+2. **The contribution ISPO pays is an internal transfer** — the corporation's income and ISPO's cost,
+   genuinely both. Named on the combined statement as such, so nobody reads the gross totals as money
+   that entered or left the group.
+3. **That figure is read from the receipts, never from an expense row**, and both it and the shortfall
+   report go through the new `netReceivedInPeriod`, so they cannot drift apart on refund timing.
+4. **ISPO Operations and the shortfall report are made to agree**, and the suite compares them.
+
+⚠️ **Rule 3 was a claim, not a test, and mutation testing caught it.** Making the ISPO statement also
+count a Maintenance-category cost row on an own-account villa produced **no failure at all**. The design
+only *detected* that shape (via a new `contribution-entered-as-a-cost` self-check); it was not immune to
+it. Fixed: such a row is now excluded from ISPO's own costs — and **named on the page**, never silently
+dropped — so the double count is arithmetically impossible rather than merely reported. Re-run, the same
+mutation fails two checks.
+
+### Also fixed, reported by Ro while this was being built
+
+**The stray rule above the signature block.** *"on statements to be printed, there is a random line
+above the signature lines … it runs almost edge to edge. it should be removed."* `PrintSignatures`
+carried `border-t` across the full width of the page, immediately above the two short lines a person
+actually signs on. Removed; the spacing is kept. It is one shared component, so the fix reaches **every**
+printed document at once — verified on the printed expense register (`border-top: 0px`, and by eye).
+
+### The test
+
+`test/two-books.test.mjs`, **50 checks**, phrased as the property's rules. Seven mutations were run and
+every one now fails the suite: the annual report unfiltered (4 fail, and it names the AGM figure moving),
+the monthly report unfiltered (4), owner statements unfiltered (1), Form 13C unfiltered (2), the transfer
+counting every proprietor's contribution (2), the contribution counted twice on the ISPO statement (2 —
+zero before the fix above), and the self-check silenced (1).
+
+**Driven through the real UI** on a scratch database as well: the "Paid from" cards on the expense form
+with strata preselected, the ISPO badge and split totals in the register, ISPO Operations rendering with
+its own figures, and the owners' statement correctly refusing to print a month whose only cost was
+ISPO's.
+
+**1,761 tests pass.** Typecheck and build clean.
+
+### Still to do
+
+- **Not released.** This and the cost-recall work above both need a version bump, tag and Windows build.
+- **Mark the ISPO costs once**, in the expense register or on their monthly cost — the phone, the
+  vehicle, the vehicle insurance. Nothing guesses them.
+- **Tick "let on the corporation's own account"** on the villas VDS lets, or the ISPO statement's
+  maintenance line reads nil. The screen says so rather than showing a silent zero.
+- ⚠️ **Found in passing, not fixed, Ro's call:** `Reports.tsx` mounts the shortfall report behind
+  `session.role === 'ADMINISTRATOR'`, while `ShortfallReport` itself implements *"every role sees it
+  unless it is withdrawn"* on Ro's own instruction (*"every staff member who has an account so ensure
+  every role can see it"*). The outer gate makes the inner `viewShortfall` permission unreachable for
+  everyone else — a guard that cannot fire. Decide which one is right and delete the other.
 
 ---
 

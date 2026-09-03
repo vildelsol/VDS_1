@@ -12,6 +12,7 @@
 
 import React from 'react';
 import { AlertTriangle, CheckCircle, Info, Loader2, Inbox } from 'lucide-react';
+import { EXPENSE_FUNDS, EXPENSE_FUND_HINTS, EXPENSE_FUND_LABELS, ExpenseFund, MANAGING_COMPANY_NAME } from '../types';
 
 export function ErrorNote({ children }: { children: React.ReactNode }) {
   if (!children) return null;
@@ -248,6 +249,78 @@ export function AlreadySettledNote({
         <span>This is separate money, not the payment already taken. Record it as a credit on the account.</span>
       </label>
     </div>
+  );
+}
+
+
+/**
+ * Which of the two books pays for a cost.
+ *
+ * Radio cards rather than a dropdown, and the hints are on the face of them,
+ * because the person posting a bill at month end is not thinking in terms of
+ * entities — they are looking at an invoice. Naming the funding source and
+ * listing what belongs in each makes the answer readable off the page.
+ *
+ * The corporation is preselected, and that is deliberate rather than lazy: it is
+ * what the overwhelming majority of costs are, it is what every record written
+ * before the two books existed already is, and it is the answer that leaves the
+ * proprietors' documents saying what they have always said. Only the exceptions
+ * are marked.
+ */
+export function FundChoice({
+  value,
+  onChange,
+  disabled,
+  idPrefix = 'fund'
+}: {
+  value: ExpenseFund;
+  onChange: (fund: ExpenseFund) => void;
+  disabled?: boolean;
+  idPrefix?: string;
+}) {
+  return (
+    <fieldset className="space-y-2" disabled={disabled}>
+      <legend className="mb-1.5 block font-mono text-[10px] font-medium uppercase tracking-wider text-slate-500">
+        Paid from
+      </legend>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {EXPENSE_FUNDS.map(fund => {
+          const selected = value === fund;
+          return (
+            <label
+              key={fund}
+              htmlFor={`${idPrefix}-${fund}`}
+              className={`flex cursor-pointer items-start gap-2 rounded-xl border p-3 transition-colors ${
+                selected ? 'border-teal-500 bg-teal-50/60' : 'border-slate-200 bg-white hover:bg-slate-50'
+              } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+            >
+              <input
+                id={`${idPrefix}-${fund}`}
+                type="radio"
+                name={`${idPrefix}-choice`}
+                value={fund}
+                checked={selected}
+                onChange={() => onChange(fund)}
+                className="mt-0.5 shrink-0"
+              />
+              <span className="min-w-0">
+                <span className="block text-xs font-semibold text-slate-800">{EXPENSE_FUND_LABELS[fund]}</span>
+                <span className="mt-0.5 block text-[10px] leading-relaxed text-slate-500">{EXPENSE_FUND_HINTS[fund]}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+/** The small badge that names a cost's book wherever one is listed. */
+export function FundBadge({ fund }: { fund: ExpenseFund }) {
+  return (
+    <Badge tone={fund === 'ispo' ? 'purple' : 'blue'}>
+      {fund === 'ispo' ? MANAGING_COMPANY_NAME : 'Strata'}
+    </Badge>
   );
 }
 

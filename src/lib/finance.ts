@@ -27,8 +27,10 @@ import {
   UtilityReading,
   Expense,
   ExpenseCategory,
+  ExpenseFund,
   Booking,
   PROPERTY_LOCATIONS,
+  fundOf,
   getUnitDisplayName
 } from '../types';
 import { round2, sumMoney, addMoney, subtractMoney } from './money';
@@ -89,6 +91,24 @@ export function refundedAsOf(payment: Payment, asOf?: string): number {
  */
 export function netPaidAsOf(payment: Payment, asOf?: string): number {
   return round2(payment.amount - refundedAsOf(payment, asOf));
+}
+
+/**
+ * Cash actually received from an already-chosen set of receipts over a range.
+ *
+ * The caller filters for currency, category and villa; this applies the one rule
+ * that is easy to get subtly wrong and must not vary between reports — a refund
+ * reduces the period it was **paid out** in, not the period of the receipt it
+ * came from. `collectedInPeriod` and the shortfall report's `receivedInMonth`
+ * both already worked this way; anything new that counts receipts goes through
+ * here so it cannot drift away from them.
+ */
+export function netReceivedInPeriod(payments: Payment[], start: string, end: string): number {
+  const completed = payments.filter(p => p.status === 'completed');
+  return subtractMoney(
+    sumMoney(completed.filter(p => isWithin(p.date, start, end)).map(p => p.amount)),
+    sumMoney(completed.filter(p => p.refundedOn && isWithin(p.refundedOn, start, end)).map(p => refundedAsOf(p)))
+  );
 }
 
 /* ------------------------------------------------------------------ *
@@ -179,6 +199,47 @@ export function isVoidExpense(expense: Expense): boolean {
 /** The costs that still count: everything that has not been taken back. */
 export function liveExpenses(expenses: Expense[]): Expense[] {
   return expenses.filter(e => !isVoidExpense(e));
+}
+
+/* ------------------------------------------------------------------ *
+ * The two books
+ *
+ * The corporation's money and ISPO's money are not the same money, and a
+ * document that mixes them misstates one of them. See `ExpenseFund` in
+ * src/types.ts for what belongs where and why absent means `strata`.
+ *
+ * **The rule about where this filter goes.** A document that is a strata
+ * document *by identity* — the proprietors' monthly report, the annual report,
+ * Form 13C, an owner's statement — filters here, inside the function, exactly as
+ * it already decides for itself that only `status === 'paid'` counts. It must not
+ * be left to the caller: a screen written next year would have to know to do it,
+ * and the one that forgot would put ISPO's vehicle insurance back into the
+ * contribution put to the meeting, silently and self-consistently.
+ *
+ * The combined views — the dashboard, the charts, the management report, and the
+ * Operating Statement, which Ro keeps as *"my all in view for the entire
+ * business"* — deliberately do not filter. They count both books and state the
+ * split, so the total is explainable rather than merely large.
+ * ------------------------------------------------------------------ */
+
+/** A cost of running the property, funded by maintenance contributions. */
+export function isStrataCost(expense: Expense): boolean {
+  return fundOf(expense) === 'strata';
+}
+
+/** One of ISPO's own costs, funded out of rental income. */
+export function isIspoCost(expense: Expense): boolean {
+  return fundOf(expense) === 'ispo';
+}
+
+/** Only the corporation's costs. What every owner-facing document counts. */
+export function strataExpenses(expenses: Expense[]): Expense[] {
+  return expenses.filter(isStrataCost);
+}
+
+/** Only ISPO's costs. */
+export function ispoExpenses(expenses: Expense[]): Expense[] {
+  return expenses.filter(isIspoCost);
 }
 
 export function bookingsForUnit(bookings: Booking[], unit: Unit, allUnits?: Unit[]): Booking[] {
@@ -1415,8 +1476,16 @@ export function ownerStatement(
    * Anything else charged to the villa — a plumber, a locksmith — has no second
    * record anywhere and is unaffected.
    */
+  /*
+   * Strata costs only, as everywhere else a proprietor reads.
+   *
+   * This line on the statement means "work the corporation did on your villa and
+   * is recharging to you". A cost ISPO paid on a villa it lets is its own
+   * business expense and is recharged to nobody — putting it here would present
+   * a proprietor with a bill that was never theirs.
+   */
   const expenseItems = inPeriod(
-    expensesForUnit(expenses, unit, units).filter(
+    strataExpenses(expensesForUnit(expenses, unit, units)).filter(
       e => e.status === 'paid' && e.currency === currency && e.category !== 'Utilities'
     ),
     e => e.datePaid || e.date
@@ -1845,10 +1914,16 @@ export interface Form13CRow {
  * Aged from the due date where there is one, falling back to the date the cost
  * was logged.
  */
-export function form13CDebts(expenses: Expense[], asOf: string): { rows: Form13CRow[]; totalsByCurrency: { currency: Currency; buckets: AgeingBuckets }[] } {
+export function form13CDebts(allExpenses: Expense[], asOf: string): { rows: Form13CRow[]; totalsByCurrency: { currency: Currency; buckets: AgeingBuckets }[] } {
   const byKey = new Map<string, Form13CRow>();
 
-  for (const expense of expenses) {
+  /*
+   * The Commission asks what the **body corporate** owes. A bill ISPO has not
+   * yet paid is ISPO's creditor, not the corporation's, and declaring it on a
+   * statutory return would overstate the corporation's liabilities to the
+   * regulator.
+   */
+  for (const expense of strataExpenses(allExpenses)) {
     if (expense.status !== 'pending') continue;
     const owedFrom = expense.dueDate || expense.date;
     if (owedFrom > asOf) continue;
@@ -2041,11 +2116,21 @@ export function annualOwnersReport(
   units: Unit[],
   charges: Charge[],
   payments: Payment[],
-  expenses: Expense[],
+  allExpenses: Expense[],
   currency: Currency,
   reportYear: number,
   options?: { budgetByCategory?: Record<string, number>; proposedFee?: number }
 ): AnnualOwnersReport {
+  /*
+   * The corporation's costs only, and this is the one that mattered most.
+   *
+   * `expenditure` here runs into `budgetExpenditure` and then into
+   * `feeToCoverBudget`, which is the maintenance contribution this document puts
+   * to the annual general meeting. Counting ISPO's vehicle insurance in it
+   * charged sixteen proprietors, through their contribution, for the running of
+   * a company vehicle they have nothing to do with.
+   */
+  const expenses = strataExpenses(allExpenses);
   const budgetByCategory = options?.budgetByCategory || {};
   const yearStart = `${reportYear}-01-01`;
   const yearEnd = `${reportYear}-12-31`;
@@ -2502,13 +2587,20 @@ function toCostLine(expense: Expense, date: string): OperationsCostLine {
  * sixteen owners what was done to each other's villas.
  */
 export function operationsStatement(
-  expenses: Expense[],
+  allExpenses: Expense[],
   payments: Payment[],
   currency: Currency,
   start: string,
   end: string
 ): OperationsStatement {
   const maintenanceCollected = collectedInPeriod(payments, currency, start, end).maintenance;
+
+  /*
+   * The corporation's costs only. This document tells sixteen proprietors what
+   * their contributions paid for, so ISPO's cell phone has no business on it —
+   * and before the two books existed it was on it, under "Utilities".
+   */
+  const expenses = strataExpenses(allExpenses);
 
   const inCurrency = expenses.filter(e => e.currency === currency);
   const paidInPeriod = inCurrency.filter(e => e.status === 'paid' && isWithin(e.datePaid || e.date, start, end));
@@ -2641,6 +2733,33 @@ export interface OperatingStatement {
   totalIncome: number;
   expenditure: StatementGroup<ExpenditureLine>[];
   totalExpenditure: number;
+  /**
+   * The same expenditure split between the two books, because this statement
+   * carries both.
+   *
+   * Ro keeps this document combined — *"it is my all in view for the entire
+   * business which is important"* — which is a legitimate thing to want and a
+   * dangerous thing to leave unlabelled: it is printed on the corporation's
+   * letterhead, and a reader has no way to tell the fund's costs from ISPO's
+   * without being told. These two always sum to `totalExpenditure`.
+   */
+  strataExpenditure: number;
+  ispoExpenditure: number;
+  /**
+   * The maintenance ISPO paid on the villas it lets, inside this period.
+   *
+   * **The one figure on this page that is the same money twice.** It is income
+   * to the corporation and a cost to ISPO, so on a combined statement it appears
+   * on both sides — correctly, since both entities genuinely moved it, and it
+   * nets to nothing across the two. It is stated so that anyone reading the
+   * gross totals knows this much of them is one transfer between the two books
+   * rather than money that entered or left the group.
+   *
+   * Taken from the payment ledger, never from an expense row: it is a
+   * contribution receipted against a villa, and there is no second record of it
+   * anywhere. Counting an expense here as well would be the double count.
+   */
+  internalTransfer: number;
   /** Income less expenditure. Negative is a deficit for the period. */
   surplus: number;
   /** True when neither side has a single line in this currency. */
@@ -2812,6 +2931,35 @@ export function operatingStatement(
 
   const totalExpenditure = sumMoney(expenditure.map(g => g.total));
 
+  /*
+   * The split, computed from the same `paid` set the statement itself used, so
+   * the two parts cannot disagree with the whole they came from. Anything the
+   * options excluded is excluded from both, for the same reason.
+   */
+  // Keyed on the category, which is what a group is and what the options
+  // exclude. Reading the ids off `expenditure` instead would have silently
+  // dropped every summary-visibility group, whose `lines` array is empty by
+  // design — the split would then not have summed to the total it sits under.
+  const excludedCategories = new Set(excludedExpenditure.map(g => g.label));
+  const countedForSplit = paid.filter(e => !excludedCategories.has(e.category));
+  const strataExpenditure = sumMoney(strataExpenses(countedForSplit).map(e => e.amount));
+  const ispoExpenditure = sumMoney(ispoExpenses(countedForSplit).map(e => e.amount));
+
+  /*
+   * The contribution ISPO paid on its own villas — the one figure that is the
+   * same money on both sides of this page. Read off the receipts, on the villas
+   * flagged as let on VDS's own account, so it agrees with the shortfall report
+   * by construction rather than by coincidence.
+   */
+  const ownAccount = new Set(
+    units.filter(u => u.letOnOwnAccount === true && (u.maintCurrency || u.currency) === currency).map(u => u.id)
+  );
+  const internalTransfer = netReceivedInPeriod(
+    payments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownAccount.has(p.unitId)),
+    start,
+    end
+  );
+
   return {
     currency,
     from: start,
@@ -2820,10 +2968,241 @@ export function operatingStatement(
     totalIncome,
     expenditure,
     totalExpenditure,
+    strataExpenditure,
+    ispoExpenditure,
+    internalTransfer,
     surplus: subtractMoney(totalIncome, totalExpenditure),
     empty: income.length === 0 && expenditure.length === 0 && excludedIncome.length === 0 && excludedExpenditure.length === 0,
     excludedIncome,
     excludedExpenditure
+  };
+}
+
+
+/* ------------------------------------------------------------------ *
+ * ISPO Operations — the letting company's own position
+ * ------------------------------------------------------------------ */
+
+export interface IspoCostLine {
+  id: string;
+  date: string;
+  vendor: string;
+  description: string;
+  /** Villa, or General / Office, so it is clear what the money went on. */
+  allocation: string;
+  reference: string;
+  amount: number;
+}
+
+export interface IspoCostGroup {
+  category: ExpenseCategory;
+  lines: IspoCostLine[];
+  total: number;
+}
+
+export interface IspoOperations {
+  currency: Currency;
+  from: string;
+  to: string;
+
+  /** Rent receipted in the period. */
+  rentReceived: number;
+  /** Short-stay booking receipts in the period. */
+  bookingReceived: number;
+  totalIncome: number;
+
+  /** ISPO's own costs, paid in the period, by category. */
+  groups: IspoCostGroup[];
+  ownCostsPaid: number;
+
+  /**
+   * The maintenance contribution ISPO paid on the villas it lets.
+   *
+   * Ro, 2026-09-03, asked for this on the statement: on the villas VDS lets, the
+   * contribution is funded out of the rent, so it is a genuine cost of letting
+   * and leaving it off would flatter the letting business by the whole of it.
+   *
+   * **Read from the receipts, never from an expense row.** A contribution is a
+   * payment against a villa's maintenance account and has exactly one record. If
+   * somebody also enters it in the expense register, the self-check says so
+   * (`contribution-entered-as-a-cost`) rather than this statement quietly
+   * counting it twice.
+   */
+  maintenanceOnOwnVillas: number;
+  /** Villas this was counted on, so the figure can be checked against the register. */
+  ownAccountVillas: string[];
+  /**
+   * Cost rows left out of `ownCostsPaid` because they *are* the contribution.
+   *
+   * `maintenanceOnOwnVillas` is read from the receipts. If somebody also types
+   * the contribution into the expense register as an ISPO cost — and there is
+   * nothing stopping them, it looks like an ordinary bill — then counting the
+   * cost row as well would put the same money into this statement twice.
+   *
+   * So the statement does not merely *detect* that shape, it is immune to it: a
+   * paid ISPO cost categorised Maintenance against a villa let on VDS's own
+   * account is the contribution by definition, and it is excluded here and
+   * **named**, never silently dropped. The self-check raises
+   * `contribution-entered-as-a-cost` as well, so the stray row gets tidied up
+   * rather than living on as a permanent exclusion.
+   */
+  excludedAsContribution: number;
+  excludedAsContributionCount: number;
+  /**
+   * True when no villa is flagged as let on VDS's own account.
+   *
+   * Not the same as "nothing was paid": the flag is ticked by hand and nothing
+   * guesses it from an owner's name. Said on the page, because a silent zero
+   * here reads as "ISPO pays no contributions", which is a different claim.
+   */
+  noVillasFlagged: boolean;
+
+  totalCosts: number;
+  /** Income less every cost. Negative means letting did not cover itself. */
+  net: number;
+
+  /** Memo, never netted: ISPO's bills that fell due in the period and are unpaid. */
+  unpaidLines: IspoCostLine[];
+  costsUnpaid: number;
+
+  /** True when neither side has anything in this currency. */
+  empty: boolean;
+}
+
+/**
+ * What the letting business took and what it spent.
+ *
+ * Ro, 2026-09-03: *"Ispo, the company that owns VDS is the company who collects
+ * the Rent payments, there are certain expenses, such as Cell phone bills,
+ * company vehicle expenses and insurance and other expenses that are paid from
+ * the rental income."*
+ *
+ * The mirror of `operationsStatement`, which is the corporation's side. Between
+ * them every cost in the register is counted exactly once, because a cost is in
+ * one book or the other and `fundOf` has no third answer — an identity asserted
+ * directly in `test/two-books.test.mjs` rather than left as a claim.
+ *
+ * **Income is every rent and short-stay receipt.** Not only those on flagged
+ * villas: the corporation never collects a proprietor's rent — they let their
+ * own villas entirely on their own account — so any rent in this system is
+ * money ISPO collected. `maintenanceOnOwnVillas` is the one figure that does
+ * depend on the flag, because it is specifically the contribution on the villas
+ * VDS lets, and it says so when no villa is flagged.
+ *
+ * Cash basis on both sides, like every other statement here, so the net
+ * reconciles to the bank rather than to an accrual.
+ */
+export function ispoOperations(
+  allExpenses: Expense[],
+  payments: Payment[],
+  units: Unit[],
+  currency: Currency,
+  start: string,
+  end: string
+): IspoOperations {
+  const collected = collectedInPeriod(payments, currency, start, end);
+  const rentReceived = collected.rent;
+  const bookingReceived = collected.booking;
+  const totalIncome = sumMoney([rentReceived, bookingReceived]);
+
+  const inCurrency = ispoExpenses(allExpenses).filter(e => e.currency === currency);
+  const paid = inCurrency.filter(e => e.status === 'paid' && isWithin(e.datePaid || e.date, start, end));
+  const pending = inCurrency.filter(e => e.status === 'pending' && isWithin(e.dueDate || e.date, start, end));
+
+  const villaOf = (expense: Expense): string => {
+    if (!expense.unitId) return expense.unitNumber || 'General';
+    const unit = units.find(u => u.id === expense.unitId);
+    return getUnitDisplayName(unit?.number || expense.unitNumber || '');
+  };
+
+  const toLine = (expense: Expense, date: string): IspoCostLine => ({
+    id: expense.id,
+    date,
+    vendor: expense.vendor,
+    description: expense.description,
+    allocation: villaOf(expense),
+    reference: expense.reference,
+    amount: expense.amount
+  });
+
+  /*
+   * The own-account villas, needed before the cost groups are built because a
+   * contribution typed into the register has to be kept out of them.
+   */
+  const ownAccountUnits = units.filter(u => u.letOnOwnAccount === true);
+  const inThisCurrency = ownAccountUnits.filter(u => (u.maintCurrency || u.currency) === currency);
+  const ownIds = new Set(inThisCurrency.map(u => u.id));
+
+  /**
+   * Is this cost row actually the contribution, already counted from receipts?
+   *
+   * A plumber or a locksmith on one of ISPO's villas is a genuine ISPO cost and
+   * belongs in the groups. A **Maintenance**-category row against a villa VDS
+   * lets on its own account is the monthly contribution, which has a receipt and
+   * is counted from it — the one shape that would be the same money twice.
+   */
+  const isTheContributionAgain = (expense: Expense): boolean =>
+    expense.category === 'Maintenance' && !!expense.unitId && ownIds.has(expense.unitId);
+
+  const duplicated = paid.filter(isTheContributionAgain);
+  const ownCosts = paid.filter(e => !isTheContributionAgain(e));
+
+  const byCategory = new Map<ExpenseCategory, IspoCostLine[]>();
+  for (const expense of ownCosts) {
+    const lines = byCategory.get(expense.category) || [];
+    lines.push(toLine(expense, expense.datePaid || expense.date));
+    byCategory.set(expense.category, lines);
+  }
+
+  const groups: IspoCostGroup[] = Array.from(byCategory.entries())
+    .map(([category, lines]) => ({
+      category,
+      lines: lines.slice().sort((a, b) => a.date.localeCompare(b.date) || a.vendor.localeCompare(b.vendor)),
+      total: sumMoney(lines.map(l => l.amount))
+    }))
+    .sort((a, b) => b.total - a.total || a.category.localeCompare(b.category));
+
+  const ownCostsPaid = sumMoney(groups.map(g => g.total));
+
+  /*
+   * The contribution ISPO paid on its own villas, off the receipts.
+   *
+   * Only where the villa is billed maintenance in this currency, so a villa
+   * assessed in US dollars contributes nothing to the Jamaican statement rather
+   * than a converted figure — the rule the whole application keeps.
+   */
+  const maintenanceOnOwnVillas = netReceivedInPeriod(
+    payments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownIds.has(p.unitId)),
+    start,
+    end
+  );
+
+  const unpaidLines = pending
+    .filter(e => !isTheContributionAgain(e))
+    .map(e => toLine(e, e.dueDate || e.date))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.vendor.localeCompare(b.vendor));
+
+  const totalCosts = sumMoney([ownCostsPaid, maintenanceOnOwnVillas]);
+
+  return {
+    currency,
+    from: start,
+    to: end,
+    rentReceived,
+    bookingReceived,
+    totalIncome,
+    groups,
+    ownCostsPaid,
+    maintenanceOnOwnVillas,
+    ownAccountVillas: inThisCurrency.map(u => getUnitDisplayName(u.number)),
+    excludedAsContribution: sumMoney(duplicated.map(e => e.amount)),
+    excludedAsContributionCount: duplicated.length,
+    noVillasFlagged: ownAccountUnits.length === 0,
+    totalCosts,
+    net: subtractMoney(totalIncome, totalCosts),
+    unpaidLines,
+    costsUnpaid: sumMoney(unpaidLines.map(l => l.amount)),
+    empty: totalIncome === 0 && totalCosts === 0 && unpaidLines.length === 0
   };
 }
 

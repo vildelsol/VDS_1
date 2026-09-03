@@ -10,12 +10,16 @@ import {
   EXPENSE_CATEGORIES,
   Expense,
   ExpenseCategory,
+  ExpenseFund,
+  EXPENSE_FUND_LABELS,
+  MANAGING_COMPANY_NAME,
   PAYMENT_METHODS,
   PaymentMethod,
   RecurringExpense,
   SessionUser,
   Unit,
   UtilityReading,
+  fundOf,
   getAllocationLabel,
   getUnitDisplayName
 } from '../types';
@@ -31,6 +35,8 @@ import {
   EmptyState,
   ErrorNote,
   Field,
+  FundBadge,
+  FundChoice,
   InfoNote,
   Modal,
   PermissionNote,
@@ -485,6 +491,7 @@ function ExpensesPanel({
    */
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'pending' | 'void'>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | ExpenseCategory>('all');
+  const [fundFilter, setFundFilter] = useState<'all' | ExpenseFund>('all');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
 
@@ -493,6 +500,7 @@ function ExpensesPanel({
     return expenses
       .filter(e => (statusFilter === 'all' ? e.status !== 'void' : e.status === statusFilter))
       .filter(e => categoryFilter === 'all' || e.category === categoryFilter)
+      .filter(e => fundFilter === 'all' || fundOf(e) === fundFilter)
       .filter(e => !fromDate || (e.datePaid || e.date) >= fromDate)
       .filter(e => !toDate || (e.datePaid || e.date) <= toDate)
       .filter(e =>
@@ -504,7 +512,7 @@ function ExpensesPanel({
             e.unitNumber.toLowerCase().includes(needle)
       )
       .sort((a, b) => (b.datePaid || b.date).localeCompare(a.datePaid || a.date));
-  }, [expenses, search, statusFilter, categoryFilter, fromDate, toDate]);
+  }, [expenses, search, statusFilter, categoryFilter, fundFilter, fromDate, toDate]);
 
   /*
    * Totals over what is shown, and a cost taken back is in neither of them.
@@ -524,6 +532,23 @@ function ExpensesPanel({
     return out;
   }, [rows]);
 
+  /*
+   * What is showing, split between the two books. Stated because this register
+   * holds both and a column of figures that mixes them answers no question on
+   * its own — the corporation's costs and ISPO's are not one total.
+   */
+  const byFund = useMemo(() => {
+    const out: Record<ExpenseFund, Record<Currency, number>> = {
+      strata: { JMD: 0, USD: 0 },
+      ispo: { JMD: 0, USD: 0 }
+    };
+    for (const e of rows) {
+      if (e.status === 'void') continue;
+      out[fundOf(e)][e.currency] = sumMoney([out[fundOf(e)][e.currency], e.amount]);
+    }
+    return out;
+  }, [rows]);
+
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
@@ -538,12 +563,13 @@ function ExpensesPanel({
           subtitle={`${rows.length} expense${rows.length === 1 ? '' : 's'}`}
           generatedBy={generatedBy}
           onClose={() => setPrinting(false)}
-          headers={['Date', 'Vendor', 'Category', 'Allocation', 'Reference', 'Status', 'Amount']}
-          alignRight={[6]}
+          headers={['Date', 'Vendor', 'Category', 'Paid from', 'Allocation', 'Reference', 'Status', 'Amount']}
+          alignRight={[7]}
           rows={rows.map(e => [
             formatDayLabel(e.datePaid || e.date),
             e.vendor,
             e.category,
+            fundOf(e) === 'ispo' ? MANAGING_COMPANY_NAME : 'Strata',
             getAllocationLabel(e.unitNumber),
             e.reference || '—',
             e.status === 'paid' ? 'Paid' : e.status === 'pending' ? 'Pending' : 'Taken back',
@@ -561,7 +587,7 @@ function ExpensesPanel({
         />
       )}
 
-      <div className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-xs sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-xs sm:grid-cols-2 lg:grid-cols-6">
         <Field label="Search" htmlFor="ex-search">
           <div className="relative">
             <Search className="absolute left-3 top-3 h-3.5 w-3.5 text-slate-400" />
@@ -574,6 +600,13 @@ function ExpensesPanel({
             <option value="pending">Pending only</option>
             <option value="paid">Paid only</option>
             <option value="void">Taken back</option>
+          </select>
+        </Field>
+        <Field label="Paid from" htmlFor="ex-fund">
+          <select id="ex-fund" value={fundFilter} onChange={e => setFundFilter(e.target.value as typeof fundFilter)} className={inputClass}>
+            <option value="all">Both books</option>
+            <option value="strata">{EXPENSE_FUND_LABELS.strata}</option>
+            <option value="ispo">{EXPENSE_FUND_LABELS.ispo}</option>
           </select>
         </Field>
         <Field label="Category" htmlFor="ex-cat">
@@ -606,6 +639,13 @@ function ExpensesPanel({
               </span>
             ) : null
           )}
+          {(['JMD', 'USD'] as Currency[]).map(c =>
+            byFund.ispo[c] > 0 ? (
+              <span key={`fund-${c}`} className="text-slate-400">
+                of which {c}: {formatMoney(byFund.strata[c], c)} strata, {formatMoney(byFund.ispo[c], c)} {MANAGING_COMPANY_NAME}
+              </span>
+            ) : null
+          )}
         </div>
 
         {rows.length === 0 ? (
@@ -620,6 +660,7 @@ function ExpensesPanel({
                   <th scope="col" className="p-4">Date</th>
                   <th scope="col" className="p-4">Vendor</th>
                   <th scope="col" className="p-4">Category</th>
+                  <th scope="col" className="p-4">Paid from</th>
                   <th scope="col" className="p-4">Allocation</th>
                   <th scope="col" className="p-4">Reference</th>
                   <th scope="col" className="p-4 text-right">Amount</th>
@@ -637,6 +678,9 @@ function ExpensesPanel({
                     </td>
                     <td className="p-4">
                       <Badge>{e.category}</Badge>
+                    </td>
+                    <td className="p-4">
+                      <FundBadge fund={fundOf(e)} />
                     </td>
                     <td className="p-4 font-mono text-[11px]">{getAllocationLabel(e.unitNumber)}</td>
                     <td className="p-4 font-mono text-[11px] text-slate-500">{e.reference || '—'}</td>
@@ -982,6 +1026,7 @@ function ExpenseForm({
   const [date, setDate] = useState(expense?.date || today());
   const [dueDate, setDueDate] = useState(expense?.dueDate || today());
   const [status, setStatus] = useState<Expense['status']>(expense?.status || 'paid');
+  const [fund, setFund] = useState<ExpenseFund>(expense ? fundOf(expense) : 'strata');
   const [datePaid, setDatePaid] = useState(expense?.datePaid || today());
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(expense?.paymentMethod || 'Bank Transfer');
   const [reference, setReference] = useState(expense?.reference || '');
@@ -1008,6 +1053,7 @@ function ExpenseForm({
         status,
         datePaid: status === 'paid' ? datePaid : undefined,
         paymentMethod,
+        fund,
         reference,
         notes
       });
@@ -1062,6 +1108,8 @@ function ExpenseForm({
             </select>
           </Field>
         </div>
+
+        <FundChoice value={fund} onChange={setFund} disabled={locked} idPrefix="ef-fund" />
 
         <Field label="Vendor or payee" htmlFor="ef-vendor" required>
           <input id="ef-vendor" type="text" list="vds-vendors" value={vendor} onChange={e => setVendor(e.target.value)} required className={inputClass} />

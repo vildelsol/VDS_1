@@ -26,6 +26,7 @@ import {
   collectionRate,
   expenseBreakdown,
   expensesInPeriod,
+  strataExpenses,
   occupancySeries,
   occupiedUnitIdsOn,
   ownerBilledUnitIds
@@ -73,13 +74,23 @@ export default function BoardPack({
   const ownerBilled = ownerBilledUnitIds(units);
   const months = monthsBetween(from, to);
 
+  /*
+   * The corporation's costs only.
+   *
+   * This is the pack a committee votes on, so it carries the body corporate's
+   * expenditure and not ISPO's. Filtered once, here, rather than at each of the
+   * four places below that count spend — the alternative is four chances to
+   * forget, and a pack that disagrees with the operating statement beside it.
+   */
+  const strataCosts = strataExpenses(expenses);
+
   const byCurrency = (['JMD', 'USD'] as Currency[])
     .map(currency => {
       const rows: MonthRow[] = months.map(month => {
         const mFrom = monthStart(month) < from ? from : monthStart(month);
         const mTo = monthEnd(month) > to ? to : monthEnd(month);
         const byCategory: Record<string, number> = {};
-        for (const row of expenseBreakdown(expenses, currency, mFrom, mTo)) {
+        for (const row of expenseBreakdown(strataCosts, currency, mFrom, mTo)) {
           if (row.amount > 0) byCategory[row.category] = row.amount;
         }
         const collectedInMonth = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
@@ -88,14 +99,14 @@ export default function BoardPack({
           billed: chargedInPeriod(charges, currency, mFrom, mTo).total,
           received: collectedInMonth.total,
           receivedAgainstBilled: sumMoney([collectedInMonth.rent, collectedInMonth.maintenance]),
-          paidOut: expensesInPeriod(expenses, currency, mFrom, mTo),
+          paidOut: expensesInPeriod(strataCosts, currency, mFrom, mTo),
           byCategory
         };
       });
 
       const collected = collectedInPeriod(payments, currency, from, to, ownerBilled);
       const billed = chargedInPeriod(charges, currency, from, to);
-      const spent = expensesInPeriod(expenses, currency, from, to);
+      const spent = expensesInPeriod(strataCosts, currency, from, to);
 
       // Same opening/closing receivable construction as the operating statement.
       const receivableAt = (asOf: string) =>
@@ -108,7 +119,7 @@ export default function BoardPack({
           )
         );
 
-      const breakdown = expenseBreakdown(expenses, currency, from, to).filter(row => row.amount > 0);
+      const breakdown = expenseBreakdown(strataCosts, currency, from, to).filter(row => row.amount > 0);
 
       return {
         currency,

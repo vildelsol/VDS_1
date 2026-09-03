@@ -27,7 +27,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { AppSettings, Currency, Expense, Payment, PaymentCategory, SessionUser, Unit, bodyCorporateName } from '../types';
+import { AppSettings, Currency, Expense, MANAGING_COMPANY_NAME, Payment, PaymentCategory, SessionUser, Unit, bodyCorporateName } from '../types';
 import { LineVisibility, OperatingStatement as Statement, OperatingStatementOptions, operatingStatement } from '../lib/finance';
 import { formatMoney } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
@@ -455,6 +455,8 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
         }
       />
 
+      <BooksNote statement={s} />
+
       <ExcludedNote statement={s} />
     </div>
   );
@@ -467,6 +469,59 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
  * omits a class of income is not a narrower document, it is a misleading one:
  * anybody reconciling it against the bank would find money they cannot place.
  */
+/**
+ * Which of the two books the expenditure above belongs to.
+ *
+ * This statement is deliberately combined — Ro, 2026-09-03: *"Keep it, it is my
+ * all in view for the entire business which is important."* That is a legitimate
+ * document to want, and an unlabelled one is a misleading document: it carries
+ * the corporation's letterhead, and a reader has no way to tell the fund's costs
+ * from the letting company's without being told which is which.
+ *
+ * The internal transfer is called out for the same reason. The contribution ISPO
+ * pays on the villas it lets is income to the corporation and a cost to ISPO —
+ * genuinely both, and genuinely the same money — so on a combined page it sits on
+ * both sides and nets to nothing. Anyone reading the gross totals should know
+ * that much of them is one transfer between the two books rather than money that
+ * entered or left the group.
+ */
+function BooksNote({ statement: s }: { statement: Statement }) {
+  if (s.ispoExpenditure === 0 && s.internalTransfer === 0) return null;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">
+      <p className="mb-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">
+        This statement carries both books
+      </p>
+      <dl className="space-y-1">
+        <div className="flex justify-between gap-3">
+          <dt>Expenditure of the body corporate</dt>
+          <dd className="font-mono font-semibold">{formatMoney(s.strataExpenditure, s.currency)}</dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt>Expenditure of {MANAGING_COMPANY_NAME}, paid from rental income</dt>
+          <dd className="font-mono font-semibold">{formatMoney(s.ispoExpenditure, s.currency)}</dd>
+        </div>
+        <div className="flex justify-between gap-3 border-t border-slate-200 pt-1 font-semibold text-slate-700">
+          <dt>Total expenditure above</dt>
+          <dd className="font-mono">{formatMoney(s.totalExpenditure, s.currency)}</dd>
+        </div>
+      </dl>
+      {s.internalTransfer > 0 && (
+        <p className="mt-2 border-t border-slate-200 pt-2">
+          Of which <span className="font-mono font-semibold">{formatMoney(s.internalTransfer, s.currency)}</span> is the
+          maintenance {MANAGING_COMPANY_NAME} paid on the villas it lets. It is a contribution the corporation received and a
+          cost {MANAGING_COMPANY_NAME} bore — the same money on both sides of this page, counted once on each and netting to
+          nothing between them, not money that entered or left the group.
+        </p>
+      )}
+      <p className="mt-2 text-[10px] text-slate-500">
+        The proprietors&rsquo; statements, the annual report and the returns to the Commission carry the corporation&rsquo;s
+        costs only.
+      </p>
+    </div>
+  );
+}
+
 function ExcludedNote({ statement: s }: { statement: Statement }) {
   const parts = [
     ...s.excludedIncome.map(e => `${e.label} ${formatMoney(e.total, s.currency)}`),
@@ -724,6 +779,19 @@ function StatementDocument({
               </tr>
             </tbody>
           </table>
+
+          {(s.ispoExpenditure > 0 || s.internalTransfer > 0) && (
+            <p className="mt-2 rounded border border-slate-300 p-2 text-[9px] leading-relaxed">
+              <strong>This statement carries both books.</strong> Of the expenditure above,{' '}
+              {formatMoney(s.strataExpenditure, s.currency)} is the body corporate&rsquo;s and{' '}
+              {formatMoney(s.ispoExpenditure, s.currency)} is {MANAGING_COMPANY_NAME}&rsquo;s, paid from rental income.
+              {s.internalTransfer > 0
+                ? ` Of that, ${formatMoney(s.internalTransfer, s.currency)} is the maintenance ${MANAGING_COMPANY_NAME} paid on the villas it lets — a contribution the corporation received and a cost ${MANAGING_COMPANY_NAME} bore, being the same money on both sides of this page and counted once on each.`
+                : ''}{' '}
+              The proprietors&rsquo; statements, the annual report and the returns to the Commission carry the
+              corporation&rsquo;s costs only.
+            </p>
+          )}
 
           {/* Said on the printed page too: the scope of the document travels with it. */}
           {(s.excludedIncome.length > 0 || s.excludedExpenditure.length > 0) && (

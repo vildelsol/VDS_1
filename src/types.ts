@@ -679,6 +679,69 @@ export const PROPERTY_LOCATION_LABELS: Record<PropertyLocation, string> = {
   Office: 'Office'
 };
 
+/**
+ * Whose money pays for a cost.
+ *
+ * Two entities share this application and their money is not the same money:
+ *
+ *   - **`strata`** — the body corporate. Security, landscaping, the pool,
+ *     grounds payroll, painting, the office and its power. Funded by the
+ *     proprietors' maintenance contributions, and the subject of the annual
+ *     report, the proprietors' monthly report and the Commission's returns.
+ *   - **`ispo`** — the company that owns VDS and collects the rent. Its cell
+ *     phone, its company vehicle and that vehicle's insurance. Funded out of
+ *     rental income, and nothing to do with the proprietors.
+ *
+ * Ro, 2026-09-03: *"there are certain expenses, such as Cell phone bills,
+ * company vehicle expenses and insurance and other expenses that are paid from
+ * the rental income … The other expenses i mentioned are supposed to come from
+ * the Rental Income for Ispo."*
+ *
+ * Before this field existed every cost was treated as the corporation's, which
+ * put ISPO's phone bill into the proprietors' monthly report and — through
+ * `feeToCoverBudget` — into the maintenance contribution the annual report puts
+ * to the meeting. **Absent therefore means `strata`**: that is what every
+ * existing record already is, it is what the reports already say, and it is what
+ * the overwhelming majority of costs genuinely are. A database written before
+ * this field must not have its books move underneath it on an upgrade — the same
+ * rule `letOnOwnAccount` follows, and for the same reason.
+ */
+export type ExpenseFund = 'strata' | 'ispo';
+
+export const EXPENSE_FUNDS: ExpenseFund[] = ['strata', 'ispo'];
+
+/**
+ * The company that owns VDS and lets its villas.
+ *
+ * A constant rather than a setting on purpose. `strataPlanNumber` is a setting
+ * that never got an input box, and three versions of the handover told people to
+ * edit it in a screen where it did not exist. A name with no way to change it is
+ * better than a setting that pretends to be changeable. Make it a setting on the
+ * day it needs to change, with the field built in the same commit.
+ */
+export const MANAGING_COMPANY_NAME = 'ISPO';
+
+/** Named by what pays, because that is the decision the person posting makes. */
+export const EXPENSE_FUND_LABELS: Record<ExpenseFund, string> = {
+  strata: 'Maintenance (Strata)',
+  ispo: `Rental income (${MANAGING_COMPANY_NAME})`
+};
+
+export const EXPENSE_FUND_HINTS: Record<ExpenseFund, string> = {
+  strata: 'Security, landscaping, pool, grounds staff, painting, the office — what contributions cover.',
+  ispo: `Cell phone, company vehicle and its insurance — ${MANAGING_COMPANY_NAME}'s own costs, paid from rent.`
+};
+
+/**
+ * The book a cost belongs to, with the default applied.
+ *
+ * Always read the fund through this rather than touching `fund` directly, so
+ * "absent means strata" is stated once instead of at every call site.
+ */
+export function fundOf(record: { fund?: ExpenseFund }): ExpenseFund {
+  return record.fund === 'ispo' ? 'ispo' : 'strata';
+}
+
 export interface Expense {
   id: string;
   category: ExpenseCategory;
@@ -708,6 +771,8 @@ export interface Expense {
   status: 'paid' | 'pending' | 'void';
   reference: string;
   notes: string;
+  /** Which of the two books pays for this. Absent means `strata`; see ExpenseFund. */
+  fund?: ExpenseFund;
   /** Set when this expense came out of a monthly run; the template it came from. */
   recurringId?: string;
   /** The month a posted run raised this for, YYYY-MM. Set on run-posted rows only. */
@@ -754,6 +819,12 @@ export interface RecurringExpense {
   paymentMethod: PaymentMethod;
   /** Day of the month the bill falls due, 1–28. */
   dueDay: number;
+  /**
+   * Which book this recurs against. Set once on the template, carried onto every
+   * cost the run raises, so payroll goes to the strata and the phone bill to
+   * ISPO every month without anyone having to remember.
+   */
+  fund?: ExpenseFund;
   /** A retired template stays on file so old expenses keep their lineage. */
   active: boolean;
   notes: string;

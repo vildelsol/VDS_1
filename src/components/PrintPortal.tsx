@@ -217,7 +217,18 @@ export function PrintSignatures({
   rightName?: string;
 }) {
   return (
-    <div className="mt-12 grid grid-cols-2 gap-8 border-t border-slate-200 pt-10 text-center text-xs">
+    /*
+     * No rule across the top of this block.
+     *
+     * It used to carry `border-t`, which drew a line the full width of the page
+     * immediately above the two signature columns — Ro, 2026-09-03: *"there is a
+     * random line above the signature lines … it should be removed."* The only
+     * lines that belong here are the two short ones a person signs on, and a
+     * full-width rule above them reads as the end of the document rather than as
+     * the head of a signature block. The spacing that separated it from the
+     * content above is kept.
+     */
+    <div className="mt-12 grid grid-cols-2 gap-8 pt-10 text-center text-xs">
       {[
         { label: left, name: leftName },
         { label: right, name: rightName }
