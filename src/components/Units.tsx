@@ -777,12 +777,30 @@ function UnitDetail({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Badge tone="slate">{expense.category}</Badge>
                       <span className="font-semibold text-slate-800">{expense.vendor}</span>
-                      {expense.status === 'pending' ? <Badge tone="amber">Pending</Badge> : <Badge tone="green">Paid</Badge>}
+                      {expense.status === 'pending' ? (
+                        <Badge tone="amber">Pending</Badge>
+                      ) : expense.status === 'paid' ? (
+                        <Badge tone="green">Paid</Badge>
+                      ) : (
+                        <Badge tone="red">Taken back</Badge>
+                      )}
                     </div>
                     {expense.description && <p className="mt-1 leading-relaxed text-slate-600">{expense.description}</p>}
                     <p className="mt-0.5 font-mono text-[10px] text-slate-400">{formatDayLabel(expense.datePaid || expense.date)}{expense.reference ? ` · ${expense.reference}` : ''}</p>
+                    {expense.status === 'void' && (
+                      <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">
+                        Taken back by {expense.voidedBy || 'unknown'}
+                        {expense.voidReason ? ` — ${expense.voidReason}` : ''}. In no total.
+                      </p>
+                    )}
                   </div>
-                  <span className="shrink-0 font-mono font-semibold text-slate-800">{formatMoney(expense.amount, expense.currency)}</span>
+                  <span
+                    className={`shrink-0 font-mono font-semibold ${
+                      expense.status === 'void' ? 'text-slate-400 line-through' : 'text-slate-800'
+                    }`}
+                  >
+                    {formatMoney(expense.amount, expense.currency)}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -2200,8 +2218,10 @@ export function UnitLedgerDocument({
                     <td className="p-2 font-sans font-semibold">{e.vendor}</td>
                     <td className="p-2">{e.category}</td>
                     <td className="p-2 font-sans">{e.description || '—'}</td>
-                    <td className="p-2 uppercase">{e.status}</td>
-                    <td className="p-2 text-right font-semibold">{formatMoney(e.amount, e.currency)} {e.currency}</td>
+                    <td className="p-2 uppercase">{e.status === 'void' ? 'Taken back' : e.status}</td>
+                    <td className={`p-2 text-right font-semibold ${e.status === 'void' ? 'line-through' : ''}`}>
+                      {formatMoney(e.amount, e.currency)} {e.currency}
+                    </td>
                   </tr>
                 ))}
               </tbody>

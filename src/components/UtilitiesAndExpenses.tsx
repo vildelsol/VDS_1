@@ -25,6 +25,7 @@ import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth
 import { errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import MonthlyExpenses from './MonthlyExpenses';
+import VoidCostModal from './VoidCostModal';
 import {
   Badge,
   EmptyState,
@@ -41,7 +42,7 @@ import {
   monoInputClass,
   tableHeadRowClass
 } from './ui';
-import { CheckCircle, Clock, Gauge, Plus, Printer, Search, Wrench } from 'lucide-react';
+import { Ban, CheckCircle, Clock, Gauge, Plus, Printer, Search, Undo2, Wrench } from 'lucide-react';
 
 interface UtilitiesAndExpensesProps {
   units: Unit[];
@@ -55,9 +56,14 @@ interface UtilitiesAndExpensesProps {
   onSettleUtility: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
   onAddExpense: (payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateExpense: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
+  /** Take one cost back off the books. Rejects with the server's ApiError. */
+  onVoidExpense: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
   onAddRecurring: (payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateRecurring: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
+  onDeleteRecurring: (id: string) => Promise<unknown>;
   onPostMonthlyExpenses: (payload: Record<string, unknown>) => Promise<{ message: string; created: number; skipped: number }>;
+  /** Take a whole posted month back. Rejects with the server's ApiError. */
+  onRecallMonthlyExpenses: (payload: Record<string, unknown>) => Promise<{ message: string; recalled: number }>;
 }
 
 export default function UtilitiesAndExpenses({
@@ -72,9 +78,12 @@ export default function UtilitiesAndExpenses({
   onSettleUtility,
   onAddExpense,
   onUpdateExpense,
+  onVoidExpense,
   onAddRecurring,
   onUpdateRecurring,
-  onPostMonthlyExpenses
+  onDeleteRecurring,
+  onPostMonthlyExpenses,
+  onRecallMonthlyExpenses
 }: UtilitiesAndExpensesProps) {
   const [tab, setTab] = useState<'utilities' | 'expenses' | 'monthly'>('utilities');
   const [error, setError] = useState('');
@@ -85,6 +94,7 @@ export default function UtilitiesAndExpenses({
   const [settlingUtility, setSettlingUtility] = useState<UtilityReading | null>(null);
   const [addingExpense, setAddingExpense] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [voidingExpense, setVoidingExpense] = useState<Expense | null>(null);
 
   const canUtilities = !!session.permissions.enterUtilities;
   const canExpenses = !!session.permissions.recordExpenses;
@@ -143,7 +153,14 @@ export default function UtilitiesAndExpenses({
           generatedBy={session.name}
         />
       ) : tab === 'expenses' ? (
-        <ExpensesPanel expenses={expenses} canEdit={canExpenses} onEdit={setEditingExpense} generatedBy={session.name} />
+        <ExpensesPanel
+          expenses={expenses}
+          canEdit={canExpenses}
+          canVoid={canExpenses && canModifySettled}
+          onEdit={setEditingExpense}
+          onVoid={setVoidingExpense}
+          generatedBy={session.name}
+        />
       ) : (
         <MonthlyExpenses
           units={units}
@@ -151,9 +168,12 @@ export default function UtilitiesAndExpenses({
           templates={recurringExpenses}
           vendors={settings.vendors}
           canEdit={canExpenses}
+          canRecall={canExpenses && canModifySettled}
           onAddRecurring={onAddRecurring}
           onUpdateRecurring={onUpdateRecurring}
+          onDeleteRecurring={onDeleteRecurring}
           onPostMonth={onPostMonthlyExpenses}
+          onRecallMonth={onRecallMonthlyExpenses}
         />
       )}
 
@@ -225,6 +245,34 @@ export default function UtilitiesAndExpenses({
             setError('');
             setAddingExpense(false);
             setEditingExpense(null);
+          }}
+        />
+      )}
+
+      {voidingExpense && (
+        <VoidCostModal
+          title="Take this cost back"
+          actionLabel="Take it back"
+          settledConfirmLabel="This cost was never actually paid. Take it back out of the accounts for its period."
+          intro={
+            <>
+              <span className="font-semibold">
+                {voidingExpense.vendor} — {formatMoney(voidingExpense.amount, voidingExpense.currency)}{' '}
+                {voidingExpense.currency}
+              </span>
+              , {voidingExpense.category.toLowerCase()}, {getAllocationLabel(voidingExpense.unitNumber)}, dated{' '}
+              {formatDayLabel(voidingExpense.datePaid || voidingExpense.date)}.
+              {voidingExpense.status === 'paid'
+                ? ' The books record this as paid.'
+                : ' This cost is raised and awaiting payment.'}
+            </>
+          }
+          onClose={() => setVoidingExpense(null)}
+          onSubmit={async (reason, includeSettled) => {
+            await onVoidExpense(voidingExpense.id, { reason, confirmSettled: includeSettled });
+            setSuccess(`${voidingExpense.vendor} — ${formatMoney(voidingExpense.amount, voidingExpense.currency)} taken back. It is out of every total from now on.`);
+            setError('');
+            setVoidingExpense(null);
           }}
         />
       )}
@@ -415,17 +463,27 @@ function UtilitiesPanel({
 function ExpensesPanel({
   expenses,
   canEdit,
+  canVoid,
   onEdit,
+  onVoid,
   generatedBy
 }: {
   expenses: Expense[];
   canEdit: boolean;
+  canVoid: boolean;
   onEdit: (e: Expense) => void;
+  onVoid: (e: Expense) => void;
   generatedBy: string;
 }) {
   const [printing, setPrinting] = useState(false);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'pending'>('all');
+  /*
+   * "All" means all the costs that count. A cost that was taken back is out of
+   * every figure, so listing it beside the live ones by default would make the
+   * register disagree with its own totals — and that column is added up by hand
+   * against a bank statement. It has its own view, so nothing is hidden.
+   */
+  const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'pending' | 'void'>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | ExpenseCategory>('all');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -433,7 +491,7 @@ function ExpensesPanel({
   const rows = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return expenses
-      .filter(e => statusFilter === 'all' || e.status === statusFilter)
+      .filter(e => (statusFilter === 'all' ? e.status !== 'void' : e.status === statusFilter))
       .filter(e => categoryFilter === 'all' || e.category === categoryFilter)
       .filter(e => !fromDate || (e.datePaid || e.date) >= fromDate)
       .filter(e => !toDate || (e.datePaid || e.date) <= toDate)
@@ -448,11 +506,20 @@ function ExpensesPanel({
       .sort((a, b) => (b.datePaid || b.date).localeCompare(a.datePaid || a.date));
   }, [expenses, search, statusFilter, categoryFilter, fromDate, toDate]);
 
+  /*
+   * Totals over what is shown, and a cost taken back is in neither of them.
+   *
+   * This was an `else`, which counted a void as pending — the one place in the
+   * application where a recalled cost could still have appeared in a figure.
+   */
   const totals = useMemo(() => {
-    const out: Record<Currency, { paid: number; pending: number }> = { USD: { paid: 0, pending: 0 }, JMD: { paid: 0, pending: 0 } };
+    const out: Record<Currency, { paid: number; pending: number; recalled: number }> = {
+      USD: { paid: 0, pending: 0, recalled: 0 },
+      JMD: { paid: 0, pending: 0, recalled: 0 }
+    };
     for (const e of rows) {
-      if (e.status === 'paid') out[e.currency].paid = sumMoney([out[e.currency].paid, e.amount]);
-      else out[e.currency].pending = sumMoney([out[e.currency].pending, e.amount]);
+      const bucket = e.status === 'paid' ? 'paid' : e.status === 'pending' ? 'pending' : 'recalled';
+      out[e.currency][bucket] = sumMoney([out[e.currency][bucket], e.amount]);
     }
     return out;
   }, [rows]);
@@ -479,14 +546,17 @@ function ExpensesPanel({
             e.category,
             getAllocationLabel(e.unitNumber),
             e.reference || '—',
-            e.status === 'paid' ? 'Paid' : 'Pending',
+            e.status === 'paid' ? 'Paid' : e.status === 'pending' ? 'Pending' : 'Taken back',
             `${formatMoney(e.amount, e.currency)} ${e.currency}`
           ])}
           totals={(['JMD', 'USD'] as Currency[])
-            .filter(currency => totals[currency].paid !== 0 || totals[currency].pending !== 0)
+            .filter(currency => totals[currency].paid !== 0 || totals[currency].pending !== 0 || totals[currency].recalled !== 0)
             .map(
               currency =>
-                `${currency}: ${formatMoney(totals[currency].paid, currency)} paid, ${formatMoney(totals[currency].pending, currency)} still pending`
+                `${currency}: ${formatMoney(totals[currency].paid, currency)} paid, ${formatMoney(totals[currency].pending, currency)} still pending` +
+                (totals[currency].recalled !== 0
+                  ? `, ${formatMoney(totals[currency].recalled, currency)} taken back and in neither figure`
+                  : '')
             )}
         />
       )}
@@ -500,9 +570,10 @@ function ExpensesPanel({
         </Field>
         <Field label="Status" htmlFor="ex-status">
           <select id="ex-status" value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)} className={inputClass}>
-            <option value="all">All</option>
+            <option value="all">All that count</option>
             <option value="pending">Pending only</option>
             <option value="paid">Paid only</option>
+            <option value="void">Taken back</option>
           </select>
         </Field>
         <Field label="Category" htmlFor="ex-cat">
@@ -527,10 +598,11 @@ function ExpensesPanel({
         <div className="flex flex-wrap gap-4 border-b border-slate-100 bg-slate-50 p-4 font-mono text-[11px] text-slate-500">
           <span>{rows.length} expense(s) shown</span>
           {(['JMD', 'USD'] as Currency[]).map(c =>
-            totals[c].paid > 0 || totals[c].pending > 0 ? (
+            totals[c].paid > 0 || totals[c].pending > 0 || totals[c].recalled > 0 ? (
               <span key={c}>
                 {c}: paid {formatMoney(totals[c].paid, c)}
                 {totals[c].pending > 0 ? `, pending ${formatMoney(totals[c].pending, c)}` : ''}
+                {totals[c].recalled > 0 ? `, taken back ${formatMoney(totals[c].recalled, c)} (in no total)` : ''}
               </span>
             ) : null
           )}
@@ -557,7 +629,7 @@ function ExpensesPanel({
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {rows.map(e => (
-                  <tr key={e.id} className="hover:bg-slate-50/50">
+                  <tr key={e.id} className={e.status === 'void' ? 'bg-slate-50/60 text-slate-400' : 'hover:bg-slate-50/50'}>
                     <td className="p-4 font-mono text-[11px] text-slate-500">{formatDayLabel(e.datePaid || e.date)}</td>
                     <td className="p-4">
                       <p className="font-medium text-slate-900">{e.vendor}</p>
@@ -568,7 +640,7 @@ function ExpensesPanel({
                     </td>
                     <td className="p-4 font-mono text-[11px]">{getAllocationLabel(e.unitNumber)}</td>
                     <td className="p-4 font-mono text-[11px] text-slate-500">{e.reference || '—'}</td>
-                    <td className="p-4 text-right font-mono font-semibold">
+                    <td className={`p-4 text-right font-mono font-semibold ${e.status === 'void' ? 'line-through' : ''}`}>
                       {formatMoney(e.amount, e.currency)}
                       <span className="ml-1 text-[9px] text-slate-400">{e.currency}</span>
                     </td>
@@ -577,17 +649,43 @@ function ExpensesPanel({
                         <Badge tone="green">
                           <CheckCircle className="h-3 w-3" /> Paid
                         </Badge>
-                      ) : (
+                      ) : e.status === 'pending' ? (
                         <Badge tone="amber">
                           <Clock className="h-3 w-3" /> Pending
                         </Badge>
+                      ) : (
+                        <>
+                          <Badge tone="red">
+                            <Ban className="h-3 w-3" /> Taken back
+                          </Badge>
+                          <p className="mt-1 max-w-[16rem] text-[10px] leading-relaxed text-slate-400">
+                            {e.voidedBy || 'unknown'}
+                            {e.voidedAt ? ` · ${formatDayLabel(e.voidedAt.substring(0, 10))}` : ''}
+                            {e.voidReason ? ` — ${e.voidReason}` : ''}
+                          </p>
+                        </>
                       )}
                     </td>
                     {canEdit && (
                       <td className="p-4 text-right">
-                        <button onClick={() => onEdit(e)} className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-50">
-                          Edit
-                        </button>
+                        {e.status === 'void' ? (
+                          <span className="text-[10px] text-slate-400">Closed</span>
+                        ) : (
+                          <div className="flex justify-end gap-2">
+                            <button onClick={() => onEdit(e)} className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 hover:bg-slate-50">
+                              Edit
+                            </button>
+                            {canVoid && (
+                              <button
+                                onClick={() => onVoid(e)}
+                                aria-label={`Take back the cost to ${e.vendor}`}
+                                className="flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-medium text-red-600 hover:bg-red-50"
+                              >
+                                <Undo2 className="h-3 w-3" /> Take back
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </td>
                     )}
                   </tr>

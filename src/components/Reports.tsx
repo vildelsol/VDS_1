@@ -26,6 +26,7 @@ import {
   collectionRate,
   expenseBreakdown,
   expensesInPeriod,
+  liveExpenses,
   occupancyOn,
   ownerBilledUnitIds
 } from '../lib/finance';
@@ -931,7 +932,13 @@ function StatementDocument({
   const receipts = payments
     .filter(p => isWithin(p.date, from, to))
     .sort((a, b) => a.date.localeCompare(b.date) || a.receiptNo.localeCompare(b.receiptNo));
-  const outgoings = expenses
+  /*
+   * A cost taken back is in none of the figures on this document, so it must not
+   * be in the detail either — this list is what an accountant checks the totals
+   * against, and a line that is not in the total is a line that will not
+   * reconcile.
+   */
+  const outgoings = liveExpenses(expenses)
     .filter(e => isWithin(e.datePaid || e.date, from, to))
     .sort((a, b) => (a.datePaid || a.date).localeCompare(b.datePaid || b.date));
 

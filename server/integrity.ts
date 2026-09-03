@@ -381,10 +381,28 @@ export function checkIntegrity(db: Database): IntegrityReport {
       expenses.filter(e => isBadNumber(e.amount) || e.amount < 0).map(e => `${e.id} (${e.amount})`)
     );
 
+    /*
+     * A cost taken back is out of every figure in the application, so the only
+     * thing standing between it and an unexplained hole in a month's spend is the
+     * record of who took it back and why. That record is written in the same
+     * operation as the void; if one is ever missing, something wrote the status
+     * directly.
+     */
+    add(
+      'serious',
+      'void-cost-without-a-reason',
+      'A cost was taken back without recording who did it or why.',
+      expenses.filter(e => e.status === 'void' && (!e.voidedBy || !e.voidReason || !e.voidedAt)).map(e => e.id)
+    );
+
     const postedKey = new Map<string, string>();
     const postedTwice: string[] = [];
     for (const e of expenses) {
       if (!e.recurringId || !e.periodMonth) continue;
+      // A month that was recalled and posted again leaves the taken-back rows on
+      // file. They are in no figure, so counting them here would report the
+      // remedy as the fault.
+      if (e.status === 'void') continue;
       const key = `${e.recurringId}|${e.periodMonth}`;
       const already = postedKey.get(key);
       if (already) postedTwice.push(`${key} (${already} and ${e.id})`);

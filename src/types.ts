@@ -694,13 +694,34 @@ export interface Expense {
   dueDate?: string;
   datePaid?: string;
   paymentMethod?: PaymentMethod;
-  status: 'paid' | 'pending';
+  /**
+   * `void` is a cost that was raised and then taken back — a bill entered twice,
+   * a run posted for the wrong month, an amount typed from the wrong invoice.
+   *
+   * It is a third state rather than a deleted row for the same reason a charge is
+   * voided rather than removed: a cost that reached the register and was recalled
+   * is part of the property's history, and a register that quietly drops a line
+   * invites the question of what else it dropped. Every figure in this system is
+   * derived from `status === 'paid'` or `status === 'pending'`, so a voided cost
+   * falls out of the arithmetic everywhere by construction.
+   */
+  status: 'paid' | 'pending' | 'void';
   reference: string;
   notes: string;
   /** Set when this expense came out of a monthly run; the template it came from. */
   recurringId?: string;
   /** The month a posted run raised this for, YYYY-MM. Set on run-posted rows only. */
   periodMonth?: string;
+  /** Who took the cost back, when, and why. Set together, on a void only. */
+  voidedBy?: string;
+  voidedAt?: string;
+  voidReason?: string;
+  /**
+   * Set when the cost was `paid` at the moment it was voided. Recalling a bill
+   * nobody has paid is a correction; recalling one the books say was settled is a
+   * statement that the money never left, so it is marked as the larger act it is.
+   */
+  voidedFromPaid?: boolean;
 }
 
 /**

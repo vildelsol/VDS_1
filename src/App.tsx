@@ -720,8 +720,13 @@ export default function App() {
             onSettleUtility={(id, payload) => mutate(() => api.post(`/api/utilities/${id}/settle`, payload))}
             onAddExpense={payload => mutate(() => api.post('/api/expenses', payload))}
             onUpdateExpense={(id, fields) => mutate(() => api.put(`/api/expenses/${id}`, fields))}
+            onVoidExpense={(id, payload) => mutate(() => api.post(`/api/expenses/${id}/void`, payload))}
             onAddRecurring={payload => mutate(() => api.post('/api/recurring-expenses', payload))}
             onUpdateRecurring={(id, fields) => mutate(() => api.put(`/api/recurring-expenses/${id}`, fields))}
+            onDeleteRecurring={id => mutate(() => api.del(`/api/recurring-expenses/${id}`))}
+            onRecallMonthlyExpenses={payload =>
+              mutate(() => api.post<{ message: string; recalled: number }>('/api/expenses/recall-month', payload))
+            }
             onPostMonthlyExpenses={payload =>
               mutate(() => api.post<{ message: string; created: number; skipped: number }>('/api/expenses/post-month', payload))
             }

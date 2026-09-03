@@ -3892,6 +3892,16 @@ app.put(
       const idx = db.expenses.findIndex(e => e.id === id);
       if (idx === -1) throw new ApiError(404, 'Expense not found.');
       const original = db.expenses[idx];
+      // A cost that was taken back is a closed record. Editing it would reshape
+      // history into a cost that was never raised, which is the thing voiding
+      // exists to avoid; raise a fresh one instead.
+      if (original.status === 'void') {
+        throw new ApiError(
+          400,
+          `That cost was taken back on ${(original.voidedAt || '').substring(0, 10)} and cannot be edited. ` +
+            `If it is owed after all, log it again as a new expense.`
+        );
+      }
       if (original.status === 'paid' && !can(req.auth!, 'modify_settled')) {
         throw new ApiError(403, 'This expense is already settled. Modifying settled records requires additional permission.');
       }
@@ -3902,6 +3912,173 @@ app.put(
       return updated;
     });
     res.json({ success: true, expense });
+  })
+);
+
+/* ------------------------------------------------------------------ *
+ * Taking a cost back
+ *
+ * Errors happen at the desk: a bill entered twice, a run posted for the wrong
+ * month, an amount read off the wrong invoice. Until now a cost that reached the
+ * register could only be *edited* — there was no way to say "this never should
+ * have been raised", which meant a mistaken cost either sat in the reports
+ * forever or was quietly reshaped into some other cost, destroying the record of
+ * what actually happened.
+ *
+ * A void is not a delete. The row stays, marked, with who took it back and why,
+ * and every figure in the application is derived from `paid` or `pending`, so a
+ * voided cost leaves the arithmetic everywhere the moment it is marked.
+ *
+ * Recalling a `pending` cost is a correction: a bill was raised and should not
+ * have been. Recalling a `paid` one is a much larger claim — the books say money
+ * left the account — so it follows the house pattern and is refused once with a
+ * machine-readable code, which the screen turns into a deliberate act.
+ */
+const EXPENSE_SETTLED = 'expense-already-settled';
+
+/** The reason a void needs, stated once so both routes ask for the same thing. */
+function requireVoidReason(body: Record<string, unknown>): string {
+  const reason = requireString(body?.reason, 'A reason', 500);
+  if (reason.length < 5) bad('Please give a reason of at least 5 characters.');
+  return reason;
+}
+
+/**
+ * Mark one expense void. `expense` is mutated in place; the caller owns the
+ * audit entry, because a month recall writes one entry for the whole run rather
+ * than sixteen.
+ */
+function voidExpense(expense: Expense, who: { name: string }, reason: string) {
+  expense.voidedFromPaid = expense.status === 'paid';
+  expense.status = 'void';
+  expense.voidedBy = who.name;
+  expense.voidedAt = new Date().toISOString();
+  expense.voidReason = reason;
+}
+
+app.post(
+  '/api/expenses/:id/void',
+  handler(async (req: AuthedRequest, res) => {
+    // The same authority that voids a charge. Recording a cost is a junior's job;
+    // erasing one from the books is not — the person who enters the money does
+    // not get to remove the record of it.
+    requirePermission(req, 'modify_settled');
+    const { id } = req.params;
+    const body = req.body || {};
+    const reason = requireVoidReason(body);
+
+    const expense = await transaction(db => {
+      const found = db.expenses.find(e => e.id === id);
+      if (!found) throw new ApiError(404, 'Expense not found.');
+      if (found.status === 'void') throw new ApiError(400, 'That cost has already been taken back.');
+
+      if (found.status === 'paid' && body.confirmSettled !== true) {
+        throw new ApiError(
+          400,
+          `The books record ${formatMoneyLong(found.amount, found.currency)} as already paid to ${found.vendor}. ` +
+            `Taking this cost back says that payment never happened, and it will come out of the operating ` +
+            `statement, the proprietors' reports and the annual accounts for its period. Confirm to continue.`,
+          EXPENSE_SETTLED
+        );
+      }
+
+      const before = { ...found };
+      const who = actor(req);
+      voidExpense(found, who, reason);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Took back a ${before.status} cost of ${formatMoneyLong(found.amount, found.currency)} to ${found.vendor}`,
+        'Expense',
+        id,
+        before,
+        found,
+        who.name
+      );
+      return { ...found };
+    });
+    res.json({ success: true, expense });
+  })
+);
+
+/**
+ * Recall a month's posted run.
+ *
+ * Posting a month raises up to twenty costs in one action, so a month posted in
+ * error has to be undoable in one action too — asking someone to take back twenty
+ * rows by hand is how half of them get left behind.
+ *
+ * Only rows the run itself raised are touched (`periodMonth` is set on those and
+ * nothing else), so a cost logged by hand in the same month is left alone. Rows
+ * already settled are refused as a group, by the same rule as a single void: the
+ * refusal names them and the screen repeats the request with `includeSettled`.
+ */
+app.post(
+  '/api/expenses/recall-month',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'modify_settled');
+    const body = req.body || {};
+    const monthString = String(body.monthString ?? '').trim();
+    if (!isValidMonth(monthString)) bad('Billing month is required in YYYY-MM format.');
+    const reason = requireVoidReason(body);
+    if (body.expenseIds !== undefined && !Array.isArray(body.expenseIds)) {
+      bad('The list of costs to take back is not in the expected form.');
+    }
+    const only = Array.isArray(body.expenseIds) ? new Set((body.expenseIds as unknown[]).map(v => String(v))) : undefined;
+
+    const result = await transaction(db => {
+      const who = actor(req);
+      const candidates = db.expenses.filter(
+        e => e.periodMonth === monthString && e.status !== 'void' && (!only || only.has(e.id))
+      );
+
+      if (candidates.length === 0) {
+        throw new ApiError(
+          404,
+          `There is nothing to take back for ${monthString} — no posted costs remain for that month.`
+        );
+      }
+
+      const settled = candidates.filter(e => e.status === 'paid');
+      if (settled.length > 0 && body.includeSettled !== true) {
+        throw new ApiError(
+          400,
+          `${settled.length} of the ${candidates.length} cost(s) posted for ${monthString} are recorded as already paid ` +
+            `(${settled.map(e => `${e.vendor} ${formatMoneyLong(e.amount, e.currency)}`).join(', ')}). ` +
+            `Taking those back says the money never left the account. Confirm to take back the whole run, ` +
+            `or take back the unpaid ones on their own from the expense register.`,
+          EXPENSE_SETTLED
+        );
+      }
+
+      for (const expense of candidates) voidExpense(expense, who, reason);
+
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Recalled the monthly costs posted for ${monthString}`,
+        'Expense',
+        monthString,
+        `${candidates.length} cost(s) posted`,
+        `${candidates.length} taken back (${settled.length} of them settled): ${candidates
+          .map(e => `${e.vendor} ${formatMoneyLong(e.amount, e.currency)}`)
+          .join(', ')} — ${reason}`,
+        who.name
+      );
+
+      return { recalled: candidates.length, settled: settled.length };
+    });
+
+    res.json({
+      success: true,
+      ...result,
+      message:
+        `Took back ${result.recalled} cost(s) posted for ${monthString}.` +
+        (result.settled > 0 ? ` ${result.settled} of them had been recorded as paid.` : '') +
+        ' The month can be posted again.'
+    });
   })
 );
 
@@ -3996,6 +4173,78 @@ app.put(
       return updated;
     });
     res.json({ success: true, template });
+  })
+);
+
+/**
+ * The code for "this monthly cost still has costs on the books".
+ *
+ * A template that has raised nothing is a typo and can go. One whose postings are
+ * still in the register is a different matter: the reports for those months are
+ * built on it, so the screen names the months and offers the recall instead.
+ */
+const MONTHLY_COST_IN_USE = 'monthly-cost-has-postings';
+
+/**
+ * Remove a monthly cost outright.
+ *
+ * "Stopped" was the only way out of this list, and it is the right answer for a
+ * cost the property genuinely used to have — the security contract that ended,
+ * the vendor that was replaced. It is the wrong answer for one that was added by
+ * mistake, which was Ro's case: a mistyped line sat on the register permanently,
+ * greyed out and unexplainable, because the system had no way to say "this was
+ * never a real cost".
+ *
+ * So the rule is about *history*, not about the template. Nothing raised from it
+ * that is still counted anywhere → it never happened, delete it. Anything live →
+ * refused, naming the months, because deleting the template would leave those
+ * costs on the books with nothing to explain where they came from. Postings that
+ * have all been taken back count as no history: they are in no figure, and they
+ * keep their own vendor and amount, so they still read correctly with the
+ * template gone.
+ */
+app.delete(
+  '/api/recurring-expenses/:id',
+  handler(async (req: AuthedRequest, res) => {
+    // Deleting the template does not touch money, but it is a records change and
+    // the same authority that takes a cost back should own it.
+    requirePermission(req, 'record_expense');
+    requirePermission(req, 'modify_settled');
+    const { id } = req.params;
+
+    const removed = await transaction(db => {
+      const idx = db.recurringExpenses.findIndex(t => t.id === id);
+      if (idx === -1) throw new ApiError(404, 'That monthly cost could not be found.');
+      const template = db.recurringExpenses[idx];
+
+      const live = db.expenses.filter(e => e.recurringId === id && e.status !== 'void');
+      if (live.length > 0) {
+        const months = [...new Set(live.map(e => e.periodMonth || (e.date || '').substring(0, 7)))].sort();
+        throw new ApiError(
+          400,
+          `${template.vendor} has ${live.length} cost(s) still on the books, posted for ${months.join(', ')}. ` +
+            `Removing it would leave those costs with nothing to explain them. Take those postings back first ` +
+            `from the monthly run, or use Stop to keep the history and take it off future runs.`,
+          MONTHLY_COST_IN_USE
+        );
+      }
+
+      db.recurringExpenses.splice(idx, 1);
+      const who = actor(req);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Removed the monthly cost for ${template.vendor} from the system`,
+        'RecurringExpense',
+        id,
+        template,
+        '',
+        who.name
+      );
+      return template;
+    });
+    res.json({ success: true, removed: removed.vendor });
   })
 );
 
@@ -4170,11 +4419,14 @@ app.post(
               return { ...one, notes: one.notes };
             })();
 
+        // A cost that was taken back is not "already posted" — the whole point of
+        // recalling a run is to be able to post the month again, correctly.
         const already = template
-          ? db.expenses.find(e => e.recurringId === template.id && e.periodMonth === monthString)
+          ? db.expenses.find(e => e.recurringId === template.id && e.periodMonth === monthString && e.status !== 'void')
           : db.expenses.find(
               e =>
                 e.periodMonth === monthString &&
+                e.status !== 'void' &&
                 !e.recurringId &&
                 e.vendor.toLowerCase() === fields.vendor.toLowerCase() &&
                 e.category === fields.category &&

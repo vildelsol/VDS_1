@@ -30,9 +30,10 @@ import {
   Unit,
   getUnitDisplayName
 } from '../types';
-import { formatMoney } from '../lib/money';
-import { currentMonth, formatMonthLabel, isValidMonth } from '../lib/dates';
+import { formatMoney, sumMoney } from '../lib/money';
+import { currentMonth, formatDayLabel, formatMonthLabel, isValidMonth } from '../lib/dates';
 import { errorMessage } from '../lib/api';
+import VoidCostModal from './VoidCostModal';
 import {
   Badge,
   EmptyState,
@@ -48,7 +49,7 @@ import {
   monoInputClass,
   tableHeadRowClass
 } from './ui';
-import { CalendarClock, Pencil, Play, Plus, Repeat, Square, Trash2 } from 'lucide-react';
+import { Ban, CalendarClock, Pencil, Play, Plus, Repeat, Square, Trash2, Undo2 } from 'lucide-react';
 
 /** An allocation token: a villa id, or one of the two named locations. */
 type Allocation = string;
@@ -102,9 +103,13 @@ interface MonthlyExpensesProps {
   templates: RecurringExpense[];
   vendors: string[];
   canEdit: boolean;
+  /** Taking a posted run back is the same authority as voiding a ledger record. */
+  canRecall: boolean;
   onAddRecurring: (payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateRecurring: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
+  onDeleteRecurring: (id: string) => Promise<unknown>;
   onPostMonth: (payload: Record<string, unknown>) => Promise<{ message: string; created: number; skipped: number }>;
+  onRecallMonth: (payload: Record<string, unknown>) => Promise<{ message: string; recalled: number }>;
 }
 
 export default function MonthlyExpenses({
@@ -113,9 +118,12 @@ export default function MonthlyExpenses({
   templates,
   vendors,
   canEdit,
+  canRecall,
   onAddRecurring,
   onUpdateRecurring,
-  onPostMonth
+  onDeleteRecurring,
+  onPostMonth,
+  onRecallMonth
 }: MonthlyExpensesProps) {
   const [month, setMonth] = useState(currentMonth());
   const [error, setError] = useState('');
@@ -123,6 +131,8 @@ export default function MonthlyExpenses({
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<RecurringExpense | null>(null);
   const [adding, setAdding] = useState(false);
+  const [recalling, setRecalling] = useState(false);
+  const [removing, setRemoving] = useState<RecurringExpense | null>(null);
 
   /** Per-template overrides for this run: whether to post it, and for how much. */
   const [overrides, setOverrides] = useState<Record<string, { include: boolean; amount: string }>>({});
@@ -134,21 +144,47 @@ export default function MonthlyExpenses({
   );
   const retired = useMemo(() => templates.filter(t => !t.active), [templates]);
 
-  /** What this month already has on file, so nothing is offered twice. */
+  /**
+   * What this month already has on file, so nothing is offered twice.
+   *
+   * A cost that was taken back does not count as on file — recalling a run exists
+   * precisely so the month can be posted again, and a row left in this map would
+   * grey out the tick box and make the recall look like it had not worked.
+   */
   const postedFor = useMemo(() => {
     const byTemplate = new Map<string, Expense>();
     for (const e of expenses) {
-      if (e.periodMonth === month && e.recurringId) byTemplate.set(e.recurringId, e);
+      if (e.periodMonth === month && e.recurringId && e.status !== 'void') byTemplate.set(e.recurringId, e);
     }
     return byTemplate;
   }, [expenses, month]);
 
+  /**
+   * Everything the run raised for this month and has not been taken back — the
+   * thing a recall would reverse. Counted per currency, never added together.
+   */
+  const postedThisMonth = useMemo(() => expenses.filter(e => e.periodMonth === month && e.status !== 'void'), [expenses, month]);
+
+  const recalledThisMonth = useMemo(() => expenses.filter(e => e.periodMonth === month && e.status === 'void'), [expenses, month]);
+
+  const postedTotals = useMemo(() => {
+    const acc: Record<Currency, number> = { JMD: 0, USD: 0 };
+    for (const e of postedThisMonth) acc[e.currency] = sumMoney([acc[e.currency], e.amount]);
+    return acc;
+  }, [postedThisMonth]);
+
+  const settledCount = postedThisMonth.filter(e => e.status === 'paid').length;
+
   const rows = active.map(t => {
     const posted = postedFor.get(t.id);
     const override = overrides[t.id];
+    // Only shown when nothing live stands in its place: a template that was
+    // recalled and correctly re-posted should read as posted, not as recalled.
+    const recalled = posted ? undefined : recalledThisMonth.find(e => e.recurringId === t.id);
     return {
       template: t,
       posted,
+      recalled,
       include: posted ? false : (override?.include ?? true),
       amount: override?.amount ?? String(t.amount)
     };
@@ -314,6 +350,15 @@ export default function MonthlyExpenses({
                           <Badge tone={row.posted.status === 'paid' ? 'green' : 'amber'}>
                             {row.posted.status === 'paid' ? 'Posted & paid' : 'Posted, awaiting payment'}
                           </Badge>
+                        ) : row.recalled ? (
+                          <span className="flex flex-col gap-1">
+                            <Badge tone="red">
+                              <Ban className="h-3 w-3" /> Taken back
+                            </Badge>
+                            <span className="text-[10px] leading-relaxed text-slate-400">
+                              {row.recalled.voidReason || 'no reason recorded'} — tick it to post the month again.
+                            </span>
+                          </span>
                         ) : row.include ? (
                           <span className="text-[11px] text-slate-500">Will be raised</span>
                         ) : (
@@ -434,6 +479,18 @@ export default function MonthlyExpenses({
                   </SecondaryButton>
                 )}
                 <div className="text-xs text-slate-500">
+                  {postedThisMonth.length > 0 && (
+                    <span className="mr-3 block sm:inline">
+                      {formatMonthLabel(month)} stands at{' '}
+                      <span className="font-mono text-slate-700">
+                        {postedTotals.JMD > 0 ? formatMoney(postedTotals.JMD, 'JMD') : ''}
+                        {postedTotals.JMD > 0 && postedTotals.USD > 0 ? ' + ' : ''}
+                        {postedTotals.USD > 0 ? formatMoney(postedTotals.USD, 'USD') : ''}
+                      </span>{' '}
+                      over {postedThisMonth.length} posted line(s)
+                      {recalledThisMonth.length > 0 ? `, with ${recalledThisMonth.length} taken back` : ''}.
+                    </span>
+                  )}
                   {selected.length + readyExtras.length} line(s) to raise ·{' '}
                   <span className="font-mono text-slate-700">
                     {totals.JMD > 0 ? formatMoney(totals.JMD, 'JMD') : ''}
@@ -443,17 +500,30 @@ export default function MonthlyExpenses({
                   </span>
                 </div>
               </div>
-              {canEdit && (
-                <SubmitButton
-                  type="button"
-                  busy={busy}
-                  busyLabel="Posting…"
-                  onClick={post}
-                  disabled={selected.length === 0 && readyExtras.length === 0}
-                >
-                  Post {formatMonthLabel(month)}
-                </SubmitButton>
-              )}
+              <div className="flex flex-wrap items-center gap-3">
+                {/*
+                  * Posting a month raises up to twenty costs in one action, so a
+                  * month posted in error has to come back in one action too.
+                  * Asking someone to take back twenty rows by hand is how half of
+                  * them get left behind.
+                  */}
+                {canRecall && postedThisMonth.length > 0 && (
+                  <SecondaryButton onClick={() => setRecalling(true)} className="border-red-200 text-red-600 hover:bg-red-50">
+                    <Undo2 className="h-4 w-4" /> Take back {formatMonthLabel(month)}
+                  </SecondaryButton>
+                )}
+                {canEdit && (
+                  <SubmitButton
+                    type="button"
+                    busy={busy}
+                    busyLabel="Posting…"
+                    onClick={post}
+                    disabled={selected.length === 0 && readyExtras.length === 0}
+                  >
+                    Post {formatMonthLabel(month)}
+                  </SubmitButton>
+                )}
+              </div>
             </div>
           </>
         )}
@@ -534,6 +604,21 @@ export default function MonthlyExpenses({
                           >
                             {t.active ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
                           </button>
+                          {/*
+                            * Stop is right for a cost the property genuinely used
+                            * to have. Remove is for one that was never real — a
+                            * mistyped line that would otherwise sit here greyed
+                            * out forever. The server decides which is allowed:
+                            * anything still on the books is refused, and says so.
+                            */}
+                          <button
+                            type="button"
+                            onClick={() => setRemoving(t)}
+                            className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
+                            aria-label={`Remove ${t.vendor} from the system`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
                       )}
                     </td>
@@ -580,6 +665,92 @@ export default function MonthlyExpenses({
             setEditing(null);
           }}
         />
+      )}
+
+      {recalling && (
+        <VoidCostModal
+          title={`Take back the costs posted for ${formatMonthLabel(month)}`}
+          actionLabel="Take the month back"
+          settledConfirmLabel="None of that money actually left the account. Take the whole run back out of the accounts for this month."
+          intro={
+            <>
+              <span className="font-semibold">
+                {postedThisMonth.length} cost(s),{' '}
+                {postedTotals.JMD > 0 ? formatMoney(postedTotals.JMD, 'JMD') : ''}
+                {postedTotals.JMD > 0 && postedTotals.USD > 0 ? ' + ' : ''}
+                {postedTotals.USD > 0 ? formatMoney(postedTotals.USD, 'USD') : ''}
+              </span>
+              , raised by the run for {formatMonthLabel(month)}
+              {settledCount > 0 ? `, ${settledCount} of them recorded as paid` : ''}. A cost you logged by hand in the
+              same month is not touched. Once taken back, the month can be posted again.
+            </>
+          }
+          onClose={() => setRecalling(false)}
+          onSubmit={async (reason, includeSettled) => {
+            const result = await onRecallMonth({ monthString: month, reason, includeSettled });
+            setSuccess(result.message);
+            setError('');
+            setOverrides({});
+            setRecalling(false);
+          }}
+        />
+      )}
+
+      {removing && (
+        <Modal
+          title={`Remove ${removing.vendor}?`}
+          onClose={() => setRemoving(null)}
+          maxWidthClass="max-w-md"
+          footer={
+            <div className="flex gap-3">
+              <SubmitButton
+                type="button"
+                busy={busy}
+                busyLabel="Removing…"
+                className="flex-1"
+                onClick={async () => {
+                  if (busy) return;
+                  setBusy(true);
+                  setError('');
+                  setSuccess('');
+                  try {
+                    await onDeleteRecurring(removing.id);
+                    setSuccess(`${removing.vendor} has been removed. It is gone from the monthly run and from this list.`);
+                    setRemoving(null);
+                  } catch (err) {
+                    // The refusal names the months that are still on the books and
+                    // what to do about them, so it belongs in front of the person
+                    // rather than behind a generic failure.
+                    setError(errorMessage(err, 'Could not remove that monthly cost.'));
+                    setRemoving(null);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Remove it
+              </SubmitButton>
+              <SecondaryButton onClick={() => setRemoving(null)}>Cancel</SecondaryButton>
+            </div>
+          }
+        >
+          <div className="space-y-3 p-6 text-xs leading-relaxed text-slate-600">
+            <p>
+              <span className="font-semibold text-slate-800">{removing.vendor}</span> — {removing.category},{' '}
+              {allocationLabel(allocationOf(removing), units)}, usually{' '}
+              {formatMoney(removing.amount, removing.currency)} on day {removing.dueDay}
+              {removing.createdAt ? `, added ${formatDayLabel(removing.createdAt.substring(0, 10))}` : ''}.
+            </p>
+            <p>
+              This takes it out of the system entirely, not just off future runs. It is refused if any cost raised from it
+              is still on the books — take those postings back first, from the run above.
+            </p>
+            <InfoNote>
+              If this was a real cost that has simply ended, use <span className="font-medium">Stop</span> instead. That
+              keeps the history and takes it off future runs.
+            </InfoNote>
+          </div>
+        </Modal>
       )}
     </div>
   );

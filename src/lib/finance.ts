@@ -159,6 +159,28 @@ export function expensesForUnit(expenses: Expense[], unit: Unit, allUnits?: Unit
   return expenses.filter(e => belongsToUnit(e, unit, allUnits));
 }
 
+/**
+ * A cost that was taken back. It is in no figure anywhere by design.
+ *
+ * Every sum in this file already keys on `status === 'paid'` or
+ * `status === 'pending'`, so a void falls out of the arithmetic without anyone
+ * remembering to exclude it — that is why `void` is a status rather than a flag.
+ * This exists for the places that are *not* sums: a register, a printed list, a
+ * villa's own history, where the question is "should this line be shown as a real
+ * cost?" rather than "what do the costs add up to?".
+ *
+ * A list that shows a voided cost must mark it. One that totals its column must
+ * leave it out.
+ */
+export function isVoidExpense(expense: Expense): boolean {
+  return expense.status === 'void';
+}
+
+/** The costs that still count: everything that has not been taken back. */
+export function liveExpenses(expenses: Expense[]): Expense[] {
+  return expenses.filter(e => !isVoidExpense(e));
+}
+
 export function bookingsForUnit(bookings: Booking[], unit: Unit, allUnits?: Unit[]): Booking[] {
   return bookings.filter(b => belongsToUnit(b, unit, allUnits));
 }

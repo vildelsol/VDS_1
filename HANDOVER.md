@@ -26,7 +26,10 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **1,655 automated tests pass.** Typecheck and build clean. A full run now simulates **6,800 audited
+- **⚠️ Unreleased work is in the tree: taking a cost back** (2026-09-03, below). A posted expense can
+  now be recalled and a mistaken monthly cost removed outright. Committed but **not released** — the
+  HP is still on v1.9.0 and needs whatever ships next.
+- **1,655 automated tests pass**, plus the 56 new checks in `taking-a-cost-back`. Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
@@ -119,6 +122,106 @@ the proprietors' monthly report.
 
 **Read "Where to pick up" before installing** — two setup steps are Ro's and two screens look wrong
 until he does them.
+
+---
+
+## Session of 2026-09-03 — taking a cost back (UNRELEASED)
+
+Ro, working on the live system: *"when the line items are posted under monthly costs, there is no
+option to completely remove that item from the system. When the expenses are posted, there is no
+option to recall the posting in the event an error was made. Those are real operational gaps as
+errors do happen. all the arithemetic and affected areas will also neeed to be adjusted
+accordingly."*
+
+Both were real, and the second was the worse of the two. **Posting a month raised up to twenty costs
+in one action and nothing on the machine could take them back.** A run posted for the wrong month,
+or twice, or off the wrong invoice, stayed in the operating statement, the proprietors' reports and
+the annual accounts permanently — the only "remedy" was to edit the mistaken cost into some other
+cost, which destroys the record of what actually happened. An expense had no void of any kind: the
+charge ledger had one since the beginning, the expense register never did.
+
+### What was built
+
+**1. `Expense.status` gained a third state, `void`.** Deliberately a status and not a flag: every sum
+in `finance.ts` already keys on `status === 'paid'` or `status === 'pending'`, so a cost taken back
+leaves the arithmetic everywhere **by construction** rather than by twenty call sites each
+remembering to exclude it. The row carries `voidedBy`, `voidedAt`, `voidReason` and `voidedFromPaid`.
+Nothing is deleted, for the same reason a charge is voided rather than removed.
+
+**2. `POST /api/expenses/:id/void`** — take one cost back. **3. `POST /api/expenses/recall-month`** —
+take a whole posted run back in one action, matching the way it went in. Only rows the run raised are
+touched (`periodMonth` is set on those and nothing else), so **a cost logged by hand in the same month
+is left alone** — there is a test for exactly that, because a recall that swept it up would cause the
+kind of loss it exists to fix.
+
+**4. `DELETE /api/recurring-expenses/:id`** — remove a monthly cost outright. The rule is about
+*history*, not about the template: nothing live raised from it → it never happened, it goes; anything
+still on the books → refused with `monthly-cost-has-postings`, **naming the months**, so the person is
+told to recall those first or to use Stop. Postings that have all been taken back count as no history.
+"Stopped" stays, and is still the right answer for a cost the property genuinely used to have.
+
+**5. Both recalls follow the house pattern for a paid cost.** Recalling a `pending` bill is a
+correction. Recalling one the books record as **paid** asserts the money never left the account, so it
+is refused once with `expense-already-settled` and the screen turns it into a deliberate act — the
+server's own sentence, an unticked box, nothing preselected. Gated on `modify_settled` throughout:
+**the person who takes the money does not erase the record of it**, the same rule juniors already have
+for receipts.
+
+### The affected areas, which was the harder half
+
+- **Re-posting.** `post-month`'s "already posted?" check now ignores voided rows, or a recalled month
+  could never be posted again — which would have made the whole feature useless.
+- **The self-check.** `monthly-cost-posted-twice` skips voided rows, or recall-then-repost reports the
+  *remedy* as a serious fault. A new check, `void-cost-without-a-reason`, catches a void that lost its
+  author or reason — the only thing standing between a taken-back cost and an unexplained hole.
+- **The one place a void could still have been counted:** `ExpensesPanel`'s totals were
+  `if (paid) … else pending`, which would have counted a void as pending. Now three buckets, and the
+  recalled figure is stated separately as *"in no total"*.
+- **The printed operating statement's expense detail** had no status filter at all — it is the list an
+  accountant checks the totals against, so a line not in the total is a line that will not reconcile.
+  Now `liveExpenses()`.
+- **A voided expense cannot be edited** back into a live one; the PUT refuses it and says to log a new
+  one instead.
+- **The villa's own record keeps voided costs, marked**, exactly as it already keeps voided charges.
+
+### The test, and why it is written the way it is
+
+`test/taking-a-cost-back.test.mjs`, **56 checks**, phrased as Ro's rules rather than the code's
+function names — the lesson of 2026-09-02, where five faults survived 1,575 tests because every test
+asserted the code's own definition.
+
+The central assertion is a **comparison of the reports to themselves**: every figure the property
+looks at — operating statement, operations statement, monthly owners report, annual report, owner
+statements, expense breakdown, Form 13C ageing, both currencies — captured before a run is posted and
+again after it is recalled, and required to be **identical**. A figure that quietly kept a recalled
+cost shows up as a difference, wherever it lives, including in a report nobody thought to check. It is
+built on a baseline that is asserted to be non-empty, and on a posting that is asserted to have
+actually moved the figures — otherwise the comparison would be two nothings agreeing.
+
+**Every guard was mutation-tested** (remove the guard, confirm the suite fails):
+
+| Mutation | Result |
+| --- | --- |
+| post-month no longer ignores voided rows | 4 checks fail |
+| self-check no longer skips voided rows | 1 fails, naming the false "posted twice" |
+| the settled confirmation gate removed | 5 fail |
+| a void that leaves the row `pending` | 11 fail, led by the whole-report comparison |
+| recall matches on date instead of `periodMonth` | 6 fail, including the hand-entered cost |
+
+**And it was driven through the real UI on a scratch database**, not just the API: add a monthly cost →
+post September → Remove refused, naming the month → take the month back with a reason → the row reads
+"Taken back" and the tick box returns → register shows it struck through with who/when/why and
+*"taken back J$42,000.00 (in no total)"* → log a paid cost → take it back → refused once, confirmed,
+gone from every total.
+
+### Still to do
+
+- **Not released.** Needs a version bump, tag and Windows build; the HP is still on v1.9.0 and needs
+  whatever ships next.
+- The **service worker** will serve the old bundle after the upgrade — Ctrl+Shift+R on the Kamrui and
+  phones, and confirm the version **from the console window**, never the sidebar.
+- Nobody has yet put a **printed** expense register with a taken-back line on paper. Printed output on
+  actual paper remains the standing untested surface.
 
 ---
 
