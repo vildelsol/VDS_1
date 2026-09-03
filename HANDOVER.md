@@ -34,8 +34,9 @@ next session from inside `pm-app`.
   the 3,000 red team is about 2m30s and the 5,000 run about 3m. That is the price of the coverage; do not trim
   it to make the suite faster.
 - **Nothing is uncommitted.** No stashes, no unpushed tags. All work from the 2026-09-01 and
-  2026-09-02 sessions is committed, pushed, and released — the out-of-pocket shortfall report as
-  **v1.11.0**, everything before it as v1.10.4.
+  2026-09-02 sessions is committed, pushed, and released. **v1.11.1 is the current release** — the
+  five faults real data found, the two-way occupancy split and the proprietors' monthly report.
+  v1.11.0 carried the shortfall report; everything before it is v1.10.4.
 - **`main` and `origin/main` are level.** Check that with `git ls-remote origin main` against your
   own `git rev-parse main` — not against a hash copied into this file, and not against a local
   `origin/main` ref, which only says what the last fetch saw. **`main` sits a documentation commit
@@ -480,7 +481,7 @@ that is a change to make on purpose rather than in passing.
 
 ### Still to do
 
-**Released as v1.11.0 on 2026-09-02.** Drop that `.exe` in the same folder as the old one and confirm
+**Released in v1.11.0 on 2026-09-02, superseded by v1.11.1 the same day.** Drop that `.exe` in the same folder as the old one and confirm
 the version from the console window, not the sidebar. **No data is re-entered** — the existing
 `db.json` is untouched and simply gains a field that is absent until somebody ticks it.
 
@@ -2365,11 +2366,12 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-⚠️ **Install v1.11.0, not v1.10.4.** v1.11.0 is the current release and contains everything v1.10.4
-did plus the out-of-pocket shortfall report. The steps below were written for v1.10.4 and are
-otherwise identical — read `v1.11.0` wherever they say `v1.10.4`, including on the console line.
+⚠️ **Install v1.11.1.** It is the current release and contains everything before it: the shortfall
+report (v1.11.0), the five faults found on real data, the split occupancy figures and the
+proprietors' monthly report. The steps below were written for v1.10.4 and are otherwise identical —
+read `v1.11.1` wherever they say `v1.10.4`, including on the console line.
 
-**1. Install v1.11.0 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
+**1. Install v1.11.1 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
 **in the same folder**, replacing the old one, and double-click it.
 
