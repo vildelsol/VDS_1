@@ -64,6 +64,7 @@ async function loadComponents(projectRoot) {
         export { PrintLetterhead, PrintSignatures } from './src/components/PrintPortal';
         export { HealthCard } from './src/components/Dashboard';
         export { stayValueForRate } from './src/components/Bookings';
+        export { default as IspoOperations } from './src/components/IspoOperations';
         export { default as React } from 'react';
       `,
       resolveDir: projectRoot,
@@ -301,6 +302,68 @@ export default async function run({ projectRoot }) {
       stayValueForRate('-50', 4) === null && stayValueForRate('1,500', 4) === null,
       `${stayValueForRate('-50', 4)} / ${stayValueForRate('1,500', 4)}`
     );
+    /* ---------------- who the ISPO statement renders for ----------------
+     *
+     * Ro, 2026-09-03: *"Every role unless withdrawn is the best option."*
+     *
+     * A **render** check on purpose, and it exists because of the exact
+     * regression it guards. `Reports.tsx` used to wrap the shortfall report in
+     * `session.role === 'ADMINISTRATOR'` while the component itself implemented
+     * "every role unless withdrawn" — so the permission could never grant
+     * anything to anybody. No server-side test could see it, because the
+     * permission was served correctly all along; only the screen threw it away.
+     * Nothing but rendering the component catches that.
+     */
+    {
+      const ispoUnits = [
+        {
+          id: 'iu', number: 'V9', ownerName: 'VDS', ownerEmail: '', ownerPhone: '',
+          tenantName: 'T', tenantEmail: '', tenantPhone: '', status: 'long-term',
+          monthlyRent: 50000, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD',
+          rentDueDay: 1, maintDueDay: 1, meterNumber: '', notes: '', letOnOwnAccount: true
+        }
+      ];
+      const ispoPayments = [
+        { id: 'r1', unitId: 'iu', unitNumber: 'V9', category: 'Rent', amount: 50000, currency: 'JMD', date: '2026-08-05', status: 'completed', payerName: 'T', method: 'Cash', receiptNo: 'RC1' }
+      ];
+      const ispoCosts = [
+        { id: 'x1', category: 'Utilities', vendor: 'MARKER-PHONE', description: '', unitId: '', unitNumber: 'General', amount: 18000, currency: 'JMD', fund: 'ispo', date: '2026-08-05', dueDate: '2026-08-05', datePaid: '2026-08-05', status: 'paid', paymentMethod: 'Cash', reference: '', notes: '' }
+      ];
+      const ispoSettings = { strataPlanNumber: '2324', vendors: [], rolePermissions: {} };
+
+      // This block has its own destructure: the one at the top of the file
+      // belongs to an earlier scope.
+      const { React, renderToStaticMarkup, IspoOperations } = mod;
+      const renderFor = session =>
+        renderToStaticMarkup(
+          React.createElement(IspoOperations, {
+            units: ispoUnits,
+            expenses: ispoCosts,
+            payments: ispoPayments,
+            settings: ispoSettings,
+            session
+          })
+        );
+
+      const junior = renderFor({ name: 'Junior Jo', role: 'JUNIOR_OFFICER', permissions: { viewIspoOperations: true } });
+      T.check('a junior officer sees the ISPO statement', /ISPO Operations/.test(junior), junior.slice(0, 200));
+
+      const legacy = renderFor({ name: 'Old Session', role: 'FINANCE_OFFICER', permissions: {} });
+      T.check(
+        'and so does a session from before the permission existed — absent means granted',
+        /ISPO Operations/.test(legacy),
+        legacy.slice(0, 200)
+      );
+
+      const withdrawn = renderFor({ name: 'Junior Jo', role: 'JUNIOR_OFFICER', permissions: { viewIspoOperations: false } });
+      T.check('withdrawing it in Settings takes the statement off their screen', withdrawn === '', withdrawn.slice(0, 200));
+
+      const admin = renderFor({ name: 'Boss', role: 'ADMINISTRATOR', permissions: { viewIspoOperations: false } });
+      T.check('an administrator is never gated, as everywhere else here', /ISPO Operations/.test(admin), admin.slice(0, 200));
+
+      T.check('the statement names itself internal wherever it renders', /Internal/.test(junior), junior.slice(0, 400));
+    }
+
   } finally {
     cleanup();
   }

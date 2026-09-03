@@ -665,6 +665,51 @@ export default async function run({ port, projectRoot }) {
       'the books stopped summing to the whole after a void'
     );
 
+    /* ================================================================
+     * Who may see the ISPO statement
+     * ================================================================ */
+
+    /*
+     * Ro, 2026-09-03: *"Every role unless withdrawn is the best option."* Asserted
+     * on the server, because that is where the default lives and where a database
+     * written before the permission existed gets merged.
+     *
+     * This also guards the fault found beside it: `Reports.tsx` used to wrap the
+     * shortfall report in `session.role === 'ADMINISTRATOR'` while the component
+     * itself implemented "every role unless withdrawn", so the permission could
+     * never grant anything to anybody — a guard that could not fire, counted as
+     * coverage. The outer wrapper is gone; these assertions are what stops it
+     * coming back.
+     */
+    await c.post('/api/users', { name: 'Junior Jo', username: 'junior2', role: 'JUNIOR_OFFICER', password: 'JuniorPass-11!' });
+    const jr = makeClient(srv.baseUrl);
+    await jr.post('/api/auth/login', { username: 'junior2', password: 'JuniorPass-11!' }, { captureCookie: true });
+    await jr.post('/api/auth/change-password', { currentPassword: 'JuniorPass-11!', newPassword: 'JuniorOwn-22!' });
+
+    const jrPerms = (await jr.get('/api/db')).body?.currentUser?.permissions;
+    T.check('the junior is signed in', (await jr.get('/api/db')).body?.currentUser?.role === 'JUNIOR_OFFICER');
+    T.check(
+      'every role sees the ISPO statement by default, as Ro asked',
+      jrPerms?.viewIspoOperations === true,
+      JSON.stringify({ ispo: jrPerms?.viewIspoOperations, shortfall: jrPerms?.viewShortfall })
+    );
+    T.check('and the shortfall report, by the same rule', jrPerms?.viewShortfall === true, String(jrPerms?.viewShortfall));
+
+    const withdrawn = await c.post('/api/settings', {
+      rolePermissions: { JUNIOR_OFFICER: { ...jrPerms, viewIspoOperations: false } }
+    });
+    T.check('it can be withdrawn in Settings', withdrawn.body?.settings?.rolePermissions?.JUNIOR_OFFICER?.viewIspoOperations === false, String(withdrawn.body?.error || ''));
+    T.check(
+      'and the withdrawal reaches the junior with no re-login',
+      (await jr.get('/api/db')).body?.currentUser?.permissions?.viewIspoOperations === false,
+      'the change did not reach the session'
+    );
+    T.check(
+      'while the shortfall report is untouched by it — they are separate switches',
+      (await jr.get('/api/db')).body?.currentUser?.permissions?.viewShortfall === true,
+      'withdrawing one took the other away'
+    );
+
     /* ---------------- what the books are not allowed to be ---------------- */
 
     T.check(
@@ -684,6 +729,72 @@ export default async function run({ port, projectRoot }) {
       ).status === 400,
       'an unknown book was accepted'
     );
+    /* ================================================================
+     * The upgrade path — a database written before any of this existed
+     * ================================================================ */
+
+    /*
+     * The rule "absent means granted" only ever fires on a **real upgrade**: a
+     * `db.json` written before the field existed, whose stored role permissions
+     * carry no value for it. A fresh database never exercises it, because its
+     * defaults already contain the key.
+     *
+     * Which is exactly how it went untested. Deleting the merge line in
+     * `server/db.ts` broke nothing at all, because every test until now started
+     * from a fresh database. This is the HP's actual upgrade path — the machine
+     * has a `db.json` that predates both the shortfall report and the two books —
+     * and if the absence were read as a denial, the whole team would lose these
+     * screens on the next restart with nobody having changed a setting.
+     *
+     * So: take a real database, strip the keys the way an older version would
+     * have left them, restart on it, and read them back.
+     */
+    const oldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-upgrade-'));
+    let upgraded = null;
+    try {
+      const seed = await startServer({ port: port + 4000, adminPassword: 'Old-1234!', projectRoot, dataDir: oldDir });
+      const seedClient = makeClient(seed.baseUrl);
+      await activateAdmin(seedClient, 'Old-1234!', 'OldNew-9876!');
+      await seed.stop();
+
+      const dbPath = path.join(oldDir, 'db.json');
+      const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+      for (const role of Object.keys(raw.settings.rolePermissions || {})) {
+        delete raw.settings.rolePermissions[role].viewIspoOperations;
+        delete raw.settings.rolePermissions[role].viewShortfall;
+        delete raw.settings.rolePermissions[role].recordPayments;
+      }
+      fs.writeFileSync(dbPath, JSON.stringify(raw, null, 2));
+      T.check(
+        'a database was written in the shape an older version would have left it',
+        raw.settings.rolePermissions.JUNIOR_OFFICER.viewIspoOperations === undefined,
+        'the fixture still carried the field'
+      );
+
+      upgraded = await startServer({ port: port + 4001, adminPassword: 'Old-1234!', projectRoot, dataDir: oldDir });
+      const after = makeClient(upgraded.baseUrl);
+      await after.post('/api/auth/login', { username: 'admin', password: 'OldNew-9876!' }, { captureCookie: true });
+      const perms = (await after.get('/api/db')).body?.settings?.rolePermissions?.JUNIOR_OFFICER;
+
+      T.check(
+        'upgrading an older database does not take the ISPO statement away from the team',
+        perms?.viewIspoOperations === true,
+        JSON.stringify(perms)
+      );
+      T.check(
+        'nor the shortfall report',
+        perms?.viewShortfall === true,
+        JSON.stringify(perms)
+      );
+      T.check(
+        'nor the till, which follows the same rule and for the same reason',
+        perms?.recordPayments === true,
+        JSON.stringify(perms)
+      );
+    } finally {
+      if (upgraded) await upgraded.stop();
+      fs.rmSync(oldDir, { recursive: true, force: true });
+    }
   } finally {
     cleanup();
     await srv.stop();

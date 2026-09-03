@@ -32,7 +32,7 @@ next session from inside `pm-app`.
   ISPO's vehicle and phone costs inflating the maintenance contribution put to the AGM. The stray rule
   above every printed signature block is gone too. Committed but **not released** — the HP is still on
   v1.9.0 and needs whatever ships next.
-- **1,761 automated tests pass** (1,655 before this session, plus 56 in `taking-a-cost-back` and 50 in `two-books`). Typecheck and build clean. A full run now simulates **6,800 audited
+- **1,806 automated tests pass** (1,655 before this session, plus `taking-a-cost-back`, `two-books` and a new **5,000-operation `books-5000`** run over the two books, the voids and the recalls). Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
@@ -128,6 +128,80 @@ until he does them.
 
 ---
 
+## Session of 2026-09-03 (third pass) — 5,000 operations, and what they found
+
+Ro: *"Ispo read only. also ensure it is printable. Short Term Bookings are also Ispo income. Every role
+unless withdrawn is the best option. You keep finding little bugs and things to fix. Run 5000 tests /
+simulations for robustness, mapping, bugs, accuracy, arithmetic, etc. now that changes have been
+made."*
+
+### The four instructions
+
+- **Read only** — it always was; nothing is typed into ISPO Operations, every figure is generated.
+- **Printable** — it was, and now it is *asserted*: `printed-records.test.mjs` renders the document and
+  checks it carries the rent, the short-stay income, each cost named, the contribution line, the unpaid
+  memo, the internal-document notice and the preparer — and that **no strata cost is on it**. The
+  printed page also gained the signature block every other document here carries.
+- **Short-term bookings are ISPO income** — already counted (`bookingReceived`), now asserted on both
+  the screen and the printed page.
+- **Every role unless withdrawn** — new `viewIspoOperations` permission, granted to every role by
+  default, withdrawable in System Settings (the matrix is data-driven, so the switch appeared for free).
+  **And the guard that could not fire is gone**: `Reports.tsx` no longer wraps the shortfall report in
+  `session.role === 'ADMINISTRATOR'`, so its "every role unless withdrawn" rule finally reaches
+  somebody. The ISPO statement follows the same rule, decided inside the component, once.
+
+### The new suite: `test/books-5000.test.mjs`
+
+Five thousand operations through the real HTTP API — costs in both books, receipts, month runs, voids,
+month recalls, template removals, edits that move a cost between the books, and new templates. The
+whole database is audited every 250 operations against seven invariants, the first being
+**strata + ISPO = the whole**, per currency, over three periods: the direct answer to *"ensure there's
+no double counting anywhere"*, since it fails if a cost is counted twice **or** if one falls between
+the two books.
+
+**It found three things on its first two runs**, which is the entire point of having built it:
+
+1. **The rent scopes genuinely differ, and nothing said so.** `ispoOperations` counts *every* rent and
+   booking receipt — the corporation never collects a proprietor's rent, so any rent is ISPO's — while
+   the shortfall report counts only villas ticked `letOnOwnAccount`. On Ro's live data those coincide;
+   the moment they do not, the two documents quote different rent for the same month with no
+   explanation. **Fixed by stating it**: `incomeFromUnflaggedVillas` is now on the statement, naming
+   the villas, because it means either a villa VDS lets that nobody has ticked or rent recorded against
+   a proprietor's villa. The invariant is now containment plus a declared gap, not equality.
+2. **The simulation degenerated and the coverage assertions caught it.** Templates were being removed
+   faster than anything created them, so within a few hundred operations there was nothing left to
+   post or recall — "0 recalled" out of five thousand — while every invariant still passed happily. A
+   replenishing branch was added, and skipped operations are now counted so the totals reconcile to
+   5,000.
+3. **The delete path was never reached at all** on the first run, because templates almost always
+   carry live postings. The simulation now walks the remedy the refusal names — recall the months,
+   then remove — which is the workflow Ro will actually use.
+
+### And a dead guard, found by mutation-testing my own fix
+
+The `if (base.viewIspoOperations === undefined) merged.viewIspoOperations = true;` line I first added to
+`server/db.ts` was **unreachable**: `merged` spreads `noPermissions()` first and that set already
+carries `true`. Deleting the line broke nothing. Per this codebase's own rule — *a guard that cannot
+fire is worse than no guard, because it is counted as coverage* — it was removed, and the behaviour is
+proved instead by a **real upgrade test**: a `db.json` is written in the shape an older version left
+it, the server is restarted on it, and the permissions are read back. That is the HP's actual upgrade
+path and nothing had ever covered it. ⚠️ The equivalent `viewShortfall` line above it is redundant
+today for the same reason; left alone rather than churned, but worth tidying.
+
+### Mutations run against the new work
+
+| Mutation | Result |
+| --- | --- |
+| voided costs count again | `books-5000` fails, 126 problems |
+| the ISPO statement stops filtering to its own book | `books-5000` fails, 14,082 problems |
+| `noPermissions()` default flipped to false | `two-books` fails 2, including the upgrade path |
+| ISPO statement gated on ADMINISTRATOR (the old mistake) | `components` fails 3 |
+| absent permission read as a denial | `components` fails 1 |
+
+**1,806 tests pass.** Typecheck and build clean.
+
+---
+
 ## Session of 2026-09-03 (second half) — the two books (UNRELEASED)
 
 Ro, still on the live system: *"Ispo, the company that owns VDS is the company who collects the Rent
@@ -217,11 +291,9 @@ ISPO's.
   vehicle, the vehicle insurance. Nothing guesses them.
 - **Tick "let on the corporation's own account"** on the villas VDS lets, or the ISPO statement's
   maintenance line reads nil. The screen says so rather than showing a silent zero.
-- ⚠️ **Found in passing, not fixed, Ro's call:** `Reports.tsx` mounts the shortfall report behind
-  `session.role === 'ADMINISTRATOR'`, while `ShortfallReport` itself implements *"every role sees it
-  unless it is withdrawn"* on Ro's own instruction (*"every staff member who has an account so ensure
-  every role can see it"*). The outer gate makes the inner `viewShortfall` permission unreachable for
-  everyone else — a guard that cannot fire. Decide which one is right and delete the other.
+- ✅ **Closed in the third pass below:** the unreachable `ADMINISTRATOR` gate on the shortfall report
+  is gone — Ro chose *"Every role unless withdrawn"* — and the ISPO statement follows the same rule
+  through a new `viewIspoOperations` permission.
 
 ---
 

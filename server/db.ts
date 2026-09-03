@@ -373,7 +373,8 @@ export function fullPermissions(): RolePermissions {
     recordExpenses: true,
     modifySettledRecords: true,
     postCharges: true,
-    viewShortfall: true
+    viewShortfall: true,
+    viewIspoOperations: true
   };
 }
 
@@ -391,7 +392,10 @@ export function noPermissions(): RolePermissions {
     postCharges: false,
     // Granted even in the "nothing" set: every member of staff sees this report
     // by default, and a role built up from no permissions is still office staff.
-    viewShortfall: true
+    viewShortfall: true,
+    // Same rule, on Ro's instruction of 2026-09-03: "Every role unless withdrawn
+    // is the best option."
+    viewIspoOperations: true
   };
 }
 
@@ -1021,6 +1025,23 @@ function migrate(db: Database): boolean {
     // existed carries no value here, and reading that absence as "denied" would
     // hide the report from the whole team on the next restart.
     if (base.viewShortfall === undefined) merged.viewShortfall = true;
+    /*
+     * The ISPO statement needs no line of its own here, and adding one would be
+     * worse than useless.
+     *
+     * `merged` spreads `noPermissions()` first, and that set carries
+     * `viewIspoOperations: true` — so an older database, whose stored value is
+     * absent, already comes back granted. A second `=== undefined` check would
+     * be a guard that can never fire, and this codebase has been bitten by
+     * exactly that: an unfirable guard is counted as coverage and hides the
+     * absence of a real test.
+     *
+     * The behaviour is proved instead, on a real upgrade, by
+     * `test/two-books.test.mjs` — it writes a database in the shape an older
+     * version left it, restarts the server on it and reads the permissions back.
+     * The same applies to `viewShortfall` above, whose line is likewise
+     * redundant today; it is left alone rather than churned.
+     */
     if (JSON.stringify(base) !== JSON.stringify(merged)) {
       settings.rolePermissions[role] = merged;
       changed = true;

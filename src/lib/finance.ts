@@ -3032,6 +3032,29 @@ export interface IspoOperations {
   /** Villas this was counted on, so the figure can be checked against the register. */
   ownAccountVillas: string[];
   /**
+   * Rent and short-stay taken on villas **not** ticked as let on VDS's own
+   * account, and the villas it came from.
+   *
+   * Income here is every rent and booking receipt, because the corporation never
+   * collects a proprietor's rent — they let their own villas entirely on their
+   * own account — so any rent in this system is money ISPO collected. The
+   * contribution line, by contrast, is scoped to the ticked villas, because it is
+   * specifically the contribution on the villas VDS lets.
+   *
+   * The two scopes are therefore different on purpose, and where they diverge the
+   * shortfall report and this statement will quote different rent figures for the
+   * same month. **Found by the 5,000-operation simulation**, which compared them
+   * and was right to.
+   *
+   * Rather than let a reader discover that by subtracting one document from
+   * another, the difference is stated here. In practice it means one of two
+   * things and both are worth knowing: a villa VDS lets that nobody has ticked
+   * yet, or rent recorded against a proprietor's villa, which the business model
+   * says should not happen.
+   */
+  incomeFromUnflaggedVillas: number;
+  unflaggedVillasWithIncome: string[];
+  /**
    * Cost rows left out of `ownCostsPaid` because they *are* the contribution.
    *
    * `maintenanceOnOwnVillas` is read from the receipts. If somebody also types
@@ -3177,6 +3200,30 @@ export function ispoOperations(
     end
   );
 
+  /*
+   * How much of the income above came from villas nobody has ticked as let on
+   * VDS's own account. Stated, never quietly dropped — see the field's note.
+   */
+  const flaggedForIncome = new Set(units.filter(u => u.letOnOwnAccount === true && u.currency === currency).map(u => u.id));
+  const unflaggedReceipts = payments.filter(
+    p =>
+      p.currency === currency &&
+      (p.category === 'Rent' || p.category === 'Booking') &&
+      !flaggedForIncome.has(p.unitId)
+  );
+  const incomeFromUnflaggedVillas = netReceivedInPeriod(unflaggedReceipts, start, end);
+  const unflaggedVillasWithIncome = [
+    ...new Set(
+      unflaggedReceipts
+        .filter(p => p.status === 'completed' && isWithin(p.date, start, end))
+        .map(p => {
+          const unit = units.find(u => u.id === p.unitId);
+          return getUnitDisplayName(unit?.number || p.unitNumber || '');
+        })
+        .filter(Boolean)
+    )
+  ].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
   const unpaidLines = pending
     .filter(e => !isTheContributionAgain(e))
     .map(e => toLine(e, e.dueDate || e.date))
@@ -3197,6 +3244,8 @@ export function ispoOperations(
     ownAccountVillas: inThisCurrency.map(u => getUnitDisplayName(u.number)),
     excludedAsContribution: sumMoney(duplicated.map(e => e.amount)),
     excludedAsContributionCount: duplicated.length,
+    incomeFromUnflaggedVillas,
+    unflaggedVillasWithIncome,
     noVillasFlagged: ownAccountUnits.length === 0,
     totalCosts,
     net: subtractMoney(totalIncome, totalCosts),

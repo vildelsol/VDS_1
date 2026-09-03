@@ -33,7 +33,7 @@ import { IspoOperations as Statement, ispoOperations } from '../lib/finance';
 import { formatMoney } from '../lib/money';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
-import PrintPortal, { PrintLetterhead } from './PrintPortal';
+import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import { Badge, EmptyState, InfoNote, SecondaryButton, SubmitButton, TableScroller, monoInputClass, tableHeadRowClass } from './ui';
 import { Download, Printer } from 'lucide-react';
 
@@ -47,9 +47,33 @@ interface Props {
 
 const CURRENCIES: Currency[] = ['JMD', 'USD'];
 
+/**
+ * Who may see this at all.
+ *
+ * The same rule as the shortfall report, on Ro's instruction of 2026-09-03:
+ * *"Every role unless withdrawn is the best option."* Internal means internal to
+ * the office, not to one login. Administrators are never gated, as everywhere
+ * else in this application.
+ *
+ * ⚠️ **A visibility rule, not a security boundary**, and it must not be
+ * described as one. Every screen here computes from `/api/db`, which any
+ * signed-in session can fetch, and the receipts underneath are already on the
+ * ledger. Withdrawing it keeps the company's trading position off a colleague's
+ * page; it does not put it behind a lock. A real boundary would mean computing
+ * this on the server behind the permission, which is different work and has not
+ * been asked for.
+ */
+function maySeeIspoOperations(session: SessionUser): boolean {
+  if (session.role === 'ADMINISTRATOR') return true;
+  // Absent means granted: a database written before the permission existed must
+  // not read the missing value as a denial.
+  return session.permissions?.viewIspoOperations !== false;
+}
+
 export default function IspoOperations({ units, expenses, payments, settings, session }: Props) {
   const [month, setMonth] = useState(() => addMonths(currentMonth(), -1));
   const [printing, setPrinting] = useState(false);
+  const allowed = maySeeIspoOperations(session);
 
   const from = monthStart(month);
   const to = monthEnd(month);
@@ -61,6 +85,13 @@ export default function IspoOperations({ units, expenses, payments, settings, se
 
   const anything = statements.some(s => !s.empty);
   const live = statements.filter(s => !s.empty);
+
+  /*
+   * Returned after the hooks above, never before them. An early return placed
+   * ahead of a `useMemo` changes the hook order the moment a session's
+   * permissions change, which React treats as a different component.
+   */
+  if (!allowed) return null;
 
   const downloadXlsx = () => {
     const sheets = live.map(s => {
@@ -303,6 +334,20 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
         </div>
       </dl>
 
+      {s.incomeFromUnflaggedVillas > 0 && (
+        <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
+          <p className="mb-1 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-800">
+            {formatMoney(s.incomeFromUnflaggedVillas, s.currency)} of the income above came from villas not ticked as own account
+          </p>
+          <p>
+            {s.unflaggedVillasWithIncome.join(', ')}. It is counted as {MANAGING_COMPANY_NAME}&rsquo;s, because the corporation
+            never collects a proprietor&rsquo;s rent. But the shortfall report only counts villas that are ticked, so the two
+            documents will quote different rent for this month until this is resolved. It means one of two things: a villa VDS
+            lets that nobody has ticked yet, or rent recorded against a proprietor&rsquo;s villa.
+          </p>
+        </div>
+      )}
+
       {s.excludedAsContributionCount > 0 && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
           <p className="mb-1 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-800">
@@ -365,7 +410,17 @@ function Tile({
 
 /* ------------------------------------------------------------------ */
 
-function IspoDocument({
+/**
+ * Exported so the printed statement can actually be asserted on.
+ *
+ * Until PrintPortal was made to render without a DOM, not one printed document
+ * here was covered by any test — which is how a maintenance receipt went missing
+ * from one unnoticed. A new printed document arrives with that lesson already
+ * learned: `test/printed-records.test.mjs` renders this and checks it carries the
+ * rent, the bookings, the costs and the contribution line, and that it carries no
+ * strata cost.
+ */
+export function IspoDocument({
   statements,
   month,
   generatedBy,
@@ -475,6 +530,10 @@ function IspoDocument({
         own account, never from the expense register, so that contribution is counted once and not twice. USD and JMD are
         reported separately and are never combined.
       </p>
+
+      {/* Signed off like every other printed document here, so an internal
+          statement still carries who prepared it and who checked it. */}
+      <PrintSignatures left="Prepared by" leftName={generatedBy} right="Reviewed / Approved by" />
     </PrintPortal>
   );
 }

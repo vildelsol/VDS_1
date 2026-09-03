@@ -3,6 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/**
+ * The company that owns VDS and lets its villas.
+ *
+ * A constant rather than a setting on purpose. `strataPlanNumber` is a setting
+ * that never got an input box, and three versions of the handover told people to
+ * edit it in a screen where it did not exist. A name with no way to change it is
+ * better than a setting that pretends to be changeable. Make it a setting on the
+ * day it needs to change, with the field built in the same commit.
+ */
+export const MANAGING_COMPANY_NAME = 'ISPO';
+
 export type UserRole = 'ADMINISTRATOR' | 'MANAGER' | 'FINANCE_OFFICER' | 'JUNIOR_OFFICER';
 
 export type Currency = 'USD' | 'JMD';
@@ -128,6 +139,21 @@ export interface RolePermissions {
    * the same reason.
    */
   viewShortfall: boolean;
+  /**
+   * See the ISPO Operations statement — the letting company's own income and
+   * costs — under Operational Reports.
+   *
+   * Ro, 2026-09-03, asked for the same rule the shortfall report follows:
+   * *"Every role unless withdrawn is the best option."* So this is **granted to
+   * every role by default** and is a permission rather than an open door only so
+   * that it can be taken away in System Settings.
+   *
+   * **Absent means granted**, for the reason `recordPayments` and `viewShortfall`
+   * carry: a database written before this field existed must not read the missing
+   * value as a denial and take the statement away from the team on the next
+   * restart.
+   */
+  viewIspoOperations: boolean;
   hasVetoPower?: boolean;
 }
 
@@ -142,7 +168,8 @@ export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
   'postCharges',
   'reversePayments',
   'modifySettledRecords',
-  'viewShortfall'
+  'viewShortfall',
+  'viewIspoOperations'
 ];
 
 export const PERMISSION_LABELS: Record<string, string> = {
@@ -156,7 +183,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   postCharges: 'Post monthly rent & maintenance charges',
   reversePayments: 'Reverse payments & void receipts',
   modifySettledRecords: 'Modify settled ledger records',
-  viewShortfall: 'See the out-of-pocket shortfall report (internal)'
+  viewShortfall: 'See the out-of-pocket shortfall report (internal)',
+  viewIspoOperations: `See the ${MANAGING_COMPANY_NAME} Operations statement (internal)`
 };
 
 export interface StaffProfile {
@@ -709,17 +737,6 @@ export const PROPERTY_LOCATION_LABELS: Record<PropertyLocation, string> = {
 export type ExpenseFund = 'strata' | 'ispo';
 
 export const EXPENSE_FUNDS: ExpenseFund[] = ['strata', 'ispo'];
-
-/**
- * The company that owns VDS and lets its villas.
- *
- * A constant rather than a setting on purpose. `strataPlanNumber` is a setting
- * that never got an input box, and three versions of the handover told people to
- * edit it in a screen where it did not exist. A name with no way to change it is
- * better than a setting that pretends to be changeable. Make it a setting on the
- * day it needs to change, with the field built in the same commit.
- */
-export const MANAGING_COMPANY_NAME = 'ISPO';
 
 /** Named by what pays, because that is the decision the person posting makes. */
 export const EXPENSE_FUND_LABELS: Record<ExpenseFund, string> = {

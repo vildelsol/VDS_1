@@ -695,13 +695,12 @@ export default function Reports({ units, charges, payments, expenses, utilities,
         the owners' statement above, every cost in the register is counted exactly
         once.
 
-        Gated the same way the shortfall report below it is gated. It is the
-        company's own trading position and does not belong in front of anyone who
-        would not be shown its bank statement.
+        Visibility is decided inside the component, on the same rule as the
+        shortfall report below: every role unless it is withdrawn in Settings.
+        Do not wrap this in a role check — that is exactly the mistake corrected
+        below it.
       */}
-      {session.role === 'ADMINISTRATOR' && (
-        <IspoOperations units={units} expenses={expenses} payments={payments} settings={settings} session={session} />
-      )}
+      <IspoOperations units={units} expenses={expenses} payments={payments} settings={settings} session={session} />
 
       {/*
         VDS's own trading position on the villas it lets — deliberately the last
@@ -709,14 +708,18 @@ export default function Reports({ units, charges, payments, expenses, utilities,
         corporation's money. It carries its own period for the same reason the
         statements above do.
 
-        Administrators only. The component enforces that itself and renders
-        nothing for anyone else — the check is repeated here so that whoever
-        reads this file can see the rule without opening the other one. Do not
-        mount this anywhere an owner or the council can reach.
+        ⚠️ **Mounted unconditionally on purpose.** This used to be wrapped in
+        `session.role === 'ADMINISTRATOR'`, while `ShortfallReport` itself
+        implements "every role sees it unless it is withdrawn in Settings" —
+        which is what Ro asked for twice. The outer gate made that inner rule
+        unreachable for everyone who was not an administrator, so the
+        `viewShortfall` permission could never grant anything: a guard that
+        cannot fire, counted as coverage. Ro, 2026-09-03: *"Every role unless
+        withdrawn is the best option."*
+
+        The permission lives in the component, once. Do not re-wrap this.
       */}
-      {session.role === 'ADMINISTRATOR' && (
-        <ShortfallReport units={units} tenancies={tenancies} bookings={bookings} payments={payments} session={session} />
-      )}
+      <ShortfallReport units={units} tenancies={tenancies} bookings={bookings} payments={payments} session={session} />
 
       {printing && (
         <StatementDocument

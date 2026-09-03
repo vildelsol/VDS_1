@@ -43,6 +43,8 @@ async function loadDocuments(projectRoot) {
       contents: `
         export { renderToStaticMarkup } from 'react-dom/server';
         export { UnitLedgerDocument, TenancyRecordDocument } from './src/components/Units';
+        export { IspoDocument } from './src/components/IspoOperations';
+        export { ispoOperations } from './src/lib/finance';
         export { default as React } from 'react';
       `,
       resolveDir: projectRoot,
@@ -127,7 +129,7 @@ export default async function run({ projectRoot }) {
   const T = reporter(title);
   const { mod, cleanup } = await loadDocuments(projectRoot);
   try {
-    const { UnitLedgerDocument, TenancyRecordDocument, React, renderToStaticMarkup } = mod;
+    const { UnitLedgerDocument, TenancyRecordDocument, IspoDocument, ispoOperations, React, renderToStaticMarkup } = mod;
 
     /* ---------------- the villa's own record ---------------- */
     const ledger = strip(
@@ -241,6 +243,74 @@ export default async function run({ projectRoot }) {
         rentOnly.slice(0, 300)
       );
       T.check('though the document still explains it covers rent only', /covers rent only/i.test(rentOnly), rentOnly.slice(0, 400));
+    }
+
+    /* ---------------- the ISPO Operations statement ----------------
+     *
+     * Ro, 2026-09-03: *"Ispo read only. also ensure it is printable."* It is, and
+     * this is what makes that a fact rather than a claim — the document is
+     * rendered and asked what it shows.
+     *
+     * The rule it must keep is the one the whole two-books change exists for: it
+     * carries ISPO's income and ISPO's costs, and **no strata cost is on it**.
+     */
+    {
+      const ispoUnit = { ...unit, id: 'iu1', number: 'V1', letOnOwnAccount: true, ownerName: 'MARKER-VDS' };
+      const ispoPayments = [
+        { id: 'ip1', unitId: 'iu1', unitNumber: 'V1', category: 'Rent', amount: 50000, currency: 'JMD', date: '2026-08-03', status: 'completed', payerName: 'MARKER-TENANT', method: 'Cash', receiptNo: 'R1' },
+        { id: 'ip2', unitId: 'iu1', unitNumber: 'V1', category: 'Booking', amount: 22000, currency: 'JMD', date: '2026-08-11', status: 'completed', payerName: 'MARKER-GUEST', method: 'Cash', receiptNo: 'R2' },
+        { id: 'ip3', unitId: 'iu1', unitNumber: 'V1', category: 'Maintenance', amount: 20000, currency: 'JMD', date: '2026-08-02', status: 'completed', payerName: 'MARKER-VDS', method: 'Cash', receiptNo: 'R3' }
+      ];
+      const ispoExpenseRows = [
+        { id: 'ie1', category: 'Utilities', vendor: 'MARKER-DIGICEL', description: 'Company cell phones', unitId: '', unitNumber: 'General', amount: 18000, currency: 'JMD', fund: 'ispo', date: '2026-08-12', dueDate: '2026-08-12', datePaid: '2026-08-12', status: 'paid', paymentMethod: 'Cash', reference: '', notes: '' },
+        { id: 'ie2', category: 'Other', vendor: 'MARKER-VEHICLE', description: 'Company vehicle insurance', unitId: '', unitNumber: 'General', amount: 34000, currency: 'JMD', fund: 'ispo', date: '2026-08-12', dueDate: '2026-08-12', datePaid: '2026-08-12', status: 'paid', paymentMethod: 'Cash', reference: '', notes: '' },
+        { id: 'ie3', category: 'Security', vendor: 'MARKER-GUARDSMAN', description: 'Common property security', unitId: '', unitNumber: 'General', amount: 96000, currency: 'JMD', date: '2026-08-12', dueDate: '2026-08-12', datePaid: '2026-08-12', status: 'paid', paymentMethod: 'Cash', reference: '', notes: '' },
+        { id: 'ie4', category: 'Contractors', vendor: 'MARKER-TYRES', description: 'Vehicle tyres, unpaid', unitId: '', unitNumber: 'General', amount: 25000, currency: 'JMD', fund: 'ispo', date: '2026-08-20', dueDate: '2026-08-20', status: 'pending', paymentMethod: 'Cash', reference: '', notes: '' }
+      ];
+
+      const statements = ['JMD', 'USD']
+        .map(currency => ispoOperations(ispoExpenseRows, ispoPayments, [ispoUnit], currency, '2026-08-01', '2026-08-31'))
+        .filter(x => !x.empty);
+
+      T.check('the ISPO statement has something to print', statements.length === 1, `${statements.length} currency blocks`);
+
+      const doc = strip(
+        renderToStaticMarkup(
+          React.createElement(IspoDocument, {
+            statements,
+            month: '2026-08',
+            generatedBy: 'MARKER-PREPARER',
+            onClose: () => {}
+          })
+        )
+      );
+
+      T.check('it prints at all', doc.length > 400, `${doc.length} characters`);
+      T.check('the rent is on it', /50,000/.test(doc), doc.slice(0, 400));
+      T.check('so is the short-stay income, which is ISPO’s too', /22,000/.test(doc), doc.slice(0, 400));
+      T.check('the cell phone is named, not lumped into a total', /MARKER-DIGICEL/.test(doc), doc.slice(0, 600));
+      T.check('and the company vehicle', /MARKER-VEHICLE/.test(doc));
+      T.check(
+        'the contribution ISPO pays on its own villa is on it',
+        /Maintenance paid on villas let on own account/i.test(doc) && /20,000/.test(doc),
+        doc.slice(0, 800)
+      );
+      T.check(
+        '⚠ and no strata cost appears anywhere on it',
+        !/MARKER-GUARDSMAN/.test(doc),
+        'a corporation cost reached the ISPO statement'
+      );
+      T.check(
+        'the unpaid bill is declared rather than folded into the cash figures',
+        /not yet paid/i.test(doc) && /25,000/.test(doc),
+        doc.slice(0, 900)
+      );
+      T.check(
+        'it says on its face that it is internal and not for owners',
+        /Internal document/i.test(doc) && /not for circulation/i.test(doc),
+        doc.slice(0, 500)
+      );
+      T.check('and it carries who prepared it', /MARKER-PREPARER/.test(doc), doc.slice(0, 400));
     }
 
     return T.done();
