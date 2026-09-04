@@ -26,12 +26,9 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **⚠️ Two unreleased pieces of work are in the tree** (both 2026-09-03, both below):
-  **taking a cost back** — a posted expense can be recalled and a mistaken monthly cost removed
-  outright; and **the two books** — the corporation's money and ISPO's are separated, which stops
-  ISPO's vehicle and phone costs inflating the maintenance contribution put to the AGM. The stray rule
-  above every printed signature block is gone too. Committed but **not released** — the HP is still on
-  v1.9.0 and needs whatever ships next.
+- **v1.12.0 is the current release** (2026-09-03) — taking a cost back, the two books, the ISPO
+  Operations statement, the `viewIspoOperations` permission, the printed-signature fix and the
+  dead-code tidy. **The HP is still on v1.9.0 and needs it.**
 - **1,806 automated tests pass** (1,655 before this session, plus `taking-a-cost-back`, `two-books` and a new **5,000-operation `books-5000`** run over the two books, the voids and the recalls). Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
@@ -39,10 +36,10 @@ next session from inside `pm-app`.
   also checks its own records at start-up. A full `npm test` takes about **six and a half minutes** —
   the 3,000 red team is about 2m30s and the 5,000 run about 3m. That is the price of the coverage; do not trim
   it to make the suite faster.
-- **Nothing is uncommitted.** No stashes, no unpushed tags. All work from the 2026-09-01 and
-  2026-09-02 sessions is committed, pushed, and released. **v1.11.1 is the current release** — the
-  five faults real data found, the two-way occupancy split and the proprietors' monthly report.
-  v1.11.0 carried the shortfall report; everything before it is v1.10.4.
+- **Nothing is uncommitted.** No stashes, no unpushed tags. Everything from the 2026-09-01 to
+  2026-09-03 sessions is committed, pushed and released. **v1.12.0 is the current release** — the
+  cost recall, the two books, the ISPO Operations statement and the tidy. v1.11.1 carried the five
+  faults real data found and the occupancy split; v1.11.0 the shortfall report.
 - **`main` and `origin/main` are level.** Check that with `git ls-remote origin main` against your
   own `git rev-parse main` — not against a hash copied into this file, and not against a local
   `origin/main` ref, which only says what the last fetch saw. **`main` may sit a documentation commit
@@ -93,9 +90,9 @@ next session from inside `pm-app`.
 - Latest release: **v1.11.1**, tagged 2026-09-03, built and published — the Windows workflow passed
   every gate (**1,655 tests, 0 failed** → assemble the `.exe` → start it and serve a real request →
   verify the Desktop shortcut) and `Villaggio-Del-Sol.exe` (**95,428,608 bytes**) is on the release.
-  **The HP needs v1.11.1**; it was last *confirmed* on v1.9.0. It carries the five faults real data
-  found on 2026-09-02, the split occupancy figures and the proprietors' monthly report, on top of
-  v1.11.0's shortfall report.
+  **Superseded by v1.12.0.** It was the release immediately before it, carrying the five faults real
+  data found on 2026-09-02, the split occupancy figures and the proprietors' monthly report, on top
+  of v1.11.0's shortfall report.
 - Superseded: **v1.10.4**, tagged 2026-09-02 (`Villaggio-Del-Sol.exe` **95,379,968 bytes**).
   ⚠️ It carries **no behaviour change** over v1.10.3, and is byte-identical in size — the difference
   is that this is the first binary built *after* the 5,000-operation paperwork suite existed, so the
@@ -114,7 +111,55 @@ next session from inside `pm-app`.
 - Older release: **v1.9.0**, shipped 2026-08-21, tag on `b29b55d`. Four releases went out that day
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
-  2026-09-01 and needs v1.11.1.** Every earlier release is superseded; install the latest only.
+  2026-09-01 and needs v1.12.0.** Every earlier release is superseded; install the latest only.
+
+## Released as v1.12.0 — 2026-09-03
+
+Tag `v1.12.0`, built and published by the Windows workflow after every gate passed: `npm ci`,
+`npm audit --omit=dev --audit-level=high`, `npm run lint`, the **1,806-test suite**, the client and
+SEA bundle, assembling `Villaggio-Del-Sol.exe`, **starting that executable and serving a real
+request**, and verifying the Desktop shortcut.
+
+**What it carries** — the four sessions below, in order:
+
+1. **Taking a cost back.** A posted expense can be recalled and a mistaken monthly cost removed
+   outright. Before this, a month posted in error stayed in the operating statement, the proprietors'
+   reports and the annual accounts permanently.
+2. **The two books.** The corporation's money and ISPO's are separated. This is the one with a
+   consequence you can measure: ISPO's phone and vehicle costs were counted as the corporation's and
+   ran into `feeToCoverBudget`, **the maintenance contribution the annual report puts to the AGM**.
+3. **5,000 operations** over both books, the voids and the recalls, plus the `viewIspoOperations`
+   permission on "every role unless withdrawn", and the ISPO statement made assertably printable.
+4. **The dead-code tidy**, with `noUnusedLocals`/`noUnusedParameters` now gating the build.
+
+**Also fixed:** the stray full-width rule above the signature block on **every** printed document.
+
+⚠️ **Two setup steps are Ro's, and two screens look wrong until he does them** — see "Where to pick
+up". Nothing guesses either of them.
+
+**Verified before cutting**, on a clean database with one dataset (contributions J$120,000, rent
+J$240,000, strata costs J$185,000, ISPO costs J$74,000):
+
+| Document | Expenditure | ISPO's vendors on it? |
+| --- | --- | --- |
+| Proprietors' monthly | J$185,000 | no |
+| Annual report (drives the AGM contribution) | J$185,000 | no |
+| ISPO Operations | J$74,000 own + J$60,000 contributions = J$134,000 | only ISPO's |
+| Operating statement (Ro's all-in view) | J$259,000, named as J$185,000 + J$74,000 | both, labelled |
+
+The books reconcile and the J$60,000 transfer is named on the combined page rather than counted
+twice.
+
+⚠️ **Still not proven, and it has not changed:** nothing has been printed **on paper**; the `.exe`
+outside CI, the PWA/service worker after an upgrade, the offline queue under real network loss, an
+Excel export opened in **actual Excel**, and the two-PC dry run are all untested. And nobody has yet
+used the two books on the real records — every fault in this project's history was found there, not
+by the suite.
+
+**Known and accepted:** `npm audit` reports three **moderate** advisories in `qs` → `body-parser` →
+`express`. The release gate is `--audit-level=high`, so they do not block it, and changing the
+dependency tree while cutting a release is the wrong moment. Worth clearing deliberately in a quiet
+commit: `npm audit fix`, then the full suite.
 
 ## Released as v1.11.1 — 2026-09-03
 
@@ -123,8 +168,7 @@ after the full suite passed on the Windows runner. It carries everything in the 
 the shortfall report from v1.11.0, the five faults real data found, the split occupancy figures and
 the proprietors' monthly report.
 
-**Read "Where to pick up" before installing** — two setup steps are Ro's and two screens look wrong
-until he does them.
+v1.11.1 is superseded by v1.12.0 above. Install the latest only.
 
 ---
 
@@ -276,7 +320,7 @@ today for the same reason; left alone rather than churned, but worth tidying.
 
 ---
 
-## Session of 2026-09-03 (second half) — the two books (UNRELEASED)
+## Session of 2026-09-03 (second half) — the two books (shipped in v1.12.0)
 
 Ro, still on the live system: *"Ispo, the company that owns VDS is the company who collects the Rent
 payments, there are certain expenses, such as Cell phone bills, company vehicle expenses and insurance
@@ -374,7 +418,7 @@ ISPO's.
 
 ---
 
-## Session of 2026-09-03 — taking a cost back (UNRELEASED)
+## Session of 2026-09-03 — taking a cost back (shipped in v1.12.0)
 
 Ro, working on the live system: *"when the line items are posted under monthly costs, there is no
 option to completely remove that item from the system. When the expenses are posted, there is no
@@ -2733,11 +2777,27 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-⚠️ **Install v1.11.1.** It is the current release and contains everything before it: the shortfall
-report (v1.11.0), the five faults found on real data, the split occupancy figures and the
-proprietors' monthly report.
+⚠️ **Install v1.12.0.** It is the current release and contains everything before it: taking a cost
+back, the two books (the corporation's money separated from ISPO's), the ISPO Operations statement,
+the printed-signature fix, the shortfall report, the five faults found on real data, the split
+occupancy figures and the proprietors' monthly report.
 
-**1. Install v1.11.1 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
+⚠️ **Two of the steps below are new and nothing guesses them.** Until they are done, two screens read
+as though they are broken when they are simply waiting: costs still count as the corporation's until
+they are marked as ISPO's, and the ISPO statement's maintenance line reads nil until the own-account
+villas are ticked. The screen says so rather than showing a silent zero.
+
+**A. Mark the ISPO costs — once.** The cell phone, the company vehicle and its insurance. Either edit
+each in Utilities & Expenses → Expense register (the **Paid from** cards, "Rental income (ISPO)"), or
+set it on the monthly cost so every future run posts it to the right book on its own. Everything else
+— office, property electricity, grounds staff, pool, painting — is already the corporation's and
+needs nothing.
+
+**B. Tick "Let on the corporation's own account"** in the Units Register on the villas VDS lets. The
+shortfall report and the ISPO statement's contribution line both depend on it, and nothing infers it
+from an owner's name.
+
+**1. Install v1.12.0 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
 **in the same folder**, replacing the old one, and double-click it.
 
