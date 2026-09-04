@@ -115,10 +115,13 @@ next session from inside `pm-app`.
 
 ## Released as v1.12.0 — 2026-09-03
 
-Tag `v1.12.0`, built and published by the Windows workflow after every gate passed: `npm ci`,
-`npm audit --omit=dev --audit-level=high`, `npm run lint`, the **1,806-test suite**, the client and
-SEA bundle, assembling `Villaggio-Del-Sol.exe`, **starting that executable and serving a real
-request**, and verifying the Desktop shortcut.
+Tag `v1.12.0` on `3bff141`, `Villaggio-Del-Sol.exe` **95,472,128 bytes**, published 2026-09-04.
+Every gate passed on the Windows runner: `npm ci`, `npm audit --omit=dev --audit-level=high`,
+`npm run lint`, the **1,806-test suite (0 failed)**, the client and SEA bundle, assembling the
+executable, **starting it and serving a real request**, and verifying the Desktop shortcut.
+
+⚠️ **v1.11.1 was 95,428,608 bytes and this is 95,472,128 — close enough to misread at a glance.**
+Tell them apart by the version on the console line, never by the file size.
 
 **What it carries** — the four sessions below, in order:
 
