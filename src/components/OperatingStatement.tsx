@@ -26,7 +26,7 @@
  * accrual somebody has to explain.
  */
 
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AppSettings, Currency, Expense, MANAGING_COMPANY_NAME, Payment, PaymentCategory, SessionUser, Unit, bodyCorporateName } from '../types';
 import { LineVisibility, OperatingStatement as Statement, OperatingStatementOptions, operatingStatement } from '../lib/finance';
 import { formatMoney } from '../lib/money';

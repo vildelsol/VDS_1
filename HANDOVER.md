@@ -128,6 +128,80 @@ until he does them.
 
 ---
 
+## Session of 2026-09-03 (fourth pass) — the tidy
+
+Ro: *"tidy everything that needs tidying including what you found in your own work"*, then *"remove all
+dead code"*.
+
+### What was found, and how
+
+Four sweeps, each mechanical rather than by eye, because "looks unused" is not evidence:
+
+1. **`tsc --noUnusedLocals --noUnusedParameters`** — 34 unused declarations. To separate mine from
+   inherited, the same check was run in a git worktree at `906c4b4` (the commit before this session):
+   **33 there, 34 now**, so exactly **one was mine** — an `ExpenseFund` import in `finance.ts` I added
+   and never used. The other 33 were pre-existing.
+2. **A dead-export scan** across `src/`, `server/`, `server.ts` **and `test/`** — because a helper
+   pulled out purely so a test can reach it is not dead, which is a deliberate pattern here.
+   **12 exports referenced nowhere at all**, each verified by a whole-repo grep returning exactly one
+   hit: its own declaration.
+3. **A prop scan** for interface members no component reads — tsc cannot see these, an unread member
+   is legal. Found two.
+4. **A route scan** and an **orphan-module scan** — all 54 routes are reached by the client or the
+   tests, and every module is imported by something. No commented-out code anywhere.
+
+### What was removed
+
+- **My own**: the unused `ExpenseFund` import.
+- **The dead guard I flagged last pass, and its twin.** `if (base.viewShortfall === undefined) …` in
+  `server/db.ts` was unreachable for the same reason the ISPO one was: `merged` spreads
+  `noPermissions()` first and that set already carries `true`. **Both gone.** `recordPayments` and
+  `postCharges` keep theirs and now say why — `noPermissions()` carries those as `false`, so without
+  their lines an upgrade really would withdraw them. Mutating the surviving mechanism now fails five
+  checks including the upgrade path, so it is provably load-bearing.
+- **12 dead exports**: `resetCacheForTests`, `getConnection`, `getPendingCount`, `creditAccounts`,
+  `groupByMonth`, `formatMoneyPlain`, `toMoney`, `clearQueue`, `subscribePending`, `clearReportRange`,
+  `OPEN_WORK_STATUSES`, `PROPERTY_LOCATION_LABELS`.
+  - `subscribePending` cascaded: it was the only thing that could populate `listeners`, so the whole
+    pub/sub in `queue.ts` — the `Listener` type, the set, and the notify loop — was unreachable and
+    went with it.
+  - `formatMoneyPlain` was "for CSV exports"; nothing has produced a CSV since v1.10.0 replaced them
+    with Excel workbooks.
+  - `toMoney` defaulted an unparseable figure to zero. **Its warning was worth keeping even though the
+    function was not**, so the note about never booking a silent zero moved onto `parseMoneyInput`,
+    which is the one actually used.
+  - `PROPERTY_LOCATION_LABELS` was superseded by `getAllocationLabel()`.
+- **33 unused imports** across 18 files, and one unused parameter: `syncOwnership` took the unit's
+  previous state and never read it. That is **not** a latent bug — `syncTenancy` needs its `original`
+  to report a status change, while ownership changes are detected from the open `Ownership` period,
+  which is the correct source. The parameter was symmetry for its own sake; removed, and the reason
+  written down so nobody adds it back.
+- **Two dead props**: `RecurringForm`'s `vendors` (the suggestions come from the parent's datalist) and
+  `Dashboard`'s `onRefresh`, both including the pass-down in the caller. The first sweep left `vendors`
+  half-alive — the destructure gone, the type and the pass-down still there — which is worth
+  remembering: removing a destructured prop is three edits, not one.
+
+### What was deliberately kept
+
+**Four engines are reachable only from the test suite and are staying**, now documented in a block at
+the head of `finance.ts` so the next sweep does not raise them again: `form13BContributions` and
+`form13CDebts` (Ro, 2026-08-21: the statutory return stays manual — *"Forms 13B/13C export stays
+manual"* — so the engines wait for a screen that has not been asked for), plus `periodStatement` and
+`disproportionateLevies`. All four are tested, so none can rot silently. **Deleting them is Ro's call,
+not a tidy-up.**
+
+### And the check is now permanent
+
+`noUnusedLocals` and `noUnusedParameters` are on in `tsconfig.json`. CI already gates on
+`npm run lint` (`tsc --noEmit`), so unused code now fails the build rather than accumulating again —
+which is how 33 of them got there. An intentionally unused parameter can still be named with a
+leading underscore.
+
+**1,806 tests pass.** Typecheck and build clean. Net **123 deletions against 83 insertions** across 26
+files, most of the insertions being the explanations above.
+
+---
+
 ## Session of 2026-09-03 (third pass) — 5,000 operations, and what they found
 
 Ro: *"Ispo read only. also ensure it is printable. Short Term Bookings are also Ispo income. Every role
@@ -294,6 +368,9 @@ ISPO's.
 - ✅ **Closed in the third pass below:** the unreachable `ADMINISTRATOR` gate on the shortfall report
   is gone — Ro chose *"Every role unless withdrawn"* — and the ISPO statement follows the same rule
   through a new `viewIspoOperations` permission.
+- ✅ **Closed in the fourth pass:** every dead export, unused import, unread prop and unfirable guard
+  in the tree is gone, and `noUnusedLocals`/`noUnusedParameters` now gate the build so they cannot
+  come back.
 
 ---
 

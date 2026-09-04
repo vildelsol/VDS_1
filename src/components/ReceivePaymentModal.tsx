@@ -34,7 +34,6 @@ import {
   AlreadySettledNote,
   ErrorNote,
   Field,
-  InfoNote,
   Modal,
   SecondaryButton,
   SubmitButton,

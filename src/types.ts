@@ -702,11 +702,6 @@ export const EXPENSE_CATEGORIES: ExpenseCategory[] = [
 export const PROPERTY_LOCATIONS = ['General', 'Office'] as const;
 export type PropertyLocation = (typeof PROPERTY_LOCATIONS)[number];
 
-export const PROPERTY_LOCATION_LABELS: Record<PropertyLocation, string> = {
-  General: 'General / common property',
-  Office: 'Office'
-};
-
 /**
  * Whose money pays for a cost.
  *
@@ -871,9 +866,6 @@ export interface AuditLog {
 export type WorkStatus = 'Reported' | 'Scheduled' | 'In progress' | 'Completed' | 'Cancelled';
 
 export const WORK_STATUSES: WorkStatus[] = ['Reported', 'Scheduled', 'In progress', 'Completed', 'Cancelled'];
-
-/** Statuses that still need someone to do something. */
-export const OPEN_WORK_STATUSES: WorkStatus[] = ['Reported', 'Scheduled', 'In progress'];
 
 export interface UnitActivity {
   id: string;

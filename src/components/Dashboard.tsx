@@ -46,7 +46,7 @@ import {
   TableScroller,
   monoInputClass
 } from './ui';
-import { AlertTriangle, ArrowUpRight, CalendarDays, Key, LogIn, LogOut, TrendingDown, TrendingUp } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, CalendarDays, Key, LogIn, LogOut } from 'lucide-react';
 import type { TabKey } from '../App';
 
 interface DashboardProps {
@@ -58,7 +58,6 @@ interface DashboardProps {
   expenses: Expense[];
   settings: AppSettings;
   session: SessionUser;
-  onRefresh: () => Promise<void> | void;
   onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
   onNavigateToTab: (tab: TabKey) => void;
 }

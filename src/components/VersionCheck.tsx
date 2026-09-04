@@ -17,7 +17,7 @@
  * screen is being drawn by the old app.
  */
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { fetchServerVersion } from '../lib/api';
 import { versionMismatch } from '../lib/version';

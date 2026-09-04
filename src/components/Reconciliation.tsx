@@ -23,13 +23,13 @@
  * at the top that the whole exercise exists to drive to zero.
  */
 
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Banknote, CheckCircle2, Circle, Landmark, Printer } from 'lucide-react';
 
 import { Currency, CURRENCIES, Payment, SessionUser, Unit, getUnitDisplayName } from '../types';
 import { Reconciliation as ReconciliationResult, reconciliation } from '../lib/finance';
 import { formatMoney, formatMoneyLong } from '../lib/money';
-import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
+import { currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import {

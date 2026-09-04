@@ -16,7 +16,6 @@
  * board pack can never quote a figure the ledger would contradict.
  */
 
-import React from 'react';
 import { AppSettings, Booking, Charge, Currency, Expense, Payment, Tenancy, Unit } from '../types';
 import {
   accountBalance,

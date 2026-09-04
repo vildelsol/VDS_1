@@ -1021,26 +1021,25 @@ function migrate(db: Database): boolean {
     // taking the till away from the whole team on the next restart. Absence means
     // "as it was", so grant it. Withdrawing it is a deliberate act in Settings.
     if (base.recordPayments === undefined) merged.recordPayments = true;
-    // Same rule, same reason: a database written before the shortfall report
-    // existed carries no value here, and reading that absence as "denied" would
-    // hide the report from the whole team on the next restart.
-    if (base.viewShortfall === undefined) merged.viewShortfall = true;
     /*
-     * The ISPO statement needs no line of its own here, and adding one would be
-     * worse than useless.
+     * `viewShortfall` and `viewIspoOperations` need no line of their own here,
+     * and adding one would be worse than useless.
      *
-     * `merged` spreads `noPermissions()` first, and that set carries
-     * `viewIspoOperations: true` — so an older database, whose stored value is
-     * absent, already comes back granted. A second `=== undefined` check would
-     * be a guard that can never fire, and this codebase has been bitten by
-     * exactly that: an unfirable guard is counted as coverage and hides the
-     * absence of a real test.
+     * `merged` spreads `noPermissions()` first, and that set carries **both** of
+     * them as `true` — so an older database, whose stored values are absent,
+     * already comes back granted. An `=== undefined` check for either would be a
+     * guard that can never fire, and this codebase has been bitten by exactly
+     * that before: an unfirable guard is counted as coverage and hides the
+     * absence of a real test. One was written here for `viewShortfall` and one
+     * was added for the ISPO statement; both are gone.
+     *
+     * `recordPayments` and `postCharges` above are different and must stay:
+     * `noPermissions()` carries those as `false`, so without their lines an
+     * upgrade really would withdraw them.
      *
      * The behaviour is proved instead, on a real upgrade, by
      * `test/two-books.test.mjs` — it writes a database in the shape an older
-     * version left it, restarts the server on it and reads the permissions back.
-     * The same applies to `viewShortfall` above, whose line is likewise
-     * redundant today; it is left alone rather than churned.
+     * version left it, restarts the server on it, and reads all four back.
      */
     if (JSON.stringify(base) !== JSON.stringify(merged)) {
       settings.rolePermissions[role] = merged;
@@ -1200,8 +1199,4 @@ function migrate(db: Database): boolean {
 }
 
 /** Testing / seeding helper. */
-export function resetCacheForTests() {
-  cache = null;
-}
-
 export { DB_FILE, DATA_DIR };

@@ -28,7 +28,7 @@
  * fee produces two honest statements rather than one meaningless total.
  */
 
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, UtilityReading, getUnitDisplayName,
   bodyCorporateName
 } from '../types';

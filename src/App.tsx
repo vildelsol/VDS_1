@@ -626,7 +626,6 @@ export default function App() {
             tenancies={data.tenancies}
             settings={settings}
             session={session}
-            onRefresh={refresh}
             onRecordPayment={recordPayment}
             onNavigateToTab={setActiveTab}
           />

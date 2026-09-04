@@ -128,10 +128,6 @@ export function subscribeConnection(fn: (state: ConnectionState, pendingWrites: 
   return () => listeners.delete(fn);
 }
 
-export function getConnection(): ConnectionState {
-  return connection;
-}
-
 /* ------------------------------------------------------------------ *
  * Timing
  * ------------------------------------------------------------------ */
@@ -379,10 +375,6 @@ export function subscribeSync(fn: (state: SyncState) => void): () => void {
   syncListeners.add(fn);
   fn(syncState);
   return () => syncListeners.delete(fn);
-}
-
-export function getPendingCount(): number {
-  return pendingActions().length;
 }
 
 let flushing = false;

@@ -43,6 +43,4 @@ export function setReportRange(range: ReportRange): void {
 }
 
 /** Testing seam: forget the shared range. */
-export function clearReportRange(): void {
-  current = null;
-}
+

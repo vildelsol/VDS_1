@@ -45,9 +45,6 @@ export interface QueuedAction {
   lastError?: string;
 }
 
-type Listener = (actions: QueuedAction[]) => void;
-const listeners = new Set<Listener>();
-
 function readAll(): QueuedAction[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -67,17 +64,10 @@ function writeAll(actions: QueuedAction[]) {
   } catch {
     /* storage full or unavailable — the in-flight request still proceeds */
   }
-  for (const fn of listeners) fn(actions);
 }
 
 export function pendingActions(): QueuedAction[] {
   return readAll();
-}
-
-export function subscribePending(fn: Listener): () => void {
-  listeners.add(fn);
-  fn(readAll());
-  return () => listeners.delete(fn);
 }
 
 /**
@@ -132,6 +122,4 @@ export function markAttempt(id: string, error?: string) {
 }
 
 /** Drop everything. Only for an operator who has accepted the loss. */
-export function clearQueue() {
-  writeAll([]);
-}
+

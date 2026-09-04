@@ -7,7 +7,7 @@ import React, { useMemo, useState } from 'react';
 import { AppSettings, Booking, Currency, SessionUser, Unit, getUnitDisplayName } from '../types';
 import { BookingClash, bookingCoversNight, bookingOverlaps, bookingsForUnit, bookingsOverlap } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
-import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, parseDay, today } from '../lib/dates';
+import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import { buildStayReceiptEmail, openMailDraft } from '../lib/email';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';

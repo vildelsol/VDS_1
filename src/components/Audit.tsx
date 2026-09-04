@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { AuditLog } from '../types';
-import { Terminal, ShieldCheck, Search, Filter, RefreshCw, Layers } from 'lucide-react';
+import { Terminal, Search } from 'lucide-react';
 
 interface AuditProps {
   auditLogs: AuditLog[];

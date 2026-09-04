@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getReportRange, setReportRange } from '../lib/reportRange';
 import {
   AppSettings,
@@ -30,7 +30,7 @@ import {
   occupancyOn,
   ownerBilledUnitIds
 } from '../lib/finance';
-import { formatMoney, formatMoneyPlain, round2, sumMoney } from '../lib/money';
+import { formatMoney, round2, sumMoney } from '../lib/money';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import {
   addDays,
@@ -50,8 +50,8 @@ import OperationsStatement from './OperationsStatement';
 import IspoOperations from './IspoOperations';
 import OperatingStatement from './OperatingStatement';
 import ShortfallReport from './ShortfallReport';
-import { Badge, EmptyState, ErrorNote, Field, InfoNote, SecondaryButton, SubmitButton, TableScroller, monoInputClass, tableHeadRowClass } from './ui';
-import { BarChart3, Download, Printer, TrendingDown, TrendingUp } from 'lucide-react';
+import { Badge, EmptyState, ErrorNote, Field, SecondaryButton, SubmitButton, TableScroller, monoInputClass, tableHeadRowClass } from './ui';
+import { BarChart3, Download, Printer } from 'lucide-react';
 
 interface ReportsProps {
   units: Unit[];

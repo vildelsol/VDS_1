@@ -52,8 +52,8 @@ import {
   ICalFeed,
   getUnitDisplayName
 } from './src/types';
-import { formatMoneyLong, parseMoneyInput, round2, toMoney } from './src/lib/money';
-import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, monthStart, nightsBetween } from './src/lib/dates';
+import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
+import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
 import { accountBalance, bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable } from './src/lib/finance';
 import {
   DATA_DIR,
@@ -88,7 +88,6 @@ import {
   hashPassword,
   isRequestSecure,
   passwordComplaint,
-  permissionsFor,
   readSessionToken,
   requireAuth,
   resetAdministratorPassword,
@@ -1456,12 +1455,21 @@ export type OwnerChangeIntent = 'correction' | 'sale';
 /**
  * Keep the ownership history in step with an edit to the unit register.
  *
- * Mirrors `syncTenancy`. Returns a note for the unit audit line.
+ * Mirrors `syncTenancy`, and returns a note for the unit audit line — but it
+ * deliberately does **not** take the unit's previous state, which its sibling
+ * does.
+ *
+ * `syncTenancy` needs the old unit because it reports a status change
+ * ("Unit status changed from vacant to long-term") that only the register knows.
+ * Ownership has no such thing: the open `Ownership` period is the record of who
+ * holds the lot, so a change is detected by comparing the incoming name against
+ * that period, not against whatever the unit row happened to say before. Passing
+ * the old unit in as well was symmetry for its own sake, and the parameter sat
+ * unread — removed rather than left to look meaningful.
  */
 function syncOwnership(
   db: Database,
   unit: Unit,
-  original: Unit,
   staffName: string,
   role: UserRole,
   /** The date the villa changed hands, when it is known. */
@@ -2336,7 +2344,7 @@ app.put(
       if (acquiredOn && acquiredOn > today()) bad('The date the villa changed hands cannot be in the future.');
 
       const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role, movedInOn, intent);
-      const ownershipNote = syncOwnership(db, updatedUnit, original, who.name, who.role, acquiredOn, ownerIntent);
+      const ownershipNote = syncOwnership(db, updatedUnit, who.name, who.role, acquiredOn, ownerIntent);
 
       const parts: string[] = [];
       if (original.number !== number) parts.push(`renamed "${original.number}" to "${number}" (${cascaded} linked record(s) relabelled)`);

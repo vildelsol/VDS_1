@@ -42,7 +42,7 @@
  * let is a separate question from whether it paid for itself.
  */
 
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Booking, Currency, Payment, SessionUser, Tenancy, Unit } from '../types';
 import { ShortfallReport as Report, outOfPocketShortfall } from '../lib/finance';
 import { formatMoney } from '../lib/money';

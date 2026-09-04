@@ -27,14 +27,36 @@ import {
   UtilityReading,
   Expense,
   ExpenseCategory,
-  ExpenseFund,
   Booking,
   PROPERTY_LOCATIONS,
   fundOf,
   getUnitDisplayName
 } from '../types';
 import { round2, sumMoney, addMoney, subtractMoney } from './money';
-import { currentMonth, daysSince, daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, nightsBetween, addDays, today } from './dates';
+
+/* ------------------------------------------------------------------ *
+ * Engines with no screen — deliberately kept
+ *
+ * Four exports here are reachable only from the test suite, and a sweep for
+ * dead code will name them every time. They are not dead:
+ *
+ *   - `form13BContributions` and `form13CDebts` compute the Commission's
+ *     statutory return. Ro decided on 2026-08-21 that the return is produced by
+ *     hand for now and asked for no export to be built — *"Forms 13B/13C export
+ *     stays manual"*. The engines are finished and tested so that the export is
+ *     a screen away on the day it is wanted.
+ *   - `periodStatement` gives opening balance, activity and closing balance for
+ *     a range. It is what makes a statement reconcilable, and it is the shape any
+ *     future accountant-facing statement needs.
+ *   - `disproportionateLevies` flags lots levied out of step with their
+ *     entitlement — the fairness check behind the Act's apportionment rules.
+ *
+ * Each is covered by tests, so none of them can rot silently. **Do not delete
+ * them as unused, and do not build screens for them unasked.** If they are ever
+ * genuinely unwanted, that is Ro's call and not a tidy-up.
+ * ------------------------------------------------------------------ */
+
+import { daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, nightsBetween, addDays, today } from './dates';
 
 /** A record that points at a unit. */
 interface UnitLinked {
@@ -620,18 +642,6 @@ export function scheduledCharges(
   return out.sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
 }
 
-/** Every account holding a credit (paid more than billed). */
-export function creditAccounts(units: Unit[], charges: Charge[], payments: Payment[], asOf?: string): AccountBalance[] {
-  const accounts: AccountBalance[] = [];
-  for (const unit of units) {
-    for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
-      const account = accountBalance(unit, category, charges, payments, asOf, units);
-      if (account.balance < 0) accounts.push(account);
-    }
-  }
-  return accounts;
-}
-
 /**
  * Accounts holding money or debt in a currency the account is not billed in — a
  * data-integrity warning.
@@ -1160,17 +1170,6 @@ export function liveUnitState(
     default:
       return { label: 'Unavailable' };
   }
-}
-
-/** Group a list of charges/payments by month for chart series. */
-export function groupByMonth<T>(rows: T[], dateOf: (row: T) => string): Map<string, T[]> {
-  const map = new Map<string, T[]>();
-  for (const row of rows) {
-    const key = monthOf(dateOf(row));
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push(row);
-  }
-  return map;
 }
 
 /**

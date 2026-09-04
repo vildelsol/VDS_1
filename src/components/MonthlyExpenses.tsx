@@ -705,7 +705,6 @@ export default function MonthlyExpenses({
       {(adding || editing) && (
         <RecurringForm
           units={units}
-          vendors={vendors}
           template={editing || undefined}
           onClose={() => {
             setAdding(false);
@@ -819,17 +818,18 @@ export default function MonthlyExpenses({
 
 function RecurringForm({
   units,
-  vendors,
   template,
   onClose,
   onSubmit
 }: {
   units: Unit[];
-  vendors: string[];
   template?: RecurringExpense;
   onClose: () => void;
   onSubmit: (payload: Record<string, unknown>) => Promise<void>;
 }) {
+  // The vendor suggestions come from the `vds-vendors` datalist the parent
+  // renders; this form only needs to point its input at it, so it takes no
+  // vendor list of its own.
   const [category, setCategory] = useState<ExpenseCategory>(template?.category || 'Utilities');
   const [vendor, setVendor] = useState(template?.vendor || '');
   const [description, setDescription] = useState(template?.description || '');

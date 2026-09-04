@@ -29,7 +29,7 @@
  * place to name every contractor paid, and the council has a document that does.
  */
 
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AppSettings, Charge, Currency, Expense, Payment, Unit, bodyCorporateName } from '../types';
 import { MonthlyOwnersReport as Report, monthlyOwnersReport } from '../lib/finance';
 import { formatMoney } from '../lib/money';

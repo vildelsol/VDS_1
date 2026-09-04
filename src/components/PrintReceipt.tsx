@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
 import { Booking, Payment, Unit, getUnitDisplayName } from '../types';
 import { formatMoneyLong } from '../lib/money';
 import { formatDayLabel } from '../lib/dates';

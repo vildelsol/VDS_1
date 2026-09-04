@@ -38,6 +38,12 @@ export function round2(value: number): number {
  * "50.000" is still read as fifty, because it is a valid plain decimal and there
  * is no way to tell it apart from fifty-point-zero. Multiple dots are the
  * unambiguous case, and those are now refused.
+ *
+ * **Refuse the null, never default it to zero.** A `?? 0` here books a silent
+ * zero into the ledger for a figure somebody actually typed, and a wrong figure
+ * that looks deliberate is worse than a refused one. There used to be a
+ * `toMoney` helper that did exactly that defaulting; nothing called it, and it
+ * has been removed rather than left as a trap.
  */
 export function parseMoneyInput(value: unknown): number | null {
   if (typeof value === 'number') return Number.isFinite(value) ? round2(value) : null;
@@ -63,16 +69,6 @@ export function parseMoneyInput(value: unknown): number | null {
 
   const n = Number(normalised);
   return Number.isFinite(n) ? round2(n) : null;
-}
-
-/**
- * Coerce form input to a safe monetary number, treating anything unreadable as
- * zero. Kept for display and for the places where a missing figure genuinely
- * means nothing rather than an error; anywhere a figure is *required*, use
- * parseMoneyInput and refuse null rather than booking a silent zero.
- */
-export function toMoney(value: unknown): number {
-  return parseMoneyInput(value) ?? 0;
 }
 
 /** Sum monetary values without accumulating float error. */
@@ -107,11 +103,6 @@ export function formatMoney(amount: number, currency: Currency): string {
 /** "USD $1,200.00" — for documents where the currency must be unambiguous. */
 export function formatMoneyLong(amount: number, currency: Currency): string {
   return `${currency} ${formatMoney(amount, currency)}`;
-}
-
-/** Plain number with 2dp, no symbol — for CSV exports. */
-export function formatMoneyPlain(amount: number): string {
-  return round2(Number(amount) || 0).toFixed(2);
 }
 
 /**
