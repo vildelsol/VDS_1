@@ -26,7 +26,12 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **v1.13.1 is the current release** (2026-09-28, tag `v1.13.1`) — the Strata / ISPO / Everything
+- ✅ **v1.13.1 is the current release** (published 2026-09-28 20:54 UTC, tag `v1.13.1` on `0fb6007`,
+  `Villaggio-Del-Sol.exe` **96,248,320 bytes**, run `36479349955` green in 27m05s — every gate
+  including the advisory check, the 1,982-test suite, the smoke test that starts the .exe and serves a
+  real request, and the Desktop shortcut check). **v1.12.0 was 95,472,128 bytes**, so unlike the
+  v1.11.1/v1.12.0 pair these two *can* be told apart by size — but still confirm the version from the
+  console line or `/api/health`, never the sidebar. It carries the Strata / ISPO / Everything
   book filter across Operational Reports, reservation deposits reaching the receipts ledger as
   received, the duplicate-deposit reconcile panel, real arrivals and departures on the dashboard, the
   currency pill on a one-off charge, one disclaimer on the printed statement instead of three, and no
@@ -39,7 +44,12 @@ next session from inside `pm-app`.
   and the job then died on **"Artifact storage quota has been hit"**, which was the step *before*
   "Publish to the GitHub Release". So the release was skipped and no `.exe` exists for v1.13.0. The
   workflow now publishes the release **first** and marks the artifact upload `continue-on-error`, so a
-  billing condition can never again throw away a build that passed everything. **Use v1.13.1.**
+  billing condition can never again throw away a build that passed everything. **Use v1.13.1.** No
+  application code differs between the two tags. The `v1.13.0` **tag still exists with no release
+  behind it** — harmless, but if it is ever confusing, delete it on the remote rather than re-pointing
+  it. The account's Actions storage quota is still full; this repo holds only one 34MB artifact and the
+  same binary is attached permanently to the v1.12.0 release, so something in another repo is holding
+  it.
 - **1,982 automated tests pass** (1,871 before this session, plus `report-books`,
   `short-stay-deposits` and a new **2,000-operation `reports-2000`** run over the book filters, the
   deposits and the charges). Six mutations run against the new guards, six killed. Typecheck and
@@ -51,8 +61,9 @@ next session from inside `pm-app`.
   also checks its own records at start-up. A full `npm test` takes about **six and a half minutes** —
   the 3,000 red team is about 2m30s and the 5,000 run about 3m. That is the price of the coverage; do not trim
   it to make the suite faster.
-- **Nothing is uncommitted.** Everything through the 2026-09-28 session is committed and pushed on
-  `990d087`, and released as **v1.13.0**. v1.12.0 carried the cost recall, the two books, the ISPO
+- **Nothing is uncommitted.** Everything through the 2026-09-28 session is committed and pushed:
+  `990d087` (the work), `25235f3` (the v1.13.0 bump) and `0fb6007` (the workflow fix and the v1.13.1
+  bump). Released as **v1.13.1**. v1.12.0 carried the cost recall, the two books, the ISPO
   Operations statement and the tidy; v1.11.1 the five faults real data found and the occupancy split;
   v1.11.0 the shortfall report.
 - ⚠️ **Open with Ro, and it is data rather than code:** the `ISPO BNS-Transfer from Ispo to Villaggio`
@@ -132,6 +143,56 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.12.0.** Every earlier release is superseded; install the latest only.
+
+## Released as v1.13.1 — 2026-09-28
+
+`Villaggio-Del-Sol.exe`, **96,248,320 bytes**, tag `v1.13.1` on `0fb6007`, run `36479349955` green in
+27m05s. Every gate passed on the Windows runner: the dependency advisory check, the typecheck, the
+full 1,982-test suite, the assembly, the smoke test that starts the executable and serves a real
+request from it with no `dist/` beside it, and the Desktop shortcut check.
+
+**v1.12.0 was 95,472,128 bytes**, so these two can be told apart by size, which the v1.11.1/v1.12.0
+pair could not. Confirm the version from the console line or `/api/health` anyway; the sidebar reads
+a cached bundle and lied on the v1.10.0 upgrade.
+
+### v1.13.0 is a tag with nothing behind it
+
+The first attempt built green and published nothing. Everything that means anything passed, and the
+job then failed uploading the 30-day convenience artifact:
+
+    Failed to CreateArtifact: Artifact storage quota has been hit.
+
+That step sat **before** "Publish to the GitHub Release", so the publish never ran and a complete,
+verified build was thrown away by a housekeeping step nobody installs from.
+
+Fixed in `0fb6007` by swapping the order and marking the artifact upload `continue-on-error`. The
+release asset is what people download and what lasts; the artifact is a convenience for handing
+someone a build without cutting a release. A full storage quota is a billing condition, not a fault
+in the build, and it must not fail a release that has already passed every real gate. The step still
+runs and still reports, so the quota stays visible rather than being silently ignored.
+
+**No application code differs between `v1.13.0` and `v1.13.1`.** The dangling tag is harmless; if it
+ever confuses anyone, delete it on the remote rather than re-pointing it, because re-pointing a
+published tag is the kind of thing that is invisible until it matters.
+
+The account's Actions storage quota is still full. This repo holds one 34MB artifact and the same
+binary is attached permanently to the v1.12.0 release, so the quota is being held by something in
+another repo. The workflow no longer cares, but a release will keep logging the failure until it is
+cleared.
+
+### What is in it
+
+The Strata / ISPO / Everything book filter across Operational Reports, reservation deposits reaching
+the receipts ledger as received, the duplicate-deposit reconcile panel, real arrivals and departures
+on the dashboard, the currency pill on a one-off charge, the refunded-deposit guard that
+`reports-2000` found, one disclaimer on the printed statement instead of three, and no em dashes in
+any user-facing text. It also carries four pieces that had sat uncommitted since September: printed
+signature spacing, the Airbnb calendar fixes, staying signed in while the program is open, and the
+screens remembering where you left them.
+
+**Tests 1,982.** Commits: `990d087`, `25235f3`, `0fb6007`.
+
+---
 
 ## Session of 2026-09-28 — reading the reports on one set of books
 
@@ -3225,10 +3286,15 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-⚠️ **Install v1.12.0.** It is the current release and contains everything before it: taking a cost
-back, the two books (the corporation's money separated from ISPO's), the ISPO Operations statement,
-the printed-signature fix, the shortfall report, the five faults found on real data, the split
-occupancy figures and the proprietors' monthly report.
+⚠️ **Install v1.13.1.** It is the current release and contains everything before it: the
+Strata / ISPO / Everything book filter on Operational Reports, reservation deposits reaching the
+receipts ledger as received, the duplicate-deposit check, real arrivals and departures on the
+dashboard, the currency pill on a one-off charge, taking a cost back, the two books (the
+corporation's money separated from ISPO's), the ISPO Operations statement, the printed-signature fix,
+the shortfall report, the five faults found on real data, the split occupancy figures and the
+proprietors' monthly report.
+
+⚠️ **Not v1.13.0.** That tag exists and has no `.exe` behind it — see *State right now*.
 
 ⚠️ **Two of the steps below are new and nothing guesses them.** Until they are done, two screens read
 as though they are broken when they are simply waiting: costs still count as the corporation's until
@@ -3245,14 +3311,14 @@ needs nothing.
 shortfall report and the ISPO statement's contribution line both depend on it, and nothing infers it
 from an owner's name.
 
-**1. Install v1.12.0 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
+**1. Install v1.13.1 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
 **in the same folder**, replacing the old one, and double-click it.
 
 **Then confirm it took — and confirm it the right way.** The v1.10.0 upgrade was correct and looked
 like a failure because the only check available read from a browser cache. In order of trust:
 
-   - **The black console window** now prints `Villaggio Del Sol operations server v1.11.1 running
+   - **The black console window** now prints `Villaggio Del Sol operations server v1.13.1 running
      at …` and, underneath, `Records folder: …`. This is the program speaking; nothing caches it.
      **Read the folder line too** — if it is not the folder the records have always been in, the
      program is looking at a different (probably empty) set of books, because the data folder is the
