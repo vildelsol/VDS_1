@@ -149,16 +149,35 @@ jobs:
           }
           Write-Host "Desktop shortcut created at $shortcut"
 
-      - name: Upload the executable as a workflow artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: Villaggio-Del-Sol-exe
-          path: Villaggio-Del-Sol.exe
-          retention-days: 30
-
+      # The release comes first, and the spare copy second.
+      #
+      # These were the other way round, and on v1.13.0 that cost a release. Every
+      # step that means anything had passed - the advisory check, the typecheck,
+      # the full suite, the assembly, the executable starting and serving a real
+      # request, the shortcut - and then the artifact upload failed with
+      # "Artifact storage quota has been hit". Because the publish step ran after
+      # it, the job stopped and **no .exe reached the release at all**: a full
+      # green build thrown away by a housekeeping step that nobody installs from.
+      #
+      # The release asset is the thing people download and the thing that lasts.
+      # The workflow artifact is a 30-day convenience for handing someone a build
+      # without cutting a release. So the deliverable is published first, and the
+      # convenience is allowed to fail without taking the release with it.
       - name: Publish to the GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: Villaggio-Del-Sol.exe
           generate_release_notes: true
+
+      # `continue-on-error` for the reason above: a full storage quota is a
+      # billing condition, not a fault in the build, and it must not fail a
+      # release that has already passed every real gate. The step still runs and
+      # still reports, so the quota is visible rather than silently ignored.
+      - name: Upload the executable as a workflow artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: Villaggio-Del-Sol-exe
+          path: Villaggio-Del-Sol.exe
+          retention-days: 30

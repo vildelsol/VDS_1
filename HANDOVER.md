@@ -26,7 +26,7 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **v1.13.0 is the current release** (2026-09-28, tag `v1.13.0`) — the Strata / ISPO / Everything
+- **v1.13.1 is the current release** (2026-09-28, tag `v1.13.1`) — the Strata / ISPO / Everything
   book filter across Operational Reports, reservation deposits reaching the receipts ledger as
   received, the duplicate-deposit reconcile panel, real arrivals and departures on the dashboard, the
   currency pill on a one-off charge, one disclaimer on the printed statement instead of three, and no
@@ -34,6 +34,12 @@ next session from inside `pm-app`.
   September: printed signature spacing, the Airbnb calendar fixes, staying signed in while the
   program is open, and the screens remembering where you left them. **The HP is still on v1.9.0 and
   needs it.**
+- ⚠️ **v1.13.0 built green and published nothing.** Every real gate passed — advisory check,
+  typecheck, all 1,982 tests, assembly, the executable starting and serving a request, the shortcut —
+  and the job then died on **"Artifact storage quota has been hit"**, which was the step *before*
+  "Publish to the GitHub Release". So the release was skipped and no `.exe` exists for v1.13.0. The
+  workflow now publishes the release **first** and marks the artifact upload `continue-on-error`, so a
+  billing condition can never again throw away a build that passed everything. **Use v1.13.1.**
 - **1,982 automated tests pass** (1,871 before this session, plus `report-books`,
   `short-stay-deposits` and a new **2,000-operation `reports-2000`** run over the book filters, the
   deposits and the charges). Six mutations run against the new guards, six killed. Typecheck and
