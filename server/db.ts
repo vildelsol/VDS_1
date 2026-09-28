@@ -350,7 +350,7 @@ export function checkBackupTarget(dir: string): { ok: boolean; message: string }
     return {
       ok: false,
       message:
-        `Could not write to ${target} — ${(err as Error).message}. ` +
+        `Could not write to ${target}, ${(err as Error).message}. ` +
         'If this is an external drive, check it is plugged in and that the drive letter is right.'
     };
   }
@@ -735,7 +735,7 @@ function readFromDisk(): Database {
     throw new Error(
       `db.json was written by a newer version of this application (database format ${version}, ` +
         `this build understands ${SCHEMA_VERSION}). It has NOT been read or modified. ` +
-        `Install the current version of Villaggio Del Sol and start it again — ` +
+        `Install the current version of Villaggio Del Sol and start it again, ` +
         `an older build cannot safely open newer records.`
     );
   }
@@ -1136,7 +1136,7 @@ function migrate(db: Database): boolean {
         changed = true;
       }
       orphaned++;
-      relinkNotes.push(`${kind} ${id}: unit "${record.unitNumber}" could not be resolved — left unlinked`);
+      relinkNotes.push(`${kind} ${id}: unit "${record.unitNumber}" could not be resolved, left unlinked`);
     }
   };
 

@@ -26,6 +26,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { AppSettings, Charge, Currency, Expense, Payment, Unit, AnnualReport as AnnualReportRecord, ANNUAL_REPORT_SECTIONS, AnnualReportSectionKey, bodyCorporateName } from '../types';
 import { AnnualOwnersReport, annualOwnersReport } from '../lib/finance';
 import { formatMoney } from '../lib/money';
@@ -47,7 +48,7 @@ interface AnnualReportProps {
   onSave: (year: number, patch: Partial<AnnualReportRecord>) => Promise<unknown>;
 }
 
-const pctLabel = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`);
+const pctLabel = (v: number | null) => (v === null ? '-' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`);
 
 export default function AnnualReport({
   units,
@@ -68,9 +69,9 @@ export default function AnnualReport({
    * for every owner, nothing personal — and differ only in the period they
    * cover and whether anything on them is written by hand.
    */
-  const [view, setView] = useState<'annual' | 'monthly'>('annual');
-  const [year, setYear] = useState(() => new Date().getFullYear() - 1);
-  const [currency, setCurrency] = useState<Currency>('JMD');
+  const [view, setView] = useRemembered<'annual' | 'monthly'>('annual-report.view', 'annual');
+  const [year, setYear] = useRemembered('annual-report.year', () => new Date().getFullYear() - 1);
+  const [currency, setCurrency] = useRemembered<Currency>('annual-report.currency', 'JMD');
   const [printing, setPrinting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -150,7 +151,7 @@ export default function AnnualReport({
 
     const positionRows: XlsxCell[][] = [
       ...documentHeader({
-        documentTitle: `${bodyCorporateName(settings)} — Annual Report`,
+        documentTitle: `${bodyCorporateName(settings)} Annual Report`,
         period,
         generatedOn: formatDayLabel(today()),
         generatedBy: currentUserName,
@@ -169,13 +170,13 @@ export default function AnnualReport({
       pair('Contributions received', report.received),
       [cell.text('Collection rate %'), report.collectionRatePct === null ? cell.muted('n/a') : cell.number(report.collectionRatePct)],
       [cell.blank()],
-      [cell.section('Lever 1 — raise the contribution', 4)],
+      [cell.section('Lever 1, raise the contribution', 4)],
       pair('Contribution needed to cover the budget', report.feeToCoverBudget),
       pair('Contribution proposed', report.proposedFee),
       pair('Reserve per villa, monthly', report.reservePerUnitMonthly),
       pair('Reserve, annual', report.reserveAnnual),
       [cell.blank()],
-      [cell.section('Lever 2 — cut the expenditure', 4)],
+      [cell.section('Lever 2, cut the expenditure', 4)],
       pair('Expenditure ceiling at the current contribution', report.expenditureCeiling),
       pair('Reduction required', report.reductionRequired),
       [cell.blank()],
@@ -319,7 +320,7 @@ export default function AnnualReport({
             <p className="mt-1 max-w-3xl text-xs text-slate-500">
               The document circulated to proprietors before the annual general meeting, and the basis of what goes to the
               Commission of Strata Corporations. It is the same for every owner and carries no personal account
-              information. Every figure below is computed from the ledger — only the written sections are typed.
+              information. Every figure below is computed from the ledger, only the written sections are typed.
             </p>
           </div>
           <div className="flex flex-wrap items-end gap-3">
@@ -372,7 +373,7 @@ export default function AnnualReport({
                 Budget for {report.budgetYear}
               </h3>
               <p className="mt-1 text-xs text-slate-500">
-                Each line starts at what it actually cost in {report.reportYear}. Change only what you expect to move —
+                Each line starts at what it actually cost in {report.reportYear}. Change only what you expect to move -
                 a line left alone is budgeted flat, never at zero. Setting a line to <span className="font-mono">0</span>{' '}
                 is how a service is cut, which is the second lever above.
               </p>
@@ -453,8 +454,8 @@ export default function AnnualReport({
                 />
               </label>
               <p className="text-[11px] text-slate-500">
-                Left blank, the report proposes exactly what the budget requires —{' '}
-                <span className="font-mono">{formatMoney(report.feeToCoverBudget, report.currency)}</span> — and holds
+                Left blank, the report proposes exactly what the budget requires -{' '}
+                <span className="font-mono">{formatMoney(report.feeToCoverBudget, report.currency)}</span>, and holds
                 nothing back as reserve.
               </p>
             </div>
@@ -465,7 +466,7 @@ export default function AnnualReport({
               <h3 className="font-display text-sm font-semibold text-slate-900">What the report says</h3>
               <p className="mt-1 text-xs text-slate-500">
                 The written sections. Everything else in the document is generated from the ledger. Keep figures out of
-                these boxes — a number typed here is one nothing recomputes, and it is how a report ends up needing a
+                these boxes, a number typed here is one nothing recomputes, and it is how a report ends up needing a
                 corrections log.
               </p>
             </div>
@@ -577,7 +578,7 @@ function LeversPanel({ report }: { report: AnnualOwnersReport }) {
           <p className="pt-1 text-[11px] text-slate-500">
             {closers.length > 0
               ? `Removing ${closers[closers.length - 1].category} entirely (${formatMoney(closers[closers.length - 1].budget, report.currency)}) would close it.`
-              : 'No single category is large enough to close it — it would take more than one.'}
+              : 'No single category is large enough to close it, it would take more than one.'}
           </p>
         )}
       </div>
@@ -631,7 +632,7 @@ function PrintedReport({
   return (
     <div className="text-[13px] leading-relaxed text-slate-800">
       <PrintLetterhead
-        documentTitle={`Annual Report — ${report.reportYear}`}
+        documentTitle={`Annual Report ${report.reportYear}`}
         meta={`Year reported ${report.reportYear} · Budget ${report.budgetYear} · All figures in ${report.currency}${meetingDate ? ` · Meeting ${formatDayLabel(meetingDate)}` : ''}`}
         generatedBy={generatedBy}
       />
@@ -666,7 +667,7 @@ function PrintedReport({
       <Section n={3} title="What each category contains" body={say('categoryNotes')} />
 
       <h3 className="mb-2 mt-6 font-display text-sm font-semibold">
-        Expenditure by category — {report.reportYear} against {report.budgetYear}
+        Expenditure by category, {report.reportYear} against {report.budgetYear}
       </h3>
       <table className="mb-6 w-full border-collapse text-[12px]">
         <thead>
@@ -720,7 +721,7 @@ function PrintedReport({
               <td className="py-1.5 text-right font-mono">{formatMoney(m.expenditure, report.currency)}</td>
               <td className="py-1.5 text-right font-mono">{formatMoney(m.income, report.currency)}</td>
               <td className={`py-1.5 text-right font-mono ${m.shortfall > 0 ? 'font-semibold' : ''}`}>
-                {m.shortfall > 0 ? formatMoney(m.shortfall, report.currency) : '—'}
+                {m.shortfall > 0 ? formatMoney(m.shortfall, report.currency) : '-'}
               </td>
             </tr>
           ))}

@@ -43,6 +43,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { Booking, Currency, Payment, SessionUser, Tenancy, Unit } from '../types';
 import { ShortfallReport as Report, outOfPocketShortfall } from '../lib/finance';
 import { formatMoney } from '../lib/money';
@@ -132,10 +133,10 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
    * it is shut.
    */
   const [open, setOpen] = useState(false);
-  const [preset, setPreset] = useState<Preset>('ytd');
-  const [view, setView] = useState<View>('villa');
-  const [customFrom, setCustomFrom] = useState(() => addMonths(currentMonth(), -11));
-  const [customTo, setCustomTo] = useState(() => currentMonth());
+  const [preset, setPreset] = useRemembered<Preset>('reports.shortfall.preset', 'ytd');
+  const [view, setView] = useRemembered<View>('reports.shortfall.view', 'villa');
+  const [customFrom, setCustomFrom] = useRemembered('reports.shortfall.from', () => addMonths(currentMonth(), -11));
+  const [customTo, setCustomTo] = useRemembered('reports.shortfall.to', currentMonth);
 
   const { from, to } = useMemo(() => {
     const now = currentMonth();
@@ -195,7 +196,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
     const sheets = reports.map(r => {
       const rows: XlsxCell[][] = [
         ...documentHeader({
-          documentTitle: `Out-of-pocket shortfall — internal (${r.currency})`,
+          documentTitle: `Out-of-pocket shortfall, internal (${r.currency})`,
           period,
           generatedOn: formatDayLabel(today()),
           generatedBy: session.name,
@@ -254,7 +255,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
       for (const m of r.byMonth) {
         rows.push([
           cell.text(formatMonthLabel(m.month)),
-          cell.text(m.vacantVillas.length > 0 ? m.vacantVillas.join(', ') : '—'),
+          cell.text(m.vacantVillas.length > 0 ? m.vacantVillas.join(', ') : '-'),
           cell.text(''),
           cell.money(m.rentReceived, r.currency),
           cell.money(m.shortStayReceived, r.currency),
@@ -292,7 +293,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
       rows.push([cell.blank()]);
       rows.push([cell.section('The months VDS funded', 8)]);
       if (r.fundedMonths.length === 0) {
-        rows.push([cell.text('None in this period — every villa covered its own contribution.')]);
+        rows.push([cell.text('None in this period, every villa covered its own contribution.')]);
       } else {
         for (const v of r.fundedMonths) {
           rows.push([
@@ -336,7 +337,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
       rows.push([
         cell.note(
           `All figures are in ${r.currency} and nothing on this sheet is converted. Cash basis: earnings counted when received, the contribution counted when paid. ` +
-            '“Earned” is rent plus short-stay receipts — both fund the contribution, so both are subtracted from it. ' +
+            '“Earned” is rent plus short-stay receipts, both fund the contribution, so both are subtracted from it. ' +
             'Days let are counted from tenancies and bookings, not from the villa’s current status.',
           8
         )
@@ -503,7 +504,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
           {noneFlagged ? (
             <EmptyState
               title="No villa is marked as let on the corporation's own account"
-              hint="Open a villa in the Units Register, tick “Let on the corporation’s own account”, and it will appear here. Nothing else in the register can answer which villas are VDS’s own — an owner name is free text and matching on it breaks the day it is typed differently."
+              hint="Open a villa in the Units Register, tick “Let on the corporation’s own account”, and it will appear here. Nothing else in the register can answer which villas are VDS’s own, an owner name is free text and matching on it breaks the day it is typed differently."
             />
           ) : reports.length === 0 ? (
             <EmptyState
@@ -547,7 +548,7 @@ function headline(r: Report): string {
    */
   const empty =
     r.vacantVillaMonths === 0
-      ? ' None of them stood empty — the villas were let and did not earn their contribution.'
+      ? ' None of them stood empty, the villas were let and did not earn their contribution.'
       : r.vacantVillaMonths === r.fundedVillaMonths
         ? ' Every one of them stood empty for the whole month.'
         : ` ${r.vacantVillaMonths} of them stood empty for the whole month, accounting for ${formatMoney(r.vacantShortfall, r.currency)}.`;
@@ -607,7 +608,7 @@ function CurrencyBlock({ report: r, view }: { report: Report; view: View }) {
                     {v.occupiedDays} of {v.daysCounted}
                   </td>
                   <td className="p-3 text-slate-600">
-                    {v.vacantMonths.length === 0 ? '—' : v.vacantMonths.map(m => formatMonthLabel(m)).join(', ')}
+                    {v.vacantMonths.length === 0 ? '-' : v.vacantMonths.map(m => formatMonthLabel(m)).join(', ')}
                   </td>
                   <td className="p-3 text-right font-mono">{formatMoney(v.rentReceived, r.currency)}</td>
                   <td className="p-3 text-right font-mono">{formatMoney(v.shortStayReceived, r.currency)}</td>
@@ -665,7 +666,7 @@ function CurrencyBlock({ report: r, view }: { report: Report; view: View }) {
               {r.byMonth.map(m => (
                 <tr key={m.month}>
                   <td className="p-3 font-medium text-slate-800">{formatMonthLabel(m.month)}</td>
-                  <td className="p-3 text-slate-600">{m.vacantVillas.length === 0 ? '—' : m.vacantVillas.join(', ')}</td>
+                  <td className="p-3 text-slate-600">{m.vacantVillas.length === 0 ? '-' : m.vacantVillas.join(', ')}</td>
                   <td className="p-3 text-right font-mono">{formatMoney(m.rentReceived, r.currency)}</td>
                   <td className="p-3 text-right font-mono">{formatMoney(m.shortStayReceived, r.currency)}</td>
                   <td className="p-3 text-right font-mono font-semibold">{formatMoney(m.earned, r.currency)}</td>
@@ -714,7 +715,7 @@ function FundedList({ report: r }: { report: Report }) {
       <ul className="mt-1.5 space-y-0.5 font-mono text-[11px] text-slate-700">
         {r.fundedMonths.map(v => (
           <li key={`${v.unitId}-${v.month}`}>
-            {v.villa} · {formatMonthLabel(v.month)} — {formatMoney(v.shortfall, r.currency)}{' '}
+            {v.villa} · {formatMonthLabel(v.month)}, {formatMoney(v.shortfall, r.currency)}{' '}
             <span className="text-slate-400">({v.vacant ? 'empty all month' : 'let, earned less than the contribution'})</span>
           </li>
         ))}
@@ -735,7 +736,7 @@ function Caveats({ report: r }: { report: Report }) {
   const parts: string[] = [];
   for (const n of r.currencyNotes) {
     parts.push(
-      `${n.villa} takes rent in ${n.rentCurrency} and is billed its contribution in ${n.maintCurrency}, so no shortfall is computed for it — subtracting one currency from the other would invent a figure.`
+      `${n.villa} takes rent in ${n.rentCurrency} and is billed its contribution in ${n.maintCurrency}, so no shortfall is computed for it, subtracting one currency from the other would invent a figure.`
     );
   }
   if (parts.length === 0) return null;
@@ -791,22 +792,22 @@ export function ShortfallDocument({
         invites exactly the confusion the document exists to prevent.
       */}
       <p className="mb-4 rounded border-2 border-slate-900 p-2 text-[11px] font-bold uppercase tracking-wider">
-        Internal to Villaggio Del Sol as landlord — not a strata document
+        Internal to Villaggio Del Sol as landlord, not a strata document
       </p>
 
       <p className="mb-4 text-[11px] leading-relaxed">
         On the villas let on the corporation&rsquo;s own account the maintenance contribution is funded out of what that villa earns. This
         report states what was funded from VDS&rsquo;s own account where those earnings did not cover the contribution paid.{' '}
-        <strong>Earnings are rent and short-stay receipts together</strong> — a villa let on short stay pays towards its own contribution
+        <strong>Earnings are rent and short-stay receipts together</strong>, a villa let on short stay pays towards its own contribution
         the same way a long-term let does, and both are subtracted from it. It is <strong>not</strong> the corporation&rsquo;s income and
-        expenditure — that is the operating statement, and the two are different entities. Prepared on a cash basis.{' '}
+        expenditure, that is the operating statement, and the two are different entities. Prepared on a cash basis.{' '}
         <strong>Each currency is reported separately and no figure combines them.</strong>
       </p>
 
       {reports.map(r => (
         <section key={r.currency} className="mb-8 break-inside-avoid">
           <h3 className="mb-2 border-b-2 border-slate-900 pb-1 text-sm font-bold uppercase tracking-wider">
-            {r.currency} — {r.currency === 'JMD' ? 'Jamaican dollars' : 'United States dollars'}
+            {r.currency}, {r.currency === 'JMD' ? 'Jamaican dollars' : 'United States dollars'}
           </h3>
 
           <p className="mb-3 border border-slate-400 p-2 text-[11px] font-bold">{headline(r)}</p>
@@ -833,7 +834,7 @@ export function ShortfallDocument({
                     {v.occupiedDays} of {v.daysCounted}
                   </td>
                   <td className="p-1.5 font-sans">
-                    {v.vacantMonths.length === 0 ? '—' : v.vacantMonths.map(m => formatMonthLabel(m)).join(', ')}
+                    {v.vacantMonths.length === 0 ? '-' : v.vacantMonths.map(m => formatMonthLabel(m)).join(', ')}
                   </td>
                   <td className="p-1.5 text-right">{formatMoney(v.rentReceived, r.currency)}</td>
                   <td className="p-1.5 text-right">{formatMoney(v.shortStayReceived, r.currency)}</td>
@@ -874,7 +875,7 @@ export function ShortfallDocument({
               {r.byMonth.map(m => (
                 <tr key={m.month}>
                   <td className="p-1.5 font-sans">{formatMonthLabel(m.month)}</td>
-                  <td className="p-1.5 font-sans">{m.vacantVillas.length === 0 ? '—' : m.vacantVillas.join(', ')}</td>
+                  <td className="p-1.5 font-sans">{m.vacantVillas.length === 0 ? '-' : m.vacantVillas.join(', ')}</td>
                   <td className="p-1.5 text-right">{formatMoney(m.rentReceived, r.currency)}</td>
                   <td className="p-1.5 text-right">{formatMoney(m.shortStayReceived, r.currency)}</td>
                   <td className="p-1.5 text-right font-bold">{formatMoney(m.earned, r.currency)}</td>

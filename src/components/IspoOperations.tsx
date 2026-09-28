@@ -28,6 +28,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { AppSettings, Currency, Expense, MANAGING_COMPANY_NAME, Payment, SessionUser, Unit } from '../types';
 import { IspoOperations as Statement, ispoOperations } from '../lib/finance';
 import { formatMoney } from '../lib/money';
@@ -71,7 +72,7 @@ function maySeeIspoOperations(session: SessionUser): boolean {
 }
 
 export default function IspoOperations({ units, expenses, payments, settings, session }: Props) {
-  const [month, setMonth] = useState(() => addMonths(currentMonth(), -1));
+  const [month, setMonth] = useRemembered('reports.ispo.month', () => addMonths(currentMonth(), -1));
   const [printing, setPrinting] = useState(false);
   const allowed = maySeeIspoOperations(session);
 
@@ -97,7 +98,7 @@ export default function IspoOperations({ units, expenses, payments, settings, se
     const sheets = live.map(s => {
       const rows: XlsxCell[][] = [
         ...documentHeader({
-          documentTitle: `${MANAGING_COMPANY_NAME} Operations — ${s.currency}`,
+          documentTitle: `${MANAGING_COMPANY_NAME} Operations (${s.currency})`,
           period: formatMonthLabel(month),
           generatedOn: formatDayLabel(today()),
           generatedBy: session.name,
@@ -118,9 +119,9 @@ export default function IspoOperations({ units, expenses, payments, settings, se
         for (const line of group.lines) {
           rows.push([
             cell.date(line.date),
-            cell.text(line.vendor || '—'),
-            cell.text(line.description || '—'),
-            cell.text(line.allocation || '—'),
+            cell.text(line.vendor || '-'),
+            cell.text(line.description || '-'),
+            cell.text(line.allocation || '-'),
             cell.money(line.amount, s.currency)
           ]);
         }
@@ -158,13 +159,13 @@ export default function IspoOperations({ units, expenses, payments, settings, se
 
       if (s.unpaidLines.length > 0) {
         rows.push([cell.blank()]);
-        rows.push([cell.section('Billed and not yet paid — not in the figures above', 5)]);
+        rows.push([cell.section('Billed and not yet paid, not in the figures above', 5)]);
         for (const line of s.unpaidLines) {
           rows.push([
             cell.date(line.date),
-            cell.text(line.vendor || '—'),
-            cell.text(line.description || '—'),
-            cell.text(line.allocation || '—'),
+            cell.text(line.vendor || '-'),
+            cell.text(line.description || '-'),
+            cell.text(line.allocation || '-'),
             cell.money(line.amount, s.currency)
           ]);
         }
@@ -173,7 +174,7 @@ export default function IspoOperations({ units, expenses, payments, settings, se
       rows.push([cell.blank()]);
       rows.push([
         cell.note(
-          `Internal. ${MANAGING_COMPANY_NAME}'s own trading position and not the proprietors' business — no part of this belongs on an owner statement or a statutory return. The maintenance line is read from receipts issued against villas let on the corporation's own account, never from the expense register, so it is counted once. Cash basis. USD and JMD are reported separately and never combined.`,
+          `Internal. ${MANAGING_COMPANY_NAME}'s own trading position and not the proprietors' business, no part of this belongs on an owner statement or a statutory return. The maintenance line is read from receipts issued against villas let on the corporation's own account, never from the expense register, so it is counted once. Cash basis. USD and JMD are reported separately and never combined.`,
           5
         )
       ]);
@@ -217,7 +218,7 @@ export default function IspoOperations({ units, expenses, payments, settings, se
       </div>
 
       <InfoNote>
-        Rent and short-stay receipts against {MANAGING_COMPANY_NAME}&rsquo;s own costs — the cell phone, the company vehicle and
+        Rent and short-stay receipts against {MANAGING_COMPANY_NAME}&rsquo;s own costs, the cell phone, the company vehicle and
         its insurance, and anything else marked <strong>paid from rental income</strong>. The corporation&rsquo;s costs are on the
         owners&rsquo; statement instead, and no cost is on both. The maintenance line is the contribution paid on the villas VDS
         lets, which the rent is what funds. Cash basis; USD and JMD never combined.
@@ -226,7 +227,7 @@ export default function IspoOperations({ units, expenses, payments, settings, se
       {statements.some(s => s.noVillasFlagged) && (
         <InfoNote tone="amber">
           No villa is yet ticked as <strong>let on the corporation&rsquo;s own account</strong> in the Units Register, so the
-          maintenance line reads nil. That is the flag being unset rather than a statement that no contributions were paid —
+          maintenance line reads nil. That is the flag being unset rather than a statement that no contributions were paid -
           nothing guesses it from an owner&rsquo;s name.
         </InfoNote>
       )}
@@ -301,9 +302,9 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
                   {group.lines.map(line => (
                     <tr key={line.id}>
                       <td className="p-3 font-mono text-[11px] text-slate-500">{formatDayLabel(line.date)}</td>
-                      <td className="p-3 font-medium text-slate-800">{line.vendor || '—'}</td>
-                      <td className="p-3 text-slate-600">{line.description || '—'}</td>
-                      <td className="p-3 font-mono text-[11px] text-slate-500">{line.allocation || '—'}</td>
+                      <td className="p-3 font-medium text-slate-800">{line.vendor || '-'}</td>
+                      <td className="p-3 text-slate-600">{line.description || '-'}</td>
+                      <td className="p-3 font-mono text-[11px] text-slate-500">{line.allocation || '-'}</td>
                       <td className="p-3 text-right font-mono">{formatMoney(line.amount, s.currency)}</td>
                     </tr>
                   ))}
@@ -356,7 +357,7 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
           <p>
             {s.excludedAsContributionCount} cost row(s) in the expense register are the maintenance contribution on a villa let
             on the corporation&rsquo;s own account. That contribution is already counted from its receipt, on the line above, so
-            counting the cost row as well would be the same money twice. Take those rows back in the expense register — the
+            counting the cost row as well would be the same money twice. Take those rows back in the expense register, the
             self-check flags them.
           </p>
         </div>
@@ -365,7 +366,7 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
       {s.unpaidLines.length > 0 && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
           <p className="mb-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-800">
-            Billed and not yet paid — {formatMoney(s.costsUnpaid, s.currency)}
+            Billed and not yet paid, {formatMoney(s.costsUnpaid, s.currency)}
           </p>
           <p className="mb-2 text-[10px] leading-relaxed text-amber-800">
             Deliberately not in the figures above, which are cash. A month with a large unpaid bill would otherwise read as a
@@ -375,7 +376,7 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
             {s.unpaidLines.map(line => (
               <li key={line.id} className="flex justify-between gap-3">
                 <span>
-                  {line.vendor} — {line.description || 'no description'} · due {formatDayLabel(line.date)}
+                  {line.vendor}, {line.description || 'no description'} · due {formatDayLabel(line.date)}
                 </span>
                 <span className="shrink-0 font-mono">{formatMoney(line.amount, s.currency)}</span>
               </li>
@@ -434,7 +435,7 @@ export function IspoDocument({
   return (
     <PrintPortal title={`${MANAGING_COMPANY_NAME} Operations`} subtitle={formatMonthLabel(month)} onClose={onClose} maxWidthClass="max-w-4xl">
       <PrintLetterhead
-        documentTitle={`${MANAGING_COMPANY_NAME} Operations — internal`}
+        documentTitle={`${MANAGING_COMPANY_NAME} Operations, internal`}
         meta={formatMonthLabel(month)}
         generatedBy={generatedBy}
       />
@@ -475,9 +476,9 @@ export function IspoDocument({
                   {group.lines.map(line => (
                     <tr key={line.id}>
                       <td className="p-1.5">{formatDayLabel(line.date)}</td>
-                      <td className="p-1.5 font-sans font-semibold">{line.vendor || '—'}</td>
-                      <td className="p-1.5 font-sans">{line.description || '—'}</td>
-                      <td className="p-1.5">{line.allocation || '—'}</td>
+                      <td className="p-1.5 font-sans font-semibold">{line.vendor || '-'}</td>
+                      <td className="p-1.5 font-sans">{line.description || '-'}</td>
+                      <td className="p-1.5">{line.allocation || '-'}</td>
                       <td className="p-1.5 text-right">{formatMoney(line.amount, s.currency)}</td>
                     </tr>
                   ))}

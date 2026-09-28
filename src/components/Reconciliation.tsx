@@ -24,6 +24,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { Banknote, CheckCircle2, Circle, Landmark, Printer } from 'lucide-react';
 
 import { Currency, CURRENCIES, Payment, SessionUser, Unit, getUnitDisplayName } from '../types';
@@ -55,8 +56,8 @@ interface ReconciliationProps {
 }
 
 export default function ReconciliationTab({ payments, units, session, onReconcile }: ReconciliationProps) {
-  const [month, setMonth] = useState(currentMonth());
-  const [currency, setCurrency] = useState<Currency>('JMD');
+  const [month, setMonth] = useRemembered('reconciliation.month', currentMonth);
+  const [currency, setCurrency] = useRemembered<Currency>('reconciliation.currency', 'JMD');
   const [show, setShow] = useState<'unmatched' | 'all'>('unmatched');
   const [statementDate, setStatementDate] = useState(today());
   const [busyId, setBusyId] = useState('');
@@ -79,7 +80,7 @@ export default function ReconciliationTab({ payments, units, session, onReconcil
 
   const unitLabel = (p: Payment) => {
     const unit = units.find(u => u.id === p.unitId);
-    return unit ? getUnitDisplayName(unit.number) : p.unitNumber || '—';
+    return unit ? getUnitDisplayName(unit.number) : p.unitNumber || '-';
   };
 
   const toggle = async (p: Payment) => {
@@ -108,7 +109,7 @@ export default function ReconciliationTab({ payments, units, session, onReconcil
 
       <InfoNote>
         Open the bank statement beside this and work down it. Tick each receipt you can see on the statement; what stays
-        unticked at the bottom is what the ledger claims and the bank does not show. Nothing here changes a balance — it
+        unticked at the bottom is what the ledger claims and the bank does not show. Nothing here changes a balance, it
         records only whether the money was actually found.
       </InfoNote>
 
@@ -282,7 +283,7 @@ export default function ReconciliationTab({ payments, units, session, onReconcil
                           <span className="block text-slate-400">by {p.reconciledBy}</span>
                         </>
                       ) : (
-                        <span className="text-slate-300">—</span>
+                        <span className="text-slate-300">-</span>
                       )}
                     </td>
                   </tr>

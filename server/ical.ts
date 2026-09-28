@@ -197,6 +197,27 @@ export function classifyEvent(event: ICalEvent): { isReservation: boolean; guest
   return { isReservation: true, guestName: summary };
 }
 
+/**
+ * What a re-sync may change on a stay it imported earlier: the dates, and nothing else.
+ *
+ * The feed carries no guest details — Airbnb sends `Reserved` for every guest —
+ * so the name it gives is always a placeholder, and the booking form tells staff
+ * to type the real guest in: *"Re-syncing will update the dates but will not
+ * overwrite what you enter."* The sync did overwrite it. Every name typed in went
+ * back to "External guest" the next time anybody pressed Sync, which made the
+ * only way to get a guest onto an imported stay undo itself.
+ *
+ * The stay value, deposit and notes were already left alone. The name now is too.
+ * Returns `null` when the dates already match, so nothing is written or audited.
+ */
+export function feedDateChange(
+  existing: { checkIn: string; checkOut: string },
+  event: { start: string; end: string }
+): { checkIn: string; checkOut: string } | null {
+  if (existing.checkIn === event.start && existing.checkOut === event.end) return null;
+  return { checkIn: event.start, checkOut: event.end };
+}
+
 /** The minimum a booking has to look like for a withdrawal to be judged. */
 export interface FeedBooking {
   id: string;
@@ -224,6 +245,16 @@ export interface FeedBooking {
  * a conversation rather than a silent edit, so those are handed back as conflicts
  * for a person to settle. Kept pure, and separate from the fetching, so it can be
  * tested without a live calendar to pull from.
+ *
+ * **Only a stay that has not happened yet can be withdrawn.** Ro asked on
+ * 2026-09-16 what the program does once a stay's dates have passed, and the
+ * honest answer was: if the stay then dropped out of the feed, this called it a
+ * cancellation — with no look at the date at all. A platform export has no
+ * reason to go on listing old stays, and a stay that has already been lived in
+ * cannot have been cancelled. So a stay that has ended is left exactly as it is,
+ * and one under way — the guest should be in the villa — is never cancelled
+ * silently, money or not: it is raised for a person to look at on the platform.
+ * `today` is required rather than defaulted, so no caller can forget it.
  */
 export function planWithdrawals(
   bookings: FeedBooking[],
@@ -231,7 +262,8 @@ export function planWithdrawals(
   seenUids: Set<string>,
   feedId: string,
   unitId: string,
-  source: string
+  source: string,
+  today: string
 ): { cancelIds: string[]; conflicts: string[] } {
   const cancelIds: string[] = [];
   const conflicts: string[] = [];
@@ -241,10 +273,20 @@ export function planWithdrawals(
     if (booking.status === 'cancelled' || !booking.externalUid) continue;
     if (seenUids.has(booking.externalUid)) continue;
 
+    // Already over: dropping out of the feed says nothing about it.
+    if (booking.checkOut <= today) continue;
+
+    if (booking.checkIn <= today) {
+      conflicts.push(
+        `${booking.guestName} (${booking.checkIn} to ${booking.checkOut}) has gone from the ${source} calendar while the stay should be under way, check the reservation on ${source} before changing anything.`
+      );
+      continue;
+    }
+
     const carriesMoney = paidBookingIds.has(booking.id) || booking.depositPaid > 0 || booking.amount > 0;
     if (carriesMoney) {
       conflicts.push(
-        `${booking.guestName} (${booking.checkIn} to ${booking.checkOut}) has gone from the ${source} calendar but has money recorded against it — cancel it by hand and settle the deposit.`
+        `${booking.guestName} (${booking.checkIn} to ${booking.checkOut}) has gone from the ${source} calendar but has money recorded against it, cancel it by hand and settle the deposit.`
       );
       continue;
     }
@@ -277,7 +319,7 @@ function isInternalAddress(ip: string): boolean {
     if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT — this is Tailscale's range
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT, this is Tailscale's range
     if (a >= 224) return true; // multicast and reserved
     return false;
   }

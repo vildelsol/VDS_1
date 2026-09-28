@@ -1,0 +1,1162 @@
+<title>Villaggio Del Sol Handbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ground:      #FAFBFB;
+    --surface:     #FFFFFF;
+    --surface-alt: #F1F5F5;
+    --ink:         #0E1B1E;
+    --ink-soft:    #52666B;
+    --ink-faint:   #7C8E92;
+    --line:        #DCE5E6;
+    --line-strong: #C3D1D3;
+    --accent:      #0B7A70;
+    --accent-soft: #E3F1EF;
+    --accent-ink:  #06544D;
+    --warn:        #A45B06;
+    --warn-soft:   #FBF0E1;
+    --stop:        #A3252A;
+    --stop-soft:   #FBE9E9;
+    --shadow:      0 1px 2px rgba(14,27,30,.05), 0 8px 24px -16px rgba(14,27,30,.28);
+
+    --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --body:    "Literata", Georgia, "Times New Roman", serif;
+    --mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0B1315;
+      --surface:     #111C1F;
+      --surface-alt: #172528;
+      --ink:         #E8F0F0;
+      --ink-soft:    #A0B3B7;
+      --ink-faint:   #7B8E92;
+      --line:        #223438;
+      --line-strong: #2F464B;
+      --accent:      #45C3B4;
+      --accent-soft: #10302E;
+      --accent-ink:  #8FE0D5;
+      --warn:        #E0A254;
+      --warn-soft:   #2E2214;
+      --stop:        #E88A8D;
+      --stop-soft:   #2E1618;
+      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0B1315;
+    --surface:     #111C1F;
+    --surface-alt: #172528;
+    --ink:         #E8F0F0;
+    --ink-soft:    #A0B3B7;
+    --ink-faint:   #7B8E92;
+    --line:        #223438;
+    --line-strong: #2F464B;
+    --accent:      #45C3B4;
+    --accent-soft: #10302E;
+    --accent-ink:  #8FE0D5;
+    --warn:        #E0A254;
+    --warn-soft:   #2E2214;
+    --stop:        #E88A8D;
+    --stop-soft:   #2E1618;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
+  /* ---------- shell ---------- */
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px 96px;
+    display: grid;
+    grid-template-columns: 236px minmax(0, 1fr);
+    gap: 56px;
+    align-items: start;
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    grid-column: 1 / -1;
+    border-bottom: 1px solid var(--line);
+    padding: 56px 0 30px;
+    margin-bottom: 44px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 14px;
+  }
+  .masthead h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(30px, 5vw, 46px);
+    line-height: 1.06;
+    letter-spacing: -.02em;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    max-width: 62ch;
+    margin: 0;
+    font-size: 18px;
+    color: var(--ink-soft);
+  }
+
+  /* ---------- side nav ---------- */
+  nav.rail {
+    position: sticky;
+    top: 24px;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    padding-right: 8px;
+  }
+  nav.rail h2 {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 12px;
+    font-weight: 500;
+  }
+  nav.rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+  nav.rail a {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 6px;
+    padding: 5px 8px 5px 4px;
+    font-family: var(--display);
+    font-size: 13.5px;
+    line-height: 1.35;
+    color: var(--ink-soft);
+    text-decoration: none;
+    border-radius: 5px;
+    border-left: 2px solid transparent;
+  }
+  nav.rail a span { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); padding-top: 1px; }
+  nav.rail a:hover { background: var(--surface-alt); color: var(--ink); }
+  nav.rail a.on { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+  nav.rail a.on span { color: var(--accent); }
+
+  /* ---------- content ---------- */
+  main { min-width: 0; }
+
+  section { scroll-margin-top: 20px; padding-bottom: 8px; }
+  section + section { margin-top: 60px; padding-top: 44px; border-top: 1px solid var(--line); }
+
+  .sec-num {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .14em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin: 0 0 10px;
+  }
+  h2.sec {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(23px, 3.2vw, 31px);
+    letter-spacing: -.015em;
+    line-height: 1.15;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 18.5px;
+    letter-spacing: -.008em;
+    margin: 36px 0 10px;
+    text-wrap: balance;
+  }
+  h4 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 15px;
+    margin: 26px 0 8px;
+  }
+  p, li { max-width: 68ch; }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; }
+  li { margin-bottom: 7px; }
+  strong { font-weight: 600; }
+
+  code, .ui {
+    font-family: var(--mono);
+    font-size: .855em;
+    background: var(--surface-alt);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+  .ui { color: var(--accent-ink); background: var(--accent-soft); border-color: transparent; font-weight: 500; }
+
+  /* ---------- numbered steps ---------- */
+  ol.steps { list-style: none; padding: 0; margin: 0 0 20px; counter-reset: step; }
+  ol.steps > li {
+    counter-increment: step;
+    position: relative;
+    padding-left: 42px;
+    margin-bottom: 14px;
+    max-width: 66ch;
+  }
+  ol.steps > li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 50%;
+  }
+
+  /* ---------- callouts ---------- */
+  .note {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--line-strong);
+    background: var(--surface);
+    border-radius: 0 8px 8px 0;
+    padding: 15px 18px;
+    margin: 20px 0;
+    max-width: 70ch;
+  }
+  .note p:last-child, .note ul:last-child, .note ol:last-child { margin-bottom: 0; }
+  .note .tag {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    margin-bottom: 7px;
+  }
+  .note.rule       { border-left-color: var(--accent); background: var(--accent-soft); }
+  .note.rule .tag  { color: var(--accent-ink); }
+  .note.careful    { border-left-color: var(--warn); background: var(--warn-soft); }
+  .note.careful .tag { color: var(--warn); }
+  .note.stop       { border-left-color: var(--stop); background: var(--stop-soft); }
+  .note.stop .tag  { color: var(--stop); }
+  .note.stuck      { border-left-color: var(--line-strong); background: var(--surface-alt); }
+  .note.stuck .tag { color: var(--ink-faint); }
+
+  /* ---------- tables ---------- */
+  .tw { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 460px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    background: var(--surface-alt);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td { font-family: var(--body); }
+  td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ---------- quick index ---------- */
+  .quick {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 24px 26px 20px;
+    box-shadow: var(--shadow);
+    margin-bottom: 8px;
+  }
+  .quick h2 {
+    font-family: var(--display);
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  .quick p.sub { font-size: 14px; color: var(--ink-soft); margin: 0 0 18px; max-width: 60ch; }
+  .quick ul { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 2px 22px; }
+  .quick li { margin: 0; max-width: none; }
+  .quick a {
+    display: block;
+    padding: 7px 0;
+    font-family: var(--display);
+    font-size: 14px;
+    color: var(--ink);
+    text-decoration: none;
+    border-bottom: 1px solid var(--line);
+  }
+  .quick a::after { content: " →"; color: var(--ink-faint); }
+  .quick a:hover { color: var(--accent); }
+  .quick a:hover::after { color: var(--accent); }
+
+  footer {
+    grid-column: 1 / -1;
+    margin-top: 72px;
+    padding-top: 22px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 22px;
+  }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; gap: 0; padding: 0 20px 72px; }
+    nav.rail {
+      position: static;
+      max-height: none;
+      margin-bottom: 40px;
+      padding: 18px 20px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    nav.rail ol { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+    .masthead { padding-top: 40px; }
+  }
+
+  @media print {
+    nav.rail, .quick { display: none; }
+    .shell { display: block; max-width: none; }
+    section + section { page-break-before: auto; }
+    body { font-size: 11pt; background: #fff; color: #000; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+  }
+  html { scroll-behavior: smooth; }
+</style>
+
+<div class="shell">
+
+  <header class="masthead">
+    <p class="eyebrow">Villaggio Del Sol · Property Operations</p>
+    <h1>The everyday handbook</h1>
+    <p class="standfirst">Everything you need to run the property from this system — sign in, take money, issue receipts, chase arrears, close the month, and print what the owners ask for. Written for someone who has never opened it before. Keep it open the first few weeks.</p>
+  </header>
+
+  <nav class="rail" aria-label="Contents">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#one-rule"><span>01</span>The one rule</a></li>
+      <li><a href="#signing-in"><span>02</span>Signing in</a></li>
+      <li><a href="#screens"><span>03</span>The screens</a></li>
+      <li><a href="#first-week"><span>04</span>Setting up</a></li>
+      <li><a href="#month"><span>05</span>The monthly routine</a></li>
+      <li><a href="#charges"><span>06</span>Billing</a></li>
+      <li><a href="#payments"><span>07</span>Taking money</a></li>
+      <li><a href="#receipts"><span>08</span>Receipts</a></li>
+      <li><a href="#fixing"><span>09</span>Fixing mistakes</a></li>
+      <li><a href="#tenants"><span>10</span>Tenants</a></li>
+      <li><a href="#owners"><span>11</span>Owners &amp; HOA</a></li>
+      <li><a href="#guests"><span>12</span>Guest bookings</a></li>
+      <li><a href="#utilities"><span>13</span>Utilities &amp; expenses</a></li>
+      <li><a href="#maintenance"><span>14</span>Repairs</a></li>
+      <li><a href="#reports"><span>15</span>Reports</a></li>
+      <li><a href="#bank"><span>16</span>Bank reconciliation</a></li>
+      <li><a href="#staff"><span>17</span>Staff &amp; permissions</a></li>
+      <li><a href="#backup"><span>18</span>Backups</a></li>
+      <li><a href="#trouble"><span>19</span>When stuck</a></li>
+      <li><a href="#oneway"><span>20</span>Cannot be undone</a></li>
+      <li><a href="#glossary"><span>21</span>Glossary</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <div class="quick">
+      <h2>I need to&hellip;</h2>
+      <p class="sub">The twelve things people look up most. Everything else is in the contents list.</p>
+      <ul>
+        <li><a href="#payments">Take a rent payment</a></li>
+        <li><a href="#charges">Bill everyone for the month</a></li>
+        <li><a href="#receipts">Reprint or email a receipt</a></li>
+        <li><a href="#fixing">Undo a payment I entered wrong</a></li>
+        <li><a href="#move-in">Put a new tenant in a villa</a></li>
+        <li><a href="#move-out">Move a tenant out</a></li>
+        <li><a href="#one-off">Charge a late fee or a repair</a></li>
+        <li><a href="#guests">Enter a guest reservation</a></li>
+        <li><a href="#utilities">Enter a water or light bill</a></li>
+        <li><a href="#reports">Print a statement for an owner</a></li>
+        <li><a href="#backup">Make a backup</a></li>
+        <li><a href="#trouble">Work out why a number looks wrong</a></li>
+      </ul>
+    </div>
+
+    <!-- ============ 01 ============ -->
+    <section id="one-rule">
+      <p class="sec-num">Section 01</p>
+      <h2 class="sec">The one rule that explains everything</h2>
+
+      <p>If you understand this single sentence, most of the system stops being mysterious:</p>
+
+      <div class="note rule">
+        <span class="tag">The rule</span>
+        <p><strong>What someone owes = what you billed them &minus; what you have actually received.</strong> Worked out separately for each villa, for each kind of account (rent or maintenance), and for each currency.</p>
+      </div>
+
+      <p>Three things follow from it, and they cause nearly every question a new user has:</p>
+
+      <ul>
+        <li><strong>Nothing is owed until you bill it.</strong> Rent does not appear by itself on the 1st. Somebody has to press <span class="ui">Post month</span>. Until then the tenant's balance is zero and it is <em>correct</em> that it is zero.</li>
+        <li><strong>Money only counts once you confirm it arrived.</strong> Writing down that a cheque is coming changes nothing anywhere. See <a href="#payments">Section 07</a> — this is the single most common source of confusion.</li>
+        <li><strong>Unpaid months stack up.</strong> That is deliberate: it is what makes the arrears list and the 30/60/90-day ageing work.</li>
+      </ul>
+
+      <p>A negative balance is not an error. It means the account has paid more than it was billed — they are in credit, and the next charge will absorb it.</p>
+
+      <h3>Two currencies, never mixed</h3>
+      <p>Some villas are billed in Jamaican dollars and some in US dollars. The system <strong>never</strong> adds the two together — not in a balance, not in a total, not in a report. Each villa is billed in its own currency.</p>
+      <p>There is an exchange rate in settings, but it only produces the small grey "&asymp;" figures next to amounts so you can eyeball them. It never converts anything real and never feeds a total. If you try to receipt a payment in the wrong currency the system stops you and explains why.</p>
+    </section>
+
+    <!-- ============ 02 ============ -->
+    <section id="signing-in">
+      <p class="sec-num">Section 02</p>
+      <h2 class="sec">Signing in and getting around</h2>
+
+      <h3>Opening the system</h3>
+      <p>The records live on <strong>one computer</strong> — the HP, which sits on and runs the program. Every other device (the Kamrui, a laptop, a phone) is just a window onto it. There is only ever one set of records.</p>
+
+      <ol class="steps">
+        <li>On the HP, the program is already running — you will see a black console window. <strong>Do not close it.</strong> Closing it takes the system down for everybody.</li>
+        <li>On any device, open the browser and go to the address for the HP, for example <code>http://hp-elitedesk:3000</code>. Bookmark it.</li>
+        <li>Type your username and password and sign in.</li>
+      </ol>
+
+      <div class="note stuck">
+        <span class="tag">If it says "Reconnecting to the server"</span>
+        <p>The network hiccuped. Wait — it retries by itself and the banner clears. Anything you were saving is retried automatically and <em>cannot</em> be recorded twice. If the banner is still there after a minute, check the HP is switched on and the console window is still open.</p>
+      </div>
+
+      <h3>Install it like a proper program</h3>
+      <p>In Chrome or Edge there is a small install icon in the address bar. Press it and the system gets its own window and its own icon on the taskbar, with no browser clutter. Do this on every machine that uses it daily. It updates itself; you never reinstall.</p>
+
+      <h3>Your own login</h3>
+      <p>Everybody who touches the system should have their own account. Every action is stamped with a name in the audit trail, and that record is worthless if four people share one login. Never do daily work as the shared <code>admin</code> account.</p>
+
+      <h3>Finding your way around</h3>
+      <p>The list down the left is the whole system. It is grouped into three: the day-to-day screens at the top, the financial and reporting screens in the middle, and the administration screens at the bottom. The <span class="ui">Notifications Hub</span> carries a number badge — that is how many things are waiting for someone.</p>
+    </section>
+
+    <!-- ============ 03 ============ -->
+    <section id="screens">
+      <p class="sec-num">Section 03</p>
+      <h2 class="sec">What each screen is for</h2>
+
+      <p>Read this once and you will rarely have to guess where something lives.</p>
+
+      <h3>Everyday</h3>
+      <div class="tw"><table>
+        <thead><tr><th>Screen</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr><td><strong>General Dashboard</strong></td><td>The morning glance. Who is in arrears, what came in this month, what was billed, the collection rate, and quick buttons to take a payment on the spot.</td></tr>
+          <tr><td><strong>Notifications Hub</strong></td><td>Your to-do list. Overdue accounts, leases about to expire, bills unpaid, months not yet billed. Work it until the badge is empty.</td></tr>
+          <tr><td><strong>Units Register</strong></td><td>The 16 villas. Who owns each one, who lives in it, what they pay, their contact details, occupancy history, and repair jobs.</td></tr>
+          <tr><td><strong>HOA &amp; Tenants Ledger</strong></td><td>The money engine. Bill the month, take payments, look up any receipt ever issued. You will spend most of your time here.</td></tr>
+          <tr><td><strong>Short-Term Bookings</strong></td><td>Guest reservations — dates, rates, deposits, the calendar, and platform feeds from Airbnb and Booking.com.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Money and reporting</h3>
+      <div class="tw"><table>
+        <thead><tr><th>Screen</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Utilities &amp; Expenses</strong></td><td>Metered water and light readings, every bill the property pays, and the fixed monthly costs.</td></tr>
+          <tr><td><strong>Operational Reports</strong></td><td>The proper operating statement for any date range — billed against received, expenses by category, printable, plus a spreadsheet export.</td></tr>
+          <tr><td><strong>Bank Reconciliation</strong></td><td>Ticking the ledger off against the actual bank statement. The only screen that checks the books against something outside the books.</td></tr>
+          <tr><td><strong>Owners Statements</strong></td><td>What each owner is due — their villa's income and costs for a period, ready to print or email.</td></tr>
+          <tr><td><strong>Charts &amp; Snapshots</strong></td><td>The same money as pictures. Also where the <strong>board pack</strong> is produced for committee meetings.</td></tr>
+          <tr><td><strong>Financial Projections</strong></td><td>A forward look for the strata corporation: maintenance contributions against running costs. Rent and guest income are deliberately excluded — they belong to individual owners, not the body corporate.</td></tr>
+          <tr><td><strong>Annual Report</strong></td><td>The owners' report for the AGM. Figures are generated from the books; you only type the narrative.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Administration</h3>
+      <div class="tw"><table>
+        <thead><tr><th>Screen</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Audit Trail</strong></td><td>Every action ever taken, by whom, when, with the before and after. Read-only. This is where you settle an argument.</td></tr>
+          <tr><td><strong>System Settings</strong></td><td>Five tabs: <strong>General</strong>, <strong>Role permissions</strong>, <strong>Staff accounts</strong>, <strong>Calendar feeds</strong>, <strong>Backup &amp; recovery</strong>.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ============ 04 ============ -->
+    <section id="first-week">
+      <p class="sec-num">Section 04</p>
+      <h2 class="sec">Setting up, in the right order</h2>
+
+      <p>Do these once, in this order, before the system goes live. Getting the order wrong creates charges you then have to unpick.</p>
+
+      <div class="note careful">
+        <span class="tag">Do this first &mdash; before anything else</span>
+        <p>Go to <span class="ui">System Settings</span> &rarr; <span class="ui">General</span> &rarr; <strong>"The books begin on"</strong> and set it to <strong>1 September 2026</strong>. Save.</p>
+        <p>This tells the system that nothing before September is its business. Without it, entering a tenant who moved in years ago makes the system bill them for their first and last month all over again — money they paid long ago to whoever kept the records before. It would also flood the Notifications Hub with an alert for every unbilled month back to their move-in date.</p>
+      </div>
+
+      <ol class="steps">
+        <li><strong>Set "The books begin on"</strong> to 1 September 2026, as above.</li>
+        <li><strong>Check the exchange rate</strong> on the same General tab. It only drives the grey "&asymp;" figures, but a wildly wrong rate looks careless on a printed page.</li>
+        <li><strong>Go through all 16 villas</strong> in the Units Register. For each one set the owner and their contact details, the rent or maintenance amount, the currency, and — importantly — <strong>the day of the month the payment is due</strong>. Not everyone pays on the 1st, and this is where you say so. See <a href="#due-days">due days</a>.</li>
+        <li><strong>Enter the tenants who are already living there</strong>, with their real move-in dates. Because you set the cutover date in step 1, this raises no charges at all — it simply records who is there and since when. See <a href="#move-in">Section 10</a>.</li>
+        <li><strong>Create a login for each member of staff</strong> under <span class="ui">System Settings</span> &rarr; <span class="ui">Staff accounts</span>, and set what each role is allowed to do under <span class="ui">Role permissions</span>. See <a href="#staff">Section 17</a>.</li>
+        <li><strong>Point backups at a drive that is not this computer</strong> — <span class="ui">System Settings</span> &rarr; <span class="ui">Backup &amp; recovery</span>. See <a href="#backup">Section 18</a>. Do not skip this.</li>
+        <li><strong>Then, and only then, post September</strong> — see <a href="#month">Section 05</a>. That is the first charge any existing tenant will see, and it is an ordinary month's rent. Exactly as it should be.</li>
+      </ol>
+
+      <h3 id="due-days">Payment due days</h3>
+      <p>Each villa has its own rent due day and its own maintenance due day, set on the villa's record in the Units Register. A tenant due on the 15th is not counted as late on the 2nd — arrears and the 30/60/90-day ageing all count from that villa's own due day.</p>
+      <p>Set these before you post the first month. Changing it later does not go back and re-date charges already raised.</p>
+
+      <div class="note stuck">
+        <span class="tag">Note</span>
+        <p>Villas cannot be created or deleted — the property has 16 and the system knows them. You edit the details on each one; you never add a seventeenth.</p>
+      </div>
+    </section>
+
+    <!-- ============ 05 ============ -->
+    <section id="month">
+      <p class="sec-num">Section 05</p>
+      <h2 class="sec">The monthly routine</h2>
+
+      <p>Once you are running, the whole job is a loop. This is it.</p>
+
+      <h3>At the start of the month</h3>
+      <ol class="steps">
+        <li>Open <span class="ui">HOA &amp; Tenants Ledger</span>.</li>
+        <li>Top right, check the month shown next to <strong>Post charges for</strong> is the month you mean.</li>
+        <li>Press <span class="ui">Post month</span>.</li>
+        <li>Every occupied villa is now billed its rent, and every owner their maintenance. A green bar confirms the month is fully posted.</li>
+      </ol>
+
+      <div class="note rule">
+        <span class="tag">Safe to press twice</span>
+        <p>Posting the same month again adds nothing. If you are not sure whether someone already did it, just press it — the system skips anything already billed and tells you how many it skipped. You cannot double-bill this way.</p>
+      </div>
+
+      <h3>Through the month</h3>
+      <ul>
+        <li>Take payments as they come in — <a href="#payments">Section 07</a>.</li>
+        <li>Print or email the receipt while the person is still standing there.</li>
+        <li>Add any late fees or recharged repairs with <span class="ui">Bill a one-off</span> — <a href="#one-off">Section 06</a>.</li>
+        <li>Enter utility bills and expenses as they arrive — <a href="#utilities">Section 13</a>.</li>
+        <li>Clear the <span class="ui">Notifications Hub</span> badge.</li>
+      </ul>
+
+      <h3>At the end of the month</h3>
+      <ol class="steps">
+        <li>Confirm any payments that were logged as expected and have now actually landed — <span class="ui">Receipts ledger</span> &rarr; <span class="ui">Confirm received</span>.</li>
+        <li>Tick the month off against the bank statement — <a href="#bank">Section 16</a>.</li>
+        <li>Print the operating statement from <span class="ui">Operational Reports</span> and file it.</li>
+        <li>Take a snapshot backup — <a href="#backup">Section 18</a>.</li>
+      </ol>
+    </section>
+
+    <!-- ============ 06 ============ -->
+    <section id="charges">
+      <p class="sec-num">Section 06</p>
+      <h2 class="sec">Billing: putting a charge on an account</h2>
+
+      <p>There are exactly two ways money gets onto someone's account, and knowing which to use takes two seconds.</p>
+
+      <div class="tw"><table>
+        <thead><tr><th>Use</th><th>For</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Post month</strong></td><td>The ordinary monthly rent and the monthly HOA maintenance fee. Everyone at once.</td><td>Top right of the HOA &amp; Tenants Ledger</td></tr>
+          <tr><td><strong>Bill a one-off</strong></td><td>Anything else at all — a late fee, a repair recharged to the tenant who caused it, a fine, an amenity fee, legal costs, a special assessment.</td><td>Button on the HOA &amp; Tenants Ledger</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3 id="one-off">Billing a one-off</h3>
+      <ol class="steps">
+        <li>Open <span class="ui">HOA &amp; Tenants Ledger</span> and press <span class="ui">Bill a one-off</span>.</li>
+        <li>Pick the villa.</li>
+        <li>Pick the account it goes on: <strong>Rent</strong> puts it on the tenant, <strong>Maintenance</strong> puts it on the owner. Choose carefully — this decides who gets the bill.</li>
+        <li>Choose the type (late fee, repair recharge, fine, and so on), enter the amount and the currency.</li>
+        <li>Set the due date and write a plain description. Whatever you type here appears on their statement, so write it for them to read, not for you.</li>
+        <li>Save.</li>
+      </ol>
+      <p>A one-off behaves exactly like rent from then on: it ages into arrears, it appears on the statement, and an ordinary payment settles it.</p>
+
+      <h3>How a payment is applied</h3>
+      <p>You do not pick which charge a payment settles. The system applies it to the <strong>oldest unpaid month first</strong> and works forward. That is standard practice and it is what makes the ageing report honest.</p>
+    </section>
+
+    <!-- ============ 07 ============ -->
+    <section id="payments">
+      <p class="sec-num">Section 07</p>
+      <h2 class="sec">Taking money — the most important section</h2>
+
+      <div class="note careful">
+        <span class="tag">Read this even if you read nothing else</span>
+        <p>There are two different buttons and they mean two completely different things. Using the wrong one is the commonest mistake anyone makes with this system.</p>
+      </div>
+
+      <div class="tw"><table>
+        <thead><tr><th>Button</th><th>Means</th><th>What actually happens</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Receive payment</strong><br><span style="color:var(--ink-faint);font-size:13px">on an arrears alert or a ledger row</span></td>
+            <td>The money is in my hand <em>now</em>.</td>
+            <td>A receipt number is issued straight away. The balance drops. The arrears alert disappears. It shows in every report.</td>
+          </tr>
+          <tr>
+            <td><strong>Record payment</strong><br><span style="color:var(--ink-faint);font-size:13px">the button at the top of the ledger</span></td>
+            <td>It is promised but has not arrived — a cheque in the post, a transfer they say they sent.</td>
+            <td>Logged as <em>awaiting funds</em>. <strong>No receipt number. No change to any balance or report.</strong> Nothing at all until you confirm it.</td>
+          </tr>
+        </tbody>
+      </table></div>
+
+      <div class="note rule">
+        <span class="tag">Why it works this way</span>
+        <p>Every single figure in this system — balances, arrears, collection rate, projections, the annual report — comes from <strong>confirmed receipts only</strong>. A payment that never actually turned up can therefore never flatter your numbers. That is a protection, not an obstacle.</p>
+      </div>
+
+      <h3>Taking a payment that is in hand</h3>
+      <ol class="steps">
+        <li>Find the account. Quickest routes: the arrears list on the <span class="ui">General Dashboard</span>, or the <span class="ui">Tenant rent</span> / <span class="ui">Owner maintenance</span> tab of the ledger.</li>
+        <li>Press <span class="ui">Receive payment</span> on that row.</li>
+        <li>Enter the amount, the currency, how they paid, and any reference (cheque number, transfer reference).</li>
+        <li>Save. <strong>The receipt opens automatically.</strong> Print it or email it before you close it.</li>
+      </ol>
+
+      <div class="note careful">
+        <span class="tag">If it refuses the currency</span>
+        <p>You are receipting in a currency the account is not billed in. Nine times out of ten it is a slip — change it. If the money genuinely came in the other currency you can force it through, but that receipt is then reported separately as a currency mismatch and is <strong>not</strong> netted off the balance, because the two currencies are never combined. Sort it properly rather than forcing it.</p>
+      </div>
+
+      <h3>Confirming a payment that has now arrived</h3>
+      <ol class="steps">
+        <li>Open <span class="ui">HOA &amp; Tenants Ledger</span> &rarr; <span class="ui">Receipts ledger</span>.</li>
+        <li>Find the entry — it is marked as awaiting funds. Use the search box for the payer, the villa or the reference.</li>
+        <li>Press <span class="ui">Confirm received</span>.</li>
+        <li>That is the moment the receipt number is issued and the money reaches the balances and the reports.</li>
+      </ol>
+      <p>The same rule governs utility bills and booking deposits: the bill stays unpaid, and the deposit stays expected, until the receipt is confirmed.</p>
+    </section>
+
+    <!-- ============ 08 ============ -->
+    <section id="receipts">
+      <p class="sec-num">Section 08</p>
+      <h2 class="sec">Receipts</h2>
+
+      <p><strong>Yes, the system issues receipts by itself.</strong> You never write a receipt number. The moment a payment is confirmed as received, the next number in sequence is stamped on it automatically, and the printable receipt opens on screen.</p>
+
+      <h3>Printing</h3>
+      <p>Press <strong>Print</strong>. Your browser's print dialog opens. To keep a digital copy instead of paper, choose <strong>Save as PDF</strong> as the destination.</p>
+
+      <h3>Emailing</h3>
+      <p>Press <strong>Email</strong> and a pre-filled draft opens in your own mail program, addressed to the tenant, owner or guest on file. <strong>You</strong> read it and <strong>you</strong> press send.</p>
+      <p>The system never sends mail on its own. It does not have your mail password and nothing leaves without you seeing it. A mail draft cannot carry an attachment, so the receipt details are written into the body of the message. If someone wants a formal copy, save the receipt as a PDF first and attach it yourself.</p>
+      <p>The Email button is greyed out when there is no email address on file for that person. Add one on their record in the Units Register.</p>
+
+      <h3>Finding an old receipt</h3>
+      <p><span class="ui">HOA &amp; Tenants Ledger</span> &rarr; <span class="ui">Receipts ledger</span>. Search by receipt number, payer name, villa or reference, and filter by category and date. Open any of them to view or reprint.</p>
+
+      <div class="note rule">
+        <span class="tag">Reprints are honest</span>
+        <p>A second copy is printed with <strong>REPRINT</strong> shown on it, and the system counts how many times it has been printed. A voided receipt prints stamped <strong>VOID</strong>. Nobody can quietly produce a clean duplicate.</p>
+      </div>
+
+      <h3>Other documents you can print</h3>
+      <ul>
+        <li><strong>Account statement</strong> — on the tenant and owner tabs, each row has a <span class="ui">Statement</span> button. A full itemised statement: every charge and payment in date order with a running balance and the closing position.</li>
+        <li><strong>Guest stay receipt</strong> — on the Short-Term Bookings list. The guest-facing document (villa, dates, nights, total, deposit, balance due on arrival), which is a different thing from the internal payment receipt.</li>
+        <li><strong>Unit ledger</strong> — the full financial history of one villa, including its occupancy history.</li>
+      </ul>
+    </section>
+
+    <!-- ============ 09 ============ -->
+    <section id="fixing">
+      <p class="sec-num">Section 09</p>
+      <h2 class="sec">Fixing a mistake</h2>
+
+      <p>Nothing in this system is ever deleted. Mistakes are corrected by cancelling the wrong record — visibly, with a reason and your name against it — and entering the right one. That is what an auditor expects to see, and it is why the books can be trusted.</p>
+
+      <h3>A payment entered wrongly</h3>
+      <ol class="steps">
+        <li>Find it in the <span class="ui">Receipts ledger</span>.</li>
+        <li>Press <span class="ui">Void receipt</span> (called reversing the payment).</li>
+        <li>Type a real reason. "Error" is useless in six months' time; "entered against Villa 4 in error, belongs to Villa 14" is useful.</li>
+        <li>Enter the payment again, correctly. A new receipt number is issued.</li>
+      </ol>
+      <p>The voided receipt stays in the ledger, marked VOID, with the reason and your name. It no longer affects any balance.</p>
+
+      <div class="note stop">
+        <span class="tag">Cannot be undone</span>
+        <p>Voiding is one-way. There is no un-void. Be sure before you confirm — and note that voiding needs the <em>Reverse payments</em> permission, so a junior may not have it.</p>
+      </div>
+
+      <h3>A charge raised in error</h3>
+      <p>Open the charges list for that villa from the ledger and void the charge with a reason. Charges are never deleted either. If you posted a month you did not mean to, void the individual charges — do not try to "unpost" it, there is no such thing.</p>
+
+      <h3>A tenant's name typed wrongly</h3>
+      <p>When you change a tenant's name the system stops and asks you which of two things you mean, because they are completely different and it cannot tell from the outside:</p>
+      <ul>
+        <li><strong>A correction</strong> — the name was spelt wrong. Nothing else changes. No new tenancy, no rent raised.</li>
+        <li><strong>A new tenant</strong> — somebody different has moved in. The old tenancy is closed and a new one opens, with first and last month's rent billed.</li>
+      </ul>
+      <p>Answer honestly. Choosing "new tenant" for a typo bills two months of rent that nobody owes.</p>
+    </section>
+
+    <!-- ============ 10 ============ -->
+    <section id="tenants">
+      <p class="sec-num">Section 10</p>
+      <h2 class="sec">Tenants</h2>
+
+      <p>A villa's record shows the <em>current</em> occupant. The history of everyone who has lived there is kept separately and is never edited away — you can always answer who was in Villa 9 in 2024 and what they were paying.</p>
+
+      <h3 id="move-in">Moving a tenant in</h3>
+      <ol class="steps">
+        <li>Open the villa in the <span class="ui">Units Register</span>.</li>
+        <li>Set it to a long-term lease and enter the tenant's name, phone and email.</li>
+        <li>Enter the monthly rent and the currency, and the day of the month rent is due.</li>
+        <li>Use <span class="ui">Edit tenancy dates</span> to record the date they <em>actually moved in</em> — not the day you did the paperwork.</li>
+        <li>If there is a fixed lease term, enter the <strong>lease end date</strong>. Leave it empty for month-to-month.</li>
+        <li>Save.</li>
+      </ol>
+
+      <div class="note careful">
+        <span class="tag">What gets billed on move-in</span>
+        <p>For a tenant starting <strong>on or after</strong> the date in "The books begin on", recording the move-in date bills <strong>two</strong> months at once: their first month, and their last month held in advance.</p>
+        <p>The advance is not a deposit and is not refunded — it pays for their final month. When the tenancy is eventually closed, that month is not charged again. A tenant who stays 14 months is charged exactly 14 months' rent.</p>
+        <p>For a tenant who moved in <strong>before</strong> that date, nothing is billed at all. Their tenancy is simply recorded.</p>
+      </div>
+
+      <div class="note rule">
+        <span class="tag">Part-month move-ins</span>
+        <p>A tenant moving in on the 20th is billed the <strong>whole</strong> month. Rent is not split by days here — that is the policy, not an oversight. The charge says so on its face ("full month; moved in 20 Sep, not prorated") so it never looks like a billing error to whoever reads the statement.</p>
+      </div>
+
+      <h3>Lease expiry</h3>
+      <p>A lease end date is not the date the tenant left — it is the date the agreement runs to. Leases within 60 days of expiry, and any already lapsed, are flagged on the dashboard and in the Notifications Hub so you have time to renew.</p>
+      <p>An expired term does <strong>not</strong> end the tenancy. It carries on month to month at the same rent until it is renewed or notice is served.</p>
+
+      <h3>Rent increases</h3>
+      <p>Rent is recorded on the tenancy as agreed at the time. Raising the rent for a new tenant does not rewrite what the previous one was charged, so the history stays true.</p>
+
+      <h3 id="move-out">Moving a tenant out</h3>
+      <ol class="steps">
+        <li>Open the villa and use <span class="ui">Edit tenancy dates</span>.</li>
+        <li>Enter the date they actually left and tick the box to close the tenancy.</li>
+        <li>Give the reason.</li>
+        <li>Save. If an advance was held, their final month is not charged — and if it had already been billed, that charge is voided automatically with the reason recorded.</li>
+      </ol>
+
+      <div class="note careful">
+        <span class="tag">For tenants who were already here in September 2026</span>
+        <p>These tenants have no advance recorded in this system, because their first-and-last was collected years ago outside it. When one of them moves out, the system will bill their final month normally — it has nothing to spend.</p>
+        <p>When that happens, void that final month's rent charge with the reason "covered by last month's rent paid in advance at move-in". Nothing to do now; just do not let it catch you out at the first move-out.</p>
+      </div>
+
+      <h3>Eviction</h3>
+      <p>When a tenant leaves owing rent, that debt should stop appearing as if it were still collectable. A <strong>Manager or Administrator</strong> opens the villa and uses <span class="ui">Evict tenant</span> on the active tenancy.</p>
+      <p>This closes the tenancy as an eviction with the date and reason, <strong>writes off the unpaid rent as bad debt</strong> so it leaves the dashboard and the hub, and frees the villa. Nothing is deleted — the tenancy, every receipt, and the amount written off all stay on the record and in the audit trail, and the eviction shows on the occupancy history with the sum written off.</p>
+      <p>A Junior or Finance Officer will not see this button.</p>
+    </section>
+
+    <!-- ============ 11 ============ -->
+    <section id="owners">
+      <p class="sec-num">Section 11</p>
+      <h2 class="sec">Owners and the HOA maintenance account</h2>
+
+      <p>Every villa has an owner, and every owner pays a monthly maintenance contribution to the body corporate. This is a separate account from rent, with its own balance, its own currency, and its own due day.</p>
+
+      <ul>
+        <li><strong>Owner maintenance</strong> tab on the ledger works exactly like the tenant tab — same balances, same <span class="ui">Receive payment</span>, same <span class="ui">Statement</span> button.</li>
+        <li>The monthly fee is billed by the same <span class="ui">Post month</span> that bills the rent.</li>
+        <li>A special assessment or any other owner charge is raised with <span class="ui">Bill a one-off</span> against the <strong>Maintenance</strong> account.</li>
+        <li>An owner who lives in their own villa still has a maintenance account; they simply have no tenant.</li>
+      </ul>
+
+      <h3>Owners Statements</h3>
+      <p>The <span class="ui">Owners Statements</span> screen is a different thing from the account statement. It shows an owner what their villa earned and cost over a period — useful when you manage the villa on their behalf. Pick a date range (last month, this month, last 3 or 6 months, year to date, or a custom range) and print or email it.</p>
+    </section>
+
+    <!-- ============ 12 ============ -->
+    <section id="guests">
+      <p class="sec-num">Section 12</p>
+      <h2 class="sec">Short-term guest bookings</h2>
+
+      <h3>Entering a reservation</h3>
+      <ol class="steps">
+        <li>Open <span class="ui">Short-Term Bookings</span> and press <span class="ui">New reservation</span>.</li>
+        <li>Pick the villa and the arrival and departure dates. The system checks availability as you type and will not let you double-book.</li>
+        <li>Enter the guest's name and contact details, the nightly rate or total stay value, and any deposit taken.</li>
+        <li>Save.</li>
+      </ol>
+
+      <div class="note rule">
+        <span class="tag">How nights are counted</span>
+        <p>A stay occupies the nights from arrival up to but <strong>not including</strong> departure. So a guest leaving on the 20th and another arriving on the 20th is a perfectly valid same-day changeover, not a clash. The calendar and the availability check both work this way.</p>
+      </div>
+
+      <h3>Deposits and balances</h3>
+      <p>A deposit follows the same rule as everything else: it stays <em>expected</em> until the receipt is confirmed. Once received it shows in "Deposits held", and the remainder shows in "Balances due on arrival" on the dashboard.</p>
+      <p>Damage deposits are handled separately on the booking so they are not mixed up with the stay payment.</p>
+
+      <h3>Guest receipt</h3>
+      <p>Each reservation has a <span class="ui">Guest receipt</span> button. This is the document you give the guest — villa, dates, nights, total, deposit paid, balance due on arrival. It is separate from the internal payment receipt kept in the finance ledger.</p>
+
+      <h3>Airbnb, Booking.com and VRBO calendars</h3>
+      <p>Under <span class="ui">System Settings</span> &rarr; <span class="ui">Calendar feeds</span> you can paste the <code>.ics</code> export link that each platform publishes for a listing, then press <span class="ui">Sync now</span>.</p>
+      <p>Know what you are getting. A platform feed carries <strong>booked dates only</strong> — no guest contact details and no pricing, because the platforms do not publish them. So:</p>
+      <ul>
+        <li>Imported stays arrive with a stay value of zero. You must type in what it is worth.</li>
+        <li>Anything clashing with a booking you already have is <strong>skipped</strong>, never silently overwritten.</li>
+        <li>Re-syncing updates the dates but leaves everything you typed alone.</li>
+      </ul>
+
+      <div class="note stop">
+        <span class="tag">Cannot be undone</span>
+        <p>A cancelled reservation cannot be reinstated. If a guest changes their mind again, create a new reservation.</p>
+      </div>
+    </section>
+
+    <!-- ============ 13 ============ -->
+    <section id="utilities">
+      <p class="sec-num">Section 13</p>
+      <h2 class="sec">Utilities and expenses</h2>
+
+      <p>This screen has three tabs, and they hold three different kinds of thing.</p>
+
+      <h3>Metered utilities</h3>
+      <p>For water and electricity that are metered per villa. Enter the billing period and the reading, and the system works out consumption and what is owed.</p>
+      <p>A utility bill is <strong>unpaid</strong> until its receipt is confirmed — the same rule as everywhere else. Settling it from this screen records the payment and issues the receipt.</p>
+
+      <h3>Expense register</h3>
+      <p>Every bill the property pays: contractors, gardening, security, insurance, repairs, supplies. Record the vendor, the category, the amount, the currency, the date and — where it matters — the due date. An expense can be attached to a specific villa or booked to the property as a whole.</p>
+      <p>The categories you pick here are what group the expense analysis in the reports and the charts, so use them consistently. Common vendors are kept in a list under <span class="ui">System Settings</span> &rarr; <span class="ui">General</span> so the names stay consistent rather than being retyped four different ways.</p>
+
+      <h3>Monthly costs</h3>
+      <p>Fixed recurring costs that happen every month without a fresh bill each time. Set them up once and post them monthly rather than retyping them.</p>
+
+      <div class="note stuck">
+        <span class="tag">Charging a repair back to a tenant</span>
+        <p>These are two separate acts. Record what the property <em>paid</em> as an expense here. Then, if a tenant is to be charged for it, raise a <span class="ui">Bill a one-off</span> against their rent account. One is money out, the other is money owed to you.</p>
+      </div>
+    </section>
+
+    <!-- ============ 14 ============ -->
+    <section id="maintenance">
+      <p class="sec-num">Section 14</p>
+      <h2 class="sec">Repairs and maintenance requests</h2>
+
+      <p>A repair logged against a villa is tracked as a job, not left as a note. Open the villa in the <span class="ui">Units Register</span> and use <span class="ui">Maintenance request</span>.</p>
+
+      <ol class="steps">
+        <li>It opens as <strong>Reported</strong> — somebody said something is broken.</li>
+        <li>Assign it to a contractor and schedule it.</li>
+        <li>Move it along as the work progresses.</li>
+        <li>Close it as <strong>Completed</strong> or <strong>Cancelled</strong>, with the date, what was done and what it cost.</li>
+      </ol>
+
+      <p>When you close it you can raise the cost as a property expense against that villa in the same step. That happens <strong>once only</strong>, so it can never reach the accounts twice.</p>
+
+      <p>Other kinds of activity — a pool booking, a noise complaint, a notice served — are recorded as a note of something that happened. They are not tracked as work with a status, because they are not jobs.</p>
+    </section>
+
+    <!-- ============ 15 ============ -->
+    <section id="reports">
+      <p class="sec-num">Section 15</p>
+      <h2 class="sec">Reports and what each one is for</h2>
+
+      <p>All of these read the same underlying figures, so they cannot contradict each other or the ledger. What differs is the shape and the audience.</p>
+
+      <div class="tw"><table>
+        <thead><tr><th>Report</th><th>Audience</th><th>What it shows</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Operational Reports</strong></td><td>You and the accountant</td><td>The reconcilable operating statement for any date range: opening and closing receivables, billed against received, expenses by category. Printable, with a spreadsheet export.</td></tr>
+          <tr><td><strong>Account statement</strong></td><td>One tenant or owner</td><td>Their charges and payments in date order with a running balance. Printed from the row's <span class="ui">Statement</span> button.</td></tr>
+          <tr><td><strong>Owners Statements</strong></td><td>One owner</td><td>What their villa earned and cost over a period.</td></tr>
+          <tr><td><strong>Charts &amp; Snapshots</strong></td><td>Anyone who wants the shape</td><td>Cash movement month by month, expenses by category, per currency. Also where the <strong>board pack</strong> is produced.</td></tr>
+          <tr><td><strong>Board pack</strong></td><td>The committee</td><td>One document for one date range: the figures a committee votes on, with the charts that evidence them. Found inside Charts &amp; Snapshots.</td></tr>
+          <tr><td><strong>Financial Projections</strong></td><td>The strata corporation</td><td>A forward, straight-line view of maintenance contributions against operating expenditure. Exports to a spreadsheet.</td></tr>
+          <tr><td><strong>Annual Report</strong></td><td>All owners, at the AGM</td><td>The report circulated before the meeting. Identical for every owner and carrying nothing personal — no unit balances, no arrears by name.</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="note rule">
+        <span class="tag">Why the Annual Report is a form and not a document editor</span>
+        <p>Every figure, table and chart is generated from the books into fixed slots. The only things you type are the eight narrative boxes. This is deliberate: nobody can type over a number, so the arithmetic in the printed report is always the arithmetic in the books.</p>
+        <p>Your wording carries forward year to year — opening next year's report starts from this year's text with every figure recalculated, rather than from a blank page.</p>
+      </div>
+
+      <div class="note careful">
+        <span class="tag">A note on projections</span>
+        <p>Financial Projections deliberately excludes rent and guest income. That money belongs to individual proprietors, not to the body corporate, so putting it in a strata projection would be wrong. It is not a bug.</p>
+      </div>
+    </section>
+
+    <!-- ============ 16 ============ -->
+    <section id="bank">
+      <p class="sec-num">Section 16</p>
+      <h2 class="sec">Bank reconciliation</h2>
+
+      <p>Every other figure in this system comes from the property's own records. That makes them consistent with each other, which is <em>not</em> the same as true. A transfer that was promised and never sent, a cheque that bounced, and cash that was receipted but never banked all look identical to money that actually arrived.</p>
+
+      <p>This screen is the only place the books are checked against something outside the books. It is a manual tick-off, on purpose — it works with a paper statement, a PDF, or your banking app open on a phone.</p>
+
+      <ol class="steps">
+        <li>Open <span class="ui">Bank Reconciliation</span>.</li>
+        <li>Choose the period and the currency. One period, one currency at a time.</li>
+        <li>Put the bank statement beside the screen and work down the list, ticking each receipt you can actually see on the statement.</li>
+        <li>Drive the figure at the top of the screen to <strong>zero</strong>. That number is the whole point of the exercise.</li>
+        <li>Print the completed reconciliation for the file.</li>
+      </ol>
+
+      <p>Anything left unticked at the end is exactly what you want to know about: money the books think you have and the bank does not.</p>
+    </section>
+
+    <!-- ============ 17 ============ -->
+    <section id="staff">
+      <p class="sec-num">Section 17</p>
+      <h2 class="sec">Staff accounts and who can do what</h2>
+
+      <p>There are four roles. Only an <strong>Administrator</strong> can create or change staff accounts.</p>
+
+      <div class="tw"><table>
+        <thead><tr><th>Role</th><th>Broadly</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Administrator</strong></td><td>Everything, always. Also the only role that can manage staff accounts.</td></tr>
+          <tr><td><strong>Manager</strong></td><td>Day-to-day authority including the settings, evictions and voiding receipts.</td></tr>
+          <tr><td><strong>Finance Officer</strong></td><td>The money work, without the veto powers.</td></tr>
+          <tr><td><strong>Junior Officer</strong></td><td>Collects rent and issues receipts. Cannot evict or void.</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>The individual permissions</h3>
+      <p>Under <span class="ui">System Settings</span> &rarr; <span class="ui">Role permissions</span> you can switch each of these on or off per role:</p>
+      <ul>
+        <li>Record payments &amp; issue receipts</li>
+        <li>Create guest reservations</li>
+        <li>Edit guest reservations</li>
+        <li>Cancel reservations &amp; issue refunds</li>
+        <li>Edit the unit register (rates, owners, tenants)</li>
+        <li>Record utility meter readings</li>
+        <li>Record property expenses</li>
+        <li>Post monthly rent &amp; maintenance charges</li>
+        <li>Reverse payments &amp; void receipts</li>
+        <li>Modify settled ledger records</li>
+      </ul>
+
+      <p>Recording payments is granted to every role by default and for a good reason: when nobody senior is on site the junior officer still has to run the day, and collecting rent <em>is</em> the day. It is a permission rather than an open door so it can still be withdrawn if you ever want to.</p>
+
+      <div class="note rule">
+        <span class="tag">These are real locks</span>
+        <p>Permissions are enforced on the server for every single request, not merely hidden on the screen. Someone who knows their way around a browser cannot get past them.</p>
+      </div>
+
+      <h3>Adding somebody</h3>
+      <ol class="steps">
+        <li><span class="ui">System Settings</span> &rarr; <span class="ui">Staff accounts</span>.</li>
+        <li>Create the account with their real name, a username and a role.</li>
+        <li>Give them the starting password in person. They are made to change it at first sign-in.</li>
+      </ol>
+
+      <h3>When somebody leaves</h3>
+      <p>Disable their account the same day. Do not delete it and do not hand their login to their replacement — every receipt they ever issued is stamped with their name, and that record needs to stay meaningful.</p>
+
+      <h3>The Audit Trail</h3>
+      <p>Every action is recorded with who did it, when, and what changed from what to what. It is read-only — nobody can edit or clear it, including an Administrator. When there is a question about who did something, this is the answer.</p>
+    </section>
+
+    <!-- ============ 18 ============ -->
+    <section id="backup">
+      <p class="sec-num">Section 18</p>
+      <h2 class="sec">Backups and getting your records back</h2>
+
+      <p>All the records live in a single file on the HP called <code>db.json</code>. It is written carefully — a crash or a power cut cannot leave it half-written, and two people saving at the same moment cannot overwrite each other. A dated copy is kept automatically every day, and the last 30 are retained.</p>
+
+      <div class="note careful">
+        <span class="tag">Those daily copies are not enough on their own</span>
+        <p>They sit on the same disk as the file they protect. That survives a bad edit. It does not survive a failed hard drive, a stolen computer, or someone deleting the folder. You need a copy somewhere else.</p>
+      </div>
+
+      <h3>Set up an off-machine backup (do this once)</h3>
+      <ol class="steps">
+        <li>Plug a USB stick or external drive into the HP.</li>
+        <li>Go to <span class="ui">System Settings</span> &rarr; <span class="ui">Backup &amp; recovery</span>.</li>
+        <li>Paste the folder path — on Windows something like <code>E:\Villaggio-Backups</code>.</li>
+        <li>Press <span class="ui">Save and back up now</span>.</li>
+      </ol>
+      <p>The path is tested by actually writing to it, so you find out immediately if it is wrong. A copy is taken there and then, and another follows every day. If the drive is later unplugged, the path is remembered so you never retype it, the copy on the HP still succeeds, and the screen tells you plainly that the external folder could not be written to rather than quietly showing nothing.</p>
+
+      <h3>Take a snapshot before anything risky</h3>
+      <p><span class="ui">System Settings</span> &rarr; <span class="ui">Backup &amp; recovery</span> &rarr; <span class="ui">Download a snapshot</span> gives you a single file containing every record. Passwords and sessions are stripped out, so it is safe to email to yourself or drop in cloud storage.</p>
+      <p>Do this before a software update, before a bulk change, and at the end of every month.</p>
+
+      <h3>Restoring</h3>
+      <ol class="steps">
+        <li>Close the program on the HP (close the console window).</li>
+        <li>Copy the backup file you want over <code>db.json</code>.</li>
+        <li>Start the program again.</li>
+      </ol>
+      <p>Backups are plain text — you can open one and read it before you restore it, to be sure it is the one you want.</p>
+
+      <div class="note rule">
+        <span class="tag">It refuses to start rather than damage your records</span>
+        <p>If <code>db.json</code> is ever unreadable, the program will not start. That is a safety feature, not a failure: it would rather stop than replace your records with an empty file. Restore a backup and start it again.</p>
+      </div>
+
+      <h3>Updating the program</h3>
+      <p>Your records and the program are completely separate files. Updating replaces only the program and never touches your data.</p>
+      <ol class="steps">
+        <li>On the HP, close the current program.</li>
+        <li>Put the new program file in the same folder, replacing the old one.</li>
+        <li>Start it. It checks its own records on start and prints the result — on a healthy database it says <strong>"no contradictions found"</strong>.</li>
+        <li>On every other device, press <strong>Ctrl+Shift+R</strong> once to pick up the new screens.</li>
+      </ol>
+    </section>
+
+    <!-- ============ 19 ============ -->
+    <section id="trouble">
+      <p class="sec-num">Section 19</p>
+      <h2 class="sec">When something looks wrong</h2>
+
+      <p>Work down this list. Nearly everything is one of these.</p>
+
+      <h3>"Nobody owes anything, but they definitely do"</h3>
+      <p>The month has not been posted. Go to the ledger and press <span class="ui">Post month</span>. Remember: nothing is owed until it is billed.</p>
+
+      <h3>"I entered a payment and the balance did not change"</h3>
+      <p>You used <span class="ui">Record payment</span> rather than <span class="ui">Receive payment</span>, so it is sitting as awaiting funds. Open the <span class="ui">Receipts ledger</span>, find it, and press <span class="ui">Confirm received</span>. See <a href="#payments">Section 07</a>.</p>
+
+      <h3>"A payment shows in the ledger but the balance ignores it"</h3>
+      <p>It was receipted in the wrong currency, so it is deliberately not netted off — a yellow note at the top of the ledger names the accounts affected. Void that receipt and enter it in the right currency.</p>
+
+      <h3>"The totals do not add up across villas"</h3>
+      <p>Check whether you are looking at a mix of JMD and USD villas. They are never added together, anywhere. Each currency has its own total.</p>
+
+      <h3>"A tenant who has been here for years is showing a huge debt"</h3>
+      <p>"The books begin on" is not set, or is set to the wrong date. Go to <span class="ui">System Settings</span> &rarr; <span class="ui">General</span> and set it to <strong>1 September 2026</strong>. Then void the charges that were wrongly raised against months before that date.</p>
+
+      <h3>"Somebody is showing as late and they are not"</h3>
+      <p>Check that villa's rent due day in the Units Register. If it says 1 and they actually pay on the 15th, fix it. Note that charges already raised keep the due date they were given.</p>
+
+      <h3>"An imported Airbnb booking has no value on it"</h3>
+      <p>Correct and expected. Platform calendars publish dates only — never prices or guest details. Type the stay value in yourself.</p>
+
+      <h3>"I cannot see a button somebody else has"</h3>
+      <p>Your role does not have that permission. An Administrator can adjust it under <span class="ui">Role permissions</span>, or do the action for you. Evicting and voiding are restricted on purpose.</p>
+
+      <h3>"Reconnecting to the server&hellip;"</h3>
+      <p>Wait. It retries by itself and cannot double-record. If it persists: check the HP is on and its console window is still open; check the network. If a save does eventually fail, your form keeps everything you typed — just press save again once the banner clears. Nothing you entered is lost.</p>
+
+      <h3>"The screens look like the old version"</h3>
+      <p>Press <strong>Ctrl+Shift+R</strong>. Your browser is showing a cached copy of the screens. Balances are always fetched fresh, so this never affects the figures — only the layout.</p>
+
+      <h3>Still stuck</h3>
+      <p>Open the <span class="ui">Audit Trail</span> and look at what was actually done, by whom, and when. It records the before and after of every change, and it usually answers the question in under a minute.</p>
+    </section>
+
+    <!-- ============ 20 ============ -->
+    <section id="oneway">
+      <p class="sec-num">Section 20</p>
+      <h2 class="sec">Things that cannot be undone</h2>
+
+      <p>These are financial controls, not limitations. Each one exists so the records cannot be quietly rewritten.</p>
+
+      <div class="note stop">
+        <span class="tag">One-way, no exceptions</span>
+        <ul>
+          <li><strong>Voiding a receipt.</strong> It stays in the ledger marked VOID with the reason and your name. To correct a payment: void it, then enter a new one.</li>
+          <li><strong>Charges are never deleted</strong>, only voided with a reason.</li>
+          <li><strong>A cancelled reservation cannot be reinstated.</strong> Create a new one.</li>
+          <li><strong>Receipt numbers are sequential and never reused</strong> — including after restoring a backup.</li>
+          <li><strong>Reprints are marked as reprints</strong> and counted.</li>
+          <li><strong>The audit trail cannot be edited or cleared</strong> by anyone, including an Administrator.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ 21 ============ -->
+    <section id="glossary">
+      <p class="sec-num">Section 21</p>
+      <h2 class="sec">Glossary</h2>
+
+      <div class="tw"><table>
+        <thead><tr><th>Term</th><th>Means</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Charge</strong></td><td>Something billed to an account. Rent, a maintenance fee, a late fee, a recharged repair.</td></tr>
+          <tr><td><strong>Payment / receipt</strong></td><td>Money received against an account. Once confirmed it carries a receipt number.</td></tr>
+          <tr><td><strong>Balance</strong></td><td>Charges minus confirmed payments. Positive means owing; negative means in credit.</td></tr>
+          <tr><td><strong>Awaiting funds</strong></td><td>A payment written down but not yet confirmed as arrived. Affects nothing until confirmed.</td></tr>
+          <tr><td><strong>Post month</strong></td><td>Raising the ordinary monthly rent and maintenance charges for every villa at once.</td></tr>
+          <tr><td><strong>One-off</strong></td><td>Any charge that is not the ordinary monthly bill.</td></tr>
+          <tr><td><strong>Advance final month</strong></td><td>The last month's rent collected at move-in. It pays for the final month, so that month is not billed again at move-out.</td></tr>
+          <tr><td><strong>Tenancy</strong></td><td>One person's occupancy of one villa, with its own dates and its own rent. Kept forever, never edited away.</td></tr>
+          <tr><td><strong>Ageing</strong></td><td>How long a debt has been outstanding, in 30/60/90-day bands, counted from that villa's own due day.</td></tr>
+          <tr><td><strong>Void</strong></td><td>Cancelling a record visibly, with a reason and a name. Not deletion — it stays on the books, marked.</td></tr>
+          <tr><td><strong>The books begin on</strong></td><td>The date this system took over the records. Nothing before it is treated as its responsibility.</td></tr>
+          <tr><td><strong>Body corporate / strata</strong></td><td>The owners collectively, funded by the monthly maintenance contributions. Distinct from any individual owner's rent income.</td></tr>
+          <tr><td><strong>Reconciliation</strong></td><td>Ticking the ledger off against the bank statement until the difference is zero.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+  </main>
+
+  <footer>
+    <span>Villaggio Del Sol &middot; Ocho Rios, St. Ann</span>
+    <span>Property Operations handbook</span>
+    <span>Records begin 1 September 2026</span>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.rail a'));
+    var map = {};
+    links.forEach(function (a) {
+      var el = document.querySelector(a.getAttribute('href'));
+      if (el) map[el.id] = a;
+    });
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        links.forEach(function (l) { l.classList.remove('on'); });
+        var a = map[e.target.id];
+        if (a) a.classList.add('on');
+      });
+    }, { rootMargin: '0px 0px -72% 0px', threshold: 0 });
+    Object.keys(map).forEach(function (id) {
+      obs.observe(document.getElementById(id));
+    });
+  })();
+</script>

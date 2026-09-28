@@ -51,8 +51,82 @@ export default async function run({ port, projectRoot }) {
     // --- validation ---
     T.check('a charge with no type is refused', (await c.post('/api/charges', { unitId: 'unit-1', category: 'Rent', amount: 5000 })).status === 400);
     T.check('a negative charge is refused', (await c.post('/api/charges', { unitId: 'unit-1', category: 'Rent', oneOffType: 'Late fee', amount: -5000 })).status === 400);
+    /*
+     * The currency the account is not billed in: refused once, with a code the
+     * screen recognises, and allowed only when somebody has been shown what it
+     * does and has said yes. Ro asked for the currency pill on 2026-09-28; the
+     * guard is what keeps it from becoming the villa C11 fault again.
+     */
     const wrongCurrency = await c.post('/api/charges', { unitId: 'unit-1', category: 'Rent', oneOffType: 'Late fee', amount: 5000, currency: 'USD' });
     T.check('a charge in the wrong currency for that account is refused', wrongCurrency.status === 400, String(wrongCurrency.body?.error).slice(0, 80));
+    T.check(
+      'and it is refused with a code, so the screen can offer the confirmation rather than matching on wording',
+      wrongCurrency.body?.code === 'charge-currency-not-confirmed',
+      String(wrongCurrency.body?.code)
+    );
+    T.check(
+      'the refusal says what would happen to the money, not merely that it is not allowed',
+      /balance/i.test(String(wrongCurrency.body?.error)) && /credit|arrears/i.test(String(wrongCurrency.body?.error)),
+      String(wrongCurrency.body?.error)
+    );
+    T.check(
+      'and nothing was written by the refused attempt',
+      (await c.get('/api/db')).body.charges.every(ch => ch.currency === 'JMD'),
+      'a USD charge reached the ledger on a refusal'
+    );
+
+    const deliberate = await c.post('/api/charges', {
+      unitId: 'unit-1',
+      category: 'Rent',
+      oneOffType: 'Late fee',
+      amount: 5000,
+      currency: 'USD',
+      confirmCurrencyMismatch: true
+    });
+    T.check('confirmed deliberately, it is accepted', deliberate.status === 200, String(deliberate.body?.error).slice(0, 120));
+    T.check(
+      'the audit trail says it stands outside that account’s balance, because nothing is ever left unexplained',
+      (await c.get('/api/db')).body.auditLogs.some(a => /outside the JMD balance/.test(String(a.action))),
+      'the audit line did not name the consequence'
+    );
+
+    /*
+     * And the consequence itself, asserted rather than assumed: the JMD balance
+     * does not move, and the charge is surfaced as being in the wrong currency
+     * instead of vanishing. This is the assertion that would have caught the
+     * stranded charge on villa C11.
+     */
+    {
+      /*
+       * A JMD charge is raised first on purpose. Without it the comparison below
+       * would be made against an empty set — a statement about nothing, which is
+       * the shape of test this project has already been caught by three times.
+       */
+      const anchor = await c.post('/api/charges', {
+        unitId: 'unit-1',
+        category: 'Rent',
+        oneOffType: 'Late fee',
+        amount: 1500,
+        currency: 'JMD'
+      });
+      T.check('a JMD charge exists to compare against, so the check below is not about an empty set', anchor.status === 200);
+
+      const after = (await c.get('/api/db')).body;
+      const stray = after.charges.find(ch => ch.currency === 'USD');
+      T.check('the deliberate charge is on file in the currency it was raised in', !!stray, 'no USD charge was written');
+      const jmdTotal = after.charges
+        .filter(ch => ch.unitId === 'unit-1' && ch.category === 'Rent' && ch.currency === 'JMD' && ch.status === 'open')
+        .reduce((total, ch) => total + ch.amount, 0);
+      T.check(
+        'it does not join the JMD rent balance, which is exactly why the confirmation is asked for',
+        !after.charges.some(ch => ch.id === stray?.id && ch.currency === 'JMD') && jmdTotal > 0,
+        `JMD billed ${jmdTotal}`
+      );
+      // Both are taken back, so nothing after this point is read against either
+      // the stranded charge or the anchor raised only to make the check real.
+      await c.post(`/api/charges/${stray.id}/void`, { reason: 'Raised deliberately in USD to prove the guard; taken back.' });
+      await c.post(`/api/charges/${anchor.body.charge.id}/void`, { reason: 'Raised only to give the currency check something to compare; taken back.' });
+    }
 
     // --- a late fee lands on the tenant's rent account ---
     const before = await balance('unit-1', 'Rent');

@@ -149,7 +149,7 @@ export default function BoardPack({
     >
       <PrintLetterhead
         documentTitle="Board Pack"
-        meta={`Period ${formatDayLabel(from)} — ${formatDayLabel(to)}`}
+        meta={`Period ${formatDayLabel(from)} to ${formatDayLabel(to)}`}
         generatedBy={generatedBy}
       />
 
@@ -267,7 +267,7 @@ export default function BoardPack({
       <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
         USD and JMD are reported separately and are never combined. Utility recoveries billed directly to owners of
         owner-occupied and short-let villas are excluded from received income, matching the operating statement.
-        Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD, for display only — no stored amount is
+        Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD, for display only, no stored amount is
         converted.
       </p>
 

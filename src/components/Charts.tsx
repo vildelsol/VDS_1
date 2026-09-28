@@ -218,7 +218,7 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
               Visual snapshot
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Money in against money out, and where the spending goes — for any date range.
+              Money in against money out, and where the spending goes, for any date range.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -452,7 +452,7 @@ export function CashFlowChart({ rows, currency }: { rows: MonthRow[]; currency: 
                     fill={series.color}
                     rx="2"
                   >
-                    <title>{`${formatMonthLabel(row.month)} — ${series.label}: ${formatMoney(value, currency)}`}</title>
+                    <title>{`${formatMonthLabel(row.month)}, ${series.label}: ${formatMoney(value, currency)}`}</title>
                   </rect>
                 );
               })}
@@ -643,7 +643,7 @@ export function CollectionRateChart({ rows, currency }: { rows: MonthRow[]; curr
                 fill={point.rate >= 100 ? '#1baf7a' : point.rate >= 80 ? '#eda100' : '#e34948'}
                 rx="2"
               >
-                <title>{`${formatMonthLabel(point.month)} — ${point.rate}% collected`}</title>
+                <title>{`${formatMonthLabel(point.month)}, ${point.rate}% collected`}</title>
               </rect>
               <text
                 x={x + barW / 2}
@@ -693,7 +693,7 @@ export function OccupancyChart({ series }: { series: { month: string; occupied: 
   return (
     <ChartFrame
       title="Rented villas by month"
-      subtitle="Villas rented out — under tenancy, or with a guest in residence — on the last day of each month."
+      subtitle="Villas rented out, under tenancy, or with a guest in residence, on the last day of each month."
     >
       <svg
         viewBox={`0 0 ${width} ${height}`}
@@ -720,7 +720,7 @@ export function OccupancyChart({ series }: { series: { month: string; occupied: 
           return (
             <g key={row.month}>
               <rect x={x} y={height - pad.bottom - h} width={barW} height={Math.max(0, h)} fill="#2a78d6" rx="2">
-                <title>{`${formatMonthLabel(row.month)} — ${row.occupied} of ${row.total} villas (${rate}%)`}</title>
+                <title>{`${formatMonthLabel(row.month)}, ${row.occupied} of ${row.total} villas (${rate}%)`}</title>
               </rect>
               <text
                 x={x + barW / 2}
@@ -763,7 +763,7 @@ export function OccupancyChart({ series }: { series: { month: string; occupied: 
       />
 
       <p className="font-mono text-[9px] leading-relaxed text-slate-500">
-        Counted from tenancy and booking records, which are the only dated occupancy evidence — a villa's register status
+        Counted from tenancy and booking records, which are the only dated occupancy evidence, a villa's register status
         records today only. An owner-occupied villa files neither a tenancy nor a booking, so it is not counted as let
         here. This counts villas rented out, not villas physically occupied, and the two differ by exactly the owner-occupied lots.
       </p>
@@ -790,7 +790,7 @@ export function ArrearsAgeingChart({ buckets, currency }: { buckets: AgeingBucke
 
   return (
     <ChartFrame
-      title={`Arrears ageing — ${currency}`}
+      title={`Arrears ageing (${currency})`}
       subtitle={`${formatMoney(buckets.total, currency)} outstanding in total.`}
       legend={<Legend items={bands.map(b => ({ label: b.label, color: b.color }))} />}
     >
@@ -922,7 +922,7 @@ export function CategoryByMonthChart({ rows, currency }: { rows: MonthRow[]; cur
                 return (
                   <g key={category}>
                     <rect x={x} y={segmentTop} width={barW} height={drawn} fill={categoryColor(category)} rx="2">
-                      <title>{`${formatMonthLabel(row.month)} — ${category}: ${formatMoney(value, currency)}`}</title>
+                      <title>{`${formatMonthLabel(row.month)}, ${category}: ${formatMoney(value, currency)}`}</title>
                     </rect>
                     {/*
                       Labelled in place only where the segment is actually tall and
@@ -1025,7 +1025,7 @@ export function CategoryTable({
                 </td>
                 <td className="p-3 text-right font-mono">{formatMoney(row.amount, currency)}</td>
                 <td className="p-3 text-right font-mono text-amber-700">
-                  {row.outstanding > 0 ? formatMoney(row.outstanding, currency) : '—'}
+                  {row.outstanding > 0 ? formatMoney(row.outstanding, currency) : '-'}
                 </td>
                 <td className="p-3 text-right font-mono text-slate-500">{row.share}%</td>
               </tr>
@@ -1035,7 +1035,7 @@ export function CategoryTable({
             <tr className="border-t-2 border-slate-300 font-mono font-semibold">
               <td className="p-3">Total</td>
               <td className="p-3 text-right">{formatMoney(paid, currency)}</td>
-              <td className="p-3 text-right">{outstanding > 0 ? formatMoney(outstanding, currency) : '—'}</td>
+              <td className="p-3 text-right">{outstanding > 0 ? formatMoney(outstanding, currency) : '-'}</td>
               <td className="p-3 text-right">100%</td>
             </tr>
           </tfoot>
@@ -1075,7 +1075,7 @@ function ChartsDocument({
     >
       <PrintLetterhead
         documentTitle="Visual Snapshot"
-        meta={`Period ${formatDayLabel(from)} — ${formatDayLabel(to)}`}
+        meta={`Period ${formatDayLabel(from)} to ${formatDayLabel(to)}`}
         generatedBy={generatedBy}
       />
 

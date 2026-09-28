@@ -16,11 +16,33 @@
 
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { Database, StoredUser, Session, fullPermissions, noPermissions } from './db';
+import { Database, StoredUser, Session, fullPermissions, noPermissions, transaction } from './db';
 import { RolePermissions, SessionUser, UserRole } from '../src/types';
 
 const SESSION_COOKIE = 'vds_session';
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // a working day
+/**
+ * How long a session lasts after it was last used — not after it was opened.
+ *
+ * This used to be a fixed twelve hours from sign-in, so a screen was signed out
+ * at 8pm for someone who signed in at 8am however busy they were, and a program
+ * left open overnight met the login screen on the first click next morning. Ro,
+ * 2026-09-16, chose "stay signed in while it's open": every signed-in request
+ * pushes the expiry forward, and the open application checks in on its own
+ * (`SESSION_HEARTBEAT_MS` in App.tsx) so an untouched screen keeps itself alive.
+ * Twelve hours is now how long a session survives with *nothing* holding it
+ * open — the window closed, or the machine it was on switched off.
+ */
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Renewals are written at most this often per session.
+ *
+ * A renewal has to reach db.json, or an HP restarting overnight would bring back
+ * the expiry from sign-in and sign the screen out anyway. But the open application
+ * checks in every few minutes, and a disk write for every one of those would be
+ * waste. An hour's slack against a twelve-hour lifetime costs nothing.
+ */
+const SESSION_RENEW_EVERY_MS = 60 * 60 * 1000;
 const SCRYPT_KEYLEN = 64;
 
 export function hashPassword(password: string): { hash: string; salt: string } {
@@ -288,6 +310,47 @@ export const ACTION_DENIED_MESSAGE: Record<GatedAction, string> = {
   manage_users: 'Only Administrators can manage staff accounts.'
 };
 
+/** Whether this session has been used long enough since its last renewal to renew again. */
+export function sessionRenewalDue(session: Session, now: number): boolean {
+  return new Date(session.expiresAt).getTime() - now <= SESSION_TTL_MS - SESSION_RENEW_EVERY_MS;
+}
+
+/**
+ * Push a session's expiry forward because it has just been used.
+ *
+ * Three copies of the expiry have to move together, and each was a way to be
+ * signed out anyway:
+ *   - the live database, so the next request sees it at once;
+ *   - db.json, so a server restart does not bring back the old expiry;
+ *   - the browser's cookie, whose `Max-Age` was set at sign-in and would be
+ *     deleted by the browser at the original time whatever the server believed.
+ */
+export function renewSession(req: Request, res: Response, session: Session): void {
+  const now = Date.now();
+  if (!sessionRenewalDue(session, now)) return;
+  const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
+  session.expiresAt = expiresAt;
+  setSessionCookie(res, session.token, isRequestSecure(req));
+  transaction(db => {
+    /*
+     * In the ordinary case the line below changes nothing: the live session was
+     * already moved above, and this transaction writes a copy of it. It is for the
+     * narrow race where another transaction was mid-flight, took its copy before
+     * the renewal, and replaces the live database when it finishes — this one
+     * runs after it and puts the renewal back. Mutation testing confirms the
+     * suite does not produce that race; the save itself it does cover.
+     *
+     * Signed out in the meantime: nothing to renew, and nothing is resurrected.
+     */
+    const stored = db.sessions.find(s => s.token === session.token);
+    if (stored) stored.expiresAt = expiresAt;
+  }).catch(err => {
+    // Not the request's failure: it is already answered, and the live copy holds
+    // until the server restarts. Said out loud rather than dropped.
+    console.error(`[auth] could not save a session renewal: ${(err as Error).message}`);
+  });
+}
+
 /** Express middleware: require a signed-in user. */
 export function requireAuth(getDb: () => Database) {
   return (req: AuthedRequest, res: Response, next: NextFunction) => {
@@ -295,9 +358,10 @@ export function requireAuth(getDb: () => Database) {
     if (!auth) {
       return res.status(401).json({ error: 'Not signed in.', code: 'UNAUTHENTICATED' });
     }
+    renewSession(req, res, auth.session);
     req.auth = auth;
     next();
   };
 }
 
-export { SESSION_COOKIE, SESSION_TTL_MS };
+export { SESSION_COOKIE, SESSION_TTL_MS, SESSION_RENEW_EVERY_MS };

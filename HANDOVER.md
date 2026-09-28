@@ -113,6 +113,431 @@ next session from inside `pm-app`.
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.12.0.** Every earlier release is superseded; install the latest only.
 
+## Session of 2026-09-28 — reading the reports on one set of books
+
+🟡 **Uncommitted on `main`, on top of the work already sitting there.** Tests → **1,982, 0 failed.**
+Typecheck and build clean. Driven on a real signed-in screen against a seeded database, and every
+new guard mutation-tested.
+
+Ro, working on the live system: *"The operational reports tab is showing payments for both ISPO and
+the BNS Strata. Both are not supposed to be mixed... The operating statement section shows all
+figures calculated in both with no separation or option to be separated. The 'Internal-Everything'
+tab does not separate the calculations, neither does the 'For the Strata corporation' which is
+precisely what it was built in for... The filters and metrics need to actually work. Strata, ISPO and
+Everything. There must be options to separate, especially for when the accountant comes."*
+
+### What was actually wrong
+
+Four separate faults, all of them real:
+
+1. **`operatingStatement` had no book filter at all.** It computed `strataExpenditure` and
+   `ispoExpenditure` and printed them as a *label* under a combined total. A label is not a filter:
+   the figure a council was being asked to approve still had both books inside it. "For the strata
+   corporation" only hid short-stay booking income and lumped maintenance into one line — ISPO's
+   phone and company vehicle were on it, and so was rent.
+2. **The management summary at the top of the tab was entirely book-blind.** Receivables, billed,
+   received, expenses, the observations, the monthly chart and the account balances were one
+   combined number each, with no way to take them apart.
+3. **The dashboard's departures list could never contain anything.** It filtered on
+   `status === 'checked-in'`, and nobody checks a guest in or out of an imported stay in this
+   program. Arrivals had the mirror of the same fault: a stay stayed `confirmed` for ever, so it went
+   on reading as a coming arrival after the guest had been and gone.
+4. **Every reservation deposit reached the ledger as "Awaiting funds."** Raised `pending` on purpose,
+   which asked the person who took the money the same question a second time on a second screen — so
+   every deposit on the property read as unreceived until somebody answered it.
+
+### The book, and where the filter lives
+
+`ReportBook = 'strata' | 'ispo' | 'everything'`, in `finance.ts` beside the existing `ExpenseFund`.
+`everything` is the default everywhere, so nothing changed until it is asked to — Ro keeps the
+combined statement as *"my all in view for the entire business"*.
+
+Income needed a book and did not have one. The mapping is **not a new decision**: it is the one
+already built into `ispoOperations`, stated once as `bookOfPaymentCategory` —
+
+- **ISPO's:** rent, short-stay bookings.
+- **The corporation's:** maintenance contributions, utilities recovered, other income.
+
+and `bookOfChargeCategory` for receivables: rent arrears are ISPO's, maintenance arrears the fund's.
+
+**The filter is applied inside `operatingStatement`**, at the top, on both sides at once — the
+standing rule for this codebase. A screen written next year that passes the raw arrays gets
+`everything`, never a half-filtered page. It could not have been a `LineVisibility`: hiding a class
+of income leaves the money in the other side's totals, while reading one book changes which money is
+on the page at all, and the two must move together or the surplus means nothing.
+
+**One selector governs the whole tab** (Ro's choice when asked), so a pack printed for the accountant
+cannot have its management figures on one book and its statement on another. `OperatingStatement`
+takes the book as a **prop**, not its own control.
+
+### The two things that only showed up on a real screen
+
+- **The ISPO book's own summary disagreed with its own statement**, J$39,000 against J$61,000 for the
+  same period. The maintenance ISPO pays the corporation on the villas it lets is real money leaving
+  ISPO and **has no row in the cost register** — it exists only as a contribution receipt. It is now
+  an expenditure line on the ISPO book, taken from `operatingStatement` so the two cannot drift, and
+  named on the card rather than appearing as an unexplained J$22,000.
+- **A contribution typed into the cost register as well as receipted** was excluded by the statement
+  and counted by the summary. One definition now — `isContributionCountedFromReceipts` and
+  `expensesForBook` — used by `ispoOperations`, `operatingStatement` and the summary alike.
+
+Every printed page and every Excel sheet names the book on its face, and the book is in the export
+filename. A page whose scope is not on it is the page that gets photocopied and misread.
+
+### Short-stay deposits
+
+A deposit entered on a reservation is money in hand: `syncBookingDepositReceipt` now issues a
+**completed** receipt with a receipt number on the spot. A deposit left `pending` by an older version
+is completed **in place** on the next touch of that reservation — the same receipt, matched on
+`bookingId`, never a second one beside it. Covered by restarting the server on a hand-written
+`db.json` in the older shape, which is the path the HP actually takes.
+
+The real double-count risk is the one the sync cannot see, and Ro named it: *"i do not want there to
+be a double count of payments after i have manually confirmed before i apply the fix."* A deposit
+typed into **Record a payment** carries no `bookingId`, so it sits beside the reservation's own
+receipt. `bookingDepositFindings` finds those — same villa, same currency, same amount, inside a
+bounded window — and **`BookingDeposits.tsx`** puts them at the head of the receipts ledger with the
+money named and both actions offered. **Nothing is changed automatically**, which is asserted rather
+than promised.
+
+### The currency pill on "Bill a one-off charge"
+
+Asked for by Ro. It re-opens the villa C11 fault — a charge in the currency an account is not billed
+in is counted by neither side of that balance — so the server refuses it once with
+`charge-currency-not-confirmed` and accepts it with `confirmCurrencyMismatch: true`. The house
+pattern: one right answer, so the screen confirms rather than offering a choice, and the audit line
+says the charge stands outside that account's balance.
+
+### Tests
+
+New `test/report-books.test.mjs` (30) and `test/short-stay-deposits.test.mjs` (34), both written as
+the property's rules rather than the code's. The load-bearing ones:
+
+- the two books add up to everything on both sides, once the one genuine transfer between them is
+  taken out — the arithmetic guarantee against anything being lost *or* doubled;
+- the ISPO book's surplus equals `ispoOperations.net` for the same period — two screens, one answer;
+- the tab summary's "paid out" equals the statement's expenditure total on all three books, with a
+  third assertion that the comparison was made against real money and not three zeros agreeing.
+
+**Five mutations run, five killed:** deposits back to `pending` (1 death), the book filter removed
+(16), the currency guard bypassed (6), departures back to `status === 'checked-in'` (4), the ISPO
+transfer line removed (7).
+
+### Second pass — 2,000 operations, one disclaimer, and a real fault they found
+
+Ro, the same day: *"run 2k tests and scenario combinations of use to test accuracy, robustness,
+integrity, find gaps in the code etc... also for the different filters that are under the operational
+reports, ensure they work as intended... as for the statement, there are 3 different areas of
+disclaimers, thats unnecessary."*
+
+**The disclaimers.** Three blocks on the printed statement — an opening paragraph, the scope box added
+with the books, and a footer — between them saying the currency rule three times and the cash basis
+twice. Now **one** block above the figures, carrying whose money it is, the scope of the book, the
+cash basis, "not a tax document", the currency rule and the indicative rate. The management report
+beside it had the same shape and got the same treatment.
+
+**`test/reports-2000.test.mjs`** — 2,000 seeded operations, audited every 125 against the whole
+accumulated database, 24 checks. `books-5000` audits the books as they are *recorded* and predates the
+filters entirely; this one audits them as they are *read*. Eleven invariants, including: the books add
+up on both sides once the internal transfer is removed **and the exclusion the ISPO statement names is
+added back**; nothing appears on the wrong book; nothing voided appears on any book; the ISPO book and
+the ISPO Operations statement agree; the tab summary agrees with the statement beneath it on all three
+books; receivables split by account; a deposit is on the ledger exactly once, net of refunds; a charge
+in the wrong currency is named and never counted; arrivals and departures are derived and disjoint.
+Coverage is asserted on **what it did**, not only on what stayed true — 342 strata costs, 213 ISPO
+costs, 127 taken back, 361 receipts, 50 voided, 44 refunded, 139 reservations, 148 edits, 47
+cancellations, 157 one-off charges, 52 in the wrong currency, 35 refused for it, 114 own-account
+toggles.
+
+**It found a real fault on its first run, and it is money.** Refunding a reservation deposit reduces
+`booking.depositPaid` and leaves the receipt's `amount` alone — correct, a receipt is what the guest
+was handed. But editing the deposit afterwards then overwrote `amount` while `refundedAmount` stayed,
+so the receipt netted to `newAmount − refund`: not what the property holds, and **negative** when the
+new deposit was smaller — a receipt claiming more money went back than ever came in. Everything built
+on `amount − refundedAmount` carried it: booking income on ISPO's book, the operating statement, and
+"deposits held" on the dashboard. It predates this session but only bit once deposits started reaching
+the ledger as received.
+
+Refused now, with `deposit-receipt-already-refunded`, naming what to record instead — a further
+payment, or a refund. The whole change rolls back; an edit that leaves the deposit alone is untouched.
+Regression test in `short-stay-deposits`, and the guard mutation-tested: removing it kills 5 checks
+there and 1 in the 2,000 run.
+
+Two invariants in the new suite were wrong on their first run and were corrected rather than loosened:
+the receipt/deposit comparison had to be **net of refunds**, and the books' sum had to add back what
+the ISPO book **names** as already counted from its receipts — the strong form, which fails if money
+vanishes *or* vanishes quietly.
+
+**Tests → 1,982, 0 failed.** Typecheck and build clean. Print preview driven on a real screen for both
+the strata and the ISPO book.
+
+### Still to do / open with Ro
+
+- **The ISPO→Villaggio bank transfers in the live register.** Ro: *"those are just transfer notes
+  from one bank account to the next to inform the reader where the money came from to pay the
+  expense."* They are recorded as **ISPO expenses** (J$122,000 + J$100,000 on 17 and 24 Sep). If they
+  are annotations, that is J$222,000 of costs ISPO did not incur. If they are genuine funding
+  movements, they are correct per book and are the same money twice in the combined `everything`
+  total — the shape the maintenance contribution already has, and which the app names as an internal
+  transfer. **Not changed. Ro's call.**
+
+---
+
+## Session of 2026-09-16 (third) — signatures on a second sheet, and what happens after a stay
+
+**Unreleased. Uncommitted on `main`, with everything below it.**
+
+**The `×3`, `×8` beside receipt numbers** are the print count (`payment.printCount`): how many times
+that receipt has been printed. Every copy after the first prints marked REPRINT and is on the audit
+trail. Nothing said so on screen; the badge now has a tooltip that does.
+
+**Signatures printing alone on a second sheet** (Ro: *"a waste of paper for just a signature
+section"*). `PrintSignatures` sits under `mt-12 pt-10` — 88px, about 23mm on paper — before a single
+signing line. On paper only (`@media print`, class `vds-print-signatures`) that is now 6mm, and the
+block is `break-inside: avoid` so it can never be split across two pages. The signing line itself is
+unchanged.
+
+**Measured, not assumed.** The real `PrintPortal` + `PrintLetterhead` + `PrintSignatures` were
+rendered with the built stylesheet and printed to PDF by headless Chrome (Letter), with a table of
+N rows, against the same stylesheet with only the new rules removed. That turned up a **second
+cause**: in the "before" PDF at 15 rows, page 2 held **only the "Powered by ISPO" credit** — the
+signatures had fitted and the one-line footer took a sheet of its own. The credit is now tightened on
+paper too (`vds-print-credit`). Result:
+
+| Rows | Before | After |
+|---|---|---|
+| 8–14 | 1 page | 1 page |
+| **15** | **2 pages** (credit alone on page 2) | **1 page** |
+| **16** | **2 pages** | **1 page** |
+| 17 | 2 pages | 2 pages — genuinely full, ~2cm short; the whole block moves over together, not split |
+
+So on this document roughly **two rows' worth** of page is recovered. A page full to the last line
+still has to go over; no print setting makes room that is not there. The PDFs were looked at, not just
+counted. Not in the suite — it runs where there is no Chrome — so `components.test.mjs` +3 holds the
+pieces the measurement depended on (the class, the 6mm/no-split rule, the credit rule).
+
+**"Once the date has passed, the system will do what?"** Answering it found a fault.
+- On screen: from the **departure day** the stay reads **Completed**, the row is shaded, and the
+  "Completed" filter finds it. Nothing else happens: the recorded status is not changed, nobody is
+  checked out, money is not touched (a completed stay still owing still shows its balance), and
+  nothing is hidden, deleted or sent.
+- **The fault:** `planWithdrawals` treated any imported stay that stopped appearing in the feed as
+  cancelled, **with no look at the date**. A platform export has no reason to keep listing old stays,
+  so a finished stay dropping out of it would have been marked *cancelled* on the next sync — or, if it
+  carried money, raised as a "cancel it by hand and settle the deposit" conflict on **every** sync
+  afterwards. Now: a stay that has **ended is left exactly as it is**; a stay **under way** is never
+  cancelled silently, money or not — it is raised as a conflict to check on the platform; only a stay
+  **still to come** is withdrawn as before. `today` is a required parameter so no caller can forget it.
+  How long Airbnb goes on listing past stays was not verified; the guard does not depend on it.
+
+**Tests — 1,861 → 1,871, 0 failed. `ical-parsing.test.mjs` +7, `components.test.mjs` +3.** Mutations: removing the
+ended-stay exemption fails 3; removing the under-way branch fails 2.
+
+## Session of 2026-09-16 (second) — the Airbnb calendar on real bookings
+
+**Unreleased. Uncommitted on `main`, with the two pieces of work below it.**
+
+Ro connected villa B6's Airbnb calendar for the first time and reported five things. What each one
+turned out to be:
+
+**1. "It doesn't show client information."** Not something any program can get from this feed.
+Airbnb's iCal export carries **no guest name, email or price** — every reservation is `SUMMARY:
+Reserved` — and only an Airbnb-approved software partner can reach guest details through their API.
+What the feed *does* carry, in each reservation's description, is a link to the reservation and the
+**last four digits of the guest's phone**. The sync already copied that into the notes, where nobody
+would look. The list now shows the confirmation code as a link that opens the reservation in Airbnb,
+plus "phone ends 1234", so the guest can be copied across in one step.
+
+**And a real fault behind it, contradicting a promise on screen.** The booking form says *"Re-syncing
+will update the dates but will not overwrite what you enter."* The sync compared `guestName` and
+wrote it back, so **every name typed onto an imported stay reverted to "External guest" on the next
+Sync** — the only way to get a guest onto an imported stay undid itself. New `feedDateChange()` in
+`server/ical.ts` (pure, beside `planWithdrawals`, for the same reason): a re-sync changes dates and
+nothing else.
+
+**2. "Paid in full" over USD $0.00 on a stay not yet taken.** The receipt read `balanceDue <= 0` as
+settled, and an imported stay has no value, so no balance. New `receiptStanding()`:
+`no-value | balance-due | paid`, paid only when there was a value and nothing is left of it. A
+no-value stay prints as a **confirmation** with "Stay total: Not yet confirmed", no money box, no
+"Paid in full"; the emailed version says the same. The list shows "Stay value not entered" instead
+of three $0.00 columns. Greeting reads "Dear Guest" rather than "Dear External guest" or
+"Dear Airbnb (Not available)".
+
+**3. "Only one says Airbnb, the other two say Blocked."** The import is reading Airbnb correctly.
+Airbnb's export has exactly two kinds of entry: `Reserved` (a guest) and `Airbnb (Not available)` —
+**everything else closed on the listing**, identically: nights blocked by hand, preparation gaps, the
+booking window, dates synced in from another calendar. The two long B6 entries (10–26 Dec,
+28 Dec–19 Jan) are the second kind. **Ro should check B6's Airbnb calendar for those dates**: if real
+guests are in them, they came from somewhere Airbnb does not name to the feed. What changed here is
+only how they read: "Dates closed — no guest" with the feed's text beneath, "No stay to charge", and
+**no Guest receipt or Hold-deposit button** beside them.
+
+**4. "When a stay has been completed there's no way to tell."** The recorded `status` only changes
+when somebody changes it, and nobody checks a guest out of an Airbnb stay here, so last month's stays
+read "confirmed". New `stayPhase()` derives **Upcoming / In stay / Completed / Cancelled** from the
+dates — the departure day counts as completed, since the villa is free on it — and the Status column
+and the list filter now use it. Completed rows are shaded. The recorded status is untouched.
+The filter is remembered per session (`bookings.listFilter`).
+
+**5. "The app's calendar isn't fed back to Airbnb." — not built; a decision for Ro.** Technically an
+export feed is small: a secret per-villa `.ics` URL of direct bookings, pasted into Airbnb's
+"Import calendar". What stands in the way is not the code:
+- **Airbnb has to fetch it from the internet, and the HP is not on the internet** — it is reached
+  over Tailscale on a plain-HTTP LAN, by design. Exporting means exposing the HP publicly (e.g.
+  Tailscale Funnel), which is an infrastructure and security decision, not a feature.
+- **Airbnb refreshes imported calendars on its own schedule, every few hours**, so a direct booking
+  taken at 10am could still be sold on Airbnb before it lands. It narrows double-booking, it does
+  not close it.
+- It must never echo Airbnb's own imported stays back to Airbnb.
+**Recommended: stay manual** — when a direct booking is taken, close those dates on Airbnb at the
+same moment — and revisit if direct bookings become frequent.
+
+**New `src/lib/stays.ts`** holds the rules (`isClosedDates`, `stayPhase`, `receiptStanding`,
+`platformReservation`, `guestGreetingName`). The reservation link is **rebuilt from the code on
+Airbnb's own address**, never lifted from the notes: notes are free text anyone with edit rights can
+type, and a lifted link would let a note point that button anywhere.
+
+**Tests — 1,831 → 1,861, 0 failed.** `components.test.mjs` +25, rendering the real `GuestStayReceipt` (now exported) on the
+rows from Ro's screenshot; `ical-parsing.test.mjs` +5 for the re-sync rule. Two of those five are
+**source checks and say so**: the sync cannot be driven from a test because the SSRF guard refuses a
+local feed, rightly, so they read `syncFeed` for the call to `feedDateChange` and the absence of a
+`existing.guestName =` assignment.
+
+**Mutations — all 8 killed:** receipt back to `balanceDue <= 0` (2 fail); standing ignoring the value
+(5); departure day counted as in stay (1); link lifted from notes (2); greeting using the feed's name
+(2); email back to $0.00 (1); sync overwriting the name again (1); date rule letting a name through (1).
+
+**Not covered by any test:** the list rows themselves (hidden buttons, "Dates closed", the link) —
+`Bookings` needs a full set of props to render and was checked by reading, not asserted. And none of
+it was driven in a signed-in browser.
+
+## Session of 2026-09-16 — staying signed in while the program is open
+
+**Unreleased. Uncommitted on `main`, alongside the 2026-09-04 screen-memory work below.**
+
+Ro, 2026-09-16: *"if i leave the program open, say overnight, eventually it times out, and closes."*
+
+**The cause was a fixed shelf life, not a timeout.** `SESSION_TTL_MS` was twelve hours **from
+sign-in**, however much the session was used: sign in at 8am, signed out at 8pm mid-click. Two
+details made it certain overnight: the open screen's connection watcher only polls `/api/health`,
+which needs no session, so nothing an untouched screen did counted as use; and `lastSeenAt` was
+recorded on every request and read by nothing.
+
+**Ro chose "stay signed in while it's open"** over "24 hours unused" and "7 days from sign-in",
+with the trade-off stated: a screen left open at an empty desk stays signed in until closed or
+signed out.
+
+**What changed.**
+- `server/auth.ts` — `renewSession()`: every signed-in request (`requireAuth`) and
+  `/api/auth/me` push the expiry to twelve hours from *now*. Twelve hours is now how long a
+  session survives with **nothing holding it open**. Three copies of the expiry move together, and
+  each one on its own was a way to be signed out anyway: the live database; **db.json**, or an HP
+  restarting overnight brings back the old expiry; and **the browser's cookie**, whose `Max-Age`
+  was set at sign-in and would be deleted at the original time whatever the server believed.
+  Throttled by `SESSION_RENEW_EVERY_MS` (1 hour), so a check-in is a disk write at most hourly per
+  open screen, not every five minutes.
+- `src/App.tsx` — `SESSION_HEARTBEAT_MS` (5 minutes): while signed in, the application checks in on
+  `/api/auth/me` by itself, and again on `visibilitychange` and `online`, so a machine waking from
+  sleep renews before anyone clicks. A genuine 401 goes through the ordinary unauthenticated
+  handler; network errors are ignored here and never sign anybody out.
+
+**⚠️ The one case this does not cover — tell Ro if it bites.** A computer that **sleeps** runs no
+timers, so a screen on a machine asleep for more than twelve hours is still signed out on waking
+(the `visibilitychange` check-in then gets a 401). An office machine asleep 6pm to 8am is fourteen
+hours. If the Kamrui or the desk PC sleeps overnight, either set its power plan to not sleep, or
+raise `SESSION_TTL_MS` — it is one number, and the tests read the lifetime from the cookie, so
+`TTL_SECONDS` in the test moves with it.
+
+**Tests — 1,813 → 1,831, 0 failed. New `test/staying-signed-in.test.mjs`, 18 checks**, named after the rules in the order a
+morning meets them: the open screen checking in stays signed in; the browser is handed a fresh
+twelve hours; the renewal reaches db.json; **so the screen is still signed in after the server
+restarts overnight**; ordinary work renews too; a session renewed minutes ago is not renewed again
+and nothing is rewritten; a session nothing held open is refused, gets no new cookie and cannot be
+brought back; signing out still signs out. Time is moved the way `staff-accounts` already moves it:
+stop the server, age the session on disk, start again. The heartbeat is a React effect the server
+renderer does not run, so its three checks read the source — they guard the *relationship* (the
+interval stays well inside the lifetime), not the behaviour, and say so.
+
+**Mutations run** (server rebuilt for each):
+| Mutation | Result |
+|---|---|
+| No renewal anywhere | 5 fail |
+| Cookie not re-issued | 2 fail |
+| Nothing saved to disk | 3 fail |
+| Renew on every request | 2 fail |
+| Check-in route does not renew | 3 fail |
+| Only the `stored.expiresAt =` line inside the save removed | **0 fail** |
+
+The last one survived, and why is written on the line: in the ordinary case the live session was
+already moved and the transaction writes a copy of it, so the line changes nothing. It exists for a
+narrow race — a transaction mid-flight that took its copy before the renewal and replaces the live
+database when it finishes. The suite does not produce that race. It is documented as uncovered
+rather than counted as coverage.
+
+**Not verified on a signed-in browser.** Signing in is not something this seat does.
+
+## Session of 2026-09-04 — the screens now remember where you left them
+
+**Unreleased. On `main`, not yet in a tagged build.**
+
+Ro, 2026-09-04: *"i was in operational reports, went to the general dashboards to look at the
+numbers went back to operational reports and what i was looking at was already off screen because
+the tabs default to August 2026 instead of the current month. it makes for an annoying workflow,
+and its the same thing in the other applicable tabs."*
+
+`App.tsx` renders exactly one tab, so leaving a screen unmounts it and every choice on it — the
+month, the period, which sub-view — was thrown away. Coming back re-ran the default.
+
+**The defaults were not changed, and should not be.** `MonthlyOwnersReport`,
+`OperationsStatement` and `IspoOperations` open on *last* month on purpose, and the reason is
+written above each one: a report about a finished month opened on a month still running invites a
+part-month figure being circulated as if it were final. August was the right first answer on
+4 September. What was wrong was that the screen kept giving it after Ro had said otherwise.
+
+**New `src/lib/screenState.ts`** — `useRemembered(key, initial)`, a drop-in for `useState` that
+consults the documented default only the first time a key is used in the session. Same shape and
+same reasoning as `reportRange.ts`: a module, session-scoped, not persisted, because this is a
+working choice and not a setting. Cleared by `forgetScreenState()` on sign-out, alongside the
+records snapshot — the desk machine is shared and the next person to sign in is not owed the last
+one's view. `resetReportRange()` was added and wired in at the same time; `reportRange.ts` had a
+`/** Testing seam: forget the shared range. */` comment with **no function under it** (lost in the
+dead-code tidy), and nothing had been clearing the shared period on logout at all.
+
+**28 controls across 14 screens** now remember: the month on the dashboard, bookings, monthly
+expenses, reconciliation, the operations statement, ISPO operations and the proprietors' monthly;
+the period on the operating statement, the shortfall report, owner statements and projections (with its
+lookback and horizon); and
+the sub-view on bookings, the ledger, utilities, the shortfall report and the annual report.
+Keys are namespaced by screen (`'reports.ispo.month'`).
+
+**Deliberately left alone:**
+- **The shortfall report's `open` toggle.** Ro, 2026-09-02: *"make it a toggle switch as it is not
+  something we need to have open permanently."* It stays shut on every mount. VDS's trading
+  position does not belong on a screen left in front of whoever is at the desk, and "I opened it
+  ten minutes ago" is not a reason to put it back up.
+- **`postMonth` on the ledger.** That is the target of an action, not a viewing lens, and posting
+  the current month is what it should offer.
+- **Charts and Operational Reports' own range**, which already survived via `reportRange.ts`.
+
+**Tests — 1,806 → 1,813**, seven new checks in `test/components.test.mjs` (screen behaviour, which
+is what that file is for). They are named after Ro's rules rather than the functions:
+*"a report about a finished month still opens on last month the first time you see it"*, *"and
+comes back to the month you left it on, not to the default again"*, *"signing out forgets it"*.
+`renderToStaticMarkup` mounts fresh on every call, which is exactly what leaving a tab and coming
+back does, so a second render **is** the return trip — the screen under test is the real
+`IspoOperations`, not a probe.
+
+Two mutations were run and both killed a test:
+- `IspoOperations` reverted to plain `useState` → *"and comes back to the month you left it on"*
+  fails with `showed 2026-08` — the exact thing Ro reported.
+- `Dashboard`'s key changed to `IspoOperations`' → *"every remembered key is used by exactly one
+  screen"* fails and names both. Two screens sharing a key would silently share a control and
+  nothing in TypeScript prevents it, so the check greps the real source.
+
+**Not yet verified on a real signed-in screen.** The automated proof is a genuine remount of a real
+component, but no browser session was driven — signing in is not something this seat does. Worth
+one pass through the tabs on the HP before it is tagged.
+
 ## Released as v1.12.0 — 2026-09-03
 
 Tag `v1.12.0` on `3bff141`, `Villaggio-Del-Sol.exe` **95,472,128 bytes**, published 2026-09-04.

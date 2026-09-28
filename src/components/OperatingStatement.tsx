@@ -26,9 +26,18 @@
  * accrual somebody has to explain.
  */
 
-import { useMemo, useState } from 'react';
-import { AppSettings, Currency, Expense, MANAGING_COMPANY_NAME, Payment, PaymentCategory, SessionUser, Unit, bodyCorporateName } from '../types';
-import { LineVisibility, OperatingStatement as Statement, OperatingStatementOptions, operatingStatement } from '../lib/finance';
+import { useEffect, useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
+import { AppSettings, Currency, Expense, MANAGING_COMPANY_NAME, Payment, PaymentCategory, SessionUser, Unit } from '../types';
+import {
+  LineVisibility,
+  OperatingStatement as Statement,
+  OperatingStatementOptions,
+  REPORT_BOOK_LABELS,
+  REPORT_BOOK_SCOPE,
+  ReportBook,
+  operatingStatement
+} from '../lib/finance';
 import { formatMoney } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
@@ -40,6 +49,16 @@ interface Props {
   units: Unit[];
   payments: Payment[];
   expenses: Expense[];
+  /**
+   * Which set of books to read, chosen once at the top of the Operational
+   * Reports tab and passed down.
+   *
+   * A prop rather than this screen's own control, deliberately: a pack printed
+   * for the accountant must not have the management figures on one book and the
+   * statement under them on another. Ro, 2026-09-28 — one selector, governing the
+   * whole tab.
+   */
+  book: ReportBook;
   settings: AppSettings;
   session: SessionUser;
 }
@@ -101,14 +120,14 @@ const COUNCIL_PRESET: OperatingStatementOptions = {
   income: { Maintenance: 'total', Booking: 'excluded' }
 };
 
-export default function OperatingStatement({ units, payments, expenses, settings, session }: Props) {
+export default function OperatingStatement({ units, payments, expenses, book, settings, session }: Props) {
   const [printing, setPrinting] = useState(false);
   const [incomeVis, setIncomeVis] = useState<Partial<Record<PaymentCategory, LineVisibility>>>(COUNCIL_PRESET.income || {});
   const [expenditureVis, setExpenditureVis] = useState<Record<string, LineVisibility>>({});
   const [showChooser, setShowChooser] = useState(false);
-  const [preset, setPreset] = useState<Preset>('lastMonth');
-  const [customFrom, setCustomFrom] = useState(() => addMonths(currentMonth(), -11));
-  const [customTo, setCustomTo] = useState(() => currentMonth());
+  const [preset, setPreset] = useRemembered<Preset>('reports.operating.preset', 'lastMonth');
+  const [customFrom, setCustomFrom] = useRemembered('reports.operating.from', () => addMonths(currentMonth(), -11));
+  const [customTo, setCustomTo] = useRemembered('reports.operating.to', currentMonth);
 
   const { from, to } = useMemo(() => {
     const now = currentMonth();
@@ -134,9 +153,23 @@ export default function OperatingStatement({ units, payments, expenses, settings
 
   const invalidRange = to < from;
 
+  /*
+   * The council copy still shows maintenance contributions as one figure rather
+   * than naming all sixteen proprietors — Ro, 2026-09-01, and nothing to do with
+   * the books. Since the book is now chosen upstream, that presentation follows
+   * it here, and switching back to a combined or internal view itemises again.
+   *
+   * A deliberate line-by-line choice made *after* the switch is left alone: the
+   * effect runs on a change of book, not on every render.
+   */
+  useEffect(() => {
+    setIncomeVis(book === 'strata' ? COUNCIL_PRESET.income || {} : {});
+    setExpenditureVis({});
+  }, [book]);
+
   const options: OperatingStatementOptions = useMemo(
-    () => ({ income: incomeVis, expenditure: expenditureVis }),
-    [incomeVis, expenditureVis]
+    () => ({ income: incomeVis, expenditure: expenditureVis, book }),
+    [incomeVis, expenditureVis, book]
   );
 
   const statements = useMemo(
@@ -156,12 +189,12 @@ export default function OperatingStatement({ units, payments, expenses, settings
    */
   const present = useMemo(() => {
     if (invalidRange) return { income: [] as string[], expenditure: [] as string[] };
-    const full = CURRENCIES.map(currency => operatingStatement(payments, expenses, units, currency, from, to));
+    const full = CURRENCIES.map(currency => operatingStatement(payments, expenses, units, currency, from, to, { book }));
     return {
       income: Array.from(new Set(full.flatMap(s => s.income.map(g => g.label)))),
       expenditure: Array.from(new Set(full.flatMap(s => s.expenditure.map(g => g.label))))
     };
-  }, [payments, expenses, units, from, to, invalidRange]);
+  }, [payments, expenses, units, from, to, invalidRange, book]);
 
   const isCouncilView =
     incomeVis.Maintenance === 'total' && incomeVis.Booking === 'excluded' && Object.keys(expenditureVis).length === 0;
@@ -181,7 +214,7 @@ export default function OperatingStatement({ units, payments, expenses, settings
     const sheets = statements.map(s => {
       const rows: XlsxCell[][] = [
         ...documentHeader({
-          documentTitle: `Operating Statement — Income and Expenditure (${s.currency})`,
+          documentTitle: `Operating Statement, Income and Expenditure, ${REPORT_BOOK_LABELS[book]} (${s.currency})`,
           period,
           generatedOn: formatDayLabel(today()),
           generatedBy: session.name,
@@ -195,7 +228,7 @@ export default function OperatingStatement({ units, payments, expenses, settings
       for (const group of s.income) {
         rows.push([cell.section(group.itemised ? group.label : `${group.label} (total only)`, 5)]);
         for (const line of group.lines) {
-          rows.push([cell.date(line.date), cell.text(line.payer), cell.text(line.villa || '—'), cell.text(line.reference), cell.money(line.amount, s.currency)]);
+          rows.push([cell.date(line.date), cell.text(line.payer), cell.text(line.villa || '-'), cell.text(line.reference), cell.money(line.amount, s.currency)]);
         }
         rows.push([cell.total(`Total ${group.label.toLowerCase()}`), cell.total(''), cell.total(''), cell.total(''), cell.totalMoney(group.total, s.currency)]);
       }
@@ -207,7 +240,7 @@ export default function OperatingStatement({ units, payments, expenses, settings
       for (const group of s.expenditure) {
         rows.push([cell.section(group.itemised ? group.label : `${group.label} (total only)`, 5)]);
         for (const line of group.lines) {
-          rows.push([cell.date(line.date), cell.text(line.payee), cell.text(line.description || '—'), cell.text(line.allocation), cell.money(line.amount, s.currency)]);
+          rows.push([cell.date(line.date), cell.text(line.payee), cell.text(line.description || '-'), cell.text(line.allocation), cell.money(line.amount, s.currency)]);
         }
         rows.push([cell.total(`Total ${group.label.toLowerCase()}`), cell.total(''), cell.total(''), cell.total(''), cell.totalMoney(group.total, s.currency)]);
       }
@@ -231,6 +264,7 @@ export default function OperatingStatement({ units, payments, expenses, settings
       }
 
       rows.push([cell.blank()]);
+      rows.push([cell.note(`Scope: ${REPORT_BOOK_SCOPE[book]}`, 5)]);
       rows.push([
         cell.note(
           `All figures are in ${s.currency}. Prepared on a cash basis: income is counted when received and expenditure when paid, so the surplus agrees with the bank. USD and JMD are stated on separate sheets and are never combined.`,
@@ -243,16 +277,23 @@ export default function OperatingStatement({ units, payments, expenses, settings
     });
 
     if (sheets.length === 0) return;
-    downloadWorkbook(sheets, `VDS Operating Statement ${from} to ${to}.xlsx`);
+    /*
+     * The book is in the filename as well as on the page. An accountant is sent
+     * three of these and the one thing that must not be guessable from the
+     * outside of the file is which set of books it is.
+     */
+    const bookTag = book === 'everything' ? 'Both books' : book === 'strata' ? 'Strata' : MANAGING_COMPANY_NAME;
+    downloadWorkbook(sheets, `VDS Operating Statement ${bookTag} ${from} to ${to}.xlsx`);
   };
 
   return (
     <section className="space-y-4 rounded-2xl border border-slate-100 bg-white p-5 shadow-xs">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div>
-          <h2 className="font-display text-lg font-medium text-slate-900">Operating statement — income and expenditure</h2>
+          <h2 className="font-display text-lg font-medium text-slate-900">Operating statement, income and expenditure</h2>
           <p className="text-xs text-slate-500">
-            The document for the strata corporation: what came in and what went out, every payment named.
+            What came in and what went out, every payment named, on whichever set of books you choose:{' '}
+            <span className="font-medium text-slate-700">{REPORT_BOOK_LABELS[book]}</span>.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -311,9 +352,18 @@ export default function OperatingStatement({ units, payments, expenses, settings
         Covering <strong>{period}</strong>
       </p>
 
-      {/* ---------------- what goes on it ---------------- */}
+      {/*
+        The book is chosen once at the top of the tab, not here. It is named on
+        this statement all the same — a page whose scope is not on its face is the
+        page that gets photocopied and misread.
+      */}
+      <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 font-mono text-[10px] leading-relaxed text-slate-600">
+        <strong className="uppercase tracking-wider">{REPORT_BOOK_LABELS[book]}</strong>, {REPORT_BOOK_SCOPE[book]}
+      </p>
 
-      <Field label="What goes on this statement" htmlFor="op-audience">
+      {/* ---------------- how the lines are shown ---------------- */}
+
+      <Field label="How the lines are shown" htmlFor="op-audience">
         <div className="flex flex-wrap items-center gap-2" id="op-audience">
           <button
             type="button"
@@ -326,7 +376,7 @@ export default function OperatingStatement({ units, payments, expenses, settings
               isCouncilView ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
             }`}
           >
-            For the strata corporation
+            Contributions as one figure
           </button>
           <button
             type="button"
@@ -339,7 +389,7 @@ export default function OperatingStatement({ units, payments, expenses, settings
               isInternalView ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
             }`}
           >
-            Internal — everything
+            Everything itemised
           </button>
           <button
             type="button"
@@ -352,9 +402,9 @@ export default function OperatingStatement({ units, payments, expenses, settings
       </Field>
 
       <p className="font-mono text-[10px] leading-relaxed text-slate-500">
-        <strong>For the strata corporation</strong> shows maintenance contributions as one figure rather than naming every
-        proprietor, and leaves short-stay rental off. <strong>Internal</strong> shows everything, itemised. Expenditure is
-        always named line by line unless you change it below.
+        <strong>Contributions as one figure</strong> shows maintenance as a single line rather than naming every proprietor,
+        what a council is given. <strong>Everything itemised</strong> names every line. Expenditure is always named line by
+        line unless you change it below. Neither changes which book is read.
       </p>
 
       {showChooser && (
@@ -377,7 +427,7 @@ export default function OperatingStatement({ units, payments, expenses, settings
       )}
 
       <InfoNote>
-        Income and expenditure only — no arrears ageing, collection rates or occupancy, which belong in the management
+        Income and expenditure only, no arrears ageing, collection rates or occupancy, which belong in the management
         report above. Every payment out is listed under its category with the person or company paid named beside the
         figure. Prepared on a cash basis, so the surplus is money that actually moved. <strong>Each currency is a
         separate statement</strong> and no total anywhere combines them.
@@ -393,7 +443,7 @@ export default function OperatingStatement({ units, payments, expenses, settings
         <StatementDocument
           statements={statements}
           period={period}
-          settings={settings}
+          book={book}
           generatedBy={session.name}
           onClose={() => setPrinting(false)}
         />
@@ -433,7 +483,7 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
         totalLabel="Total income"
         emptyLabel={
           s.excludedIncome.length > 0
-            ? 'Nothing on this statement — income in the period was received under classes left off below.'
+            ? 'Nothing on this statement, income in the period was received under classes left off below.'
             : 'Nothing recorded in this period.'
         }
       />
@@ -450,7 +500,7 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
         totalLabel="Total expenditure"
         emptyLabel={
           s.excludedExpenditure.length > 0
-            ? 'Nothing on this statement — expenditure in the period fell under classes left off below.'
+            ? 'Nothing on this statement, expenditure in the period fell under classes left off below.'
             : 'Nothing recorded in this period.'
         }
       />
@@ -486,6 +536,28 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
  * entered or left the group.
  */
 function BooksNote({ statement: s }: { statement: Statement }) {
+  /*
+   * On a single book there is no split to explain, and claiming one would be
+   * false — so the combined breakdown is not rendered. The internal transfer is
+   * still worth naming on the ISPO book, because it is the largest cost on the
+   * page and there is no expense row anywhere behind it.
+   */
+  if (s.book !== 'everything') {
+    if (s.book !== 'ispo' || s.internalTransfer === 0) return null;
+    return (
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">
+        <p className="mb-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          One cost here has no bill behind it
+        </p>
+        <p>
+          <span className="font-mono font-semibold">{formatMoney(s.internalTransfer, s.currency)}</span> is the maintenance{' '}
+          {MANAGING_COMPANY_NAME} paid to the corporation on the villas it lets. It is read from the contribution receipts,
+          never from the cost register, so it is counted exactly once, a contribution typed into the register as well is
+          left off and named below.
+        </p>
+      </div>
+    );
+  }
   if (s.ispoExpenditure === 0 && s.internalTransfer === 0) return null;
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">
@@ -510,7 +582,7 @@ function BooksNote({ statement: s }: { statement: Statement }) {
         <p className="mt-2 border-t border-slate-200 pt-2">
           Of which <span className="font-mono font-semibold">{formatMoney(s.internalTransfer, s.currency)}</span> is the
           maintenance {MANAGING_COMPANY_NAME} paid on the villas it lets. It is a contribution the corporation received and a
-          cost {MANAGING_COMPANY_NAME} bore — the same money on both sides of this page, counted once on each and netting to
+          cost {MANAGING_COMPANY_NAME} bore, the same money on both sides of this page, counted once on each and netting to
           nothing between them, not money that entered or left the group.
         </p>
       )}
@@ -672,8 +744,8 @@ function Ledger({
                 <tr key={line.id}>
                   <td className="p-3 font-mono text-slate-500">{formatDayLabel(line.date)}</td>
                   <td className="p-3 font-medium text-slate-800">{line.who}</td>
-                  <td className="p-3 text-slate-600">{line.what || '—'}</td>
-                  <td className="p-3 font-mono text-[10px] text-slate-400">{line.extra || '—'}</td>
+                  <td className="p-3 text-slate-600">{line.what || '-'}</td>
+                  <td className="p-3 font-mono text-[10px] text-slate-400">{line.extra || '-'}</td>
                   <td className={`p-3 text-right font-mono ${line.amount < 0 ? 'text-amber-700' : ''}`}>
                     {formatMoney(line.amount, currency)}
                   </td>
@@ -709,31 +781,53 @@ function Tile({ label, value, tone, strong }: { label: string; value: string; to
 function StatementDocument({
   statements,
   period,
-  settings,
+  book,
   generatedBy,
   onClose
 }: {
   statements: Statement[];
   period: string;
-  settings: AppSettings;
+  book: ReportBook;
   generatedBy: string;
   onClose: () => void;
 }) {
+  /*
+   * Whose income and expenditure this is comes from `REPORT_BOOK_SCOPE`, which
+   * names the entity itself, so it is not said twice.
+   *
+   * A statement read on the ISPO book is not the body corporate's and must not
+   * say it is: it goes in front of an accountant. A page that has had half the
+   * money filtered out of it and still carries the corporation's name over the
+   * figures is the one thing worse than an unfiltered page.
+   */
+
   return (
     <PrintPortal title="Operating statement" subtitle={period} onClose={onClose} maxWidthClass="max-w-4xl">
-      <PrintLetterhead documentTitle="Operating Statement" meta={`Income and expenditure · ${period}`} generatedBy={generatedBy} />
+      <PrintLetterhead
+        documentTitle="Operating Statement"
+        meta={`Income and expenditure · ${REPORT_BOOK_LABELS[book]} · ${period}`}
+        generatedBy={generatedBy}
+      />
 
-      <p className="mb-4 text-[11px] leading-relaxed">
-        Income and expenditure of <strong>{bodyCorporateName(settings)}</strong> for the period stated. Every payment out
-        is listed under its class with the person or company paid named against it. Prepared on a cash basis: income is
-        counted when it was received and expenditure when it was paid.{' '}
-        <strong>Each currency is reported separately and no figure combines them.</strong>
+      {/*
+        One note, not three.
+        
+        Ro, 2026-09-28: *"there are 3 different areas of disclaimers, thats
+        unnecessary."* There were — an opening paragraph, the scope box added with
+        the books, and a footer — and between them the currency rule was stated
+        three times and the cash basis twice. Everything a reader needs to know
+        about how to read the page is now said once, here, above the figures,
+        where it is read before them rather than after.
+      */}
+      <p className="mb-4 rounded border border-slate-300 p-2 text-[10px] leading-relaxed">
+        <strong>{REPORT_BOOK_SCOPE[book]}</strong> Cash basis: income counted when received, expenditure when paid, so
+        the surplus agrees with the bank. Not a tax document. JMD and USD are reported separately and never combined.
       </p>
 
       {statements.map(s => (
         <section key={s.currency} className="mb-8 break-inside-avoid">
           <h3 className="mb-2 border-b-2 border-slate-900 pb-1 text-sm font-bold uppercase tracking-wider">
-            {s.currency} — {s.currency === 'JMD' ? 'Jamaican dollars' : 'United States dollars'}
+            {s.currency} ({s.currency === 'JMD' ? 'Jamaican dollars' : 'United States dollars'})
           </h3>
 
           <PrintLedger
@@ -749,7 +843,7 @@ function StatementDocument({
             totalLabel="Total income"
             emptyLabel={
               s.excludedIncome.length > 0
-                ? 'Nothing on this statement — income in the period was received under classes left off below.'
+                ? 'Nothing on this statement, income in the period was received under classes left off below.'
                 : 'Nothing recorded in this period.'
             }
           />
@@ -766,7 +860,7 @@ function StatementDocument({
             totalLabel="Total expenditure"
             emptyLabel={
               s.excludedExpenditure.length > 0
-                ? 'Nothing on this statement — expenditure in the period fell under classes left off below.'
+                ? 'Nothing on this statement, expenditure in the period fell under classes left off below.'
                 : 'Nothing recorded in this period.'
             }
           />
@@ -780,13 +874,13 @@ function StatementDocument({
             </tbody>
           </table>
 
-          {(s.ispoExpenditure > 0 || s.internalTransfer > 0) && (
+          {s.book === 'everything' && (s.ispoExpenditure > 0 || s.internalTransfer > 0) && (
             <p className="mt-2 rounded border border-slate-300 p-2 text-[9px] leading-relaxed">
               <strong>This statement carries both books.</strong> Of the expenditure above,{' '}
               {formatMoney(s.strataExpenditure, s.currency)} is the body corporate&rsquo;s and{' '}
               {formatMoney(s.ispoExpenditure, s.currency)} is {MANAGING_COMPANY_NAME}&rsquo;s, paid from rental income.
               {s.internalTransfer > 0
-                ? ` Of that, ${formatMoney(s.internalTransfer, s.currency)} is the maintenance ${MANAGING_COMPANY_NAME} paid on the villas it lets — a contribution the corporation received and a cost ${MANAGING_COMPANY_NAME} bore, being the same money on both sides of this page and counted once on each.`
+                ? ` Of that, ${formatMoney(s.internalTransfer, s.currency)} is the maintenance ${MANAGING_COMPANY_NAME} paid on the villas it lets, a contribution the corporation received and a cost ${MANAGING_COMPANY_NAME} bore, being the same money on both sides of this page and counted once on each.`
                 : ''}{' '}
               The proprietors&rsquo; statements, the annual report and the returns to the Commission carry the
               corporation&rsquo;s costs only.
@@ -805,12 +899,6 @@ function StatementDocument({
           )}
         </section>
       ))}
-
-      <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
-        Prepared on a cash basis from the property's records for the period stated, and is not a tax document. USD and
-        JMD are reported separately and are never combined; no figure on this statement has been converted. Indicative
-        rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD, shown for reference only.
-      </p>
 
       <PrintSignatures left="Prepared by" leftName={generatedBy} right="Received / Approved by" />
     </PrintPortal>
@@ -863,8 +951,8 @@ function PrintLedger({
                 <tr key={line.id}>
                   <td className="p-1.5">{formatDayLabel(line.date)}</td>
                   <td className="p-1.5 font-sans">{line.who}</td>
-                  <td className="p-1.5 font-sans">{line.what || '—'}</td>
-                  <td className="p-1.5">{line.extra || '—'}</td>
+                  <td className="p-1.5 font-sans">{line.what || '-'}</td>
+                  <td className="p-1.5">{line.extra || '-'}</td>
                   <td className="p-1.5 text-right">{formatMoney(line.amount, currency)}</td>
                 </tr>
               ))}

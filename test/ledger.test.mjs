@@ -115,9 +115,17 @@ export default async function run({ port, projectRoot }) {
     const old = deps.find(p => p.id === dep1.id);
     T.check('the voided deposit receipt stays voided', old?.status === 'reversed');
     T.check('the reversal reason is preserved on the voided receipt', !!old?.reversalReason);
-    // A restored deposit is an expectation again, not money in hand: it is raised
-    // as pending and has to be confirmed like any other receipt.
-    T.check('restoring the deposit raises a new expected receipt', deps.some(p => p.id !== dep1.id && p.status === 'pending'));
+    /*
+     * A restored deposit is money in hand again — Ro, 2026-09-28: a deposit
+     * entered on a reservation is money that was taken, and asking a second time
+     * on a second screen left every deposit on the property reading as
+     * unreceived. It is raised as received, with its own new receipt number, and
+     * the voided one stays voided beside it.
+     */
+    const revived = deps.find(p => p.id !== dep1.id);
+    T.check('restoring the deposit raises a new receipt, not a resurrection of the voided one', !!revived);
+    T.check('and it is on the ledger as received rather than awaiting funds', revived?.status === 'completed', String(revived?.status));
+    T.check('with a receipt number of its own', !!revived?.receiptNo && revived.receiptNo !== old?.receiptNo, `${revived?.receiptNo} vs ${old?.receiptNo}`);
     T.check('exactly one live deposit receipt exists', deps.filter(p => p.status !== 'reversed').length === 1);
 
     // --- settled-record rules ---

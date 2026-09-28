@@ -4,6 +4,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import {
   AppSettings,
   Currency,
@@ -91,7 +92,7 @@ export default function UtilitiesAndExpenses({
   onPostMonthlyExpenses,
   onRecallMonthlyExpenses
 }: UtilitiesAndExpensesProps) {
-  const [tab, setTab] = useState<'utilities' | 'expenses' | 'monthly'>('utilities');
+  const [tab, setTab] = useRemembered<'utilities' | 'expenses' | 'monthly'>('utilities.tab', 'utilities');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -222,7 +223,7 @@ export default function UtilitiesAndExpenses({
             await onSettleUtility(settlingUtility.id, payload);
             setSuccess(
               'Payment logged against this bill. The bill stays unpaid until you confirm the money was received, ' +
-                'in the HOA & Tenants Ledger under Receipts — only then is a receipt issued and the bill marked settled.'
+                'in the HOA & Tenants Ledger under Receipts, only then is a receipt issued and the bill marked settled.'
             );
             setError('');
             setSettlingUtility(null);
@@ -263,10 +264,11 @@ export default function UtilitiesAndExpenses({
           intro={
             <>
               <span className="font-semibold">
-                {voidingExpense.vendor} — {formatMoney(voidingExpense.amount, voidingExpense.currency)}{' '}
+                {voidingExpense.vendor}, {formatMoney(voidingExpense.amount, voidingExpense.currency)}{' '}
                 {voidingExpense.currency}
               </span>
-              , {voidingExpense.category.toLowerCase()}, {getAllocationLabel(voidingExpense.unitNumber)}, dated{' '}
+              ,{' '}
+              {voidingExpense.category.toLowerCase()}, {getAllocationLabel(voidingExpense.unitNumber)}, dated{' '}
               {formatDayLabel(voidingExpense.datePaid || voidingExpense.date)}.
               {voidingExpense.status === 'paid'
                 ? ' The books record this as paid.'
@@ -276,7 +278,7 @@ export default function UtilitiesAndExpenses({
           onClose={() => setVoidingExpense(null)}
           onSubmit={async (reason, includeSettled) => {
             await onVoidExpense(voidingExpense.id, { reason, confirmSettled: includeSettled });
-            setSuccess(`${voidingExpense.vendor} — ${formatMoney(voidingExpense.amount, voidingExpense.currency)} taken back. It is out of every total from now on.`);
+            setSuccess(`${voidingExpense.vendor}, ${formatMoney(voidingExpense.amount, voidingExpense.currency)} taken back. It is out of every total from now on.`);
             setError('');
             setVoidingExpense(null);
           }}
@@ -368,7 +370,7 @@ function UtilitiesPanel({
           alignRight={[3, 4, 5, 6]}
           rows={rows.map(u => [
             getUnitDisplayName(u.unitNumber),
-            u.meterNumber || '—',
+            u.meterNumber || '-',
             formatMonthLabel(u.billingPeriod),
             u.previousReading.toLocaleString(),
             u.currentReading.toLocaleString(),
@@ -571,7 +573,7 @@ function ExpensesPanel({
             e.category,
             fundOf(e) === 'ispo' ? MANAGING_COMPANY_NAME : 'Strata',
             getAllocationLabel(e.unitNumber),
-            e.reference || '—',
+            e.reference || '-',
             e.status === 'paid' ? 'Paid' : e.status === 'pending' ? 'Pending' : 'Taken back',
             `${formatMoney(e.amount, e.currency)} ${e.currency}`
           ])}
@@ -683,7 +685,7 @@ function ExpensesPanel({
                       <FundBadge fund={fundOf(e)} />
                     </td>
                     <td className="p-4 font-mono text-[11px]">{getAllocationLabel(e.unitNumber)}</td>
-                    <td className="p-4 font-mono text-[11px] text-slate-500">{e.reference || '—'}</td>
+                    <td className="p-4 font-mono text-[11px] text-slate-500">{e.reference || '-'}</td>
                     <td className={`p-4 text-right font-mono font-semibold ${e.status === 'void' ? 'line-through' : ''}`}>
                       {formatMoney(e.amount, e.currency)}
                       <span className="ml-1 text-[9px] text-slate-400">{e.currency}</span>
@@ -705,7 +707,7 @@ function ExpensesPanel({
                           <p className="mt-1 max-w-[16rem] text-[10px] leading-relaxed text-slate-400">
                             {e.voidedBy || 'unknown'}
                             {e.voidedAt ? ` · ${formatDayLabel(e.voidedAt.substring(0, 10))}` : ''}
-                            {e.voidReason ? ` — ${e.voidReason}` : ''}
+                            {e.voidReason ? `, ${e.voidReason}` : ''}
                           </p>
                         </>
                       )}
@@ -955,7 +957,7 @@ function SettleUtilityForm({
   return (
     <Modal
       title="Settle utility bill"
-      subtitle={`${getUnitDisplayName(utility.unitNumber)} — ${formatMoneyLong(utility.amountCharged, utility.currency)}`}
+      subtitle={`${getUnitDisplayName(utility.unitNumber)}, ${formatMoneyLong(utility.amountCharged, utility.currency)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -1171,7 +1173,7 @@ function ExpenseForm({
         <Field
           label="Reference"
           htmlFor="ef-ref"
-          hint="Invoice or voucher number. Keep the paper document filed against this reference — the system does not store attachments."
+          hint="Invoice or voucher number. Keep the paper document filed against this reference, the system does not store attachments."
         >
           <input id="ef-ref" type="text" value={reference} onChange={e => setReference(e.target.value)} className={monoInputClass} />
         </Field>

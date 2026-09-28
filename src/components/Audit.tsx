@@ -121,7 +121,7 @@ export default function Audit({ auditLogs }: AuditProps) {
                         </div>
                         <div>
                           <span className="font-semibold text-slate-500 uppercase text-[9px] block">Authorized User</span>
-                          <p className="text-slate-700 mt-0.5">{log.user} — {log.role.replace('_', ' ')}</p>
+                          <p className="text-slate-700 mt-0.5">{log.user}, {log.role.replace('_', ' ')}</p>
                         </div>
                         <div>
                           <span className="font-semibold text-slate-500 uppercase text-[9px] block">Exact Date & Time</span>

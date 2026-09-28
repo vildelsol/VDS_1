@@ -28,7 +28,7 @@ export default function PrintReceipt({ payment, units, bookings, onClose, onMark
   return (
     <PrintPortal
       title={`Receipt ${payment.receiptNo}`}
-      subtitle={`${payment.payerName} — ${formatMoneyLong(payment.amount, payment.currency)}`}
+      subtitle={`${payment.payerName}: ${formatMoneyLong(payment.amount, payment.currency)}`}
       maxWidthClass="max-w-md"
       onClose={onClose}
       onBeforePrint={() => {
@@ -68,7 +68,7 @@ export default function PrintReceipt({ payment, units, bookings, onClose, onMark
       {isReprint && payment.status !== 'reversed' && (
         <div className="print-emphasis mb-4 rounded-lg border border-amber-400 bg-amber-50 px-3 py-1.5 text-center">
           <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-amber-800">
-            Reprint — duplicate of receipt {payment.receiptNo}
+            Reprint, duplicate of receipt {payment.receiptNo}
           </p>
         </div>
       )}
@@ -135,7 +135,7 @@ export default function PrintReceipt({ payment, units, bookings, onClose, onMark
       ) : (
         <div className="mt-6 border-t border-slate-200 pt-4 text-center font-mono text-[9px] leading-relaxed text-slate-500">
           <p>
-            Paid by {payment.method.toLowerCase()} — no signature is required, as the transaction is evidenced by the
+            Paid by {payment.method.toLowerCase()}, no signature is required, as the transaction is evidenced by the
             {payment.reference ? ` reference ${payment.reference}` : ' banking record'}.
           </p>
           <p className="mt-1">
@@ -145,7 +145,7 @@ export default function PrintReceipt({ payment, units, bookings, onClose, onMark
       )}
 
       <p className="mt-5 border-t border-dashed border-slate-300 pt-2 text-center font-mono text-[9px] uppercase text-slate-400">
-        Villaggio Del Sol — retain this receipt as proof of payment
+        Villaggio Del Sol, retain this receipt as proof of payment
       </p>
     </PrintPortal>
   );

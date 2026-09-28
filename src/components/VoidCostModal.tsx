@@ -54,7 +54,7 @@ export default function VoidCostModal({
     event.preventDefault();
     if (busy) return;
     if (reason.trim().length < 5) {
-      setError('Please give a reason of at least 5 characters — it goes on the record.');
+      setError('Please give a reason of at least 5 characters, it goes on the record.');
       return;
     }
     setBusy(true);

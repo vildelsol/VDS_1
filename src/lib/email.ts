@@ -18,6 +18,7 @@
 import { Booking, Payment, Unit, getUnitDisplayName } from '../types';
 import { formatMoneyLong } from './money';
 import { formatDayLabel, nightsBetween } from './dates';
+import { guestGreetingName, receiptStanding } from './stays';
 
 export interface MailDraft {
   to: string;
@@ -80,7 +81,7 @@ export function buildReceiptEmail(payment: Payment, unit: Unit | undefined, reci
   ];
   return {
     to: recipient.email,
-    subject: `Receipt ${payment.receiptNo} — ${payment.category} — ${villa}`,
+    subject: `Receipt ${payment.receiptNo}, ${payment.category}, ${villa}`,
     body: lines.join('\n')
   };
 }
@@ -88,8 +89,17 @@ export function buildReceiptEmail(payment: Payment, unit: Unit | undefined, reci
 export function buildStayReceiptEmail(booking: Booking, unit: Unit | undefined): MailDraft {
   const villa = unit ? getUnitDisplayName(unit.number) : `Unit ${booking.unitNumber}`;
   const nights = nightsBetween(booking.checkIn, booking.checkOut);
+  const standing = receiptStanding(booking);
+  const money =
+    standing === 'no-value'
+      ? ['Stay total   : not yet confirmed']
+      : [
+          `Stay total   : ${formatMoneyLong(booking.amount, booking.currency)}`,
+          `Deposit paid : ${formatMoneyLong(booking.depositPaid, booking.currency)}`,
+          `Balance due  : ${formatMoneyLong(booking.balanceDue, booking.currency)}${booking.balanceDue > 0 ? ' (payable on arrival)' : ''}`
+        ];
   const lines = [
-    `Dear ${booking.guestName || 'Guest'},`,
+    `Dear ${guestGreetingName(booking)},`,
     '',
     `Thank you for choosing ${PROPERTY}. Here are your stay details:`,
     '',
@@ -98,9 +108,7 @@ export function buildStayReceiptEmail(booking: Booking, unit: Unit | undefined):
     `Departure    : ${formatDayLabel(booking.checkOut)}`,
     `Nights       : ${nights}`,
     ...(booking.nightlyRate ? [`Nightly rate : ${formatMoneyLong(booking.nightlyRate, booking.currency)}`] : []),
-    `Stay total   : ${formatMoneyLong(booking.amount, booking.currency)}`,
-    `Deposit paid : ${formatMoneyLong(booking.depositPaid, booking.currency)}`,
-    `Balance due  : ${formatMoneyLong(booking.balanceDue, booking.currency)}${booking.balanceDue > 0 ? ' (payable on arrival)' : ''}`,
+    ...money,
     '',
     'We look forward to welcoming you.',
     '',
@@ -108,7 +116,7 @@ export function buildStayReceiptEmail(booking: Booking, unit: Unit | undefined):
   ];
   return {
     to: booking.guestEmail || '',
-    subject: `Your stay at ${villa} — ${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)}`,
+    subject: `Your stay at ${villa}, ${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)}`,
     body: lines.join('\n')
   };
 }

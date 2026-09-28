@@ -205,7 +205,7 @@ async function waitForServer(deadline: number): Promise<void> {
       return;
     }
   }
-  throw new ApiError(0, 'The connection to the server was lost. Your entry has not been saved — check the network and try again.');
+  throw new ApiError(0, 'The connection to the server was lost. Your entry has not been saved, check the network and try again.');
 }
 
 // The browser's own signals are a useful hint, though not authoritative here.
@@ -430,7 +430,7 @@ export async function flushQueue(): Promise<void> {
         // The server refused it. `request` has already dropped it from the
         // queue, because replaying a rejected action would block the queue
         // forever. Carry on with the rest and report it.
-        uploaded.push(`${action.label} — refused by the server`);
+        uploaded.push(`${action.label}, refused by the server`);
       }
     }
     publishSync({ phase: 'done', uploaded });

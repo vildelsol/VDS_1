@@ -5,12 +5,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { getReportRange, setReportRange } from '../lib/reportRange';
+import { useRemembered } from '../lib/screenState';
 import {
   AppSettings,
   Booking,
   Charge,
+  ChargeCategory,
   Currency,
   Expense,
+  MANAGING_COMPANY_NAME,
   Payment,
   SessionUser,
   Tenancy,
@@ -20,15 +23,24 @@ import {
   getUnitDisplayName
 } from '../types';
 import {
+  REPORT_BOOKS,
+  REPORT_BOOK_LABELS,
+  REPORT_BOOK_SCOPE,
+  ReportBook,
   accountBalance,
+  chargeCategoriesInBook,
   chargedInPeriod,
+  chargesInBook,
   collectedInPeriod,
   collectionRate,
   expenseBreakdown,
+  expensesForBook,
   expensesInPeriod,
   liveExpenses,
   occupancyOn,
-  ownerBilledUnitIds
+  operatingStatement,
+  ownerBilledUnitIds,
+  paymentsInBook
 } from '../lib/finance';
 import { formatMoney, round2, sumMoney } from '../lib/money';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
@@ -100,7 +112,17 @@ function rangeForPreset(preset: Preset, custom: { from: string; to: string }): {
   }
 }
 
-export default function Reports({ units, charges, payments, expenses, utilities, bookings, tenancies, settings, session }: ReportsProps) {
+export default function Reports({
+  units,
+  charges,
+  payments: allPayments,
+  expenses: allExpenses,
+  utilities,
+  bookings,
+  tenancies,
+  settings,
+  session
+}: ReportsProps) {
   // Adopt the period chosen on Charts, if one was, so the statement and the
   // charts beside it in a pack cover the same period.
   const shared = getReportRange();
@@ -112,6 +134,48 @@ export default function Reports({ units, charges, payments, expenses, utilities,
   );
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState('');
+
+  /*
+   * Which set of books this whole tab is read on.
+   *
+   * Ro, 2026-09-28: *"Now at the top of the summary all calculations are built
+   * into one receivables and billed which is not supposed to be the case."* They
+   * were: every figure on this screen summed rent and maintenance, and both
+   * books' costs, into one number, and nothing offered a way to take them apart.
+   *
+   * One selector governs the whole tab rather than one per statement, so a pack
+   * printed for the accountant cannot have two of its pages on different books.
+   * `everything` is the default and is the combined view that was here before.
+   *
+   * The books split like this, and it is the same rule `ispoOperations` already
+   * applies rather than a new one:
+   *   - the corporation's: maintenance contributions, utilities recovered, other
+   *     income, against the costs marked as funded by contributions;
+   *   - ISPO's: rent and short-stay bookings, against the costs marked as paid
+   *     from rental income.
+   */
+  const [book, setBook] = useRemembered<ReportBook>('reports.book', 'everything');
+
+  const payments = useMemo(() => paymentsInBook(allPayments, book), [allPayments, book]);
+
+  /*
+   * `expensesForBook`, not `expensesInBook`: on ISPO's book a contribution typed
+   * into the cost register as well as receipted is counted from the receipt, and
+   * counting the row too would put the same money on this screen twice. The
+   * operating statement below already applied that rule and this summary did not,
+   * so the two disagreed.
+   *
+   * The per-currency form is used for every figure; this array is for the printed
+   * list of outgoings, which shows both currencies together.
+   */
+  const expenses = useMemo(() => expensesForBook(allExpenses, units, book), [allExpenses, units, book]);
+  const bookCharges = useMemo(() => chargesInBook(charges, book), [charges, book]);
+  /*
+   * A balance is computed per unit **per category**, so the book is applied by
+   * choosing which categories to walk rather than by filtering an answer after
+   * it has been added up.
+   */
+  const bookCategories = useMemo(() => chargeCategoriesInBook(book), [book]);
 
   const { from, to } = rangeForPreset(preset, custom);
   const invalidRange = to < from;
@@ -129,22 +193,44 @@ export default function Reports({ units, charges, payments, expenses, utilities,
     if (invalidRange) return [];
     return (['JMD', 'USD'] as Currency[]).map(currency => {
       const collected = collectedInPeriod(payments, currency, from, to, ownerBilled);
-      const billed = chargedInPeriod(charges, currency, from, to);
-      const spent = expensesInPeriod(expenses, currency, from, to);
+      const billed = chargedInPeriod(bookCharges, currency, from, to);
 
-      // Opening / closing receivable position across every account in this currency.
+      /*
+       * What went out, on this book.
+       *
+       * On ISPO's book the cost register is not the whole of it. The maintenance
+       * ISPO pays the corporation on the villas it lets is real money leaving
+       * ISPO, and there is no bill for it anywhere — it exists only as a
+       * contribution receipt the corporation issued. Left out, this screen said
+       * J$39,000 went out while the operating statement underneath it totalled
+       * J$61,000 for the same period and the same book: two figures on one page
+       * disagreeing, which is the fault this application keeps meeting.
+       *
+       * Taken from `operatingStatement` rather than computed again here, so the
+       * two cannot drift apart. It is nil on the corporation's book and on the
+       * combined one, where that money is income rather than a cost.
+       */
+      const paidOver =
+        book === 'ispo'
+          ? operatingStatement(allPayments, allExpenses, units, currency, from, to, { book }).internalTransfer
+          : 0;
+      const costs = expensesForBook(allExpenses, units, book, currency);
+      const spent = sumMoney([expensesInPeriod(costs, currency, from, to), paidOver]);
+
+      // Opening / closing receivable position across every account in this
+      // currency that belongs to the book being read.
       const openingReceivable = sumMoney(
         units.flatMap(u =>
-          (['Rent', 'Maintenance'] as const)
-            .map(cat => accountBalance(u, cat, charges, payments, addDays(from, -1), units))
+          bookCategories
+            .map(cat => accountBalance(u, cat, bookCharges, payments, addDays(from, -1), units))
             .filter(a => a.currency === currency)
             .map(a => a.balance)
         )
       );
       const closingReceivable = sumMoney(
         units.flatMap(u =>
-          (['Rent', 'Maintenance'] as const)
-            .map(cat => accountBalance(u, cat, charges, payments, to, units))
+          bookCategories
+            .map(cat => accountBalance(u, cat, bookCharges, payments, to, units))
             .filter(a => a.currency === currency)
             .map(a => a.balance)
         )
@@ -159,10 +245,11 @@ export default function Reports({ units, charges, payments, expenses, utilities,
         rate: collectionRate(billed.total, sumMoney([collected.rent, collected.maintenance])),
         openingReceivable,
         closingReceivable,
-        breakdown: expenseBreakdown(expenses, currency, from, to)
+        paidOver,
+        breakdown: expenseBreakdown(costs, currency, from, to)
       };
     });
-  }, [payments, charges, expenses, units, from, to, ownerBilled, invalidRange]);
+  }, [payments, bookCharges, bookCategories, expenses, allPayments, allExpenses, book, units, from, to, ownerBilled, invalidRange]);
 
   /* ---------------- monthly series for charts ---------------- */
 
@@ -174,14 +261,21 @@ export default function Reports({ units, charges, payments, expenses, utilities,
       const row: Record<string, number | string> = { month };
       for (const currency of ['JMD', 'USD'] as Currency[]) {
         const collected = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
-        const billed = chargedInPeriod(charges, currency, mFrom, mTo);
+        const billed = chargedInPeriod(bookCharges, currency, mFrom, mTo);
         row[`${currency}_in`] = collected.total;
-        row[`${currency}_out`] = expensesInPeriod(expenses, currency, mFrom, mTo);
+        row[`${currency}_out`] = sumMoney([
+          expensesInPeriod(expensesForBook(allExpenses, units, book, currency), currency, mFrom, mTo),
+          // Same reason as the summary card above: on ISPO's book the
+          // contribution it pays over is money out with no cost row behind it.
+          book === 'ispo'
+            ? operatingStatement(allPayments, allExpenses, units, currency, mFrom, mTo, { book }).internalTransfer
+            : 0
+        ]);
         row[`${currency}_billed`] = billed.total;
       }
       return row;
     });
-  }, [months, payments, charges, expenses, from, to, ownerBilled, invalidRange]);
+  }, [months, payments, bookCharges, expenses, allPayments, allExpenses, book, units, from, to, ownerBilled, invalidRange]);
 
   /* ---------------- factual observations ---------------- */
 
@@ -209,6 +303,13 @@ export default function Reports({ units, charges, payments, expenses, utilities,
     const entries: { text: string; rank: number }[] = [];
     const say = (rank: number, text: string) => entries.push({ rank, text });
 
+    /*
+     * Which accounts the book being read actually holds. "Billed in rent and
+     * maintenance" was true of the combined view and false of either single one:
+     * the corporation bills no rent and ISPO bills no maintenance.
+     */
+    const billedAccounts = bookCategories.map(cat => cat.toLowerCase()).join(' and ');
+
     for (const entry of summary) {
       if (entry.billed.total === 0 && entry.collected.total === 0 && entry.spent === 0) continue;
       const c = entry.currency;
@@ -217,7 +318,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
         // Anything short of full collection is money outstanding, not a statistic.
         say(
           entry.rate !== null && entry.rate < 100 ? URGENT : NOTABLE,
-          `${c}: ${formatMoney(entry.billed.total, c)} was billed in rent and maintenance; ` +
+          `${c}: ${formatMoney(entry.billed.total, c)} was billed in ${billedAccounts}; ` +
             `${formatMoney(sumMoney([entry.collected.rent, entry.collected.maintenance]), c)} was received against it ` +
             `(${entry.rate ?? 0}% of the amount billed in this period).`
         );
@@ -243,7 +344,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
         say(
           // Spending more than came in is a fact that belongs at the top.
           entry.net < 0 ? URGENT : NOTABLE,
-          `${c}: ${formatMoney(entry.collected.total, c)} received against ${formatMoney(entry.spent, c)} paid out — ` +
+          `${c}: ${formatMoney(entry.collected.total, c)} received against ${formatMoney(entry.spent, c)} paid out, ` +
             `a net cash movement of ${formatMoney(entry.net, c)}.`
         );
       }
@@ -251,7 +352,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
 
     // Arrears ageing, stated as counts.
     const aged = units
-      .flatMap(u => (['Rent', 'Maintenance'] as const).map(cat => accountBalance(u, cat, charges, payments, to, units)))
+      .flatMap(u => bookCategories.map(cat => accountBalance(u, cat, bookCharges, payments, to, units)))
       .filter(a => a.balance > 0);
     if (aged.length > 0) {
       const over60 = aged.filter(a => a.oldestUnpaidDays > 60).length;
@@ -272,17 +373,25 @@ export default function Reports({ units, charges, payments, expenses, utilities,
       }, 0);
     const shortLetUnits = units.filter(u => u.status === 'short-term').length;
     const daysInRange = nightsBetween(from, addDays(to, 1));
-    if (shortLetUnits > 0 && daysInRange > 0) {
+    /*
+     * Short-stay letting is ISPO's trade, not the corporation's — Ro, 2026-09-28:
+     * *"Short term rentals should also be an internal calculation and not a part
+     * of the strata operating statement or calculations especially when printed."*
+     * So it is stated on the internal books and left off the corporation's.
+     */
+    if (book !== 'strata' && shortLetUnits > 0 && daysInRange > 0) {
       const available = shortLetUnits * daysInRange;
       say(
         CONTEXT,
-        `${nightsSold} guest night(s) were sold across ${shortLetUnits} short-let villa(s) over ${daysInRange} day(s) — ` +
+        `${nightsSold} guest night(s) were sold across ${shortLetUnits} short-let villa(s) over ${daysInRange} day(s), ` +
           `${round2((nightsSold / available) * 100)}% of available nights.`
       );
     }
 
     const unpaidUtilities = utilities.filter(u => u.status === 'unpaid').length;
-    if (unpaidUtilities > 0) say(URGENT, `${unpaidUtilities} utility bill(s) remain unsettled at the report date.`);
+    if (book !== 'ispo' && unpaidUtilities > 0) {
+      say(URGENT, `${unpaidUtilities} utility bill(s) remain unsettled at the report date.`);
+    }
 
     /*
      * Who was in a villa on the report date, not how the villas are set up to be
@@ -305,7 +414,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
       .map((entry, index) => ({ ...entry, index }))
       .sort((a, b) => a.rank - b.rank || a.index - b.index)
       .map(entry => entry.text);
-  }, [summary, units, charges, payments, bookings, utilities, from, to, invalidRange]);
+  }, [summary, units, bookCharges, bookCategories, book, payments, bookings, utilities, from, to, invalidRange]);
 
   /* ---------------- CSV ---------------- */
 
@@ -322,7 +431,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
     const period = `${formatDayLabel(from)} to ${formatDayLabel(to)}`;
     const head = (documentTitle: string, span: number) =>
       documentHeader({
-        documentTitle,
+        documentTitle: `${documentTitle}, ${REPORT_BOOK_LABELS[book]}`,
         period,
         generatedOn: formatDayLabel(today()),
         generatedBy: session.name,
@@ -332,7 +441,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
 
     /* --- 1. the period, per currency --- */
     const summaryRows: XlsxCell[][] = [
-      ...head('Period summary by currency', 9),
+      ...head('Period summary by currency', 10),
       [
         cell.header('Currency'),
         cell.header('Opening receivable', 'right'),
@@ -340,6 +449,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
         cell.header('Received in period', 'right'),
         cell.header('Closing receivable', 'right'),
         cell.header('Expenses paid', 'right'),
+        cell.header('of which paid to the corporation', 'right'),
         cell.header('Expenses outstanding', 'right'),
         cell.header('Net cash movement', 'right'),
         cell.header('Collection rate %', 'right')
@@ -353,13 +463,15 @@ export default function Reports({ units, charges, payments, expenses, utilities,
         cell.money(entry.collected.total, entry.currency),
         cell.money(entry.closingReceivable, entry.currency),
         cell.money(entry.spent, entry.currency),
+        cell.money(entry.paidOver, entry.currency),
         cell.money(sumMoney(entry.breakdown.map(b => b.outstanding)), entry.currency),
         cell.money(entry.net, entry.currency),
         entry.rate === null ? cell.muted('n/a') : cell.number(entry.rate)
       ]);
     }
     summaryRows.push([cell.blank()]);
-    summaryRows.push([cell.note('USD and JMD are reported separately and are never combined. Each figure is in the currency of its own row.', 9)]);
+    summaryRows.push([cell.note('USD and JMD are reported separately and are never combined. Each figure is in the currency of its own row.', 10)]);
+    summaryRows.push([cell.note(`Scope: ${REPORT_BOOK_SCOPE[book]}`, 10)]);
 
     /* --- 2. what was received, by category --- */
     const incomeRows: XlsxCell[][] = [
@@ -440,7 +552,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
 
     /* --- 5. where every account stands --- */
     const balanceRows = units
-      .flatMap(unit => (['Rent', 'Maintenance'] as const).map(cat => ({ unit, account: accountBalance(unit, cat, charges, payments, to, units), cat })))
+      .flatMap(unit => bookCategories.map(cat => ({ unit, account: accountBalance(unit, cat, bookCharges, payments, to, units), cat })))
       .filter(r => r.account.charged !== 0 || r.account.paid !== 0)
       .sort((a, b) => b.account.balance - a.account.balance);
 
@@ -490,13 +602,13 @@ export default function Reports({ units, charges, payments, expenses, utilities,
 
     downloadWorkbook(
       [
-        { name: 'Period summary', widths: [12, 18, 18, 18, 18, 16, 20, 18, 16], rows: summaryRows, freezeRows: headerRow, repeatRow: headerRow, landscape: true },
+        { name: 'Period summary', widths: [12, 18, 18, 18, 18, 16, 24, 20, 18, 16], rows: summaryRows, freezeRows: headerRow, repeatRow: headerRow, landscape: true },
         { name: 'Income received', widths: [12, 16, 16, 16, 16, 16, 18], rows: incomeRows, freezeRows: headerRow, repeatRow: headerRow, landscape: true },
         { name: 'Expenses', widths: [12, 24, 16, 16, 16], rows: expenseRows, freezeRows: headerRow, repeatRow: headerRow },
         { name: 'Monthly cash', widths: [18, 12, 16, 16, 16, 16], rows: monthlyRows, freezeRows: headerRow, repeatRow: headerRow },
         { name: 'Account balances', widths: [18, 14, 26, 12, 18, 18, 18, 14], rows: balanceSheet, freezeRows: headerRow, repeatRow: headerRow, landscape: true }
       ],
-      `VDS Operating Statement ${from} to ${to}.xlsx`
+      `VDS Management Report ${book === 'everything' ? 'Both books' : REPORT_BOOK_LABELS[book]} ${from} to ${to}.xlsx`
     );
   };
 
@@ -530,6 +642,39 @@ export default function Reports({ units, charges, payments, expenses, utilities,
               <Printer className="h-4 w-4" /> Print statement
             </SubmitButton>
           </div>
+        </div>
+
+        {/*
+          Which books, above the period, because it decides which money is on the
+          screen at all. Everything below it — the summary, the chart, the
+          observations, the account balances, the operating statement, the Excel
+          export and the printed pack — reads whichever book is chosen here.
+        */}
+        <div className="space-y-2">
+          <span className="block font-mono text-[10px] uppercase tracking-wide text-slate-500">Which set of books</span>
+          <div className="flex flex-wrap gap-2">
+            {REPORT_BOOKS.map(b => (
+              <button
+                key={b}
+                type="button"
+                onClick={() => setBook(b)}
+                aria-pressed={book === b}
+                className={`rounded-lg px-3 py-1.5 font-mono text-xs font-semibold transition-colors ${
+                  book === b ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {REPORT_BOOK_LABELS[b]}
+              </button>
+            ))}
+          </div>
+          <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 font-mono text-[10px] leading-relaxed text-slate-600">
+            {REPORT_BOOK_SCOPE[book]}
+          </p>
+          <p className="font-mono text-[10px] leading-relaxed text-slate-400">
+            The proprietors&rsquo; monthly statement, the {MANAGING_COMPANY_NAME} operations statement and the out-of-pocket
+            report further down each belong to one book by their nature and say so on their own face. This selector does not
+            change them.
+          </p>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -597,9 +742,17 @@ export default function Reports({ units, charges, payments, expenses, utilities,
                   <StatementRow label="Billed during period" value={formatMoney(entry.billed.total, entry.currency)} detail={`Rent ${formatMoney(entry.billed.rent, entry.currency)} · Maintenance ${formatMoney(entry.billed.maintenance, entry.currency)}`} />
                   <StatementRow label="Received during period" value={formatMoney(entry.collected.total, entry.currency)} detail={`Rent ${formatMoney(entry.collected.rent, entry.currency)} · Maintenance ${formatMoney(entry.collected.maintenance, entry.currency)} · Bookings ${formatMoney(entry.collected.booking, entry.currency)} · Utilities ${formatMoney(entry.collected.utility, entry.currency)} · Other ${formatMoney(entry.collected.other, entry.currency)}`} />
                   <StatementRow label="Receivable at end of period" value={formatMoney(entry.closingReceivable, entry.currency)} strong />
-                  <StatementRow label="Expenses paid" value={formatMoney(entry.spent, entry.currency)} />
+                  <StatementRow
+                    label="Expenses paid"
+                    value={formatMoney(entry.spent, entry.currency)}
+                    detail={
+                      entry.paidOver > 0
+                        ? `Includes ${formatMoney(entry.paidOver, entry.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on the villas it lets. It is read from the contribution receipts, there is no bill for it in the cost register.`
+                        : undefined
+                    }
+                  />
                   <StatementRow label="Net cash movement" value={formatMoney(entry.net, entry.currency)} strong tone={entry.net < 0 ? 'negative' : 'positive'} />
-                  <StatementRow label="Collection rate" value={entry.rate === null ? 'n/a — nothing billed' : `${entry.rate}%`} />
+                  <StatementRow label="Collection rate" value={entry.rate === null ? 'n/a, nothing billed' : `${entry.rate}%`} />
                 </dl>
 
                 {entry.breakdown.length > 0 && (
@@ -666,7 +819,7 @@ export default function Reports({ units, charges, payments, expenses, utilities,
             )}
           </section>
 
-          <AccountBalancesTable units={units} charges={charges} payments={payments} asOf={to} />
+          <AccountBalancesTable units={units} charges={bookCharges} payments={payments} categories={bookCategories} asOf={to} />
         </>
       )}
 
@@ -682,7 +835,24 @@ export default function Reports({ units, charges, payments, expenses, utilities,
         council asks for a month, a quarter or the year, independently of
         whatever range the management figures above are being read over.
       */}
-      <OperatingStatement units={units} payments={payments} expenses={expenses} settings={settings} session={session} />
+      {/*
+        The book comes from the selector at the top of this tab, so the statement
+        and the management figures above it are never on different books in the
+        same printed pack. Ro, 2026-09-28: one selector, governing the whole tab.
+
+        The raw arrays are passed, never the book-filtered ones: `operatingStatement`
+        applies the book itself, and handing it a pre-filtered array as well would
+        filter twice — harmless today and exactly the shape that silently drops a
+        class of money the day the two rules stop agreeing.
+      */}
+      <OperatingStatement
+        units={units}
+        payments={allPayments}
+        expenses={allExpenses}
+        book={book}
+        settings={settings}
+        session={session}
+      />
 
       <OperationsStatement expenses={expenses} payments={payments} settings={settings} session={session} />
 
@@ -724,15 +894,16 @@ export default function Reports({ units, charges, payments, expenses, utilities,
       {printing && (
         <StatementDocument
           units={units}
-          charges={charges}
+          charges={bookCharges}
           payments={payments}
           expenses={expenses}
           summary={summary}
           series={series}
           observations={observations}
+          book={book}
+          categories={bookCategories}
           from={from}
           to={to}
-          settings={settings}
           generatedBy={session.name}
           onClose={() => setPrinting(false)}
         />
@@ -846,16 +1017,27 @@ function CashChart({ currency, series }: { currency: Currency; series: Record<st
   );
 }
 
-function AccountBalancesTable({ units, charges, payments, asOf }: { units: Unit[]; charges: Charge[]; payments: Payment[]; asOf: string }) {
+function AccountBalancesTable({
+  units,
+  charges,
+  payments,
+  categories,
+  asOf
+}: {
+  units: Unit[];
+  charges: Charge[];
+  payments: Payment[];
+  /** The accounts this book contains — rent is ISPO's, maintenance the fund's. */
+  categories: ChargeCategory[];
+  asOf: string;
+}) {
   const rows = useMemo(
     () =>
       units
-        .flatMap(unit =>
-          (['Rent', 'Maintenance'] as const).map(category => accountBalance(unit, category, charges, payments, asOf, units))
-        )
+        .flatMap(unit => categories.map(category => accountBalance(unit, category, charges, payments, asOf, units)))
         .filter(a => a.charged !== 0 || a.paid !== 0)
         .sort((a, b) => b.balance - a.balance),
-    [units, charges, payments, asOf]
+    [units, charges, payments, categories, asOf]
   );
 
   if (rows.length === 0) {
@@ -896,7 +1078,7 @@ function AccountBalancesTable({ units, charges, payments, asOf }: { units: Unit[
                 <td className={`p-3 text-right font-mono font-semibold ${a.balance > 0 ? 'text-red-600' : a.balance < 0 ? 'text-sky-600' : 'text-slate-500'}`}>
                   {formatMoney(a.balance, a.currency)}
                 </td>
-                <td className="p-3 text-right font-mono text-slate-500">{a.oldestUnpaidDays > 0 ? `${a.oldestUnpaidDays} days` : '—'}</td>
+                <td className="p-3 text-right font-mono text-slate-500">{a.oldestUnpaidDays > 0 ? `${a.oldestUnpaidDays} days` : '-'}</td>
               </tr>
             ))}
           </tbody>
@@ -915,6 +1097,12 @@ function buildSummaryType() {
     collected: ReturnType<typeof collectedInPeriod>;
     billed: ReturnType<typeof chargedInPeriod>;
     spent: number;
+    /**
+     * How much of `spent` is the maintenance ISPO paid the corporation on the
+     * villas it lets. Nil on every book but ISPO's, where it is real money out
+     * with no row in the cost register behind it.
+     */
+    paidOver: number;
     net: number;
     rate: number | null;
     openingReceivable: number;
@@ -931,9 +1119,10 @@ function StatementDocument({
   summary,
   series,
   observations,
+  book,
+  categories,
   from,
   to,
-  settings,
   generatedBy,
   onClose
 }: {
@@ -944,9 +1133,11 @@ function StatementDocument({
   summary: Summary;
   series: Record<string, number | string>[];
   observations: string[];
+  /** The book every figure on this page was read on. Named on the page. */
+  book: ReportBook;
+  categories: ChargeCategory[];
   from: string;
   to: string;
-  settings: AppSettings;
   generatedBy: string;
   onClose: () => void;
 }) {
@@ -972,9 +1163,24 @@ function StatementDocument({
     >
       <PrintLetterhead
         documentTitle="Operating Statement"
-        meta={`Period ${formatDayLabel(from)} — ${formatDayLabel(to)}`}
+        meta={`${REPORT_BOOK_LABELS[book]} · Period ${formatDayLabel(from)} to ${formatDayLabel(to)}`}
         generatedBy={generatedBy}
       />
+
+      {/*
+        One note, above the figures, saying everything a reader needs in order to
+        read them — the scope of the page and the rules the numbers follow.
+
+        The scope belongs on the sheet because a printed page has no selector on it
+        to say which books it was read on. It is joined here with what used to be a
+        separate footer: Ro, 2026-09-28, on the statement beside this one —
+        *"there are 3 different areas of disclaimers, thats unnecessary."*
+      */}
+      <p className="mb-4 rounded border border-slate-400 p-2 text-[10px] leading-relaxed">
+        <strong>Scope.</strong> {REPORT_BOOK_SCOPE[book]} JMD and USD are reported separately and never combined.
+        Utility recoveries billed directly to owners of owner-occupied and short-let villas are excluded from operating
+        revenue.
+      </p>
 
       <section className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
         {summary.map(entry => (
@@ -986,6 +1192,9 @@ function StatementDocument({
               ['Received in period', formatMoney(entry.collected.total, entry.currency)],
               ['Receivable carried forward', formatMoney(entry.closingReceivable, entry.currency)],
               ['Expenses paid', formatMoney(entry.spent, entry.currency)],
+              ...(entry.paidOver > 0
+                ? [[`of which contributions paid to the corporation`, formatMoney(entry.paidOver, entry.currency)] as [string, string]]
+                : []),
               ['Expenses outstanding', formatMoney(sumMoney(entry.breakdown.map(b => b.outstanding)), entry.currency)],
               ['Net cash movement', formatMoney(entry.net, entry.currency)],
               ['Collection rate', entry.rate === null ? 'n/a' : `${entry.rate}%`]
@@ -1053,7 +1262,7 @@ function StatementDocument({
             </thead>
             <tbody className="font-mono">
               {units
-                .flatMap(unit => (['Rent', 'Maintenance'] as const).map(cat => accountBalance(unit, cat, charges, payments, to, units)))
+                .flatMap(unit => categories.map(cat => accountBalance(unit, cat, charges, payments, to, units)))
                 .filter(a => a.charged !== 0 || a.paid !== 0)
                 .sort((a, b) => b.balance - a.balance)
                 .map(a => (
@@ -1065,7 +1274,7 @@ function StatementDocument({
                     <td className="p-2 text-right">{formatMoney(a.charged, a.currency)}</td>
                     <td className="p-2 text-right">{formatMoney(a.paid, a.currency)}</td>
                     <td className="p-2 text-right font-bold">{formatMoney(a.balance, a.currency)}</td>
-                    <td className="p-2 text-right">{a.oldestUnpaidDays > 0 ? `${a.oldestUnpaidDays}d` : '—'}</td>
+                    <td className="p-2 text-right">{a.oldestUnpaidDays > 0 ? `${a.oldestUnpaidDays}d` : '-'}</td>
                   </tr>
                 ))}
             </tbody>
@@ -1141,7 +1350,7 @@ function StatementDocument({
                           <tr key={b.category}>
                             <td className="p-2 font-sans">{b.category}</td>
                             <td className="p-2 text-right">{formatMoney(b.amount, s.currency)}</td>
-                            <td className="p-2 text-right">{b.outstanding > 0 ? formatMoney(b.outstanding, s.currency) : '—'}</td>
+                            <td className="p-2 text-right">{b.outstanding > 0 ? formatMoney(b.outstanding, s.currency) : '-'}</td>
                             <td className="p-2 text-right font-semibold">{formatMoney(round2(b.amount + b.outstanding), s.currency)}</td>
                           </tr>
                         ))}
@@ -1189,7 +1398,7 @@ function StatementDocument({
                     <td className="p-2 font-sans font-semibold">{e.vendor}</td>
                     <td className="p-2">{e.category}</td>
                     <td className="p-2">{getAllocationLabel(e.unitNumber)}</td>
-                    <td className="p-2">{e.reference || '—'}</td>
+                    <td className="p-2">{e.reference || '-'}</td>
                     <td className="p-2 uppercase">{e.status}</td>
                     <td className="p-2 text-right font-semibold">
                       {formatMoney(e.amount, e.currency)} {e.currency}
@@ -1212,12 +1421,6 @@ function StatementDocument({
           </ol>
         </section>
       )}
-
-      <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
-        USD and JMD are reported separately and are never combined. Utility recoveries billed directly to owners of
-        owner-occupied and short-let villas are excluded from operating revenue. Indicative rate on file: 1 USD ={' '}
-        {settings.fxRateJmdPerUsd} JMD, used for display only.
-      </p>
 
       <PrintSignatures left="Prepared by" leftName={generatedBy} right="Reviewed / Approved by" />
     </PrintPortal>

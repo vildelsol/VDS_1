@@ -3,8 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import {
+  Booking,
+  CURRENCIES,
   Charge,
   ChargeCategory,
   Currency,
@@ -35,6 +38,7 @@ import { currentMonth, formatDayLabel, formatMonthLabel, today } from '../lib/da
 import { ALREADY_SETTLED, ApiError, CURRENCY_CHANGE, errorMessage } from '../lib/api';
 import { openMailDraft } from '../lib/email';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
+import BookingDeposits from './BookingDeposits';
 import {
   AlreadySettledNote,
   Badge,
@@ -73,6 +77,8 @@ interface FinanceHubProps {
   units: Unit[];
   charges: Charge[];
   payments: Payment[];
+  /** Needed to spot a deposit that is on the ledger twice. See `BookingDeposits`. */
+  bookings: Booking[];
   session: SessionUser;
   onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
   onConfirmPayment: (paymentId: string, fields?: Record<string, unknown>) => Promise<Payment>;
@@ -91,6 +97,7 @@ export default function FinanceHub({
   units,
   charges,
   payments,
+  bookings,
   session,
   onRecordPayment,
   onConfirmPayment,
@@ -102,7 +109,7 @@ export default function FinanceHub({
   onAddCharge,
   onOpenReceipt
 }: FinanceHubProps) {
-  const [tab, setTab] = useState<'tenants' | 'owners' | 'transactions'>('tenants');
+  const [tab, setTab] = useRemembered<'tenants' | 'owners' | 'transactions'>('finance.tab', 'tenants');
   const [asOf, setAsOf] = useState(today());
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -278,7 +285,7 @@ export default function FinanceHub({
                 {formatMonthLabel(thisMonth)} charges are not fully posted yet
               </p>
               <p className="mt-0.5 text-xs leading-relaxed text-amber-800">
-                Post them in one click to bill every unit at once — rent for {monthCharges.rentCount} long-term lease
+                Post them in one click to bill every unit at once, rent for {monthCharges.rentCount} long-term lease
                 {monthCharges.rentCount === 1 ? '' : 's'} and maintenance for {monthCharges.maintCount} owner
                 {monthCharges.maintCount === 1 ? '' : 's'}. You do not re-enter these each month; posting is safe to run
                 again and never double-bills.
@@ -304,7 +311,7 @@ export default function FinanceHub({
       {perms.postCharges && monthCharges.fullyPosted && (
         <div className="flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50/60 px-4 py-2.5 text-xs text-emerald-800">
           <CheckCircle className="h-4 w-4 text-emerald-600" />
-          {formatMonthLabel(thisMonth)} charges are posted — every unit is billed. Record payments as they come in.
+          {formatMonthLabel(thisMonth)} charges are posted, every unit is billed. Record payments as they come in.
         </div>
       )}
 
@@ -373,7 +380,7 @@ export default function FinanceHub({
           accounts={rentAccounts}
           category="Rent"
           asOf={asOf}
-          nameOf={u => u.tenantName || '— no tenant on record —'}
+          nameOf={u => u.tenantName || '- no tenant on record -'}
           contactOf={u => u.tenantEmail}
           payments={payments}
           onReceive={openPaymentFor}
@@ -398,6 +405,18 @@ export default function FinanceHub({
 
       {tab === 'transactions' && (
         <div className="space-y-4">
+          {/*
+            Above the filters on purpose: it is a decision waiting, not a record to
+            look up, and it renders nothing at all when there is nothing to decide.
+          */}
+          <BookingDeposits
+            bookings={bookings}
+            payments={payments}
+            session={session}
+            onConfirmPayment={onConfirmPayment}
+            onReversePayment={onReversePayment}
+          />
+
           <div className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-xs sm:grid-cols-2 lg:grid-cols-5">
             <Field label="Search" htmlFor="vds-search">
               <div className="relative">
@@ -510,7 +529,14 @@ export default function FinanceHub({
                           <button onClick={() => setDetailTarget(p)} className="underline-offset-2 hover:underline">
                             {p.receiptNo || <span className="italic text-slate-400">not yet issued</span>}
                           </button>
-                          {(p.printCount || 0) > 1 && <span className="ml-1 text-[9px] text-amber-600">×{p.printCount}</span>}
+                          {(p.printCount || 0) > 1 && (
+                            <span
+                              className="ml-1 cursor-help text-[9px] text-amber-600"
+                              title={`Printed ${p.printCount} times, every copy after the first is marked REPRINT and recorded on the audit trail`}
+                            >
+                              ×{p.printCount}
+                            </span>
+                          )}
                         </td>
                         <td className="p-4">
                           <p className="font-medium text-slate-900">{p.payerName}</p>
@@ -582,7 +608,7 @@ export default function FinanceHub({
                               <button
                                 onClick={() => setRefundTarget(p)}
                                 className="rounded-lg border border-amber-200 p-1.5 text-amber-700 transition-all hover:bg-amber-50"
-                                title="Refund — record money handed back to the payer"
+                                title="Refund: record money handed back to the payer"
                                 aria-label={`Refund receipt ${p.receiptNo}`}
                               >
                                 <Undo2 className="h-4 w-4" />
@@ -654,7 +680,7 @@ export default function FinanceHub({
               payment.status === 'completed'
                 ? `Receipt ${payment.receiptNo} issued for ${formatMoneyLong(payment.amount, payment.currency)}.`
                 : `${formatMoneyLong(payment.amount, payment.currency)} logged as expected from ${payment.payerName}. ` +
-                  'It does not affect any balance yet — confirm it as received, in the Receipts ledger, once the money is actually in hand.'
+                  'It does not affect any balance yet, confirm it as received, in the Receipts ledger, once the money is actually in hand.'
             );
             setPayTarget(null);
           }}
@@ -796,7 +822,7 @@ function AccountTable({
       {noCharges && (
         <InfoNote tone="amber">
           No {category.toLowerCase()} charges have been posted yet, so every balance reads zero. Use{' '}
-          <strong>Post month</strong> above to raise the charges for a billing month — that is what makes arrears
+          <strong>Post month</strong> above to raise the charges for a billing month, that is what makes arrears
           accumulate.
         </InfoNote>
       )}
@@ -873,7 +899,7 @@ function AccountTable({
                           {account.oldestUnpaidDays} days
                         </Badge>
                       ) : (
-                        <span className="text-slate-300">—</span>
+                        <span className="text-slate-300">-</span>
                       )}
                     </td>
                     <td className="p-4">
@@ -920,7 +946,7 @@ function AccountTable({
                               <CheckCircle className="h-3.5 w-3.5" /> Settled
                             </span>
                           ) : (
-                            <span className="text-slate-300">—</span>
+                            <span className="text-slate-300">-</span>
                           )}
                         </div>
                       </div>
@@ -1091,7 +1117,7 @@ function RecordPaymentModal({
       subtitle={
         initial.receivedNow
           ? `Receipt will be issued in the name of ${staffName}`
-          : 'Nothing is received yet — confirm it from the Receipts ledger when the money arrives'
+          : 'Nothing is received yet, confirm it from the Receipts ledger when the money arrives'
       }
       onClose={onClose}
       footer={
@@ -1169,7 +1195,7 @@ function RecordPaymentModal({
             </p>
             <label className="flex items-start gap-2">
               <input type="checkbox" checked={confirmMismatch} onChange={e => setConfirmMismatch(e.target.checked)} className="mt-0.5" />
-              <span>Record it in {currency} anyway — I will reconcile the account separately.</span>
+              <span>Record it in {currency} anyway, I will reconcile the account separately.</span>
             </label>
           </div>
         )}
@@ -1180,7 +1206,7 @@ function RecordPaymentModal({
               <strong>{getUnitDisplayName(unit!.number)}</strong> is {UNIT_STATUS_LABELS[unit!.status].toLowerCase()} and is
               not billed for {category.toLowerCase()}.
               {category === 'Rent'
-                ? ' Owners pay HOA maintenance rather than rent — switch the category to Maintenance if that is what this money is for.'
+                ? ' Owners pay HOA maintenance rather than rent, switch the category to Maintenance if that is what this money is for.'
                 : ' Set a monthly fee on the villa first if it should be billed.'}
             </p>
             <label className="flex items-start gap-2">
@@ -1275,7 +1301,7 @@ function ConfirmReceiptModal({
   return (
     <Modal
       title="Confirm money received"
-      subtitle={`${payment.payerName} — ${formatMoneyLong(payment.amount, payment.currency)}`}
+      subtitle={`${payment.payerName}: ${formatMoneyLong(payment.amount, payment.currency)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -1428,7 +1454,7 @@ function RefundModal({
 
         <InfoNote tone="amber">
           This records money <strong>going back out</strong>. Receipt {payment.receiptNo} stays valid and printable,
-          because the money really was received — it is netted off the balance and the collection figures from the
+          because the money really was received, it is netted off the balance and the collection figures from the
           refund date. If instead the payment should never have been recorded at all, void it rather than refunding it.
         </InfoNote>
 
@@ -1561,7 +1587,7 @@ function ReversalModal({
             value={reason}
             onChange={e => setReason(e.target.value)}
             required
-            placeholder="e.g. Recorded against the wrong villa — re-entered as REC-2026-0042"
+            placeholder="e.g. Recorded against the wrong villa, re-entered as REC-2026-0042"
             className={inputClass}
           />
         </Field>
@@ -1673,7 +1699,7 @@ function PaymentDetailModal({
         <div className="space-y-4 p-6 text-xs">
           {payment.status === 'reversed' && (
             <ErrorNote>
-              <strong>Voided</strong> by {payment.reversedBy} on {formatDayLabel(payment.reversalDate || '')} — “
+              <strong>Voided</strong> by {payment.reversedBy} on {formatDayLabel(payment.reversalDate || '')}, “
               {payment.reversalReason}”
             </ErrorNote>
           )}
@@ -1693,7 +1719,7 @@ function PaymentDetailModal({
               ['Amount', formatMoneyLong(payment.amount, payment.currency)],
               ['Date received', formatDayLabel(payment.date)],
               ['Method', payment.method],
-              ['Reference', payment.reference || '—'],
+              ['Reference', payment.reference || '-'],
               ['Recorded by', payment.staffMember]
             ].map(([label, value]) => (
               <div key={label}>
@@ -1755,7 +1781,7 @@ function PaymentDetailModal({
 
           <InfoNote tone="amber">
             Corrections are recorded in the audit trail with the previous and new values. The receipt number and its
-            void status cannot be changed here — void the receipt and re-enter it if the payment itself was wrong.
+            void status cannot be changed here, void the receipt and re-enter it if the payment itself was wrong.
           </InfoNote>
 
           <div className="grid grid-cols-2 gap-3">
@@ -1795,7 +1821,7 @@ function PaymentDetailModal({
               required
               // Said at the field, not only after the refusal: the point is to stop
               // an accidental change, and by then it has already been made.
-              hint={currencyChanged ? 'The figure is not converted — it moves to the other account as it stands.' : undefined}
+              hint={currencyChanged ? 'The figure is not converted, it moves to the other account as it stands.' : undefined}
             >
               <select
                 id="pe-cur"
@@ -1878,7 +1904,7 @@ function ChargeHistoryModal({
 
   return (
     <Modal
-      title={`${account.category} charges — ${getUnitDisplayName(account.unit.number)}`}
+      title={`${account.category} charges: ${getUnitDisplayName(account.unit.number)}`}
       subtitle={`Balance ${formatMoneyLong(account.balance, account.currency)}`}
       onClose={onClose}
       maxWidthClass="max-w-2xl"
@@ -1895,7 +1921,7 @@ function ChargeHistoryModal({
         {!canVoid && rows.length > 0 && (
           <p className="rounded-lg bg-slate-50 p-3 text-[11px] text-slate-500">
             A charge raised in error is cancelled by voiding it, which needs the permission to
-            correct settled records. Ask an Administrator or Manager. Nothing is deleted — a
+            correct settled records. Ask an Administrator or Manager. Nothing is deleted, a
             voided charge stays on the record with the reason and who voided it.
           </p>
         )}
@@ -1969,7 +1995,7 @@ function ChargeHistoryModal({
         {account.mismatchedCurrencyPayments.length > 0 && (
           <InfoNote tone="amber">
             <strong>Not included in this balance:</strong>{' '}
-            {account.mismatchedCurrencyPayments.map(p => `${p.receiptNo} (${formatMoneyLong(p.amount, p.currency)})`).join(', ')} —
+            {account.mismatchedCurrencyPayments.map(p => `${p.receiptNo} (${formatMoneyLong(p.amount, p.currency)})`).join(', ')} -
             recorded in a different currency to the {account.currency} billed on this account.
           </InfoNote>
         )}
@@ -1986,8 +2012,8 @@ function ChargeHistoryModal({
             <strong>Billed in another currency and not counted above:</strong>{' '}
             {account.mismatchedCurrencyCharges
               .map(c => `${formatMoneyLong(c.amount, c.currency)} due ${c.dueDate}`)
-              .join(', ')}{' '}
-            — this account is billed in {account.currency}, so these charges are not in the balance and
+              .join(', ')}
+            , this account is billed in {account.currency}, so these charges are not in the balance and
             anything paid against them will look like a credit. Void and re-raise them in {account.currency},
             or change the currency on the villa.
           </InfoNote>
@@ -2035,7 +2061,7 @@ function AccountStatementDocument({
       .map(c => ({
         date: c.dueDate,
         kind: 'charge' as const,
-        label: c.description || `${category} charge — ${formatMonthLabel(c.periodMonth)}`,
+        label: c.description || `${category} charge for ${formatMonthLabel(c.periodMonth)}`,
         ref: '',
         debit: c.amount,
         credit: 0
@@ -2068,12 +2094,12 @@ function AccountStatementDocument({
       '',
       'Villaggio Del Sol Management'
     ].join('\n');
-    openMailDraft({ to: recipientEmail || '', subject: `${category} statement — ${getUnitDisplayName(unit.number)}`, body });
+    openMailDraft({ to: recipientEmail || '', subject: `${category} statement: ${getUnitDisplayName(unit.number)}`, body });
   };
 
   return (
     <PrintPortal
-      title={`${category} statement — ${getUnitDisplayName(unit.number)}`}
+      title={`${category} statement: ${getUnitDisplayName(unit.number)}`}
       subtitle={recipientName}
       onClose={onClose}
       maxWidthClass="max-w-3xl"
@@ -2098,7 +2124,7 @@ function AccountStatementDocument({
 
       <section className="mb-5 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
         {[
-          [category === 'Maintenance' ? 'Registered owner' : 'Tenant', recipientName || '—'],
+          [category === 'Maintenance' ? 'Registered owner' : 'Tenant', recipientName || '-'],
           ['Account', `${category} (${currency})`],
           ['Total billed', formatMoney(account.charged, currency)],
           ['Balance', account.balance >= 0 ? `${formatMoney(account.balance, currency)} due` : `${formatMoney(Math.abs(account.balance), currency)} credit`]
@@ -2130,9 +2156,9 @@ function AccountStatementDocument({
                 <tr key={i}>
                   <td className="p-2 whitespace-nowrap">{formatDayLabel(row.date)}</td>
                   <td className="p-2 font-sans">{row.label}</td>
-                  <td className="p-2">{row.ref || '—'}</td>
-                  <td className="p-2 text-right">{row.debit ? formatMoney(row.debit, currency) : '—'}</td>
-                  <td className="p-2 text-right text-emerald-700">{row.credit ? formatMoney(row.credit, currency) : '—'}</td>
+                  <td className="p-2">{row.ref || '-'}</td>
+                  <td className="p-2 text-right">{row.debit ? formatMoney(row.debit, currency) : '-'}</td>
+                  <td className="p-2 text-right text-emerald-700">{row.credit ? formatMoney(row.credit, currency) : '-'}</td>
                   <td className="p-2 text-right font-semibold">{formatMoney(row.running, currency)}</td>
                 </tr>
               ))}
@@ -2189,7 +2215,47 @@ function OneOffChargeModal({
   const [busy, setBusy] = useState(false);
 
   const unit = units.find(u => u.id === unitId);
-  const currency = unit ? chargeCurrency(unit, category) : 'JMD';
+
+  /*
+   * The currency this account is billed in — what every figure on it is measured
+   * in, and what the charge falls to unless somebody deliberately says otherwise.
+   */
+  const nativeCurrency = unit ? chargeCurrency(unit, category) : 'JMD';
+
+  /**
+   * The currency chosen for this one charge.
+   *
+   * Ro, 2026-09-28: *"the 'Bill a one-off charge' feature does not have a USD
+   * currency pill whereby the currency is selected."* It did not, because the
+   * charge simply took the villa's own currency.
+   *
+   * Offering the choice re-opens a fault this application has already been bitten
+   * by once, on villa C11 in September: **a balance is computed per unit, per
+   * category, per currency, and the two currencies are never combined.** A charge
+   * raised in the currency an account is *not* billed in is therefore counted by
+   * neither side of that balance. "Billed to date" does not move while the money
+   * is genuinely owed, and the next correctly-denominated receipt then shows the
+   * villa as being in credit. The books flatter themselves and warn nobody.
+   *
+   * So the pill is here and the other currency is reachable, but never by
+   * accident: choosing it states plainly what will happen and asks for a
+   * deliberate tick. That is the same house pattern as the currency guard on a
+   * settled receipt, and the same reason.
+   */
+  const [currency, setCurrency] = useState<Currency>(nativeCurrency);
+  const [acceptStranded, setAcceptStranded] = useState(false);
+
+  /*
+   * Changing the villa or the account changes which currency is the native one,
+   * and a tick given for a previous account cannot stand for this one. Both the
+   * choice and the acceptance go back to the safe answer.
+   */
+  useEffect(() => {
+    setCurrency(nativeCurrency);
+    setAcceptStranded(false);
+  }, [nativeCurrency]);
+
+  const mismatched = currency !== nativeCurrency;
   const payer = unit ? (category === 'Maintenance' ? unit.ownerName : unit.tenantName || unit.ownerName) : '';
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -2203,10 +2269,27 @@ function OneOffChargeModal({
       setError('Enter an amount greater than zero.');
       return;
     }
+    if (mismatched && !acceptStranded) {
+      setError(
+        `This account is billed in ${nativeCurrency}. Tick the confirmation below to raise the charge in ${currency} anyway, or change the currency back.`
+      );
+      return;
+    }
     setBusy(true);
     setError('');
     try {
-      await onSubmit({ unitId, category, oneOffType, amount: Number(amount), currency, dueDate, description });
+      await onSubmit({
+        unitId,
+        category,
+        oneOffType,
+        amount: Number(amount),
+        currency,
+        dueDate,
+        description,
+        // Only ever sent when the tick above was given. The server refuses the
+        // mismatch without it, so the guard is enforced there and not only here.
+        ...(mismatched ? { confirmCurrencyMismatch: true } : {})
+      });
     } catch (err) {
       setError(errorMessage(err, 'Could not raise the charge.'));
     } finally {
@@ -2217,7 +2300,7 @@ function OneOffChargeModal({
   return (
     <Modal
       title="Bill a one-off charge"
-      subtitle="A late fee, a recharged repair, a fine, a levy — anything outside the monthly rent and HOA fee"
+      subtitle="A late fee, a recharged repair, a fine, a levy: anything outside the monthly rent and HOA fee"
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -2233,7 +2316,7 @@ function OneOffChargeModal({
 
         <InfoNote>
           This is money owed, not money received. It joins the villa&apos;s balance, ages into arrears and appears on the
-          statement exactly like rent — record the payment separately when it is settled.
+          statement exactly like rent, record the payment separately when it is settled.
         </InfoNote>
 
         <div className="grid grid-cols-2 gap-3">
@@ -2274,6 +2357,67 @@ function OneOffChargeModal({
             ))}
           </select>
         </Field>
+
+        <Field
+          label="Currency"
+          htmlFor="oc-currency"
+          required
+          hint={unit ? `This account is billed in ${nativeCurrency}.` : undefined}
+        >
+          <div className="flex flex-wrap gap-2" id="oc-currency">
+            {CURRENCIES.map(cur => (
+              <button
+                key={cur}
+                type="button"
+                onClick={() => {
+                  setCurrency(cur);
+                  setAcceptStranded(false);
+                  setError('');
+                }}
+                aria-pressed={currency === cur}
+                className={`rounded-lg px-3 py-1.5 font-mono text-xs font-semibold transition-colors ${
+                  currency === cur ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {cur}
+                {cur === nativeCurrency && <span className="ml-1.5 text-[9px] font-normal opacity-70">account currency</span>}
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {mismatched && (
+          <div className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-3">
+            <p className="text-[11px] font-semibold text-amber-900">
+              This account is billed in {nativeCurrency}. A {currency} charge will not join its balance.
+            </p>
+            <p className="text-[11px] leading-relaxed text-amber-900">
+              Balances are kept per account per currency and the two are never added together. A {currency} charge on a{' '}
+              {nativeCurrency} account is therefore counted by neither side: &ldquo;Billed to date&rdquo; will not move,
+              the money will still be owed, and the next {nativeCurrency} receipt will make the villa read as being in
+              credit. It is flagged on the account as a charge in the wrong currency rather than chased as arrears.
+            </p>
+            <label className="flex items-start gap-2 text-[11px] font-medium text-amber-900">
+              <input
+                type="checkbox"
+                checked={acceptStranded}
+                onChange={e => {
+                  setAcceptStranded(e.target.checked);
+                  setError('');
+                }}
+                className="mt-0.5"
+              />
+              <span>
+                Yes, raise this charge in {currency} anyway. I know it will not be counted in the {nativeCurrency}{' '}
+                balance.
+              </span>
+            </label>
+            <p className="font-mono text-[10px] text-amber-800">
+              If this account should be billed in {currency} from now on, change the villa&rsquo;s currency in the Units
+              Register instead, that moves the account, rather than leaving one charge behind it.
+            </p>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <Field label={`Amount (${currency})`} htmlFor="oc-amount" required>

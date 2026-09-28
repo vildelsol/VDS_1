@@ -790,7 +790,7 @@ function UnitDetail({
                     {expense.status === 'void' && (
                       <p className="mt-0.5 text-[10px] leading-relaxed text-slate-400">
                         Taken back by {expense.voidedBy || 'unknown'}
-                        {expense.voidReason ? ` — ${expense.voidReason}` : ''}. In no total.
+                        {expense.voidReason ? `, ${expense.voidReason}` : ''}. In no total.
                       </p>
                     )}
                   </div>
@@ -924,7 +924,7 @@ function EntitlementNote({ unit, units }: { unit: Unit; units: Unit[] }) {
     >
       <span className="font-semibold">
         Entitlement {unit.entitlement}
-        {share !== null ? ` — ${(share * 100).toFixed(2)}% of the plan` : ''}
+        {share !== null ? `, ${(share * 100).toFixed(2)}% of the plan` : ''}
       </span>
       {unit.strataLotNumber ? <span className="font-mono"> · lot {unit.strataLotNumber}</span> : ''}
       {row && (
@@ -932,7 +932,7 @@ function EntitlementNote({ unit, units }: { unit: Unit; units: Unit[] }) {
           {off ? (
             <>
               Levied {formatMoney(row.levied, row.currency)}, against {formatMoney(row.proportionate, row.currency)} if the same total were
-              struck strictly by entitlement — {row.variance > 0 ? 'more' : 'less'} than this lot&rsquo;s share by{' '}
+              struck strictly by entitlement, {row.variance > 0 ? 'more' : 'less'} than this lot&rsquo;s share by{' '}
               {formatMoney(Math.abs(row.variance), row.currency)}.
             </>
           ) : (
@@ -1147,7 +1147,7 @@ function UnitEditor({
       return;
     }
     if (tenantRemoved && !tenantIntent) {
-      setError('Say whether the tenant moved out or was entered by mistake — the two do different things to the rent.');
+      setError('Say whether the tenant moved out or was entered by mistake, the two do different things to the rent.');
       return;
     }
     if (ownerNameChanged && !ownerIntent) {
@@ -1209,7 +1209,7 @@ function UnitEditor({
 
         {currencyChanged && (
           <InfoNote tone="amber">
-            Changing the billing currency does <strong>not</strong> convert the amounts below — it changes which currency
+            Changing the billing currency does <strong>not</strong> convert the amounts below, it changes which currency
             they are billed in. Enter the correct figure in the new currency yourself.
           </InfoNote>
         )}
@@ -1242,7 +1242,7 @@ function UnitEditor({
               {strandedCharges.length > 6 && <li>…and {strandedCharges.length - 6} more.</li>}
             </ul>
             <p className="text-xs leading-relaxed text-amber-900">
-              Nothing here can convert them — the same number in the other currency is not the same money, and no rate
+              Nothing here can convert them, the same number in the other currency is not the same money, and no rate
               this application holds is good enough to restate what somebody owes. Saving will <strong>void</strong> them
               instead: the records stay, the reason is stored, and the audit trail keeps them. Re-post the month, or
               raise the balance again in the new currency afterwards.
@@ -1291,7 +1291,7 @@ function UnitEditor({
                   onChange={() => setOwnerIntent('correction')}
                 />
                 <span>
-                  <strong>The name was wrong — this is a correction.</strong> The spelling is put right on the existing
+                  <strong>The name was wrong, this is a correction.</strong> The spelling is put right on the existing
                   ownership record, and any outstanding maintenance follows the corrected name.
                 </span>
               </label>
@@ -1313,7 +1313,7 @@ function UnitEditor({
             </div>
             {ownerIntent === 'sale' && (
               <div className="mt-3">
-                <Field label="Date the villa changed hands" htmlFor="ue-acquired" hint="Leave empty if it is not known — today is used, and it can be corrected later.">
+                <Field label="Date the villa changed hands" htmlFor="ue-acquired" hint="Leave empty if it is not known, today is used, and it can be corrected later.">
                   <input
                     id="ue-acquired"
                     type="date"
@@ -1385,7 +1385,7 @@ function UnitEditor({
                   onChange={() => setTenantIntent('correction')}
                 />
                 <span>
-                  <strong>The name was wrong — this is a correction.</strong> The spelling is put right and the tenancy
+                  <strong>The name was wrong, this is a correction.</strong> The spelling is put right and the tenancy
                   carries on as it is. No rent is billed and no move-in date is recorded.
                 </span>
               </label>
@@ -1696,7 +1696,7 @@ function EvictModal({
   return (
     <Modal
       title="Evict tenant"
-      subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
+      subtitle={`${tenancy.tenantName}, ${getUnitDisplayName(tenancy.unitNumber)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -1717,14 +1717,14 @@ function EvictModal({
 
         <InfoNote tone="amber">
           Recording an eviction ends this tenancy, frees the villa, and <strong>writes off the tenant&apos;s unpaid
-          rent</strong> so it stops appearing on the dashboard and in the notifications hub. Nothing is deleted — the
+          rent</strong> so it stops appearing on the dashboard and in the notifications hub. Nothing is deleted, the
           tenancy, the receipts, and the written-off amount stay in the record and audit trail as bad debt.
         </InfoNote>
 
         <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-center">
           <span className="block font-mono text-[10px] uppercase text-red-700">Rent to be written off</span>
           <span className="font-mono text-lg font-bold text-red-700">
-            {writeOff > 0 ? formatMoneyLong(writeOff, tenancy.currency) : `${formatMoneyLong(0, tenancy.currency)} — nothing outstanding`}
+            {writeOff > 0 ? formatMoneyLong(writeOff, tenancy.currency) : `${formatMoneyLong(0, tenancy.currency)}, nothing outstanding`}
           </span>
         </div>
 
@@ -1788,7 +1788,7 @@ function TenancyEditor({
   return (
     <Modal
       title={closing ? 'Edit tenancy dates' : 'Correct tenancy dates'}
-      subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
+      subtitle={`${tenancy.tenantName}, ${getUnitDisplayName(tenancy.unitNumber)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -1812,8 +1812,8 @@ function TenancyEditor({
           htmlFor="tn-start"
           hint={
             tenancy.startedOn
-              ? 'A move-in part way through a month is billed the whole month — rent is not prorated.'
-              : 'Not recorded — this tenancy predates occupancy tracking. A mid-month move-in is billed the whole month.'
+              ? 'A move-in part way through a month is billed the whole month, rent is not prorated.'
+              : 'Not recorded, this tenancy predates occupancy tracking. A mid-month move-in is billed the whole month.'
           }
         >
           <input id="tn-start" type="date" value={startedOn} max={today()} onChange={e => setStartedOn(e.target.value)} className={monoInputClass} />
@@ -1892,7 +1892,7 @@ function LogActivityModal({
   return (
     <Modal
       title="Log resident activity"
-      subtitle={`${getUnitDisplayName(unit.number)} — ${unit.ownerName}`}
+      subtitle={`${getUnitDisplayName(unit.number)}, ${unit.ownerName}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -2016,7 +2016,7 @@ export function UnitLedgerDocument({
   const maint = accountBalance(unit, 'Maintenance', charges, payments, undefined, units);
 
   return (
-    <PrintPortal title={`Unit ledger — ${getUnitDisplayName(unit.number)}`} onClose={onClose} maxWidthClass="max-w-4xl">
+    <PrintPortal title={`Unit ledger, ${getUnitDisplayName(unit.number)}`} onClose={onClose} maxWidthClass="max-w-4xl">
       <PrintLetterhead documentTitle="Unit Activity Ledger" meta={getUnitDisplayName(unit.number)} generatedBy={generatedBy} />
 
       <section className="mb-6 grid grid-cols-2 gap-4 rounded-xl border border-slate-300 p-4 text-xs md:grid-cols-4">
@@ -2082,8 +2082,8 @@ export function UnitLedgerDocument({
                       <td className="p-2">{t.startedOn ? formatDayLabel(t.startedOn) : 'not recorded'}</td>
                       <td className="p-2">{t.endedOn ? formatDayLabel(t.endedOn) : 'present'}</td>
                       <td className="p-2 text-right">{formatMoney(t.monthlyRent, t.currency)} {t.currency}</td>
-                      <td className="p-2 font-sans">{[t.tenantEmail, t.tenantPhone].filter(Boolean).join(' • ') || '—'}</td>
-                      <td className="p-2 font-sans">{t.endReason || '—'}</td>
+                      <td className="p-2 font-sans">{[t.tenantEmail, t.tenantPhone].filter(Boolean).join(' • ') || '-'}</td>
+                      <td className="p-2 font-sans">{t.endReason || '-'}</td>
                     </tr>
                   ))}
               </tbody>
@@ -2116,8 +2116,8 @@ export function UnitLedgerDocument({
                     <td className="p-2">{formatMonthLabel(c.periodMonth)}</td>
                     <td className="p-2 font-sans">{c.category}</td>
                     <td className="p-2 font-sans">{c.payerName}</td>
-                    <td className="p-2 font-sans">{c.description || '—'}</td>
-                    <td className="p-2 font-sans">{c.status === 'void' ? `Void${c.voidReason ? ` — ${c.voidReason}` : ''}` : 'Open'}</td>
+                    <td className="p-2 font-sans">{c.description || '-'}</td>
+                    <td className="p-2 font-sans">{c.status === 'void' ? `Void${c.voidReason ? `, ${c.voidReason}` : ''}` : 'Open'}</td>
                     <td className="p-2 text-right">
                       {formatMoney(c.amount, c.currency)} {c.currency}
                     </td>
@@ -2217,7 +2217,7 @@ export function UnitLedgerDocument({
                     <td className="p-2">{formatDayLabel(e.datePaid || e.date)}</td>
                     <td className="p-2 font-sans font-semibold">{e.vendor}</td>
                     <td className="p-2">{e.category}</td>
-                    <td className="p-2 font-sans">{e.description || '—'}</td>
+                    <td className="p-2 font-sans">{e.description || '-'}</td>
                     <td className="p-2 uppercase">{e.status === 'void' ? 'Taken back' : e.status}</td>
                     <td className={`p-2 text-right font-semibold ${e.status === 'void' ? 'line-through' : ''}`}>
                       {formatMoney(e.amount, e.currency)} {e.currency}
@@ -2346,7 +2346,7 @@ export function TenancyRecordDocument({
       .map(c => ({
         date: c.dueDate,
         kind: 'charge' as const,
-        detail: `Rent charged — ${formatMonthLabel(c.periodMonth)}`,
+        detail: `Rent charged, ${formatMonthLabel(c.periodMonth)}`,
         ref: '',
         debit: c.amount,
         credit: 0,
@@ -2407,14 +2407,14 @@ export function TenancyRecordDocument({
 
   return (
     <PrintPortal
-      title={`Tenant record — ${tenancy.tenantName}`}
+      title={`Tenant record, ${tenancy.tenantName}`}
       subtitle={getUnitDisplayName(tenancy.unitNumber)}
       onClose={onClose}
       maxWidthClass="max-w-3xl"
     >
       <PrintLetterhead
         documentTitle="Tenant Record"
-        meta={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
+        meta={`${tenancy.tenantName}, ${getUnitDisplayName(tenancy.unitNumber)}`}
         generatedBy={generatedBy}
       />
 
@@ -2428,7 +2428,7 @@ export function TenancyRecordDocument({
             tenancy.endedOn ? formatDayLabel(tenancy.endedOn) : tenancy.status === 'active' ? 'Still in occupancy' : 'Not recorded'
           ],
           ['Agreed rent', `${formatMoney(tenancy.monthlyRent, currency)} per month`],
-          ['Rent due day', tenancy.rentDueDay ? `${tenancy.rentDueDay} of each month` : '—'],
+          ['Rent due day', tenancy.rentDueDay ? `${tenancy.rentDueDay} of each month` : '-'],
           ['Email', tenancy.tenantEmail || 'Not recorded'],
           ['Telephone', tenancy.tenantPhone || 'Not recorded']
         ].map(([label, value]) => (
@@ -2481,9 +2481,9 @@ export function TenancyRecordDocument({
                 <tr key={i}>
                   <td className="p-2 whitespace-nowrap">{formatDayLabel(row.date)}</td>
                   <td className="p-2 font-sans">{row.detail}</td>
-                  <td className="p-2">{row.ref || '—'}</td>
-                  <td className="p-2 text-right">{row.debit ? formatMoney(row.debit, row.currency) : '—'}</td>
-                  <td className="p-2 text-right">{row.credit ? formatMoney(row.credit, row.currency) : '—'}</td>
+                  <td className="p-2">{row.ref || '-'}</td>
+                  <td className="p-2 text-right">{row.debit ? formatMoney(row.debit, row.currency) : '-'}</td>
+                  <td className="p-2 text-right">{row.credit ? formatMoney(row.credit, row.currency) : '-'}</td>
                 </tr>
               ))}
             </tbody>
@@ -2508,7 +2508,7 @@ export function TenancyRecordDocument({
 
       {excludedMaintenance && (
         <p className="mt-4 rounded-lg border border-slate-300 bg-slate-50 p-3 text-[11px] text-slate-700 print-outline">
-          <strong>Not included on this record:</strong> maintenance contributions for this villa —{' '}
+          <strong>Not included on this record:</strong> maintenance contributions for this villa -{' '}
           {formatMoney(excludedMaintenance.billed, excludedMaintenance.currency)} billed
           {excludedMaintenance.receipts > 0 && (
             <>
@@ -2524,8 +2524,8 @@ export function TenancyRecordDocument({
       <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
         This record covers {tenancy.tenantName} only, for the occupancy dates shown above. Rent charged and received
         outside those dates belongs to another occupancy and is deliberately excluded. For everything that has happened
-        to this villa across all occupants — every charge, every receipt in every category, utilities, expenses and
-        activity — print the unit ledger instead.
+        to this villa across all occupants, every charge, every receipt in every category, utilities, expenses and
+        activity, print the unit ledger instead.
       </p>
 
       <PrintSignatures left="Prepared by" leftName={generatedBy} right="Tenant acknowledgement" rightName={tenancy.tenantName} />
@@ -2595,7 +2595,7 @@ function WorkOrderModal({
   return (
     <Modal
       title="Update maintenance request"
-      subtitle={`${getUnitDisplayName(activity.unitNumber)} — reported ${formatDayLabel(activity.dateCaptured)}`}
+      subtitle={`${getUnitDisplayName(activity.unitNumber)}, reported ${formatDayLabel(activity.dateCaptured)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -2657,7 +2657,7 @@ function WorkOrderModal({
             <input type="checkbox" checked={raiseExpense} onChange={e => setRaiseExpense(e.target.checked)} className="mt-0.5" />
             <span>
               <strong>Also record this cost as a property expense</strong>, allocated to{' '}
-              {getUnitDisplayName(activity.unitNumber)}. Tick this only if it is not already in the expense register —
+              {getUnitDisplayName(activity.unitNumber)}. Tick this only if it is not already in the expense register -
               it can only be done once.
             </span>
           </label>
@@ -2726,7 +2726,7 @@ function DepositModal({
 
   if (settled) {
     return (
-      <Modal title="Security deposit" subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`} onClose={onClose}>
+      <Modal title="Security deposit" subtitle={`${tenancy.tenantName}, ${getUnitDisplayName(tenancy.unitNumber)}`} onClose={onClose}>
         <div className="space-y-3 p-6 text-xs">
           <InfoNote>This deposit has been reconciled and closed. It is kept here as a permanent record.</InfoNote>
           <dl className="space-y-1 rounded-xl bg-slate-50 p-3 font-mono text-[11px]">
@@ -2755,7 +2755,7 @@ function DepositModal({
   return (
     <Modal
       title={held ? 'Return the security deposit' : 'Record a security deposit'}
-      subtitle={`${tenancy.tenantName} — ${getUnitDisplayName(tenancy.unitNumber)}`}
+      subtitle={`${tenancy.tenantName}, ${getUnitDisplayName(tenancy.unitNumber)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -2771,7 +2771,7 @@ function DepositModal({
 
         <InfoNote>
           A deposit is the tenant&apos;s money held on their behalf, not income. It never appears in the balance, the
-          arrears or the reports — and it has to be given back, less anything fairly deducted.
+          arrears or the reports, and it has to be given back, less anything fairly deducted.
         </InfoNote>
 
         {!held ? (
@@ -2827,7 +2827,7 @@ function DepositModal({
                   value={withheldReason}
                   onChange={e => setWithheldReason(e.target.value)}
                   required
-                  placeholder="e.g. Broken interior door and deep clean — quotes attached to the file"
+                  placeholder="e.g. Broken interior door and deep clean, quotes attached to the file"
                   className={inputClass}
                 />
               </Field>

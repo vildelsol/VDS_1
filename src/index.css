@@ -143,6 +143,36 @@
     page-break-after: avoid;
   }
 
+  /*
+   * The signature block on paper.
+   *
+   * On screen it sits under 88px of space (mt-12 + pt-10) — about 23mm once
+   * printed, before a single signing line is drawn. That gap was the usual reason
+   * a one-page document printed a second sheet holding nothing but "Prepared by"
+   * and "Reviewed / Approved by". Ro, 2026-09-16. The space a person actually signs
+   * on, the line itself, is left the same.
+   *
+   * And never split: half a signature block on each page is worse than either.
+   * Where a page is genuinely full to the last line, the block still has to go
+   * over — no print setting can make room that is not there.
+   */
+  .vds-print-document .vds-print-signatures {
+    margin-top: 6mm !important;
+    padding-top: 0 !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /*
+   * The "Powered by ISPO" credit. Printed to PDF, the old spacing pushed this one
+   * line onto a sheet of its own after the signatures had fitted — a blank page
+   * with eight-point type at the top. Tightened on paper only.
+   */
+  .vds-print-document .vds-print-credit {
+    margin-top: 3mm !important;
+    padding-top: 1mm !important;
+  }
+
   .vds-print-document .page-break-before {
     break-before: page;
     page-break-before: always;

@@ -152,7 +152,7 @@ export default function NotificationsTab({
     const accounts = delinquentAccounts(units, charges, payments, today()).map<Item>(account => ({
       id: `${account.category.toLowerCase()}-${account.unit.id}`,
       type: account.category === 'Rent' ? 'rent' : 'maintenance',
-      title: `${account.category === 'Rent' ? 'Rent' : 'HOA maintenance'} outstanding — ${getUnitDisplayName(account.unit.number)}`,
+      title: `${account.category === 'Rent' ? 'Rent' : 'HOA maintenance'} outstanding, ${getUnitDisplayName(account.unit.number)}`,
       description:
         `${account.unpaidCharges[0]?.payerName || 'The account holder'} has ${account.unpaidCharges.length} unpaid ` +
         `month${account.unpaidCharges.length === 1 ? '' : 's'} from ${formatMonthLabel(account.unpaidCharges[0]?.periodMonth || '')}. ` +
@@ -169,9 +169,9 @@ export default function NotificationsTab({
     const scheduledItems = scheduledCharges(units, charges, payments, today()).map<Item>(row => ({
       id: `scheduled-${row.category.toLowerCase()}-${row.unit.id}`,
       type: row.category === 'Rent' ? 'rent' : 'maintenance',
-      title: `${row.category === 'Rent' ? 'Rent' : 'HOA maintenance'} due ${formatDayLabel(row.nextDueDate)} — ${getUnitDisplayName(row.unit.number)}`,
+      title: `${row.category === 'Rent' ? 'Rent' : 'HOA maintenance'} due ${formatDayLabel(row.nextDueDate)}, ${getUnitDisplayName(row.unit.number)}`,
       description:
-        `${row.charges[0].payerName || 'The account holder'} — posted and not yet due` +
+        `${row.charges[0].payerName || 'The account holder'}, posted and not yet due` +
         `${row.daysUntilDue === 1 ? ', due tomorrow' : `, due in ${row.daysUntilDue} days`}. ` +
         'Nothing is late. It moves to the list above on the day itself.',
       amount: row.amount,
@@ -194,7 +194,7 @@ export default function NotificationsTab({
     const unbilledItems = unbilledOccupancy(units, tenancies, charges, today(), settings?.booksBeginOn).map<Item>(row => ({
       id: `unbilled-${row.tenancy.id}`,
       type: 'unbilled',
-      title: `Rent not yet billed — ${getUnitDisplayName(row.unit.number)}`,
+      title: `Rent not yet billed, ${getUnitDisplayName(row.unit.number)}`,
       description:
         `${row.tenancy.tenantName} has occupied ${row.months.length} month${row.months.length === 1 ? '' : 's'} ` +
         `that ${row.months.length === 1 ? 'has' : 'have'} never been billed (${row.months.map(formatMonthLabel).join(', ')}). ` +
@@ -212,7 +212,7 @@ export default function NotificationsTab({
     const leaseItems = leasesNeedingAttention(units, tenancies).map<Item>(row => ({
       id: `lease-${row.tenancy.id}`,
       type: 'lease',
-      title: `${row.expired ? 'Lease expired' : 'Lease ending soon'} — ${getUnitDisplayName(row.unit.number)}`,
+      title: `${row.expired ? 'Lease expired' : 'Lease ending soon'}, ${getUnitDisplayName(row.unit.number)}`,
       description: row.expired
         ? `${row.tenancy.tenantName}'s lease ended ${formatDayLabel(row.leaseEndsOn)}, ${Math.abs(row.daysRemaining)} day${Math.abs(row.daysRemaining) === 1 ? '' : 's'} ago. ` +
           'Until it is renewed they are on month-to-month terms at the old rent. Agree a renewal or serve notice.'
@@ -229,7 +229,7 @@ export default function NotificationsTab({
       .map<Item>(u => ({
         id: `util-${u.id}`,
         type: 'utility',
-        title: `Unpaid utility bill — ${getUnitDisplayName(u.unitNumber)}`,
+        title: `Unpaid utility bill, ${getUnitDisplayName(u.unitNumber)}`,
         description: `Meter ${u.meterNumber} for ${formatMonthLabel(u.billingPeriod)}: ${u.consumption.toLocaleString()} units consumed.`,
         amount: u.amountCharged,
         currency: u.currency,
@@ -246,10 +246,10 @@ export default function NotificationsTab({
         return {
           id: `expense-${e.id}`,
           type: 'expense',
-          title: `Expense due — ${e.vendor}`,
+          title: `Expense due, ${e.vendor}`,
           description: `${e.category}${e.unitNumber !== 'General' ? ` for ${getAllocationLabel(e.unitNumber)}` : ' (property-wide)'}: ${
             e.description || 'no description recorded'
-          }. Due ${formatDayLabel(due)}${overdueBy > 0 ? ` — ${overdueBy} days overdue` : ''}.`,
+          }. Due ${formatDayLabel(due)}${overdueBy > 0 ? `, ${overdueBy} days overdue` : ''}.`,
           amount: e.amount,
           currency: e.currency,
           severity: overdueBy > 0 ? 'high' : 'medium',
@@ -261,7 +261,7 @@ export default function NotificationsTab({
     const overlapItems = bookingOverlaps(bookings).map<Item>((clash, i) => ({
       id: `overlap-${clash.unitId}-${i}`,
       type: 'booking',
-      title: `Double-booking — ${getUnitDisplayName(clash.unitNumber)}`,
+      title: `Double-booking, ${getUnitDisplayName(clash.unitNumber)}`,
       description:
         `${clash.a.guestName} (${formatDayLabel(clash.a.checkIn)}–${formatDayLabel(clash.a.checkOut)}) overlaps ` +
         `${clash.b.guestName} (${formatDayLabel(clash.b.checkIn)}–${formatDayLabel(clash.b.checkOut)}). ` +
@@ -269,7 +269,7 @@ export default function NotificationsTab({
       amount: 0,
       currency: 'USD',
       severity: 'high',
-      ageDays: 9999, // sort to the very top — a clash needs resolving before it reaches a guest
+      ageDays: 9999, // sort to the very top, a clash needs resolving before it reaches a guest
       isBooking: true
     }));
 
@@ -392,7 +392,7 @@ export default function NotificationsTab({
           title={items.length === 0 ? 'Nothing outstanding' : 'Nothing outstanding in this category'}
           hint={
             charges.length === 0
-              ? 'No charges have been posted yet. Rent and maintenance only appear here once a billing month is posted — from the ledger, or from the "not yet billed" alerts on this page.'
+              ? 'No charges have been posted yet. Rent and maintenance only appear here once a billing month is posted, from the ledger, or from the "not yet billed" alerts on this page.'
               : 'Nothing is overdue, all utility bills are paid, and no expenses are pending. Rent posted for a month but not yet due is shown in grey rather than counted here.'
           }
           icon={<CheckCircle className="h-6 w-6" />}
@@ -685,7 +685,7 @@ function SettleAccountModal({
   return (
     <Modal
       title={`Receive ${account.category.toLowerCase()} payment`}
-      subtitle={`${getUnitDisplayName(account.unit.number)} — balance ${formatMoneyLong(account.balance, account.currency)}`}
+      subtitle={`${getUnitDisplayName(account.unit.number)}, balance ${formatMoneyLong(account.balance, account.currency)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -715,7 +715,7 @@ function SettleAccountModal({
           label={`Amount received (${account.currency})`}
           htmlFor="sa-amount"
           required
-          hint={partial ? 'This is a part payment — the remainder stays on the account.' : undefined}
+          hint={partial ? 'This is a part payment, the remainder stays on the account.' : undefined}
         >
           <input id="sa-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
         </Field>
@@ -788,7 +788,7 @@ function SettleUtilityModal({
   return (
     <Modal
       title="Settle utility bill"
-      subtitle={`${getUnitDisplayName(utility.unitNumber)} — ${formatMonthLabel(utility.billingPeriod)}`}
+      subtitle={`${getUnitDisplayName(utility.unitNumber)}, ${formatMonthLabel(utility.billingPeriod)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -909,7 +909,7 @@ function SettleExpenseModal({
   return (
     <Modal
       title="Record expense as paid"
-      subtitle={`${expense.vendor} — ${formatMoneyLong(expense.amount, expense.currency)}`}
+      subtitle={`${expense.vendor}, ${formatMoneyLong(expense.amount, expense.currency)}`}
       onClose={onClose}
       footer={
         <div className="flex gap-3">

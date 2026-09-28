@@ -91,13 +91,14 @@ import {
   readSessionToken,
   requireAuth,
   resetAdministratorPassword,
+  renewSession,
   resolveAuth,
   setSessionCookie,
   toSessionUser,
   verifyPassword,
   burnPasswordCheck
 } from './server/auth';
-import { assertFetchableFeedUrl, classifyEvent, fetchICal, parseICal, planWithdrawals } from './server/ical';
+import { assertFetchableFeedUrl, classifyEvent, feedDateChange, fetchICal, parseICal, planWithdrawals } from './server/ical';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -429,7 +430,7 @@ async function bootstrap() {
   });
   if (bootstrapPassword) {
     console.log('\n' + '='.repeat(72));
-    console.log('  FIRST RUN — an administrator account has been created.');
+    console.log('  FIRST RUN, an administrator account has been created.');
     console.log('    username: admin');
     console.log(`    password: ${bootstrapPassword}`);
     console.log('  You will be required to change this password at first sign-in.');
@@ -700,6 +701,9 @@ app.get(
     const db = getDb();
     const auth = resolveAuth(db, req);
     if (!auth) return res.status(401).json({ error: 'Not signed in.', code: 'UNAUTHENTICATED' });
+    // This is the route the open application checks in on, so it is the one that
+    // keeps an untouched screen signed in overnight.
+    renewSession(req, res, auth.session);
     res.json({ user: toSessionUser(db, auth.user) });
   })
 );
@@ -1264,8 +1268,8 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
     const movedInOnDay = Number(tenancy.startedOn.slice(8, 10));
     const description =
       movedInOnDay > 1
-        ? `First month's rent — ${month} (full month; moved in ${formatDayLabel(tenancy.startedOn)}, not prorated)`
-        : `First month's rent — ${month}`;
+        ? `First month's rent, ${month} (full month; moved in ${formatDayLabel(tenancy.startedOn)}, not prorated)`
+        : `First month's rent, ${month}`;
     const first: Charge = {
       id: uniqueRecordId(db.charges, `chg-${month}-${unit.id}-rent`),
       unitId: unit.id,
@@ -1307,7 +1311,7 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
     db,
     staffName,
     role,
-    `Billed last month's rent in advance for ${tenancy.tenantName} at ${unit.number} — their final month will not be charged again`,
+    `Billed last month's rent in advance for ${tenancy.tenantName} at ${unit.number}, their final month will not be charged again`,
     'Charge',
     advance.id,
     '',
@@ -1354,11 +1358,11 @@ function applyAdvanceRentOnMoveOut(db: Database, tenancy: Tenancy, endedOn: stri
       db,
       staffName,
       role,
-      `Applied ${tenancy.tenantName}'s advance to their final month (${finalMonth}) at ${tenancy.unitNumber} — that month is not charged again`,
+      `Applied ${tenancy.tenantName}'s advance to their final month (${finalMonth}) at ${tenancy.unitNumber}, that month is not charged again`,
       'Charge',
       finalCharge.id,
       'open',
-      'void — covered by rent paid in advance'
+      'void, covered by rent paid in advance'
     );
   } else {
     addAudit(
@@ -1576,7 +1580,7 @@ function syncOwnership(
     db,
     staffName,
     role,
-    `Closed ownership for ${before.ownerName} at ${unit.number} — villa sold to ${name}`,
+    `Closed ownership for ${before.ownerName} at ${unit.number}, villa sold to ${name}`,
     'Ownership',
     current.id,
     before,
@@ -1663,7 +1667,7 @@ function syncTenancy(
         }
         current.status = 'ended';
         current.endedOn = current.startedOn || stamp;
-        current.endReason = 'Recorded in error — this tenancy did not happen.';
+        current.endReason = 'Recorded in error, this tenancy did not happen.';
         current.closedBy = staffName;
         // Never held, so never spent: leave the advance unapplied.
         delete current.advanceRentChargeId;
@@ -2079,7 +2083,7 @@ app.post(
         charge.status = 'void';
         charge.voidedBy = who.name;
         charge.voidedAt = new Date().toISOString();
-        charge.voidReason = `Written off — tenant evicted (${reason}).`;
+        charge.voidReason = `Written off, tenant evicted (${reason}).`;
       }
 
       record.status = 'ended';
@@ -2191,7 +2195,7 @@ app.put(
           `${villa} has ${stranded.length} charge(s) still open in the currency it is billed in now. ` +
             `Changing the ${detail} would leave them on an account that is no longer billed in that currency, ` +
             `so they would count towards nothing: the villa would show as owing less than it does, and the next ` +
-            `payment would look like a credit. Nothing here can convert them — ${stranded[0].currency} ` +
+            `payment would look like a credit. Nothing here can convert them, ${stranded[0].currency} ` +
             `${stranded[0].amount} is not the same money in the other currency. Confirm to void the open charges ` +
             `(the records are kept and the reason stored), then re-post the month or raise the balance again in the new currency.`,
           UNIT_CURRENCY_CHANGE
@@ -2466,7 +2470,7 @@ app.post(
         result.created > 0
           ? `Posted ${result.created} charge(s) for ${monthString}.` +
             (result.skipped > 0 ? ` ${result.skipped} were already posted and were left untouched.` : '')
-          : `Nothing to post — all ${result.skipped} billable charge(s) for ${monthString} already exist.`
+          : `Nothing to post, all ${result.skipped} billable charge(s) for ${monthString} already exist.`
     });
   })
 );
@@ -2505,10 +2509,14 @@ app.post(
       // the balance without ever being settleable by a payment against it.
       const expected = chargeCurrency(unit, category);
       const currency = body.currency ? requireCurrency(body.currency) : expected;
-      if (currency !== expected) {
-        bad(
+      if (currency !== expected && body.confirmCurrencyMismatch !== true) {
+        throw new ApiError(
+          400,
           `${unit.number} is billed for ${category.toLowerCase()} in ${expected}. ` +
-            `A ${currency} charge could never be settled against that balance, because the two are never combined.`
+            `A ${currency} charge is counted by neither side of that balance: it will not appear in "Billed to date", ` +
+            `it will not be chased as arrears, and the next ${expected} receipt will read as a credit. ` +
+            `Confirm on the form if that is genuinely what happened.`,
+          CHARGE_CURRENCY_MISMATCH
         );
       }
 
@@ -2536,7 +2544,10 @@ app.post(
         db,
         who.name,
         who.role,
-        `Raised a one-off ${oneOffType.toLowerCase()} of ${currency} ${amount} on ${unit.number} ${category.toLowerCase()} account`,
+        `Raised a one-off ${oneOffType.toLowerCase()} of ${currency} ${amount} on ${unit.number} ${category.toLowerCase()} account` +
+          (currency !== expected
+            ? `, deliberately in ${currency}, which that account is not billed in, so it stands outside the ${expected} balance`
+            : ''),
         'Charge',
         created.id,
         '',
@@ -2603,7 +2614,7 @@ function assertBookableUnit(unit: Unit) {
   throw new ApiError(
     400,
     `${getUnitDisplayName(unit.number)} ${because[unit.status] || `is set to ${unit.status}`}, so it cannot take a guest reservation. ` +
-      `Only villas whose status is "Short-term / Airbnb" can be booked — change it in the Units Register first if that is intended.`
+      `Only villas whose status is "Short-term / Airbnb" can be booked, change it in the Units Register first if that is intended.`
   );
 }
 
@@ -2650,29 +2661,78 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
       live.reversalDate = today();
       live.reversalReason =
         booking.status === 'cancelled'
-          ? 'Reservation cancelled — deposit receipt voided.'
-          : 'Reservation deposit reduced to zero — deposit receipt voided.';
+          ? 'Reservation cancelled, deposit receipt voided.'
+          : 'Reservation deposit reduced to zero, deposit receipt voided.';
       addAudit(db, staffName, role, 'Voided booking deposit receipt', 'Payment', live.id, before, live, staffName);
     }
     return;
   }
 
   if (live) {
+    /*
+     * A receipt that has already been refunded is never silently re-priced.
+     *
+     * Found by `test/reports-2000.test.mjs` on its first run, and it is a real
+     * misstatement of money. The sequence: a deposit of 604.20 is receipted, the
+     * guest is refunded it, and the reservation is then edited to a different
+     * deposit. The receipt's `amount` was overwritten while `refundedAmount`
+     * stayed — so the receipt netted to `newAmount - 604.20`, which is not what
+     * the property holds and, when the new deposit was smaller, was **negative**:
+     * a receipt claiming more money went back than ever came in. Every figure
+     * built on `amount - refundedAmount` carried it, which is booking income on
+     * ISPO's book, the operating statement and "deposits held" on the dashboard.
+     *
+     * A receipt is what the guest was handed and a refund is recorded beside it,
+     * never over it. So the change is refused and named, on the same rule that
+     * already stops a refunded receipt being voided: more money, or less, is its
+     * own record, not an edit of an old one.
+     */
+    const refunded = round2(live.refundedAmount || 0);
+    if (refunded > 0 && round2(live.amount - refunded) !== round2(booking.depositPaid)) {
+      throw new ApiError(
+        400,
+        `${live.currency} ${refunded} has already been refunded against receipt ${live.receiptNo} on this reservation, which now holds ${live.currency} ${round2(live.amount - refunded)}. ` +
+          'Re-typing the deposit would rewrite a receipt that has already been handed over. Record a further payment if the guest has paid more, or a refund if money has gone back.',
+        DEPOSIT_ALREADY_REFUNDED
+      );
+    }
+
+    const before = { ...live };
+    let changed = false;
+
     if (live.amount !== booking.depositPaid || live.currency !== booking.currency) {
-      const before = { ...live };
       live.amount = booking.depositPaid;
       live.currency = booking.currency;
       live.payerName = booking.guestName;
       live.unitId = booking.unitId;
       live.unitNumber = booking.unitNumber;
-      addAudit(db, staffName, role, 'Adjusted booking deposit receipt to match the reservation', 'Payment', live.id, before, live);
+      changed = true;
+    }
+
+    /*
+     * A deposit still sitting as "Awaiting funds" is brought onto the ledger.
+     *
+     * This is the migration path for every receipt raised before the rule below
+     * changed, and it is why the whole thing is safe to apply to live data: the
+     * row already exists and is matched on `bookingId`, so it is completed in
+     * place rather than a second one being raised beside it.
+     */
+    if (live.status === 'pending') {
+      live.status = 'completed';
+      live.receiptNo = live.receiptNo || nextReceiptNo(db);
+      live.receivedBy = staffName;
+      live.receivedAt = new Date().toISOString();
+      changed = true;
+    }
+
+    if (changed) {
+      addAudit(db, staffName, role, `Deposit receipt ${live.receiptNo} brought into step with the reservation`, 'Payment', live.id, before, live);
     }
     return;
   }
 
   const payment: Payment = {
     id: uniqueRecordId(db.payments, `p-booking-${booking.id}`),
-    receiptNo: '',
     payerName: booking.guestName,
     unitId: booking.unitId,
     unitNumber: booking.unitNumber,
@@ -2684,12 +2744,34 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     reference: `BOOK-${booking.id.slice(-6).toUpperCase()}`,
     notes: `Deposit for reservation by ${booking.guestName} (${booking.checkIn} to ${booking.checkOut}).`,
     staffMember: staffName,
-    status: 'pending',
+    /*
+     * Received, not expected.
+     *
+     * Ro, 2026-09-28: *"if a client's deposit has been fully covered from the
+     * short term rentals tab, the receipts ledger's status is automatically
+     * updated... full deposits were received from the guests and confirmed under
+     * short term bookings however under receipts ledger the status still says
+     * awaiting funds."*
+     *
+     * The field is called `depositPaid` and it is filled in by the person who
+     * took the money. Raising the receipt as `pending` asked that same person the
+     * same question a second time on a different screen, and left every deposit
+     * on the property reading as unreceived until somebody answered it. A
+     * deposit entered on a reservation is money in hand, and the ledger now says
+     * so on the spot with a receipt number against it.
+     *
+     * A deposit entered by mistake is taken off by clearing it on the reservation,
+     * which voids the receipt — visibly and with a reason, as it always did.
+     */
+    status: 'completed',
+    receiptNo: nextReceiptNo(db),
+    receivedBy: staffName,
+    receivedAt: new Date().toISOString(),
     printCount: 0,
     bookingId: booking.id
   };
   db.payments.push(payment);
-  addAudit(db, staffName, role, 'Logged an expected booking deposit — awaiting confirmation of receipt', 'Payment', payment.id, '', payment);
+  addAudit(db, staffName, role, `Recorded the reservation deposit and issued receipt ${payment.receiptNo}`, 'Payment', payment.id, '', payment);
 }
 
 function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?: Booking) {
@@ -2965,6 +3047,34 @@ const CURRENCY_CHANGE = 'currency-change-not-confirmed';
  */
 const UNIT_CURRENCY_CHANGE = 'unit-currency-change-not-confirmed';
 
+/**
+ * A one-off charge raised in a currency the account is not billed in.
+ *
+ * Ro asked on 2026-09-28 for a currency pill on "Bill a one-off charge". The
+ * request had simply been refused before, because such a charge is counted by
+ * neither side of that account's balance — see the note in `OneOffChargeModal`
+ * for what the same shape did to villa C11 in September.
+ *
+ * Refusing outright was the safe answer and the wrong one: sometimes a US dollar
+ * recharge on a Jamaican dollar account is genuinely what happened, and the
+ * office has no way to record it. So the house pattern applies — refused once
+ * with a code, repeated with `confirmCurrencyMismatch: true` when the screen has
+ * shown what the consequence is and somebody has deliberately accepted it.
+ *
+ * There is exactly one right answer here, so the screen confirms rather than
+ * offering a choice.
+ */
+const CHARGE_CURRENCY_MISMATCH = 'charge-currency-not-confirmed';
+
+/**
+ * A reservation's deposit being changed after its receipt was refunded.
+ *
+ * There is no right way for the machine to apply this one: a larger deposit is a
+ * second payment and a smaller one is a second refund, and both are records in
+ * their own right. So it is refused and the screen says which to record.
+ */
+const DEPOSIT_ALREADY_REFUNDED = 'deposit-receipt-already-refunded';
+
 function assertAccountStillOwes(
   db: Database,
   unit: Unit,
@@ -3011,7 +3121,7 @@ function assertAccountStillOwes(
 
   const position =
     outstanding <= 0
-      ? `${villa}'s ${category.toLowerCase()} account owes nothing — ${money(account.charged)} has been billed and ` +
+      ? `${villa}'s ${category.toLowerCase()} account owes nothing, ${money(account.charged)} has been billed and ` +
         `${money(account.paid)} received.${alreadyTaken}`
       : `${villa}'s ${category.toLowerCase()} account only owes ${money(outstanding)}, but ${verb.toLowerCase()} for ` +
         `${money(amount)}.${alreadyTaken}`;
@@ -3020,7 +3130,7 @@ function assertAccountStillOwes(
     400,
     `${position} Recording it would leave the account ${money(round2(amount - outstanding))} in credit. ` +
       `If somebody else has just taken this payment, do not record it again. ` +
-      `If it is genuinely separate money — rent paid in advance, or a debt not yet posted — confirm to record it as a credit.`,
+      `If it is genuinely separate money, rent paid in advance, or a debt not yet posted, confirm to record it as a credit.`,
     ALREADY_SETTLED
   );
 }
@@ -3067,7 +3177,7 @@ app.post(
           const message = !isBillable(unit, category as ChargeCategory)
             ? `${unit.number} is ${UNIT_STATUS_LABELS[unit.status].toLowerCase()} and is not billed for ${category.toLowerCase()}. ` +
               (category === 'Rent'
-                ? 'Owners pay HOA maintenance rather than rent — record it under Maintenance, or confirm to hold it as a credit.'
+                ? 'Owners pay HOA maintenance rather than rent, record it under Maintenance, or confirm to hold it as a credit.'
                 : 'Set a monthly fee on the villa first, or confirm to hold it as a credit.')
             : `Nothing has been billed to ${unit.number} for ${category.toLowerCase()} yet, so this payment would be recorded as a credit ` +
               `rather than settling anything. Post the month's charges first, or confirm to record it as a credit on the account.`;
@@ -3120,7 +3230,7 @@ app.post(
         who.role,
         receivedNow
           ? `Received ${created.currency} ${created.amount} for ${unit.number} and issued receipt ${created.receiptNo}`
-          : `Logged an expected ${created.category.toLowerCase()} payment of ${created.currency} ${created.amount} for ${unit.number} — awaiting confirmation of receipt`,
+          : `Logged an expected ${created.category.toLowerCase()} payment of ${created.currency} ${created.amount} for ${unit.number}, awaiting confirmation of receipt`,
         'Payment',
         created.id,
         '',
@@ -3196,7 +3306,7 @@ app.put(
           );
         }
         if (updated.currency !== original.currency) {
-          throw new ApiError(400, 'This receipt has been refunded. Its currency cannot be changed — the refund was paid in the original currency.');
+          throw new ApiError(400, 'This receipt has been refunded. Its currency cannot be changed, the refund was paid in the original currency.');
         }
         if (original.refundedOn && updated.date > original.refundedOn) {
           throw new ApiError(400, 'That date is after the refund was paid out. A refund cannot precede the payment it refunds.');
@@ -3212,7 +3322,7 @@ app.put(
         throw new ApiError(
           400,
           `Receipt ${original.receiptNo} was recorded as ${original.currency} ${original.amount}. ` +
-            `Changing it to ${updated.currency} does not convert the figure — it becomes ${updated.currency} ${updated.amount}, ` +
+            `Changing it to ${updated.currency} does not convert the figure, it becomes ${updated.currency} ${updated.amount}, ` +
             `and the receipt moves off the ${original.currency} account onto the ${updated.currency} one. ` +
             'Confirm only if the money really was received in that currency.',
           CURRENCY_CHANGE
@@ -3248,7 +3358,7 @@ app.put(
         who.name,
         who.role,
         `Corrected settled receipt ${original.receiptNo}` +
-          (unmatched ? ' — its bank-statement match was cleared and needs checking again' : ''),
+          (unmatched ? ', its bank-statement match was cleared and needs checking again' : ''),
         'Payment',
         id,
         original,
@@ -3362,7 +3472,7 @@ app.post(
         throw new ApiError(
           400,
           `${target.currency} ${target.refundedAmount} was refunded against receipt ${target.receiptNo} on ${target.refundedOn}. ` +
-            'A receipt that has been refunded cannot also be voided — voiding says the money never arrived.'
+            'A receipt that has been refunded cannot also be voided, voiding says the money never arrived.'
         );
       }
       const wasPending = target.status === 'pending';
@@ -3427,7 +3537,7 @@ app.post(
         (wasPending
           ? 'Cancelled an expected payment that was never received'
           : `Voided receipt ${target.receiptNo}`) +
-          (wasReconciled ? ' — its bank-statement match was cleared' : ''),
+          (wasReconciled ? ', its bank-statement match was cleared' : ''),
         'Payment',
         id,
         before,
@@ -3545,7 +3655,7 @@ app.post(
         db,
         who.name,
         who.role,
-        `Refunded ${target.currency} ${amount} against receipt ${target.receiptNo} — ${reason}`,
+        `Refunded ${target.currency} ${amount} against receipt ${target.receiptNo}, ${reason}`,
         'Payment',
         id,
         before,
@@ -3605,7 +3715,7 @@ app.post(
         throw new ApiError(
           400,
           target.status === 'pending'
-            ? 'That payment is still awaiting funds. Confirm it as received first — then it can be matched to the statement.'
+            ? 'That payment is still awaiting funds. Confirm it as received first, then it can be matched to the statement.'
             : 'That receipt has been voided, so there is nothing to find on a statement.'
         );
       }
@@ -3812,7 +3922,7 @@ app.post(
         reference: optionalString(body.reference, 120) || `UTIL-${utility.billingPeriod}`,
         notes:
           optionalString(body.notes, 2000) ||
-          `Utility settlement for ${utility.billingPeriod} — ${utility.consumption} units on meter ${utility.meterNumber}.`,
+          `Utility settlement for ${utility.billingPeriod}, ${utility.consumption} units on meter ${utility.meterNumber}.`,
         staffMember: who.name,
         status: 'pending',
         printCount: 0,
@@ -3829,7 +3939,7 @@ app.post(
         db,
         who.name,
         who.role,
-        `Logged an expected utility payment for ${utility.unitNumber} (${utility.billingPeriod}) — awaiting confirmation of receipt`,
+        `Logged an expected utility payment for ${utility.unitNumber} (${utility.billingPeriod}), awaiting confirmation of receipt`,
         'Utility',
         utility.id,
         'unpaid',
@@ -4052,7 +4162,7 @@ app.post(
       if (candidates.length === 0) {
         throw new ApiError(
           404,
-          `There is nothing to take back for ${monthString} — no posted costs remain for that month.`
+          `There is nothing to take back for ${monthString}, no posted costs remain for that month.`
         );
       }
 
@@ -4080,7 +4190,7 @@ app.post(
         `${candidates.length} cost(s) posted`,
         `${candidates.length} taken back (${settled.length} of them settled): ${candidates
           .map(e => `${e.vendor} ${formatMoneyLong(e.amount, e.currency)}`)
-          .join(', ')} — ${reason}`,
+          .join(', ')}, ${reason}`,
         who.name
       );
 
@@ -4509,7 +4619,7 @@ app.post(
           ? `Raised ${result.created} cost(s) for ${monthString}, awaiting payment.` +
             (result.skipped > 0 ? ` ${result.skipped} were already posted and were left untouched.` : '')
           : result.skipped > 0
-            ? `Nothing to post — all ${result.skipped} cost(s) for ${monthString} were already raised.`
+            ? `Nothing to post, all ${result.skipped} cost(s) for ${monthString} were already raised.`
             : `Nothing was selected to post for ${monthString}.`
     });
   })
@@ -4829,14 +4939,15 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
       }
 
       if (existing) {
-        if (existing.checkIn === event.start && existing.checkOut === event.end && existing.guestName === guestName) {
+        // Dates only: the name on an imported stay is whatever staff typed in.
+        const change = feedDateChange(existing, event);
+        if (!change) {
           unchanged++;
           continue;
         }
         const before = { ...existing };
-        existing.checkIn = event.start;
-        existing.checkOut = event.end;
-        existing.guestName = guestName;
+        existing.checkIn = change.checkIn;
+        existing.checkOut = change.checkOut;
         existing.importedAt = new Date().toISOString();
         updated++;
         addAudit(db, staffName, role, `Updated imported reservation from ${live.source}`, 'Booking', existing.id, before, existing);
@@ -4858,7 +4969,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
           status: 'confirmed',
           notes:
             (isReservation
-              ? `Imported from the ${live.source} calendar. The platform feed does not carry pricing — enter the stay value manually.`
+              ? `Imported from the ${live.source} calendar. The platform feed does not carry pricing, enter the stay value manually.`
               : `Owner block imported from the ${live.source} calendar.`) + (event.description ? `\n${event.description}` : ''),
           externalUid: event.uid,
           externalFeedId: live.id,
@@ -4885,7 +4996,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
      */
     const seen = new Set(events.filter(e => !e.cancelled).map(e => e.uid));
     const paidBookingIds = new Set(db.payments.filter(p => p.bookingId && p.status !== 'reversed').map(p => p.bookingId as string));
-    const plan = planWithdrawals(db.bookings, paidBookingIds, seen, live.id, unit.id, live.source);
+    const plan = planWithdrawals(db.bookings, paidBookingIds, seen, live.id, unit.id, live.source, today());
     for (const message of plan.conflicts) conflicts.push(message);
     for (const id of plan.cancelIds) {
       const booking = db.bookings.find(b => b.id === id);
@@ -5026,7 +5137,7 @@ function confirmNewDatabase(): Promise<void> {
         '  Only do this on the ONE computer that should hold the real\n' +
         '  records (usually the office server). If you meant to connect\n' +
         "  to that computer's existing records instead, close this window\n" +
-        '  now and open a web browser to its address — do not continue.\n'
+        '  now and open a web browser to its address, do not continue.\n'
     );
     process.stdout.write('  Press Enter to create a new database here, or close this window to cancel: ');
     process.stdin.resume();
@@ -5214,7 +5325,7 @@ function createDesktopShortcutIfNeeded() {
     // running and must stay running.
     console.log(
       `[vds] could not create the Desktop shortcut (${err instanceof Error ? err.message : String(err)}).\n` +
-        '      The program still works — right-click the file and choose "Send to → Desktop" if you want one.'
+        '      The program still works, right-click the file and choose "Send to → Desktop" if you want one.'
     );
   }
 }
@@ -5317,10 +5428,10 @@ function openInDefaultBrowser(url: string) {
           : ['xdg-open', [url]];
     const child = spawn(command, args, { detached: true, stdio: 'ignore' });
     // A machine with no default browser must not take the server down with it.
-    child.on('error', () => console.log(`[vds] could not open a browser — open ${url} yourself.`));
+    child.on('error', () => console.log(`[vds] could not open a browser, open ${url} yourself.`));
     child.unref();
   } catch {
-    console.log(`[vds] could not open a browser — open ${url} yourself.`);
+    console.log(`[vds] could not open a browser, open ${url} yourself.`);
   }
 }
 

@@ -179,7 +179,7 @@ export default function ReceivePaymentModal({
   return (
     <Modal
       title="Record payment received"
-      subtitle={account ? `${getUnitDisplayName(account.unit.number)} — ${account.category}` : undefined}
+      subtitle={account ? `${getUnitDisplayName(account.unit.number)}, ${account.category}` : undefined}
       onClose={onClose}
       footer={
         <div className="flex gap-3">
@@ -257,7 +257,7 @@ export default function ReceivePaymentModal({
                     {formatMonthLabel(liveAccount.unpaidCharges[0].periodMonth)}.{' '}
                   </>
                 )}
-                The amount is set to the full balance — change it if less was handed over.
+                The amount is set to the full balance, change it if less was handed over.
               </>
             ) : (
               <>Nothing is outstanding on this account. Anything recorded here will sit as a credit against future billing.</>

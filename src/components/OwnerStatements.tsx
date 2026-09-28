@@ -29,6 +29,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, UtilityReading, getUnitDisplayName,
   bodyCorporateName
 } from '../types';
@@ -122,23 +123,23 @@ function netLabel(net: number, owner?: string, unitNumber?: string): string {
    * figure beside it. A proprietor who has paid should be told they have paid.
    */
   if (net === 0) {
-    if (villa) return `Settled in full — ${villa}`;
+    if (villa) return `Settled in full, ${villa}`;
     return 'Settled in full';
   }
 
   const direction = net > 0 ? 'Due to' : 'Due from';
-  if (who && villa) return `${direction} ${who} — ${villa}`;
+  if (who && villa) return `${direction} ${who}, ${villa}`;
   if (who) return `${direction} ${who}`;
   if (villa) return `${direction} the owner of ${villa}`;
   return `${direction} the owner`;
 }
 
 export default function OwnerStatements({ units, charges, payments, expenses, utilities, settings, session }: OwnerStatementsProps) {
-  const [preset, setPreset] = useState<Preset>('lastMonth');
-  const [custom, setCustom] = useState({
+  const [preset, setPreset] = useRemembered<Preset>('owner-statements.preset', 'lastMonth');
+  const [custom, setCustom] = useRemembered('owner-statements.custom', () => ({
     from: monthStart(addMonths(currentMonth(), -1)),
     to: monthEnd(addMonths(currentMonth(), -1))
-  });
+  }));
   const [printing, setPrinting] = useState<OwnerStatementGroup | null>(null);
 
   const { from, to } = rangeForPreset(preset, custom);
@@ -232,7 +233,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, ut
               Owners statements
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              What each proprietor has been billed by the corporation and what they have paid — one statement per villa,
+              What each proprietor has been billed by the corporation and what they have paid, one statement per villa,
               per currency.
             </p>
           </div>
@@ -289,9 +290,9 @@ export default function OwnerStatements({ units, charges, payments, expenses, ut
         <InfoNote>
           Rent and short-term booking income are the proprietor's own and never pass through the corporation's books;
           maintenance (HOA) contributions are the corporation's income. What is deducted is the contribution{' '}
-          <strong>still outstanding</strong> for the period — anything already received is shown and taken off, so a
-          proprietor who has paid is stated as settled rather than billed again. Expenses are those charged to that villa
-          — common property and office costs are the corporation's and never appear here. USD and JMD are stated
+          <strong>still outstanding</strong> for the period, anything already received is shown and taken off, so a
+          proprietor who has paid is stated as settled rather than billed again. Expenses are those charged to that villa,
+          common property and office costs are the corporation's and never appear here. USD and JMD are stated
           separately and never combined.
         </InfoNote>
       </section>
@@ -485,12 +486,12 @@ function OwnerStatementDocument({
       '',
       'Villaggio Del Sol Management'
     ].join('\n');
-    openMailDraft({ to: ownerEmail, subject: `Owner statement — ${period}`, body });
+    openMailDraft({ to: ownerEmail, subject: `Owner statement, ${period}`, body });
   };
 
   return (
     <PrintPortal
-      title={`Owner statement — ${group.owner || 'Owner not recorded'}`}
+      title={`Owner statement, ${group.owner || 'Owner not recorded'}`}
       subtitle={period}
       onClose={onClose}
       maxWidthClass="max-w-4xl"
@@ -518,7 +519,7 @@ function OwnerStatementDocument({
       */}
       <section className="mb-5 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
         {[
-          ['Registered proprietor', group.owner || '—'],
+          ['Registered proprietor', group.owner || '-'],
           ['Villas', String(new Set(group.statements.map(s => s.unit.id)).size)],
           ['Period', period],
           // Nothing is ever collected for a proprietor, so this is always a
@@ -528,7 +529,7 @@ function OwnerStatementDocument({
             ? ['Balance', 'Settled in full']
             : [
                 group.netByCurrency.every(r => r.net <= 0) ? 'Balance owing' : 'Balance',
-                group.netByCurrency.map(r => formatMoneyLong(Math.abs(r.net), r.currency)).join(' · ') || '—'
+                group.netByCurrency.map(r => formatMoneyLong(Math.abs(r.net), r.currency)).join(' · ') || '-'
               ]
         ].map(([label, value]) => (
           <div key={label}>
@@ -558,7 +559,7 @@ function OwnerStatementDocument({
         <ul className="list-disc space-y-1 pl-5 text-[11px] leading-relaxed">
           <li>
             This is an account of what you owe the body corporate,{' '}
-            <strong>{bodyCorporateName(settings)}</strong> — not of income from your villa. Letting your villa is
+            <strong>{bodyCorporateName(settings)}</strong>, not of income from your villa. Letting your villa is
             yours to arrange, and any rent or guest income from it is yours in full and does not pass through this
             corporation.
           </li>
@@ -568,7 +569,7 @@ function OwnerStatementDocument({
             <strong>still outstanding</strong>, and a contribution paid in full leaves nothing owing.
           </li>
           <li>
-            Only amounts the corporation charges you appear here — your maintenance contribution, your share of the
+            Only amounts the corporation charges you appear here, your maintenance contribution, your share of the
             annual insurance premium, and anything separately recharged to your villa. Your utilities are supplied on
             your own meter in your own name and settled directly with the utility, so they never appear on this
             statement. Common property and office costs are the corporation's.
@@ -597,7 +598,7 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
   return (
     <section className="mb-6 break-inside-avoid">
       <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
-        {getUnitDisplayName(s.unit.number)} — {c}
+        {getUnitDisplayName(s.unit.number)}, {c}
       </h3>
 
       <TableScroller>
@@ -624,7 +625,7 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
               title="Maintenance contribution billed"
               rows={s.maintenanceCharges.map(charge => ({
                 date: charge.dueDate,
-                detail: charge.description || `Maintenance — ${formatMonthLabel(charge.periodMonth)}`,
+                detail: charge.description || `Maintenance, ${formatMonthLabel(charge.periodMonth)}`,
                 ref: '',
                 amount: charge.amount
               }))}
@@ -654,8 +655,8 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
               title="Utilities billed to your villa"
               rows={s.utilityCharges.map(u => ({
                 date: monthEnd(u.billingPeriod),
-                detail: `Utilities — ${formatMonthLabel(u.billingPeriod)}${u.meterNumber ? ` (meter ${u.meterNumber})` : ''}${
-                  u.consumption ? ` — ${u.consumption} units` : ''
+                detail: `Utilities, ${formatMonthLabel(u.billingPeriod)}${u.meterNumber ? ` (meter ${u.meterNumber})` : ''}${
+                  u.consumption ? `, ${u.consumption} units` : ''
                 }`,
                 ref: u.status === 'paid' ? 'settled' : 'unpaid',
                 amount: u.amountCharged
@@ -670,7 +671,7 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
               title="Charged to your villa"
               rows={s.expenseItems.map(e => ({
                 date: e.datePaid || e.date,
-                detail: `${e.category}${e.vendor ? ` — ${e.vendor}` : ''}${e.description ? ` — ${e.description}` : ''}`,
+                detail: `${e.category}${e.vendor ? `, ${e.vendor}` : ''}${e.description ? `, ${e.description}` : ''}`,
                 ref: e.reference,
                 amount: e.amount
               }))}
@@ -744,7 +745,7 @@ function LineGroup({
           <tr key={i}>
             <td className="whitespace-nowrap p-2">{formatDayLabel(row.date)}</td>
             <td className="p-2 font-sans">{row.detail}</td>
-            <td className="p-2">{row.ref || '—'}</td>
+            <td className="p-2">{row.ref || '-'}</td>
             <td className={`p-2 text-right ${tone === 'credit' ? 'text-emerald-700' : ''}`}>
               {formatMoney(row.amount, currency)}
             </td>

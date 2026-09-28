@@ -187,7 +187,7 @@ export default function SystemSettings({
             const results = (response?.results || []) as SyncResult[];
             const failed = results.filter(r => !r.ok);
             if (failed.length > 0) {
-              fail(new Error(failed.map(f => `${f.unitNumber}: ${f.error}`).join(' — ')), 'Sync failed.');
+              fail(new Error(failed.map(f => `${f.unitNumber}: ${f.error}`).join(', ')), 'Sync failed.');
               return;
             }
             const imported = results.reduce((n, r) => n + r.imported, 0);
@@ -272,7 +272,7 @@ function PermissionsPanel({
                     <span className="font-medium text-slate-800">{PERMISSION_LABELS[key]}</span>
                     {(key === 'reversePayments' || key === 'modifySettledRecords') && (
                       <span className="mt-0.5 block text-[10px] text-amber-700">
-                        Financial control — grant sparingly and review it in the audit trail.
+                        Financial control, grant sparingly and review it in the audit trail.
                       </span>
                     )}
                     {/*
@@ -554,7 +554,7 @@ function StaffFormModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: 
 
         <InfoNote tone="amber">
           Pass this password to the member of staff through a channel you trust. It is stored only as a hash and cannot
-          be recovered — only reset.
+          be recovered, only reset.
         </InfoNote>
       </form>
     </Modal>
@@ -582,7 +582,7 @@ function ResetPasswordModal({ user, onClose, onSubmit }: { user: User; onClose: 
 
   return (
     <Modal
-      title={`Reset password — ${user.name}`}
+      title={`Reset password, ${user.name}`}
       subtitle={user.username}
       onClose={onClose}
       footer={
@@ -645,7 +645,7 @@ function FeedsPanel({
   return (
     <div className="space-y-4">
       <InfoNote>
-        Booking platforms publish an iCalendar (.ics) export per listing. It carries booked dates only — never guest
+        Booking platforms publish an iCalendar (.ics) export per listing. It carries booked dates only, never guest
         contact details or pricing. Imported stays therefore arrive with a zero stay value until you enter one, and any
         event clashing with an existing reservation is skipped rather than overwriting it.
       </InfoNote>
@@ -730,7 +730,7 @@ function FeedsPanel({
                     {feed.url}
                   </p>
                   <p className="mt-0.5 text-[10px] text-slate-500">
-                    {feed.lastSyncAt ? `Last synced ${formatDayLabel(feed.lastSyncAt.substring(0, 10))} — ${feed.lastResult}` : 'Never synced'}
+                    {feed.lastSyncAt ? `Last synced ${formatDayLabel(feed.lastSyncAt.substring(0, 10))}, ${feed.lastResult}` : 'Never synced'}
                   </p>
                 </div>
                 <div className="flex shrink-0 gap-2">
@@ -1016,8 +1016,8 @@ function BackupPanel({
       {!external && (
         <InfoNote tone="amber">
           <strong>Every copy of your records is on this one machine.</strong> The automatic backups sit on the same disk
-          as the database they protect, so a disk failure, a theft or a deleted folder takes both. Set a folder below —
-          an external drive is ideal — and a second copy is written there every day, automatically.
+          as the database they protect, so a disk failure, a theft or a deleted folder takes both. Set a folder below -
+          an external drive is ideal, and a second copy is written there every day, automatically.
         </InfoNote>
       )}
 
@@ -1030,7 +1030,7 @@ function BackupPanel({
       {external && !status.externalBackupError && !status.todayBackedUpExternally && (
         <InfoNote tone="amber">
           No copy has reached <code className="rounded bg-white px-1 font-mono">{external}</code> today yet. If that is an
-          external drive, check it is plugged in — then use <strong>Back up now</strong>.
+          external drive, check it is plugged in, then use <strong>Back up now</strong>.
         </InfoNote>
       )}
 
@@ -1058,7 +1058,7 @@ function BackupPanel({
         <Field
           label="Backup folder"
           htmlFor="bk-folder"
-          hint="On Windows, e.g. E:\Villaggio-Backups — open the drive in File Explorer and copy the address bar. Leave empty to turn this off."
+          hint="On Windows, e.g. E:\Villaggio-Backups, open the drive in File Explorer and copy the address bar. Leave empty to turn this off."
         >
           <input
             id="bk-folder"
@@ -1082,7 +1082,7 @@ function BackupPanel({
           </div>
           <p className="mt-1 text-xs text-slate-600">
             Plug a USB drive into the computer running this system, then choose it below. A drive plugged into any other
-            computer cannot be used — the backup is written by the server itself.
+            computer cannot be used, the backup is written by the server itself.
           </p>
 
           {drives && drives.length > 0 ? (
@@ -1112,7 +1112,7 @@ function BackupPanel({
                     </span>
                   </div>
                   {!d.removable && !d.isCurrentTarget && d.writable && (
-                    <p className="ml-1 mt-0.5 text-[10px] text-amber-600">This is the machine's own disk — an external drive is safer.</p>
+                    <p className="ml-1 mt-0.5 text-[10px] text-amber-600">This is the machine's own disk, an external drive is safer.</p>
                   )}
                 </li>
               ))}
@@ -1171,7 +1171,7 @@ function BackupPanel({
           <strong>To restore:</strong> stop the application, copy the backup file you want over{' '}
           <code className="rounded bg-white px-1 font-mono">db.json</code>, and start it again. If{' '}
           <code className="rounded bg-white px-1 font-mono">db.json</code> is ever damaged, the application refuses to
-          start rather than overwriting it — so nothing is lost while you recover.
+          start rather than overwriting it, so nothing is lost while you recover.
         </InfoNote>
       </div>
 
@@ -1262,7 +1262,7 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
       <Field
         label="The books begin on"
         htmlFor="gp-books-begin"
-        hint="The day this application took over the records. Months before it were billed in whatever system came before, so the application will not report them as unbilled — which lets a tenancy carry its real start date without producing an alert for every month back to it. It does not excuse anything genuinely owed: a balance carried over is entered as a dated charge and ages normally. Leave empty if the records go all the way back."
+        hint="The day this application took over the records. Months before it were billed in whatever system came before, so the application will not report them as unbilled, which lets a tenancy carry its real start date without producing an alert for every month back to it. It does not excuse anything genuinely owed: a balance carried over is entered as a dated charge and ages normally. Leave empty if the records go all the way back."
       >
         <input
           id="gp-books-begin"
@@ -1276,7 +1276,7 @@ function GeneralPanel({ settings, onSave }: { settings: AppSettings; onSave: (pa
       <Field
         label="Property health grade on the dashboard"
         htmlFor="gp-health"
-        hint="A single letter for how the property is running, from collection, cost coverage, debt ageing and cash position — each shown with the figures behind it. Turn it off if a graded summary is not wanted on the front page; every underlying figure stays available on its own screen either way."
+        hint="A single letter for how the property is running, from collection, cost coverage, debt ageing and cash position, each shown with the figures behind it. Turn it off if a graded summary is not wanted on the front page; every underlying figure stays available on its own screen either way."
       >
         {/*
           * Deliberately NOT wrapped in a second <label>. `Field` already renders
@@ -1343,7 +1343,7 @@ function IntegritySection({
         <div>
           <h3 className="font-display text-sm font-semibold text-slate-900">Check the records</h3>
           <p className="mt-1 max-w-2xl text-xs text-slate-600">
-            Reads every record and reports anything that contradicts itself — a receipt number issued twice, a month
+            Reads every record and reports anything that contradicts itself, a receipt number issued twice, a month
             billed twice, a villa sold to two guests on one night, money refunded beyond what was received. It changes
             nothing: a fault is reported so a person can decide, never repaired automatically. This also runs on its own
             each time the program starts.
@@ -1356,7 +1356,7 @@ function IntegritySection({
 
       {report && report.ok && (
         <p className="text-sm font-medium text-emerald-800">
-          No contradictions found — {report.counts.payments} payments, {report.counts.charges} charges,{' '}
+          No contradictions found, {report.counts.payments} payments, {report.counts.charges} charges,{' '}
           {report.counts.bookings} stays and {report.counts.expenses} costs were checked.
         </p>
       )}

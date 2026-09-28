@@ -52,6 +52,8 @@ import {
 import { countBookingOverlaps, delinquentAccounts } from './lib/finance';
 import { today } from './lib/dates';
 import { clearSnapshot, loadSnapshot, saveSnapshot } from './lib/snapshot';
+import { forgetScreenState } from './lib/screenState';
+import { resetReportRange } from './lib/reportRange';
 import {
   AlertTriangle,
   BarChart3,
@@ -90,6 +92,13 @@ export type TabKey =
   | 'annual-report'
   | 'audit'
   | 'settings';
+
+/**
+ * How often an open screen checks in to keep its session alive. Far inside the
+ * twelve-hour lifetime, and above the once-a-minute floor browsers throttle a
+ * background tab's timers to, so a minimised window keeps checking in too.
+ */
+const SESSION_HEARTBEAT_MS = 5 * 60 * 1000;
 
 const TAB_TITLES: Record<TabKey, string> = {
   dashboard: 'General Dashboard',
@@ -221,6 +230,43 @@ export default function App() {
     void checkSession();
   }, [checkSession]);
 
+  /**
+   * Keep an open screen signed in.
+   *
+   * Ro, 2026-09-16: *"if i leave the program open, say overnight, eventually it
+   * times out."* Sessions now last twelve hours from last use rather than from
+   * sign-in (see `server/auth.ts`), but a screen nobody touches sends nothing
+   * that counts as use — the connection watcher only asks /api/health, which
+   * needs no session. So the application checks in by itself.
+   *
+   * Also on returning to the window: a laptop asleep all night runs no timers,
+   * and the first thing it should do on waking is renew, before anyone clicks.
+   * A session that genuinely lapsed while the machine was off answers 401, and
+   * the ordinary unauthenticated handler shows the sign-in screen as before.
+   * Anything else — the server restarting, the network dropping — is ignored
+   * here; the connection watcher already reports that, and this must never sign
+   * anybody out for it.
+   */
+  useEffect(() => {
+    if (!session) return;
+    const checkIn = () => {
+      api.get('/api/auth/me', { failFast: true }).catch(() => undefined);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') checkIn();
+    };
+    const timer = window.setInterval(checkIn, SESSION_HEARTBEAT_MS);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', checkIn);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', checkIn);
+    };
+    // The identity, not every copy of the session object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
+
   /* ---------------- data ---------------- */
 
   /** Spread one /api/db payload into the shape the screens consume. */
@@ -298,6 +344,10 @@ export default function App() {
     setRecordsAsOf(null);
     // Records must not outlive the session that loaded them: the desk machine is
     // shared, and the next person to sign in is not owed the last one's view.
+    // The same goes for where each screen was left — the months and periods
+    // remembered across tabs belong to the person who chose them.
+    forgetScreenState();
+    resetReportRange();
     void clearSnapshot();
   }, []);
 
@@ -679,6 +729,7 @@ export default function App() {
             units={data.units}
             charges={data.charges}
             payments={data.payments}
+            bookings={data.bookings}
             session={session}
             onRecordPayment={recordPayment}
             onConfirmPayment={confirmPayment}
@@ -859,7 +910,7 @@ function StartingUp() {
         <>
           <p className="text-sm font-medium text-slate-200">Starting up…</p>
           <p className="max-w-sm text-xs leading-relaxed text-slate-500">
-            Waiting for the property server to answer. The first start after an update takes longer than usual — this
+            Waiting for the property server to answer. The first start after an update takes longer than usual, this
             screen will move on by itself.
           </p>
         </>
@@ -876,7 +927,7 @@ function CannotReachServer({ message, onRetry }: { message: string; onRetry: () 
         <h1 className="font-display text-base font-semibold text-white">The program is not ready yet</h1>
         <p className="text-xs leading-relaxed text-slate-400">{message}</p>
         <p className="text-[11px] leading-relaxed text-slate-500">
-          Leave the green “Villaggio Del Sol” window open — closing it shuts the program down. If this keeps happening,
+          Leave the green “Villaggio Del Sol” window open, closing it shuts the program down. If this keeps happening,
           restart the computer and start the program again.
         </p>
         <button
@@ -936,7 +987,7 @@ function ConnectionBanner({
       >
         <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
         <span>
-          <strong>The server cannot be reached.</strong> You are looking at records saved on this machine at {when} — anything entered
+          <strong>The server cannot be reached.</strong> You are looking at records saved on this machine at {when}, anything entered
           elsewhere since then is not shown.{queued}
         </span>
       </div>
@@ -1010,7 +1061,7 @@ function SyncBanner({ sync, onRetry }: { sync: SyncState; onRetry: () => void })
         <strong>
           {pending} entr{pending === 1 ? 'y is' : 'ies are'} held on this computer and not yet sent to the server.
         </strong>{' '}
-        Nothing is lost — they will be sent automatically when it is reachable.
+        Nothing is lost, they will be sent automatically when it is reachable.
       </span>
       <button onClick={onRetry} className="rounded-lg bg-amber-950/20 px-2 py-0.5 font-semibold underline-offset-2 hover:bg-amber-950/30">
         Try now

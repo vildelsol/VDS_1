@@ -29,6 +29,8 @@ import {
   ExpenseCategory,
   Booking,
   PROPERTY_LOCATIONS,
+  ExpenseFund,
+  MANAGING_COMPANY_NAME,
   fundOf,
   getUnitDisplayName
 } from '../types';
@@ -264,8 +266,212 @@ export function ispoExpenses(expenses: Expense[]): Expense[] {
   return expenses.filter(isIspoCost);
 }
 
+/* ------------------------------------------------------------------ *
+ * Reading one book, or both
+ *
+ * Ro, 2026-09-28: *"The operational reports tab is showing payments for both
+ * ISPO and the BNS Strata. Both are not supposed to be mixed... There must be
+ * options to separate, especially for when the accountant comes."*
+ *
+ * `ExpenseFund` above says which book pays a **cost**. Income needed the same
+ * answer and did not have one, so every screen that summed receipts summed both
+ * books into a single "received" and a single "billed". The classification is
+ * not a new decision — it is the one already built into `ispoOperations`, which
+ * counts rent and short-stay bookings as ISPO's income and nothing else:
+ *
+ *   - **ISPO's income** is rent and short-stay bookings. The corporation does not
+ *     collect rent for proprietors; the letting machinery is for the villas VDS
+ *     lets on its own account, and that money is ISPO's.
+ *   - **The corporation's income** is maintenance contributions, utilities
+ *     recovered, and other income — levies and recharges for work it performed.
+ *
+ * Stated as functions of the category so the mapping lives in one place and can
+ * be asserted, rather than being re-derived by each screen.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Which book a report is being read on.
+ *
+ * `everything` is not "no filter applied by accident" — it is a deliberate third
+ * choice, the combined all-in view Ro keeps (*"it is my all in view for the
+ * entire business which is important"*). It is the default everywhere, so no
+ * screen changes what it shows until somebody asks it to.
+ */
+export type ReportBook = ExpenseFund | 'everything';
+
+export const REPORT_BOOKS: ReportBook[] = ['everything', 'strata', 'ispo'];
+
+/** Which book a receipt belongs to, from what it was received for. */
+export function bookOfPaymentCategory(category: PaymentCategory): ExpenseFund {
+  return category === 'Rent' || category === 'Booking' ? 'ispo' : 'strata';
+}
+
+/** Which book a charge belongs to. Rent is ISPO's to collect; maintenance is the fund's. */
+export function bookOfChargeCategory(category: ChargeCategory): ExpenseFund {
+  return category === 'Rent' ? 'ispo' : 'strata';
+}
+
+/**
+ * The charge/payment categories that exist in a book.
+ *
+ * Used where a screen walks accounts per category (`accountBalance` is computed
+ * per unit **per category**), so a receivables figure on the strata book counts
+ * maintenance accounts and no rent account, rather than filtering the answer
+ * after the fact.
+ */
+export function chargeCategoriesInBook(book: ReportBook): ChargeCategory[] {
+  const all: ChargeCategory[] = ['Rent', 'Maintenance'];
+  return book === 'everything' ? all : all.filter(c => bookOfChargeCategory(c) === book);
+}
+
+export function paymentsInBook(payments: Payment[], book: ReportBook): Payment[] {
+  return book === 'everything' ? payments : payments.filter(p => bookOfPaymentCategory(p.category) === book);
+}
+
+export function chargesInBook(charges: Charge[], book: ReportBook): Charge[] {
+  return book === 'everything' ? charges : charges.filter(c => bookOfChargeCategory(c.category) === book);
+}
+
+export function expensesInBook(expenses: Expense[], book: ReportBook): Expense[] {
+  return book === 'everything' ? expenses : expenses.filter(e => fundOf(e) === book);
+}
+
+/**
+ * Is this cost row actually the monthly contribution, already counted from its
+ * receipt?
+ *
+ * A plumber or a locksmith on one of ISPO's villas is a genuine ISPO cost. A
+ * **Maintenance**-category row against a villa VDS lets on its own account is the
+ * contribution, which has a receipt and is counted from it — the one shape that
+ * would put the same money on ISPO's books twice.
+ *
+ * One definition, used by `ispoOperations`, by `operatingStatement` and by the
+ * management summary on the reports tab, so those three cannot disagree about
+ * what ISPO spent. They did: the summary counted such a row and the statement
+ * under it did not.
+ */
+export function isContributionCountedFromReceipts(expense: Expense, ownAccountUnitIds: Set<string>): boolean {
+  return expense.category === 'Maintenance' && !!expense.unitId && ownAccountUnitIds.has(expense.unitId);
+}
+
+/** The villas VDS lets on the corporation's own account, optionally in one currency. */
+export function ownAccountUnitIds(units: Unit[], currency?: Currency): Set<string> {
+  return new Set(
+    units
+      .filter(u => u.letOnOwnAccount === true && (!currency || (u.maintCurrency || u.currency) === currency))
+      .map(u => u.id)
+  );
+}
+
+/**
+ * The costs a book counts as its own — the book filter, plus the one exclusion
+ * that keeps ISPO's side from counting a contribution twice.
+ *
+ * What every screen reading a book should call. `expensesInBook` alone is the
+ * book filter and nothing more.
+ */
+export function expensesForBook(expenses: Expense[], units: Unit[], book: ReportBook, currency?: Currency): Expense[] {
+  const inBook = expensesInBook(expenses, book);
+  if (book !== 'ispo') return inBook;
+  const own = ownAccountUnitIds(units, currency);
+  return inBook.filter(e => !isContributionCountedFromReceipts(e, own));
+}
+
+/** What each book is called on a screen and at the head of a printed page. */
+export const REPORT_BOOK_LABELS: Record<ReportBook, string> = {
+  everything: 'Everything (both books)',
+  strata: 'The strata corporation',
+  ispo: `${MANAGING_COMPANY_NAME} (internal)`
+};
+
+/**
+ * What a reader is being told the scope of the page is.
+ *
+ * Printed under the title of anything read on one book. A statement that has
+ * silently had half the money taken out of it is worse than one that has not
+ * been filtered at all, so the scope is always named on the face of the page.
+ */
+export const REPORT_BOOK_SCOPE: Record<ReportBook, string> = {
+  everything: `Both books: the corporation's money and ${MANAGING_COMPANY_NAME}'s. Internal, not a statement of the body corporate alone.`,
+  strata:
+    'The corporation only: contributions, utilities recovered and other income, against the costs contributions fund. No rent, no short-stay rental, none of the letting company’s costs.',
+  ispo: `${MANAGING_COMPANY_NAME} only: rent and short-stay rental against its own costs. Internal, not for an owner statement or a statutory return.`
+};
+
 export function bookingsForUnit(bookings: Booking[], unit: Unit, allUnits?: Unit[]): Booking[] {
   return bookings.filter(b => belongsToUnit(b, unit, allUnits));
+}
+
+/* ------------------------------------------------------------------ *
+ * Booking deposits and the receipts ledger
+ * ------------------------------------------------------------------ */
+
+/**
+ * A reservation whose deposit needs a person to look at it.
+ *
+ * Ro, 2026-09-28, asking for deposits to reach the ledger by themselves: *"i do
+ * not want there to be a double count of payments after i have manually
+ * confirmed before i apply the fix."*
+ *
+ * That is the real risk and it is not the one the sync guards against. The sync
+ * matches a reservation's receipt on `bookingId`, so it can never raise a second
+ * one for the same reservation. What it cannot see is a deposit somebody typed
+ * into **Record a payment** instead: that receipt carries no `bookingId`, so it
+ * sits beside the reservation's own receipt and the money is on the ledger twice.
+ *
+ * Nothing here changes anything. It finds the shapes a person has to decide
+ * about, names the money in each, and leaves the decision to them.
+ */
+export interface BookingDepositFinding {
+  booking: Booking;
+  /** The receipt raised by the reservation itself, if there is a live one. */
+  linked: Payment | null;
+  /**
+   * Booking receipts against the same villa, in the same currency, for the same
+   * amount and around the same dates, that are **not** tied to this reservation.
+   * Each one is either a duplicate of the deposit or a genuinely separate
+   * payment, and only a person knows which.
+   */
+  unlinked: Payment[];
+  /** True while the reservation's own receipt is still awaiting confirmation. */
+  awaiting: boolean;
+}
+
+/**
+ * Deposits on the ledger twice, or not yet on it at all.
+ *
+ * The window is deliberately wide — a deposit is taken when the guest books,
+ * which can be months before they arrive — and deliberately bounded, so a
+ * standing guest who pays the same amount every year is not matched against a
+ * stay two years away. Amount and currency must match exactly: a part payment of
+ * a different size is a different payment, not a duplicate of this one.
+ */
+export function bookingDepositFindings(bookings: Booking[], payments: Payment[]): BookingDepositFinding[] {
+  const live = payments.filter(p => p.status !== 'reversed');
+
+  const findings: BookingDepositFinding[] = [];
+  for (const booking of bookings) {
+    if (booking.status === 'cancelled' || booking.depositPaid <= 0) continue;
+
+    const linked = live.find(p => p.bookingId === booking.id) || null;
+
+    const windowFrom = addDays(booking.checkIn, -365);
+    const windowTo = addDays(booking.checkOut, 60);
+    const unlinked = live.filter(
+      p =>
+        p.bookingId !== booking.id &&
+        p.category === 'Booking' &&
+        p.unitId === booking.unitId &&
+        p.currency === booking.currency &&
+        round2(p.amount) === round2(booking.depositPaid) &&
+        isWithin(p.date, windowFrom, windowTo)
+    );
+
+    const awaiting = !!linked && linked.status === 'pending';
+    if (unlinked.length === 0 && !awaiting) continue;
+    findings.push({ booking, linked, unlinked, awaiting });
+  }
+  return findings.sort((a, b) => a.booking.checkIn.localeCompare(b.booking.checkIn));
 }
 
 /** The currency a unit is billed in for a given category. */
@@ -2722,12 +2928,24 @@ export interface OperatingStatementOptions {
   expenditure?: Record<string, LineVisibility>;
   defaultIncome?: LineVisibility;
   defaultExpenditure?: LineVisibility;
+  /**
+   * Which book to read. Absent means `everything`, so a caller that predates
+   * the split still gets the combined statement it has always got.
+   *
+   * This is not a line-visibility choice and could not be one. Hiding a class of
+   * income leaves the money in the totals of the other side; reading one book
+   * changes which money is on the page at all, on **both** sides, and the two
+   * must move together or the surplus is an arithmetic statement about nothing.
+   */
+  book?: ReportBook;
 }
 
 export interface OperatingStatement {
   currency: Currency;
   from: string;
   to: string;
+  /** The book this statement was read on. Named on the printed page. */
+  book: ReportBook;
   income: StatementGroup<IncomeLine>[];
   totalIncome: number;
   expenditure: StatementGroup<ExpenditureLine>[];
@@ -2799,14 +3017,41 @@ export interface OperatingStatement {
  * accrual that has to be explained.
  */
 export function operatingStatement(
-  payments: Payment[],
-  expenses: Expense[],
+  allPayments: Payment[],
+  allExpenses: Expense[],
   units: Unit[],
   currency: Currency,
   start: string,
   end: string,
   options: OperatingStatementOptions = {}
 ): OperatingStatement {
+  /*
+   * The book is applied here, at the top, before anything is counted — not by
+   * the caller and not at the end.
+   *
+   * Ro, 2026-09-28: the strata copy of this statement was printing ISPO's phone
+   * and company vehicle as the corporation's expenditure, and rent as its
+   * income. `strataExpenditure` and `ispoExpenditure` below had always *named*
+   * the split under a combined total, which is a label, not a filter: the figure
+   * a council was asked to approve still had both books inside it.
+   *
+   * Filtering inside the function is the standing rule for this codebase (see
+   * the note on the two books above). A screen written next year that passes the
+   * raw arrays gets `everything` — the same combined statement as before, never a
+   * half-filtered one.
+   */
+  const book: ReportBook = options.book ?? 'everything';
+  const payments = paymentsInBook(allPayments, book);
+  const expenses = expensesInBook(allExpenses, book);
+
+  /*
+   * The villas VDS lets on the corporation's own account, needed here rather
+   * than further down because the ISPO book has to keep a contribution typed
+   * into the expense register out of its own costs — see `isTheContributionAgain`
+   * below and the identical rule in `ispoOperations`.
+   */
+  const ownAccount = ownAccountUnitIds(units, currency);
+
   const incomeVisibility = (category: PaymentCategory): LineVisibility =>
     options.income?.[category] ?? options.defaultIncome ?? 'itemised';
   const expenditureVisibility = (category: string): LineVisibility =>
@@ -2859,7 +3104,7 @@ export function operatingStatement(
       lines.push({
         id: `${p.id}-refund`,
         date: p.refundedOn || p.date,
-        payer: `${p.payerName || 'payer'} — refunded${p.refundReason ? ` (${p.refundReason})` : ''}`,
+        payer: `${p.payerName || 'payer'}, refunded${p.refundReason ? ` (${p.refundReason})` : ''}`,
         villa: villaOf(p.unitId, p.unitNumber),
         reference: p.receiptNo || '',
         amount: -refundedAsOf(p)
@@ -2888,7 +3133,26 @@ export function operatingStatement(
    * corporation's account — and its allocation is named on the line, so the
    * recovery appearing on the income side can be matched against it.
    */
-  const paid = expenses.filter(e => e.status === 'paid' && e.currency === currency && isWithin(e.datePaid || e.date, start, end));
+  const settled = expenses.filter(e => e.status === 'paid' && e.currency === currency && isWithin(e.datePaid || e.date, start, end));
+
+  /**
+   * Is this cost row actually the monthly contribution, already counted from its
+   * receipt?
+   *
+   * Only asked on the ISPO book, and only there because that book's income and
+   * costs must agree with `ispoOperations` — which applies exactly this rule — by
+   * construction rather than by coincidence. A plumber on one of ISPO's villas is
+   * a genuine ISPO cost; a **Maintenance**-category row against a villa VDS lets
+   * on its own account is the contribution, which has a receipt.
+   *
+   * The combined book is left exactly as it was: Ro keeps `everything` as his
+   * all-in view and nothing is quietly removed from a figure he already reads.
+   */
+  const isTheContributionAgain = (e: Expense): boolean =>
+    book === 'ispo' && isContributionCountedFromReceipts(e, ownAccount);
+
+  const contributionAgain = settled.filter(isTheContributionAgain);
+  const paid = settled.filter(e => !isTheContributionAgain(e));
 
   const byCategory = new Map<string, ExpenditureLine[]>();
   for (const e of paid) {
@@ -2928,8 +3192,6 @@ export function operatingStatement(
     .map(({ visibility: _visibility, ...group }) => group)
     .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
 
-  const totalExpenditure = sumMoney(expenditure.map(g => g.total));
-
   /*
    * The split, computed from the same `paid` set the statement itself used, so
    * the two parts cannot disagree with the whole they came from. Anything the
@@ -2941,26 +3203,65 @@ export function operatingStatement(
   // design — the split would then not have summed to the total it sits under.
   const excludedCategories = new Set(excludedExpenditure.map(g => g.label));
   const countedForSplit = paid.filter(e => !excludedCategories.has(e.category));
-  const strataExpenditure = sumMoney(strataExpenses(countedForSplit).map(e => e.amount));
-  const ispoExpenditure = sumMoney(ispoExpenses(countedForSplit).map(e => e.amount));
 
   /*
    * The contribution ISPO paid on its own villas — the one figure that is the
-   * same money on both sides of this page. Read off the receipts, on the villas
-   * flagged as let on VDS's own account, so it agrees with the shortfall report
-   * by construction rather than by coincidence.
+   * same money on both sides of a combined page. Read off the receipts, on the
+   * villas flagged as let on VDS's own account, so it agrees with the shortfall
+   * report by construction rather than by coincidence.
+   *
+   * Taken from `allPayments`, deliberately: on the ISPO book a maintenance
+   * receipt is not ISPO's income and has been filtered out of `payments` above,
+   * yet it is precisely the money ISPO paid over and this figure must still be
+   * the same money on every book.
    */
-  const ownAccount = new Set(
-    units.filter(u => u.letOnOwnAccount === true && (u.maintCurrency || u.currency) === currency).map(u => u.id)
-  );
   const internalTransfer = netReceivedInPeriod(
-    payments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownAccount.has(p.unitId)),
+    allPayments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownAccount.has(p.unitId)),
     start,
     end
   );
 
+  /*
+   * On the ISPO book that transfer is a real cost, and there is no expense row
+   * for it anywhere — it exists only as a receipt the corporation issued. Without
+   * it the ISPO book would show rent as profit and none of the maintenance it is
+   * funded from, and its surplus would not equal `ispoOperations.net` on the same
+   * period. `test/two-books-reports.test.mjs` compares the two.
+   */
+  if (book === 'ispo' && internalTransfer !== 0) {
+    expenditure.push({
+      label: 'Maintenance contributions paid to the corporation',
+      lines: [],
+      total: internalTransfer,
+      itemised: false
+    });
+    expenditure.sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+  }
+
+  const totalExpenditure = sumMoney(expenditure.map(g => g.total));
+
+  /*
+   * Anything the ISPO book dropped as already-receipted is named here rather than
+   * removed in silence — the standing rule in this codebase. Without the line, a
+   * register showing a Maintenance cost against an own-account villa and a
+   * statement that does not carry it would look like a fault.
+   */
+  if (contributionAgain.length > 0) {
+    excludedExpenditure.push({
+      label: 'Contributions typed into the cost register (counted from their receipts instead)',
+      total: sumMoney(contributionAgain.map(e => e.amount))
+    });
+  }
+
+  const strataExpenditure = sumMoney(strataExpenses(countedForSplit).map(e => e.amount));
+  const ispoExpenditure = sumMoney([
+    sumMoney(ispoExpenses(countedForSplit).map(e => e.amount)),
+    book === 'ispo' ? internalTransfer : 0
+  ]);
+
   return {
     currency,
+    book,
     from: start,
     to: end,
     income,
@@ -2971,7 +3272,11 @@ export function operatingStatement(
     ispoExpenditure,
     internalTransfer,
     surplus: subtractMoney(totalIncome, totalExpenditure),
-    empty: income.length === 0 && expenditure.length === 0 && excludedIncome.length === 0 && excludedExpenditure.length === 0,
+    empty:
+      income.length === 0 &&
+      expenditure.length === 0 &&
+      excludedIncome.length === 0 &&
+      excludedExpenditure.length === 0,
     excludedIncome,
     excludedExpenditure
   };
@@ -3153,7 +3458,7 @@ export function ispoOperations(
    */
   const ownAccountUnits = units.filter(u => u.letOnOwnAccount === true);
   const inThisCurrency = ownAccountUnits.filter(u => (u.maintCurrency || u.currency) === currency);
-  const ownIds = new Set(inThisCurrency.map(u => u.id));
+  const ownIds = ownAccountUnitIds(units, currency);
 
   /**
    * Is this cost row actually the contribution, already counted from receipts?
@@ -3163,8 +3468,7 @@ export function ispoOperations(
    * lets on its own account is the monthly contribution, which has a receipt and
    * is counted from it — the one shape that would be the same money twice.
    */
-  const isTheContributionAgain = (expense: Expense): boolean =>
-    expense.category === 'Maintenance' && !!expense.unitId && ownIds.has(expense.unitId);
+  const isTheContributionAgain = (expense: Expense): boolean => isContributionCountedFromReceipts(expense, ownIds);
 
   const duplicated = paid.filter(isTheContributionAgain);
   const ownCosts = paid.filter(e => !isTheContributionAgain(e));

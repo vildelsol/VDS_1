@@ -19,6 +19,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import {
   Currency,
   EXPENSE_CATEGORIES,
@@ -133,7 +134,7 @@ export default function MonthlyExpenses({
   onPostMonth,
   onRecallMonth
 }: MonthlyExpensesProps) {
-  const [month, setMonth] = useState(currentMonth());
+  const [month, setMonth] = useRemembered('expenses.monthly.month', currentMonth);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [busy, setBusy] = useState(false);
@@ -287,7 +288,7 @@ export default function MonthlyExpenses({
               <CalendarClock className="h-5 w-5 text-teal-600" /> Post the month&rsquo;s costs
             </h2>
             <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-500">
-              Check each figure against the bill in front of you before posting — the amounts below are the usual ones, not this
+              Check each figure against the bill in front of you before posting, the amounts below are the usual ones, not this
               month&rsquo;s. Everything posted is raised as <span className="font-medium">awaiting payment</span>; it is marked paid in the
               expense register when the money actually leaves.
             </p>
@@ -352,7 +353,7 @@ export default function MonthlyExpenses({
                           <FundBadge fund={fundOf(row.template)} />
                           <span className="text-[11px] text-slate-500">
                             {row.template.category}
-                            {row.template.description ? ` — ${row.template.description}` : ''} · due day {row.template.dueDay}
+                            {row.template.description ? `, ${row.template.description}` : ''} · due day {row.template.dueDay}
                           </span>
                         </div>
                       </td>
@@ -387,7 +388,7 @@ export default function MonthlyExpenses({
                               <Ban className="h-3 w-3" /> Taken back
                             </Badge>
                             <span className="text-[10px] leading-relaxed text-slate-400">
-                              {row.recalled.voidReason || 'no reason recorded'} — tick it to post the month again.
+                              {row.recalled.voidReason || 'no reason recorded'}, tick it to post the month again.
                             </span>
                           </span>
                         ) : row.include ? (
@@ -540,7 +541,7 @@ export default function MonthlyExpenses({
                     {totals.JMD > 0 ? formatMoney(totals.JMD, 'JMD') : ''}
                     {totals.JMD > 0 && totals.USD > 0 ? ' + ' : ''}
                     {totals.USD > 0 ? formatMoney(totals.USD, 'USD') : ''}
-                    {totals.JMD === 0 && totals.USD === 0 ? '—' : ''}
+                    {totals.JMD === 0 && totals.USD === 0 ? '-' : ''}
                   </span>
                   {runTouchesBothBooks && (
                     <span className="mt-1 block text-[11px] text-slate-400">
@@ -690,7 +691,7 @@ export default function MonthlyExpenses({
 
         <div className="border-t border-slate-100 p-5">
           <InfoNote>
-            An annual cost split across the villas — the insurance premium — is not set up here. It is a different calculation and is
+            An annual cost split across the villas, the insurance premium, is not set up here. It is a different calculation and is
             entered in the expense register when the premium falls due.
           </InfoNote>
         </div>
@@ -738,7 +739,8 @@ export default function MonthlyExpenses({
                 {postedTotals.JMD > 0 && postedTotals.USD > 0 ? ' + ' : ''}
                 {postedTotals.USD > 0 ? formatMoney(postedTotals.USD, 'USD') : ''}
               </span>
-              , raised by the run for {formatMonthLabel(month)}
+              ,{' '}
+              raised by the run for {formatMonthLabel(month)}
               {settledCount > 0 ? `, ${settledCount} of them recorded as paid` : ''}. A cost you logged by hand in the
               same month is not touched. Once taken back, the month can be posted again.
             </>
@@ -794,14 +796,14 @@ export default function MonthlyExpenses({
         >
           <div className="space-y-3 p-6 text-xs leading-relaxed text-slate-600">
             <p>
-              <span className="font-semibold text-slate-800">{removing.vendor}</span> — {removing.category},{' '}
+              <span className="font-semibold text-slate-800">{removing.vendor}</span>, {removing.category},{' '}
               {allocationLabel(allocationOf(removing), units)}, usually{' '}
               {formatMoney(removing.amount, removing.currency)} on day {removing.dueDay}
               {removing.createdAt ? `, added ${formatDayLabel(removing.createdAt.substring(0, 10))}` : ''}.
             </p>
             <p>
               This takes it out of the system entirely, not just off future runs. It is refused if any cost raised from it
-              is still on the books — take those postings back first, from the run above.
+              is still on the books, take those postings back first, from the run above.
             </p>
             <InfoNote>
               If this was a real cost that has simply ended, use <span className="font-medium">Stop</span> instead. That
@@ -925,7 +927,7 @@ function RecurringForm({
         </Field>
 
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Usual amount" htmlFor="rf-amount" required hint="A starting figure — correct it each month.">
+          <Field label="Usual amount" htmlFor="rf-amount" required hint="A starting figure, correct it each month.">
             <input id="rf-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
           </Field>
           <Field label="Currency" htmlFor="rf-cur" required>

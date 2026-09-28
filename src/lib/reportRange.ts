@@ -42,5 +42,7 @@ export function setReportRange(range: ReportRange): void {
   current = range;
 }
 
-/** Testing seam: forget the shared range. */
-
+/** Forget the shared range. Called on sign-out, and by the tests. */
+export function resetReportRange(): void {
+  current = null;
+}

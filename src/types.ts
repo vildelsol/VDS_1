@@ -296,7 +296,7 @@ export const UNIT_STATUSES: UnitStatus[] = ['long-term', 'short-term', 'owner-oc
 
 export interface Unit {
   id: string;
-  number: string; // display label, e.g. "1" or "A1" — may be edited, so never use as a join key
+  number: string; // display label, e.g. "1" or "A1", may be edited, so never use as a join key
   ownerName: string;
   ownerEmail: string;
   ownerPhone: string;
@@ -494,7 +494,7 @@ export interface Booking {
   guestEmail: string;
   guestPhone: string;
   checkIn: string; // YYYY-MM-DD (arrival, inclusive)
-  checkOut: string; // YYYY-MM-DD (departure, exclusive — the unit is free again on this date)
+  checkOut: string; // YYYY-MM-DD (departure, exclusive, the unit is free again on this date)
   source: 'Direct' | 'Airbnb' | 'Booking.com' | 'Blocked' | 'Unavailable';
   amount: number;
   nightlyRate?: number;
@@ -740,8 +740,8 @@ export const EXPENSE_FUND_LABELS: Record<ExpenseFund, string> = {
 };
 
 export const EXPENSE_FUND_HINTS: Record<ExpenseFund, string> = {
-  strata: 'Security, landscaping, pool, grounds staff, painting, the office — what contributions cover.',
-  ispo: `Cell phone, company vehicle and its insurance — ${MANAGING_COMPANY_NAME}'s own costs, paid from rent.`
+  strata: 'Security, landscaping, pool, grounds staff, painting, the office, what contributions cover.',
+  ispo: `Cell phone, company vehicle and its insurance, ${MANAGING_COMPANY_NAME}'s own costs, paid from rent.`
 };
 
 /**
@@ -960,7 +960,7 @@ export const ANNUAL_REPORT_SECTIONS = [
   { key: 'executiveSummary', label: 'Executive summary', hint: 'The position in a few sentences: what the year cost, what owners were billed, and what is being proposed.' },
   { key: 'costContext', label: 'What it costs to run the property', hint: 'Why the cost is what it is. The figures and chart are generated below this text.' },
   { key: 'categoryNotes', label: 'What each category contains', hint: 'What sits inside each expenditure heading, so owners can see nothing is combined for convenience.' },
-  { key: 'movements', label: 'What the movements tell us', hint: 'The year-over-year changes worth explaining — which lines moved and why.' },
+  { key: 'movements', label: 'What the movements tell us', hint: 'The year-over-year changes worth explaining, which lines moved and why.' },
   { key: 'recommendation', label: 'Recommendation', hint: 'The contribution being proposed, and the case for it.' },
   { key: 'alternatives', label: 'If the increase is not approved', hint: 'What must be reduced to fit within the current contribution. The reduction required is computed below.' },
   { key: 'risks', label: 'Risks of deferring', hint: 'What happens if the position is left as it is.' },

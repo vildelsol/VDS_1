@@ -18,6 +18,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, bodyCorporateName } from '../types';
 import {
   accountBalance,
@@ -217,7 +218,7 @@ function analysisFor(p: CurrencyProjection, horizon: number): string[] {
   const avgNet = round2(p.avgReceived - p.avgExpense);
   out.push(
     `Over the ${p.lookback} months ${window}, the corporation received ${formatMoney(p.maintReceived, c)} in maintenance ` +
-      `contributions against ${formatMoney(p.expensesPaid, c)} in operating expenditure — an average monthly ` +
+      `contributions against ${formatMoney(p.expensesPaid, c)} in operating expenditure, an average monthly ` +
       `${avgNet >= 0 ? 'surplus' : 'deficit'} of ${formatMoney(Math.abs(avgNet), c)}.`
   );
 
@@ -264,11 +265,11 @@ function analysisFor(p: CurrencyProjection, horizon: number): string[] {
 }
 
 export default function Projections({ units, charges, payments, expenses, settings, session }: ProjectionsProps) {
-  const [lookback, setLookback] = useState<number>(6);
-  const [horizon, setHorizon] = useState<number>(6);
-  const [customRange, setCustomRange] = useState(false);
-  const [customFrom, setCustomFrom] = useState(monthStart(addMonths(currentMonth(), -6)));
-  const [customTo, setCustomTo] = useState(monthEnd(addMonths(currentMonth(), -1)));
+  const [lookback, setLookback] = useRemembered<number>('projections.lookback', 6);
+  const [horizon, setHorizon] = useRemembered<number>('projections.horizon', 6);
+  const [customRange, setCustomRange] = useRemembered('projections.customRange', false);
+  const [customFrom, setCustomFrom] = useRemembered('projections.from', () => monthStart(addMonths(currentMonth(), -6)));
+  const [customTo, setCustomTo] = useRemembered('projections.to', () => monthEnd(addMonths(currentMonth(), -1)));
   const [printing, setPrinting] = useState(false);
 
   const invalidRange = customRange && customTo < customFrom;
@@ -313,7 +314,7 @@ export default function Projections({ units, charges, payments, expenses, settin
     const sheets = projections.map(p => {
       const rows: XlsxCell[][] = [
         ...documentHeader({
-          documentTitle: `Financial Projection — ${p.currency}`,
+          documentTitle: `Financial Projection, ${p.currency}`,
           period,
           generatedOn: formatDayLabel(today()),
           generatedBy: session.name,
@@ -332,7 +333,7 @@ export default function Projections({ units, charges, payments, expenses, settin
         [cell.text('Projected monthly net'), cell.money(p.projectedNet, p.currency)],
         [cell.text('Maintenance arrears outstanding today'), cell.money(p.arrears, p.currency)],
         [cell.blank()],
-        [cell.section(`Forecast — next ${horizon} month(s)`, 5)],
+        [cell.section(`Forecast, next ${horizon} month(s)`, 5)],
         [cell.header('Month'), cell.header('Contributions', 'right'), cell.header('Expenditure', 'right'), cell.header('Net', 'right'), cell.header('Cumulative', 'right')]
       ];
 
@@ -360,7 +361,7 @@ export default function Projections({ units, charges, payments, expenses, settin
       rows.push([cell.blank()]);
       rows.push([
         cell.note(
-          'Maintenance (HOA) contributions only — rent and guest income belong to individual proprietors and never pass through the corporation. USD and JMD are projected separately and are never combined.',
+          'Maintenance (HOA) contributions only, rent and guest income belong to individual proprietors and never pass through the corporation. USD and JMD are projected separately and are never combined.',
           5
         )
       ]);
@@ -461,7 +462,7 @@ export default function Projections({ units, charges, payments, expenses, settin
         {invalidRange && <ErrorNote>The end date must fall on or after the start date.</ErrorNote>}
 
         <InfoNote>
-          Straight-line projection — no growth or seasonality is assumed. Income is maintenance (HOA) contributions only;
+          Straight-line projection, no growth or seasonality is assumed. Income is maintenance (HOA) contributions only;
           rent and short-term booking income belong to individual proprietors and are excluded. USD and JMD are projected
           separately and never combined. No opening bank balance is assumed; figures are cash movement, not a bank position.
         </InfoNote>
@@ -539,7 +540,7 @@ function ProjectionCard({ p, horizon }: { p: CurrencyProjection; horizon: number
       <dl className="space-y-2 text-xs">
         <ProjRow label="Current monthly assessment" value={formatMoney(p.contractedMonthly, p.currency)} detail={`${p.contributingUnits} contributing proprietor${p.contributingUnits === 1 ? '' : 's'}`} />
         <ProjRow label={`Average received (last ${p.lookback} mo.)`} value={formatMoney(p.avgReceived, p.currency)} />
-        <ProjRow label="Collection rate" value={p.rate === null ? 'n/a — nothing billed' : `${p.rate}%`} />
+        <ProjRow label="Collection rate" value={p.rate === null ? 'n/a, nothing billed' : `${p.rate}%`} />
       </dl>
 
       {/* Projected monthly income vs expenditure, at a glance. */}
@@ -568,7 +569,7 @@ function ProjectionCard({ p, horizon }: { p: CurrencyProjection; horizon: number
         <InfoNote tone="amber">
           {formatMoney(p.arrears, p.currency)} in maintenance contributions is outstanding across {p.arrearsAccounts} account
           {p.arrearsAccounts === 1 ? '' : 's'}
-          {p.arrearsOver60 > 0 ? ` (${p.arrearsOver60} over 60 days)` : ''} — recoverable upside not included in the projection above.
+          {p.arrearsOver60 > 0 ? ` (${p.arrearsOver60} over 60 days)` : ''}, recoverable upside not included in the projection above.
         </InfoNote>
       )}
     </section>
@@ -691,17 +692,17 @@ function ProjectionDocument({
         <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Basis and assumptions</h3>
         <ul className="list-disc space-y-1 pl-5 text-[11px] leading-relaxed">
           <li>
-            Prepared for <strong>{bodyCorporateName(settings)}</strong> — the body corporate — for its own management and
+            Prepared for <strong>{bodyCorporateName(settings)}</strong>, the body corporate, for its own management and
             annual general meeting. <strong>This is not the annual return filed with the Commission of Strata Corporations</strong>,
             which is made on Forms 13A, 13B and 13C for the financial year.
           </li>
           <li>Income is maintenance (HOA) contributions only; rent and short-term booking income belong to individual proprietors and are excluded.</li>
           <li>
             Projection is straight-line from the run-rate of {formatDayLabel(basisFrom)} to {formatDayLabel(basisTo)} (
-            {lookback} month{lookback === 1 ? '' : 's'}) — no growth, inflation or seasonality is assumed.
+            {lookback} month{lookback === 1 ? '' : 's'}), no growth, inflation or seasonality is assumed.
           </li>
           <li>Projected contributions are the current monthly assessment tempered by the recent collection rate; expenditure is the average of expenses paid over the period.</li>
-          <li>USD and JMD are projected separately and never combined. No opening bank balance is assumed — figures represent cash movement, not a bank position.</li>
+          <li>USD and JMD are projected separately and never combined. No opening bank balance is assumed, figures represent cash movement, not a bank position.</li>
         </ul>
       </section>
 

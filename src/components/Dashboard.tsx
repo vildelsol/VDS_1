@@ -4,6 +4,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import {
   AppSettings,
   Booking,
@@ -33,6 +34,7 @@ import {
   OperationalHealth
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2, sumMoney } from '../lib/money';
+import { arrivalsWithin, departuresWithin } from '../lib/stays';
 import ReceivePaymentModal from './ReceivePaymentModal';
 import { addDays, addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
 import {
@@ -76,7 +78,7 @@ export default function Dashboard({
   onRecordPayment,
   onNavigateToTab
 }: DashboardProps) {
-  const [month, setMonth] = useState(currentMonth());
+  const [month, setMonth] = useRemembered('dashboard.month', currentMonth);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [payTarget, setPayTarget] = useState<AccountBalance | 'blank' | null>(null);
@@ -189,7 +191,7 @@ export default function Dashboard({
    */
   const booksBeginOn = settings.booksBeginOn || '';
   const hasComparison = !booksBeginOn || previousEnd >= booksBeginOn;
-  const noComparisonLabel = `no comparison — the books begin ${formatDayLabel(booksBeginOn)}`;
+  const noComparisonLabel = `no comparison, the books begin ${formatDayLabel(booksBeginOn)}`;
 
   /** Arrears as they stood at the end of the previous month. */
   const previousArrears = useMemo(
@@ -235,13 +237,17 @@ export default function Dashboard({
   const todayStr = today();
   const horizon = addDays(todayStr, ARRIVAL_WINDOW_DAYS);
 
-  const upcomingArrivals = activeBookings
-    .filter(b => b.checkIn >= todayStr && b.checkIn <= horizon && b.status === 'confirmed')
-    .sort((a, b) => a.checkIn.localeCompare(b.checkIn));
-
-  const upcomingDepartures = activeBookings
-    .filter(b => b.checkOut >= todayStr && b.checkOut <= horizon && b.status === 'checked-in')
-    .sort((a, b) => a.checkOut.localeCompare(b.checkOut));
+  /*
+   * Who is actually arriving and leaving, from the dates.
+   *
+   * Both lists were filtered on the recorded `status` — `confirmed` for arrivals
+   * and `checked-in` for departures — and nobody checks a guest in or out of an
+   * imported stay in this program. The departures panel was therefore empty
+   * whatever was in the calendar (Ro, 2026-09-28). The rules now live in
+   * `src/lib/stays.ts` where a test can reach them.
+   */
+  const upcomingArrivals = arrivalsWithin(activeBookings, todayStr, horizon);
+  const upcomingDepartures = departuresWithin(activeBookings, todayStr, horizon);
 
   const stayBalances = useMemo(() => {
     const out: Record<Currency, { collected: number; outstanding: number }> = {
@@ -404,7 +410,7 @@ export default function Dashboard({
                       <Badge tone={account.category === 'Maintenance' ? 'purple' : 'green'}>{account.category}</Badge>
                     </div>
                     <p className="mt-1.5 truncate text-[10px] text-slate-500">
-                      Payer: <span className="font-medium text-slate-700">{account.unpaidCharges[0]?.payerName || '—'}</span>
+                      Payer: <span className="font-medium text-slate-700">{account.unpaidCharges[0]?.payerName || '-'}</span>
                     </p>
                     <p className="mt-0.5 text-[10px] text-slate-500">
                       {account.unpaidCharges.length} unpaid month{account.unpaidCharges.length === 1 ? '' : 's'} from{' '}
@@ -486,10 +492,10 @@ export default function Dashboard({
           {leases
             .slice(0, 3)
             .map(l =>
-              `${getUnitDisplayName(l.unit.number)} — ${l.tenancy.tenantName} (${l.expired ? `expired ${Math.abs(l.daysRemaining)}d ago` : `${l.daysRemaining}d left`})`
+              `${getUnitDisplayName(l.unit.number)}, ${l.tenancy.tenantName} (${l.expired ? `expired ${Math.abs(l.daysRemaining)}d ago` : `${l.daysRemaining}d left`})`
             )
             .join('; ')}
-          {leases.length > 3 ? ` and ${leases.length - 3} more` : ''}. An expired term does not end the tenancy — it
+          {leases.length > 3 ? ` and ${leases.length - 3} more` : ''}. An expired term does not end the tenancy, it
           continues month to month at the old rent until it is renewed or notice is served. See the{' '}
           <button onClick={() => onNavigateToTab('notifications')} className="font-semibold underline">
             Notifications Hub
@@ -646,7 +652,7 @@ export default function Dashboard({
 
         <p className="border-t border-slate-100 pt-3 font-mono text-[10px] leading-relaxed text-slate-400">
           Utility recoveries from owner-occupied and short-let villas are billed directly to the owner and are excluded
-          from the figures above. Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD (display only — no
+          from the figures above. Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD (display only, no
           stored amount is converted).
         </p>
       </section>
@@ -664,7 +670,7 @@ export default function Dashboard({
         {importedWithoutValue.length > 0 && (
           <InfoNote tone="amber">
             {importedWithoutValue.length} imported reservation{importedWithoutValue.length === 1 ? '' : 's'} carry no
-            stay value. Platform calendar feeds publish dates only, never pricing — open each reservation and enter the
+            stay value. Platform calendar feeds publish dates only, never pricing, open each reservation and enter the
             amount so it appears in revenue.
           </InfoNote>
         )}
@@ -698,7 +704,7 @@ export default function Dashboard({
             tone="emerald"
             bookings={upcomingArrivals}
             dateOf={b => b.checkIn}
-            emptyText="No confirmed arrivals scheduled in this window."
+            emptyText="No guests are due to arrive in this window."
           />
           <TransitionList
             title={`Departures in the next ${ARRIVAL_WINDOW_DAYS} days`}
@@ -706,7 +712,7 @@ export default function Dashboard({
             tone="amber"
             bookings={upcomingDepartures}
             dateOf={b => b.checkOut}
-            emptyText="No guests currently checked in are due to depart in this window."
+            emptyText="No guests are due to depart in this window."
           />
         </div>
       </section>
@@ -818,7 +824,7 @@ function TransitionList({
             <li key={b.id} className={`flex items-center justify-between gap-2 rounded-xl border p-3 text-xs ${styles}`}>
               <div className="min-w-0">
                 <p className="truncate font-medium text-slate-800">
-                  {b.guestName} — {getUnitDisplayName(b.unitNumber)}
+                  {b.guestName}, {getUnitDisplayName(b.unitNumber)}
                 </p>
                 <p className="mt-0.5 font-mono text-[10px] text-slate-500">{formatDayLabel(dateOf(b))}</p>
               </div>
@@ -870,10 +876,10 @@ export function HealthCard({ health, currency }: { health: OperationalHealth | n
         : { text: 'text-rose-700', ring: 'border-rose-200 bg-rose-50/50', bar: 'bg-rose-500' };
 
   const meaning: Record<string, string> = {
-    A: 'Running well — collecting, covering its costs, and not carrying old debt.',
+    A: 'Running well, collecting, covering its costs, and not carrying old debt.',
     B: 'Sound, with something worth watching below.',
     C: 'Under strain. One or more of the figures below needs attention.',
-    D: 'Struggling — the property is not being funded as it is being run.',
+    D: 'Struggling, the property is not being funded as it is being run.',
     E: 'Serious. Collection or cost coverage has broken down.'
   };
 
@@ -922,7 +928,7 @@ export function HealthCard({ health, currency }: { health: OperationalHealth | n
       </TableScroller>
 
       <p className="text-[11px] leading-relaxed text-slate-500">
-        The grade is the weighted average of the scores above and nothing else — A is 85 and over, B 70, C 55, D 40.
+        The grade is the weighted average of the scores above and nothing else, A is 85 and over, B 70, C 55, D 40.
         Anything that cannot be measured this period is left out and the weights are shared across the rest, rather than
         being counted as a zero. Currencies are graded separately.
       </p>

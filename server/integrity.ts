@@ -158,7 +158,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
     add(
       'warning',
       'voided-but-reconciled',
-      'A voided receipt is still ticked as found on a bank statement — it says the money both did and did not arrive.',
+      'A voided receipt is still ticked as found on a bank statement, it says the money both did and did not arrive.',
       payments.filter(p => p.status === 'reversed' && !!p.reconciledOn).map(p => p.receiptNo || p.id)
     );
 
@@ -254,13 +254,13 @@ export function checkIntegrity(db: Database): IntegrityReport {
       // Only compare when the villa actually states a currency; a blank one is
       // its own, separate finding rather than a mismatch with everything.
       if (expected && c.currency && c.currency !== expected) {
-        strandedCharges.push(`${c.id} — ${c.unitNumber || c.unitId} ${c.category} raised in ${c.currency}, billed in ${expected}`);
+        strandedCharges.push(`${c.id}, ${c.unitNumber || c.unitId} ${c.category} raised in ${c.currency}, billed in ${expected}`);
       }
     }
     add(
       'serious',
       'charge-in-unbilled-currency',
-      'A charge is raised in a currency the account is not billed in, so it is in no balance — the villa owes this money but does not appear to.',
+      'A charge is raised in a currency the account is not billed in, so it is in no balance, the villa owes this money but does not appear to.',
       strandedCharges
     );
 
@@ -272,7 +272,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
       if (!unit) continue;
       const expected = billingCurrency(unit, p.category);
       if (expected && p.currency && p.currency !== expected) {
-        strandedPayments.push(`${p.receiptNo || p.id} — ${p.unitNumber || p.unitId} ${p.category} received in ${p.currency}, billed in ${expected}`);
+        strandedPayments.push(`${p.receiptNo || p.id}, ${p.unitNumber || p.unitId} ${p.category} received in ${p.currency}, billed in ${expected}`);
       }
     }
     add(
@@ -522,7 +522,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
 /** One line for the console at startup. Deliberately quiet when all is well. */
 export function describeIntegrity(report: IntegrityReport): string {
   if (report.ok) {
-    return `Records checked: ${report.counts.payments} payments, ${report.counts.charges} charges — no contradictions found.`;
+    return `Records checked: ${report.counts.payments} payments, ${report.counts.charges} charges, no contradictions found.`;
   }
   const parts = [`${report.serious} serious`, `${report.warnings} warning${report.warnings === 1 ? '' : 's'}`];
   return `RECORDS CHECK FOUND PROBLEMS (${parts.join(', ')}):\n` + report.findings.map(f => `  [${f.severity}] ${f.message}`).join('\n');

@@ -4,12 +4,14 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { AppSettings, Booking, Currency, SessionUser, Unit, getUnitDisplayName } from '../types';
 import { BookingClash, bookingCoversNight, bookingOverlaps, bookingsForUnit, bookingsOverlap } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import { buildStayReceiptEmail, openMailDraft } from '../lib/email';
+import { STAY_PHASE_LABEL, StayPhase, guestGreetingName, isClosedDates, platformReservation, receiptStanding, stayPhase } from '../lib/stays';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import {
   Badge,
@@ -63,8 +65,8 @@ export default function Bookings({
   onHoldDamageDeposit,
   onSettleDamageDeposit
 }: BookingsProps) {
-  const [view, setView] = useState<'calendar' | 'list'>('calendar');
-  const [month, setMonth] = useState(currentMonth());
+  const [view, setView] = useRemembered<'calendar' | 'list'>('bookings.view', 'calendar');
+  const [month, setMonth] = useRemembered('bookings.month', currentMonth);
   const [adding, setAdding] = useState<{ unitId?: string; checkIn?: string } | null>(null);
   const [editing, setEditing] = useState<Booking | null>(null);
   const [printing, setPrinting] = useState<{ from: string; to: string } | null>(null);
@@ -204,7 +206,7 @@ export default function Bookings({
       if (failed.length) parts.push(`${failed.length} feed(s) could not be reached`);
       setSuccess(`Calendar sync finished: ${parts.join(', ')}.`);
       if (failed.length) {
-        setError(failed.map(f => `${f.unitNumber} (${f.source}): ${f.error}`).join(' — '));
+        setError(failed.map(f => `${f.unitNumber} (${f.source}): ${f.error}`).join(', '));
       }
     } catch (err) {
       setError(errorMessage(err, 'Calendar sync failed.'));
@@ -215,13 +217,20 @@ export default function Bookings({
 
   /* ---------------- list ---------------- */
 
-  const [listFilter, setListFilter] = useState<'all' | Booking['status']>('all');
+  /*
+   * Filtered by where the stay stands on the calendar, not by the recorded status:
+   * nobody checks a guest out of an Airbnb stay here, so "confirmed" covered last
+   * month's stays and next month's alike. Ro, 2026-09-16: *"when a short term
+   * booking has already been completed there's no way to tell."*
+   */
+  const [listFilter, setListFilter] = useRemembered<'all' | StayPhase>('bookings.listFilter', 'all');
+  const todayKey = today();
   const listRows = useMemo(
     () =>
       bookings
-        .filter(b => listFilter === 'all' || b.status === listFilter)
+        .filter(b => listFilter === 'all' || stayPhase(b, todayKey) === listFilter)
         .sort((a, b) => b.checkIn.localeCompare(a.checkIn)),
-    [bookings, listFilter]
+    [bookings, listFilter, todayKey]
   );
 
   return (
@@ -233,7 +242,7 @@ export default function Bookings({
         <div role="alert" className="space-y-2 rounded-2xl border-2 border-red-200 bg-red-50 p-4 text-xs text-red-800">
           <p className="flex items-center gap-1.5 font-semibold">
             <AlertCircle className="h-4 w-4 text-red-600" />
-            {overlapWarnings.length} overlapping reservation{overlapWarnings.length === 1 ? '' : 's'} detected — resolve to avoid a double-booking
+            {overlapWarnings.length} overlapping reservation{overlapWarnings.length === 1 ? '' : 's'} detected, resolve to avoid a double-booking
           </p>
           <ul className="space-y-1">
             {overlapWarnings.map((c, i) => (
@@ -259,7 +268,7 @@ export default function Bookings({
                 <option value="">Select villa</option>
                 {shortLetUnits.map(u => (
                   <option key={u.id} value={u.id}>
-                    {getUnitDisplayName(u.number)} — {u.status}
+                    {getUnitDisplayName(u.number)}, {u.status}
                   </option>
                 ))}
               </select>
@@ -323,7 +332,7 @@ export default function Bookings({
                   <strong>
                     {activeFeeds.length} calendar feed{activeFeeds.length === 1 ? '' : 's'} connected.
                   </strong>{' '}
-                  Platform feeds publish dates only — never guest contact details or pricing — so imported stays need a
+                  Platform feeds publish dates only, never guest contact details or pricing, so imported stays need a
                   stay value entered manually.
                   {activeFeeds[0].lastSyncAt && (
                     <> Last synchronised {formatDayLabel(activeFeeds[0].lastSyncAt.substring(0, 10))}.</>
@@ -449,7 +458,7 @@ export default function Bookings({
                             type="button"
                             title={
                               booking
-                                ? `${booking.guestName} — ${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)} (${booking.source})`
+                                ? `${booking.guestName}, ${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)} (${booking.source})`
                                 : blocked
                                   ? `${getUnitDisplayName(unit.number)} is ${unit.status} and not available for short stays`
                                   : `Create a reservation for ${getUnitDisplayName(unit.number)} arriving ${formatDayLabel(dayKey(day))}`
@@ -518,11 +527,11 @@ export default function Bookings({
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 p-4">
             <span className="font-mono text-xs text-slate-500">{listRows.length} reservation(s)</span>
             <select value={listFilter} onChange={e => setListFilter(e.target.value as typeof listFilter)} className="rounded-lg border border-slate-200 p-1.5 text-xs">
-              <option value="all">All statuses</option>
-              <option value="confirmed">Confirmed</option>
-              <option value="checked-in">Checked in</option>
-              <option value="checked-out">Checked out</option>
-              <option value="cancelled">Cancelled</option>
+              <option value="all">All stays</option>
+              <option value="upcoming">{STAY_PHASE_LABEL.upcoming}</option>
+              <option value="in-stay">{STAY_PHASE_LABEL['in-stay']}</option>
+              <option value="completed">{STAY_PHASE_LABEL.completed}</option>
+              <option value="cancelled">{STAY_PHASE_LABEL.cancelled}</option>
             </select>
           </div>
           {listRows.length === 0 ? (
@@ -548,17 +557,51 @@ export default function Bookings({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {listRows.map(b => (
+                  {listRows.map(b => {
+                    const phase = stayPhase(b, todayKey);
+                    const closed = isClosedDates(b);
+                    const standing = receiptStanding(b);
+                    const platform = b.externalUid ? platformReservation(b.notes) : {};
+                    return (
                     <tr
                       key={b.id}
                       onClick={() => (canEdit ? setEditing(b) : undefined)}
-                      className={`${canEdit ? 'cursor-pointer' : ''} transition-colors hover:bg-slate-50/60 ${b.status === 'cancelled' ? 'text-slate-400' : ''}`}
+                      className={`${canEdit ? 'cursor-pointer' : ''} transition-colors hover:bg-slate-50/60 ${
+                        phase === 'cancelled' ? 'text-slate-400' : phase === 'completed' ? 'bg-slate-50/70 text-slate-500' : ''
+                      }`}
                     >
                       <td className="p-3 font-mono font-semibold">{getUnitDisplayName(b.unitNumber)}</td>
                       <td className="p-3">
-                        <p className="font-medium text-slate-900">{b.guestName}</p>
+                        {closed ? (
+                          <>
+                            <p className="font-medium italic text-slate-500">Dates closed, no guest</p>
+                            <p className="text-[10px] text-slate-400" title="Exactly what the calendar feed sent">
+                              {b.guestName}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="font-medium text-slate-900">{b.guestName}</p>
+                        )}
                         {(b.guestEmail || b.guestPhone) && (
                           <p className="text-[10px] text-slate-400">{[b.guestEmail, b.guestPhone].filter(Boolean).join(' • ')}</p>
+                        )}
+                        {(platform.code || platform.phoneLast4) && (
+                          <p className="text-[10px] text-slate-500">
+                            {platform.code && (
+                              <a
+                                href={platform.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={e => e.stopPropagation()}
+                                className="font-mono text-teal-700 underline"
+                                title="Open this reservation in Airbnb to see the guest's name and contact details"
+                              >
+                                {platform.code}
+                              </a>
+                            )}
+                            {platform.code && platform.phoneLast4 && ' · '}
+                            {platform.phoneLast4 && `phone ends ${platform.phoneLast4}`}
+                          </p>
                         )}
                         {b.externalUid && <Badge tone="slate">Imported</Badge>}
                       </td>
@@ -569,24 +612,43 @@ export default function Bookings({
                       <td className="p-3">
                         <Badge tone={b.source === 'Airbnb' ? 'red' : b.source === 'Booking.com' ? 'blue' : b.source === 'Direct' ? 'green' : 'slate'}>{b.source}</Badge>
                       </td>
-                      <td className="p-3 text-right font-mono">{formatMoney(b.amount, b.currency)}</td>
-                      <td className="p-3 text-right font-mono text-emerald-600">{formatMoney(b.depositPaid, b.currency)}</td>
-                      <td className="p-3 text-right font-mono font-semibold text-amber-600">{formatMoney(b.balanceDue, b.currency)}</td>
+                      {closed ? (
+                        <td colSpan={3} className="p-3 text-right text-[11px] text-slate-400">
+                          No stay to charge
+                        </td>
+                      ) : standing === 'no-value' ? (
+                        <td colSpan={3} className="p-3 text-right text-[11px] font-medium text-amber-700">
+                          Stay value not entered
+                        </td>
+                      ) : (
+                        <>
+                          <td className="p-3 text-right font-mono">{formatMoney(b.amount, b.currency)}</td>
+                          <td className="p-3 text-right font-mono text-emerald-600">{formatMoney(b.depositPaid, b.currency)}</td>
+                          <td className="p-3 text-right font-mono font-semibold text-amber-600">{formatMoney(b.balanceDue, b.currency)}</td>
+                        </>
+                      )}
                       <td className="p-3">
-                        <Badge tone={b.status === 'checked-in' ? 'green' : b.status === 'confirmed' ? 'blue' : b.status === 'cancelled' ? 'red' : 'slate'}>{b.status}</Badge>
+                        <Badge
+                          tone={phase === 'in-stay' ? 'green' : phase === 'upcoming' ? 'blue' : phase === 'cancelled' ? 'red' : 'slate'}
+                        >
+                          {STAY_PHASE_LABEL[phase]}
+                        </Badge>
                       </td>
                       {/* Optional throughout. Most stays take no damage deposit,
                           so this column is blank for them and nothing asks. */}
                       <td className="p-3" onClick={e => e.stopPropagation()}>
+                        {!closed && (
                         <DamageDepositCell
                           booking={b}
                           canHold={canHoldDeposit}
                           canSettle={canSettleDeposit}
                           onOpen={() => setDepositBooking(b)}
                         />
+                        )}
                       </td>
                       <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
-                        {b.status !== 'cancelled' && (
+                        {/* Closed dates have no guest to give a receipt to. */}
+                        {b.status !== 'cancelled' && !closed && (
                           <button
                             onClick={() => setReceiptBooking(b)}
                             title="Print or email a guest stay receipt"
@@ -597,7 +659,8 @@ export default function Bookings({
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </TableScroller>
@@ -689,7 +752,7 @@ export default function Bookings({
  * guest keeps, distinct from the internal payment receipt in the finance ledger.
  * It shows the stay, what was paid, and any balance due on arrival.
  */
-function GuestStayReceipt({
+export function GuestStayReceipt({
   booking,
   unit,
   generatedBy,
@@ -702,11 +765,14 @@ function GuestStayReceipt({
 }) {
   const villa = unit ? getUnitDisplayName(unit.number) : `Unit ${booking.unitNumber}`;
   const nights = nightsBetween(booking.checkIn, booking.checkOut);
-  const paidInFull = booking.balanceDue <= 0;
+  // "Paid in full" only when there was something to pay. An imported stay with
+  // no value entered has had nothing paid — see `receiptStanding`.
+  const standing = receiptStanding(booking);
+  const paidInFull = standing === 'paid';
 
   return (
     <PrintPortal
-      title={`Guest receipt — ${booking.guestName}`}
+      title={`Guest ${paidInFull ? 'receipt' : 'confirmation'}: ${guestGreetingName(booking) === 'Guest' ? villa : guestGreetingName(booking)}`}
       subtitle={`${villa} · ${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)}`}
       onClose={onClose}
       maxWidthClass="max-w-md"
@@ -730,7 +796,7 @@ function GuestStayReceipt({
       />
 
       <p className="mb-4 text-xs text-slate-700">
-        Dear {booking.guestName}, thank you for choosing Villaggio Del Sol. Your reservation details are confirmed below.
+        Dear {guestGreetingName(booking)}, thank you for choosing Villaggio Del Sol. Your reservation details are confirmed below.
       </p>
 
       <dl className="space-y-0 text-xs">
@@ -749,6 +815,14 @@ function GuestStayReceipt({
         ))}
       </dl>
 
+      {standing === 'no-value' ? (
+        <div className="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs">
+          <div className="flex justify-between">
+            <span className="text-slate-600">Stay total</span>
+            <span className="font-semibold">Not yet confirmed</span>
+          </div>
+        </div>
+      ) : (
       <div className="mt-4 space-y-1.5 rounded-xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs">
         <div className="flex justify-between">
           <span className="text-slate-600">Stay total</span>
@@ -765,16 +839,17 @@ function GuestStayReceipt({
           </span>
         </div>
       </div>
+      )}
 
       {paidInFull ? (
         <p className="print-emphasis mt-4 rounded-lg border border-emerald-500 bg-emerald-50 py-1.5 text-center text-xs font-bold uppercase tracking-widest text-emerald-800">
           Paid in full
         </p>
-      ) : (
+      ) : standing === 'balance-due' ? (
         <p className="mt-4 text-center text-[11px] text-slate-500">
           The balance shown is payable on arrival. Amounts are in {booking.currency}.
         </p>
-      )}
+      ) : null}
 
       <PrintSignatures left="Villaggio Del Sol" right="Guest signature" />
 
@@ -954,7 +1029,7 @@ function BookingForm({
 
   return (
     <Modal
-      title={mode === 'create' ? 'New guest reservation' : `Reservation — ${booking?.guestName}`}
+      title={mode === 'create' ? 'New guest reservation' : `Reservation: ${booking?.guestName}`}
       subtitle={unit ? getUnitDisplayName(unit.number) : undefined}
       onClose={onClose}
       maxWidthClass="max-w-lg"
@@ -992,7 +1067,7 @@ function BookingForm({
         {bookableUnits.length === 0 && (
           <ErrorNote>
             No villa is set to <strong>Short-term / Airbnb</strong> in the Units Register, so there is nothing to book.
-            Set a villa&rsquo;s status there first — a long-term let, an owner&rsquo;s own home or a villa off the market
+            Set a villa&rsquo;s status there first, a long-term let, an owner&rsquo;s own home or a villa off the market
             cannot take a guest reservation.
           </ErrorNote>
         )}
@@ -1107,7 +1182,7 @@ function BookingForm({
         {cancelling && (Number(deposit) > 0 || (booking?.depositPaid || 0) > 0) && (
           <InfoNote tone="amber">
             Cancelling voids the deposit receipt for this reservation. The receipt stays in the ledger marked VOID, with
-            the reason recorded — it is not deleted.
+            the reason recorded, it is not deleted.
           </InfoNote>
         )}
 
@@ -1168,7 +1243,7 @@ function DamageDepositCell({
     );
   }
 
-  if (!canHold || booking.status === 'cancelled') return <span className="text-[10px] text-slate-300">—</span>;
+  if (!canHold || booking.status === 'cancelled') return <span className="text-[10px] text-slate-300">-</span>;
 
   return (
     <button
@@ -1273,7 +1348,7 @@ function DamageDepositModal({
 
         <div className="rounded-xl bg-slate-50 p-3 text-[11px] text-slate-600">
           <p className="font-medium text-slate-800">
-            {getUnitDisplayName(booking.unitNumber)} — {booking.guestName}
+            {getUnitDisplayName(booking.unitNumber)}, {booking.guestName}
           </p>
           <p className="font-mono">
             {formatDayLabel(booking.checkIn)} → {formatDayLabel(booking.checkOut)}
@@ -1319,7 +1394,7 @@ function DamageDepositModal({
 
             {withheldNum > 0 && (
               <InfoNote tone="amber">
-                Keeping this money is not income. If it is covering a real cost — a broken door, a replaced mattress — record that cost as an
+                Keeping this money is not income. If it is covering a real cost, a broken door, a replaced mattress, record that cost as an
                 expense against the villa.
               </InfoNote>
             )}
@@ -1389,7 +1464,7 @@ function ReservationsReport({
     <PrintPortal title="Reservations report" subtitle={`${formatDayLabel(from)} to ${formatDayLabel(to)}`} onClose={onClose} maxWidthClass="max-w-5xl">
       <PrintLetterhead
         documentTitle="Guest Reservations Report"
-        meta={`Period ${formatDayLabel(from)} — ${formatDayLabel(to)}`}
+        meta={`Period ${formatDayLabel(from)} to ${formatDayLabel(to)}`}
         generatedBy={generatedBy}
       />
 
@@ -1464,7 +1539,7 @@ function ReservationsReport({
       )}
 
       <p className="mt-8 border-t border-slate-300 pt-3 text-center font-mono text-[9px] uppercase text-slate-500">
-        Confidential — Villaggio Del Sol reservations ledger
+        Confidential, Villaggio Del Sol reservations ledger
       </p>
     </PrintPortal>
   );

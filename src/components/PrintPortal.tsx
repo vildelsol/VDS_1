@@ -125,7 +125,7 @@ export default function PrintPortal({
             actually billing them. Down here it reads as what it is: who built
             the system the document came out of.
           */}
-          <p className="mt-6 border-t border-slate-200 pt-2 text-center font-mono text-[8px] uppercase tracking-[0.2em] text-slate-400">
+          <p className="vds-print-credit mt-6 border-t border-slate-200 pt-2 text-center font-mono text-[8px] uppercase tracking-[0.2em] text-slate-400">
             Powered by ISPO
           </p>
         </div>
@@ -180,7 +180,7 @@ export function PrintLetterhead({
           />
         )}
         <p className="mt-1 font-mono text-xs text-slate-500">Ocho Rios, St. Ann, Jamaica</p>
-        <p className="mt-0.5 text-[10px] text-slate-400">16-Unit Gated Residence — Internal Operations Record</p>
+        <p className="mt-0.5 text-[10px] text-slate-400">16-Unit Gated Residence, Internal Operations Record</p>
       </div>
       <div className="text-right">
         <div className="print-outline inline-block rounded-lg border border-slate-900 bg-white px-3 py-1 font-mono text-[10px] font-bold uppercase text-slate-900">
@@ -228,7 +228,12 @@ export function PrintSignatures({
      * the head of a signature block. The spacing that separated it from the
      * content above is kept.
      */
-    <div className="mt-12 grid grid-cols-2 gap-8 pt-10 text-center text-xs">
+    /*
+     * `vds-print-signatures`: on paper the space above is cut and the block is
+     * kept whole — see index.css. Ro, 2026-09-16: the signatures kept landing
+     * alone on a second sheet of what was otherwise a one-page document.
+     */
+    <div className="vds-print-signatures mt-12 grid grid-cols-2 gap-8 pt-10 text-center text-xs">
       {[
         { label: left, name: leftName },
         { label: right, name: rightName }

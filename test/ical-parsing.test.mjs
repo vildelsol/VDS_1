@@ -107,6 +107,35 @@ export default async function run({ projectRoot }) {
     const block = air.find(e => e.uid === 'blocked-owner-stay@airbnb.com');
     T.check('"Airbnb (Not available)" is a block, not a booking', classifyEvent(block).isReservation === false);
 
+    /*
+     * Re-syncing a stay already imported. Ro, 2026-09-16, found imported stays
+     * carry no guest; the booking form tells staff to type the guest in and
+     * promises a re-sync will not overwrite it. It did — every Sync put the name
+     * back to "External guest".
+     */
+    const { feedDateChange } = mod;
+    const typedIn = { guestName: 'Marcia Brown', checkIn: '2026-07-15', checkOut: '2026-07-20', amount: 900 };
+    T.check(
+      'a re-sync with the same dates changes nothing, so the guest name typed in stays',
+      feedDateChange(typedIn, stay) === null
+    );
+    const moved = feedDateChange(typedIn, { ...stay, end: '2026-07-22' });
+    T.check('when the guest changes dates on Airbnb, the new dates come through', moved?.checkOut === '2026-07-22' && moved?.checkIn === '2026-07-15', JSON.stringify(moved));
+    T.check(
+      'and the change carries dates only — nothing in it can replace a name, a value or a note',
+      !!moved && Object.keys(moved).sort().join(',') === 'checkIn,checkOut',
+      JSON.stringify(moved)
+    );
+    {
+      // The function is only a promise if the sync uses it. The sync cannot be
+      // driven from a test — the address guard refuses a local feed, rightly —
+      // so this one reads the source, and says so.
+      const serverSrc = fs.readFileSync(path.join(projectRoot, 'server.ts'), 'utf8');
+      const syncBody = serverSrc.slice(serverSrc.indexOf('async function syncFeed'), serverSrc.indexOf("app.post(\n  '/api/ical/sync'"));
+      T.check('the sync decides an update with that rule (source check)', syncBody.length > 0 && /feedDateChange\(existing, event\)/.test(syncBody));
+      T.check('and never assigns a name to a stay it already holds (source check)', syncBody.length > 0 && !/existing\.guestName\s*=/.test(syncBody));
+    }
+
     /* ---------------------------------------------------------------- *
      * Booking.com
      * ---------------------------------------------------------------- */
@@ -176,7 +205,9 @@ export default async function run({ projectRoot }) {
       externalFeedId: 'feed-1',
       ...over
     });
-    const plan = (bookings, seen, paid = []) => planWithdrawals(bookings, new Set(paid), new Set(seen), 'feed-1', 'unit-1', 'Airbnb');
+    // The fixture stay is 15–20 July; judged from 1 July it is still to come, as
+    // these checks were written to assume.
+    const plan = (bookings, seen, paid = [], day = '2026-07-01') => planWithdrawals(bookings, new Set(paid), new Set(seen), 'feed-1', 'unit-1', 'Airbnb', day);
 
     T.check('a stay still in the feed is left alone', plan([booking()], ['uid-1']).cancelIds.length === 0);
 
@@ -207,9 +238,27 @@ export default async function run({ projectRoot }) {
       new Set(['uid-1']),
       'feed-1',
       'unit-1',
-      'Airbnb'
+      'Airbnb',
+      '2026-07-01'
     );
     T.check('only the withdrawn stay on the right villa is cancelled', many.cancelIds.length === 1 && many.cancelIds[0] === 'drop', many.cancelIds.join(','));
+
+    /*
+     * Ro, 2026-09-16: "once the date has passed, the system will do what?" A
+     * finished stay must come through a later sync untouched, whatever the feed
+     * has stopped listing.
+     */
+    const afterwards = plan([booking()], [], [], '2026-09-16');
+    T.check('a stay that has already ended is never called cancelled when it drops out of the feed', afterwards.cancelIds.length === 0, afterwards.cancelIds.join(','));
+    T.check('nor raised as a problem, since there is nothing to settle', afterwards.conflicts.length === 0, afterwards.conflicts.join(' | '));
+    const settledAfterwards = plan([booking({ amount: 1200, depositPaid: 1200 })], [], ['b1'], '2026-09-16');
+    T.check('a finished stay with money on it is not raised every sync either', settledAfterwards.cancelIds.length === 0 && settledAfterwards.conflicts.length === 0);
+    T.check('the departure day counts as ended', plan([booking()], [], [], '2026-07-20').cancelIds.length === 0 && plan([booking()], [], [], '2026-07-20').conflicts.length === 0);
+
+    const midStay = plan([booking()], [], [], '2026-07-17');
+    T.check('a stay under way is never cancelled silently, even with no money on it', midStay.cancelIds.length === 0);
+    T.check('it is raised for a person to check on the platform instead', midStay.conflicts.length === 1 && /under way/.test(midStay.conflicts[0]), midStay.conflicts.join(' | '));
+    T.check('and a stay still to come is withdrawn exactly as before', plan([booking()], [], [], '2026-07-14').cancelIds.length === 1);
 
     return T.done();
   } finally {

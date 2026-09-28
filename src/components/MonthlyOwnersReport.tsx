@@ -30,6 +30,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { AppSettings, Charge, Currency, Expense, Payment, Unit, bodyCorporateName } from '../types';
 import { MonthlyOwnersReport as Report, monthlyOwnersReport } from '../lib/finance';
 import { formatMoney } from '../lib/money';
@@ -56,7 +57,7 @@ export default function MonthlyOwnersReport({ units, charges, payments, expenses
    * opening it on a month still running invites a figure being circulated as if
    * it were final.
    */
-  const [month, setMonth] = useState(() => addMonths(currentMonth(), -1));
+  const [month, setMonth] = useRemembered('owners.monthly.month', () => addMonths(currentMonth(), -1));
   const [printing, setPrinting] = useState(false);
 
   const reports = useMemo(
@@ -102,7 +103,7 @@ export default function MonthlyOwnersReport({ units, charges, payments, expenses
       rows.push([
         cell.text('Lots with contributions outstanding at month end'),
         cell.text(''),
-        cell.text(`${r.lotsInArrears} of ${r.lotsTotal} — ${formatMoney(r.arrearsOutstanding, r.currency)}`)
+        cell.text(`${r.lotsInArrears} of ${r.lotsTotal}, ${formatMoney(r.arrearsOutstanding, r.currency)}`)
       ]);
       if (r.unpaidCount > 0) {
         rows.push([
@@ -124,7 +125,7 @@ export default function MonthlyOwnersReport({ units, charges, payments, expenses
         cell.note(
           `All figures are in ${r.currency} and nothing on this sheet is converted. Prepared on a cash basis: contributions are counted ` +
             'when received and costs when paid. Work on an individual villa is recharged to that owner and is not a common cost. ' +
-            'No lot is named anywhere on this report — the arrears line is a count and a total only.',
+            'No lot is named anywhere on this report, the arrears line is a count and a total only.',
           3
         )
       ]);
@@ -343,7 +344,7 @@ export function MonthlyReportDocument({
       {reports.map(r => (
         <section key={r.currency} className="mb-8 break-inside-avoid">
           <h3 className="mb-2 border-b-2 border-slate-900 pb-1 text-sm font-bold uppercase tracking-wider">
-            {r.currency} — {r.currency === 'JMD' ? 'Jamaican dollars' : 'United States dollars'}
+            {r.currency}, {r.currency === 'JMD' ? 'Jamaican dollars' : 'United States dollars'}
           </h3>
 
           <table className="mb-4 w-full text-left text-[11px]">

@@ -29,6 +29,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
+import { useRemembered } from '../lib/screenState';
 import { AppSettings, Currency, Expense, Payment, SessionUser } from '../types';
 import { OperationsStatement as Statement, operationsStatement } from '../lib/finance';
 import { formatMoney } from '../lib/money';
@@ -49,7 +50,7 @@ const CURRENCIES: Currency[] = ['JMD', 'USD'];
 
 export default function OperationsStatement({ expenses, payments, settings, session }: Props) {
   // Last completed month: the period a statement is actually issued for.
-  const [month, setMonth] = useState(() => addMonths(currentMonth(), -1));
+  const [month, setMonth] = useRemembered('reports.operations.month', () => addMonths(currentMonth(), -1));
   const [printing, setPrinting] = useState(false);
 
   const from = monthStart(month);
@@ -77,7 +78,7 @@ export default function OperationsStatement({ expenses, payments, settings, sess
       .map(s => {
         const rows: XlsxCell[][] = [
           ...documentHeader({
-            documentTitle: `Statement of Operations — ${s.currency}`,
+            documentTitle: `Statement of Operations, ${s.currency}`,
             period: formatMonthLabel(month),
             generatedOn: formatDayLabel(today()),
             generatedBy: session.name,
@@ -106,8 +107,8 @@ export default function OperationsStatement({ expenses, payments, settings, sess
           for (const line of group.lines) {
             rows.push([
               cell.date(line.date),
-              cell.text(line.vendor || '—'),
-              cell.text(line.description || '—'),
+              cell.text(line.vendor || '-'),
+              cell.text(line.description || '-'),
               cell.text(line.reference || ''),
               cell.money(line.amount, s.currency)
             ]);
@@ -137,8 +138,8 @@ export default function OperationsStatement({ expenses, payments, settings, sess
           for (const line of s.unpaidLines) {
             rows.push([
               cell.date(line.date),
-              cell.text(line.vendor || '—'),
-              cell.text(line.description || '—'),
+              cell.text(line.vendor || '-'),
+              cell.text(line.description || '-'),
               cell.text(line.reference || ''),
               cell.money(line.amount, s.currency)
             ]);
@@ -160,7 +161,7 @@ export default function OperationsStatement({ expenses, payments, settings, sess
         rows.push([cell.blank()]);
         rows.push([
           cell.note(
-            'The costs of the common property only — grounds, pool, security, fuel and payroll. Work on an individual villa is recharged to that proprietor. Prepared on a cash basis. USD and JMD are reported separately and are never combined.',
+            'The costs of the common property only, grounds, pool, security, fuel and payroll. Work on an individual villa is recharged to that proprietor. Prepared on a cash basis. USD and JMD are reported separately and are never combined.',
             5
           )
         ]);
@@ -202,7 +203,7 @@ export default function OperationsStatement({ expenses, payments, settings, sess
       </div>
 
       <InfoNote>
-        The costs of the common property only — the grounds, the pool, security, fuel, payroll. Work done to an
+        The costs of the common property only, the grounds, the pool, security, fuel, payroll. Work done to an
         individual villa is recharged to that proprietor and appears on their own statement, not here. Costs count in
         the month they were <strong>paid</strong>, against the contributions received in the same month, so the surplus
         is money that actually moved. Anything billed but not yet settled is listed underneath and is deliberately not
@@ -273,9 +274,9 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
                 {group.lines.map(line => (
                   <tr key={line.id}>
                     <td className="p-3 font-mono text-slate-500">{formatDayLabel(line.date)}</td>
-                    <td className="p-3">{line.vendor || '—'}</td>
+                    <td className="p-3">{line.vendor || '-'}</td>
                     <td className="p-3 text-slate-600">
-                      {line.description || '—'}
+                      {line.description || '-'}
                       {line.reference && <span className="ml-1 font-mono text-[10px] text-slate-400">({line.reference})</span>}
                     </td>
                     <td className="p-3 text-right font-mono">{formatMoney(line.amount, s.currency)}</td>
@@ -296,14 +297,14 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
       {s.unpaidLines.length > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
           <p className="mb-1 text-xs font-semibold text-amber-900">
-            Billed in the month and not yet settled — {formatMoney(s.costsUnpaid, s.currency)}
+            Billed in the month and not yet settled, {formatMoney(s.costsUnpaid, s.currency)}
           </p>
           {/* Deliberately outside the surplus. Netting an unpaid bill into the
               cash position is how a bad month reads as a good one. */}
           <ul className="space-y-0.5 font-mono text-[11px] text-amber-900">
             {s.unpaidLines.map(line => (
               <li key={line.id}>
-                {formatDayLabel(line.date)} · {line.vendor || 'supplier'} · {line.description || '—'} ·{' '}
+                {formatDayLabel(line.date)} · {line.vendor || 'supplier'} · {line.description || '-'} ·{' '}
                 {formatMoney(line.amount, s.currency)}
               </li>
             ))}
@@ -359,7 +360,7 @@ function OperationsDocument({
 
       <p className="mb-4 text-[11px] leading-relaxed">
         This statement sets out what the corporation collected in maintenance contributions during the month, and what
-        those contributions paid for. It covers the <strong>common property</strong> — the grounds, the pool, security,
+        those contributions paid for. It covers the <strong>common property</strong>, the grounds, the pool, security,
         fuel and payroll. Work carried out on an individual villa is recharged to that proprietor and appears on their
         own statement rather than here.
       </p>
@@ -385,8 +386,8 @@ function OperationsDocument({
                     {group.lines.map(line => (
                       <tr key={line.id}>
                         <td className="p-2">{formatDayLabel(line.date)}</td>
-                        <td className="p-2 font-sans">{line.vendor || '—'}</td>
-                        <td className="p-2 font-sans">{line.description || '—'}</td>
+                        <td className="p-2 font-sans">{line.vendor || '-'}</td>
+                        <td className="p-2 font-sans">{line.description || '-'}</td>
                         <td className="p-2 text-right">{formatMoney(line.amount, s.currency)}</td>
                       </tr>
                     ))}
@@ -415,12 +416,12 @@ function OperationsDocument({
           {s.unpaidLines.length > 0 && (
             <div className="mt-2 rounded border border-slate-300 p-2">
               <p className="text-[10px] font-bold uppercase tracking-wide">
-                Billed in the month, not yet settled — {formatMoney(s.costsUnpaid, s.currency)}
+                Billed in the month, not yet settled, {formatMoney(s.costsUnpaid, s.currency)}
               </p>
               <ul className="mt-1 space-y-0.5 font-mono text-[10px]">
                 {s.unpaidLines.map(line => (
                   <li key={line.id}>
-                    {formatDayLabel(line.date)} · {line.vendor || 'supplier'} · {line.description || '—'} ·{' '}
+                    {formatDayLabel(line.date)} · {line.vendor || 'supplier'} · {line.description || '-'} ·{' '}
                     {formatMoney(line.amount, s.currency)}
                   </li>
                 ))}
