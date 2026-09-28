@@ -26,20 +26,34 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- **v1.12.0 is the current release** (2026-09-03) — taking a cost back, the two books, the ISPO
-  Operations statement, the `viewIspoOperations` permission, the printed-signature fix and the
-  dead-code tidy. **The HP is still on v1.9.0 and needs it.**
-- **1,806 automated tests pass** (1,655 before this session, plus `taking-a-cost-back`, `two-books` and a new **5,000-operation `books-5000`** run over the two books, the voids and the recalls). Typecheck and build clean. A full run now simulates **6,800 audited
+- **v1.13.0 is the current release** (2026-09-28, tag `v1.13.0`) — the Strata / ISPO / Everything
+  book filter across Operational Reports, reservation deposits reaching the receipts ledger as
+  received, the duplicate-deposit reconcile panel, real arrivals and departures on the dashboard, the
+  currency pill on a one-off charge, one disclaimer on the printed statement instead of three, and no
+  em dashes in any user-facing text. It also carries four pieces that had sat uncommitted since
+  September: printed signature spacing, the Airbnb calendar fixes, staying signed in while the
+  program is open, and the screens remembering where you left them. **The HP is still on v1.9.0 and
+  needs it.**
+- **1,982 automated tests pass** (1,871 before this session, plus `report-books`,
+  `short-stay-deposits` and a new **2,000-operation `reports-2000`** run over the book filters, the
+  deposits and the charges). Six mutations run against the new guards, six killed. Typecheck and
+  build clean, and the screens were driven signed in.
+- **Earlier: 1,806 automated tests passed at v1.12.0** (1,655 before this session, plus `taking-a-cost-back`, `two-books` and a new **5,000-operation `books-5000`** run over the two books, the voids and the recalls). Typecheck and build clean. A full run now simulates **6,800 audited
   scenarios**: 200 ledger, 200 whole-application on full data, 400 reporting, a **3,000-scenario
   adversarial red team**, a **5,000-operation run that then reads the paperwork it produced**, and
   three **1,000-simulation expert suites** (property manager, architect, security). The application
   also checks its own records at start-up. A full `npm test` takes about **six and a half minutes** —
   the 3,000 red team is about 2m30s and the 5,000 run about 3m. That is the price of the coverage; do not trim
   it to make the suite faster.
-- **Nothing is uncommitted.** No stashes, no unpushed tags. Everything from the 2026-09-01 to
-  2026-09-03 sessions is committed, pushed and released. **v1.12.0 is the current release** — the
-  cost recall, the two books, the ISPO Operations statement and the tidy. v1.11.1 carried the five
-  faults real data found and the occupancy split; v1.11.0 the shortfall report.
+- **Nothing is uncommitted.** Everything through the 2026-09-28 session is committed and pushed on
+  `990d087`, and released as **v1.13.0**. v1.12.0 carried the cost recall, the two books, the ISPO
+  Operations statement and the tidy; v1.11.1 the five faults real data found and the occupancy split;
+  v1.11.0 the shortfall report.
+- ⚠️ **Open with Ro, and it is data rather than code:** the `ISPO BNS-Transfer from Ispo to Villaggio`
+  rows on the HP (J$122,000 on 24 Sep, J$100,000 on 17 Sep) are recorded as ISPO **costs**. Ro says
+  they are transfer notes saying where the money came from, which would mean J$222,000 of costs
+  nobody incurred. **No release changes them.** They have to be taken back on the HP, with the
+  funding note moved into the reference of the cost each one paid for.
 - **`main` and `origin/main` are level.** Check that with `git ls-remote origin main` against your
   own `git rev-parse main` — not against a hash copied into this file, and not against a local
   `origin/main` ref, which only says what the last fetch saw. **`main` may sit a documentation commit
