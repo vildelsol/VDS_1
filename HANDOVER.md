@@ -26,7 +26,10 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- ✅ **v1.13.1 is the current release** (published 2026-09-28 20:54 UTC, tag `v1.13.1` on `0fb6007`,
+- ✅ **v1.14.0 is the current release** (2026-10-05, tag `v1.14.0`) — supplier credits as negative
+  costs, the itemised expense sheet in the workbook, and the short-stay column that explains why
+  Received can exceed Billed. **2,019 tests.** It contains everything in v1.13.1 below.
+- **v1.13.1** (published 2026-09-28 20:54 UTC, tag `v1.13.1` on `0fb6007`,
   `Villaggio-Del-Sol.exe` **96,248,320 bytes**, run `36479349955` green in 27m05s — every gate
   including the advisory check, the 1,982-test suite, the smoke test that starts the .exe and serves a
   real request, and the Desktop shortcut check). **v1.12.0 was 95,472,128 bytes**, so unlike the
@@ -146,7 +149,7 @@ next session from inside `pm-app`.
 
 ## Session of 2026-10-05 — supplier credits, itemised costs, and where the money came from
 
-🟡 **Uncommitted on `main`.** Tests → **2,019, 0 failed.** Typecheck and build clean. Driven on a real
+✅ **Released as v1.14.0.** Tests → **2,019, 0 failed.** Typecheck and build clean. Driven on a real
 signed-in screen, including inflating the exported workbook to read the sheet rather than trusting it.
 
 Four things Ro asked for, and the bug hunt that followed.
@@ -3363,7 +3366,9 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-⚠️ **Install v1.13.1.** It is the current release and contains everything before it: the
+⚠️ **Install v1.14.0.** It is the current release and contains everything before it: supplier
+credits recorded as negative costs, the expense sheet itemised line by line in the Excel export, the
+short-stay column that explains why Received can read higher than Billed, the
 Strata / ISPO / Everything book filter on Operational Reports, reservation deposits reaching the
 receipts ledger as received, the duplicate-deposit check, real arrivals and departures on the
 dashboard, the currency pill on a one-off charge, taking a cost back, the two books (the
@@ -3388,14 +3393,14 @@ needs nothing.
 shortfall report and the ISPO statement's contribution line both depend on it, and nothing infers it
 from an owner's name.
 
-**1. Install v1.13.1 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
+**1. Install v1.14.0 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
 **in the same folder**, replacing the old one, and double-click it.
 
 **Then confirm it took — and confirm it the right way.** The v1.10.0 upgrade was correct and looked
 like a failure because the only check available read from a browser cache. In order of trust:
 
-   - **The black console window** now prints `Villaggio Del Sol operations server v1.13.1 running
+   - **The black console window** now prints `Villaggio Del Sol operations server v1.14.0 running
      at …` and, underneath, `Records folder: …`. This is the program speaking; nothing caches it.
      **Read the folder line too** — if it is not the folder the records have always been in, the
      program is looking at a different (probably empty) set of books, because the data folder is the
