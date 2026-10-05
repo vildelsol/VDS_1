@@ -68,6 +68,7 @@ async function loadComponents(projectRoot) {
         export { buildStayReceiptEmail } from './src/lib/email';
         export { default as IspoOperations } from './src/components/IspoOperations';
         export { forgetScreenState, recall, remember } from './src/lib/screenState';
+        export { categoriesWithSpend } from './src/lib/finance';
         export { default as React } from 'react';
       `,
       resolveDir: projectRoot,
@@ -236,6 +237,60 @@ export default async function run({ projectRoot }) {
     const table = render(h(mod.CategoryTable, { breakdown: BREAKDOWN, currency: 'JMD' }));
     T.check('the category table separates what is paid from what is outstanding', textOf(table).includes('Paid') && textOf(table).includes('Outstanding'));
     T.check('and shows a category still owing money', textOf(table).includes('5,000'), textOf(table).slice(0, 120));
+
+    /* ---------------- a category that nets to a supplier credit ---------------- */
+
+    /*
+     * Ro, 2026-10-05, after a utility provider issued a credit. Allowing negative
+     * costs was the easy half; the dangerous half was every screen that read
+     * `> 0` and treated a credit as nothing having happened. The category tables
+     * and charts dropped such a category entirely, so the money was in every
+     * total and absent from the picture beside it, which is how a figure gets
+     * quietly disbelieved.
+     *
+     * Rendered rather than reasoned about: these filters live in components, and
+     * nothing else in the suite opens them.
+     */
+    const CREDITED = [
+      { category: 'Utilities', amount: -15000, outstanding: 0, share: -25 },
+      { category: 'Security', amount: 60000, outstanding: -4000, share: 100 }
+    ];
+    const credited = textOf(render(h(mod.CategoryTable, { breakdown: CREDITED, currency: 'JMD' })));
+    T.check('a category that nets to a credit is still on the table', credited.includes('Utilities'), credited.slice(0, 200));
+    T.check('and its figure is shown as the credit it is, not as a blank', credited.includes('15,000'), credited.slice(0, 200));
+    T.check(
+      'a credit still to be settled is shown rather than printed as a dash meaning nothing',
+      credited.includes('4,000'),
+      credited.slice(0, 300)
+    );
+    T.check(
+      'and the rule deciding which categories are drawn keeps it, which is where the fault actually was',
+      mod.categoriesWithSpend(CREDITED).some(r => r.category === 'Utilities'),
+      JSON.stringify(mod.categoriesWithSpend(CREDITED).map(r => r.category))
+    );
+
+    const creditedMonths = textOf(
+      render(
+        h(mod.CategoryByMonthChart, {
+          /*
+           * Utilities is a credit in **every** month on purpose. With one
+           * positive month the check would pass whether the filter read `> 0` or
+           * `!== 0`, which is a test that proves nothing - and this one did,
+           * until mutating the filter killed nothing and said so.
+           */
+          rows: [
+            { month: '2026-08', byCategory: { Utilities: -15000, Security: 60000 } },
+            { month: '2026-09', byCategory: { Utilities: -4000, Security: 60000 } }
+          ],
+          currency: 'JMD'
+        })
+      )
+    );
+    T.check(
+      'and the month-by-month category view keeps it too',
+      creditedMonths.includes('Utilities'),
+      creditedMonths.slice(0, 200)
+    );
 
 
     /* ---------------- the health grade ---------------- */

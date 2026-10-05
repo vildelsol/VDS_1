@@ -50,7 +50,7 @@ next session from inside `pm-app`.
   it. The account's Actions storage quota is still full; this repo holds only one 34MB artifact and the
   same binary is attached permanently to the v1.12.0 release, so something in another repo is holding
   it.
-- **1,982 automated tests pass** (1,871 before this session, plus `report-books`,
+- **2,019 automated tests pass** (1,982 at v1.13.1, plus `supplier-credits` and the credits now running inside `reports-2000`). Earlier: 1,982 (1,871 before that session, plus `report-books`,
   `short-stay-deposits` and a new **2,000-operation `reports-2000`** run over the book filters, the
   deposits and the charges). Six mutations run against the new guards, six killed. Typecheck and
   build clean, and the screens were driven signed in.
@@ -143,6 +143,83 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.12.0.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-10-05 — supplier credits, itemised costs, and where the money came from
+
+🟡 **Uncommitted on `main`.** Tests → **2,019, 0 failed.** Typecheck and build clean. Driven on a real
+signed-in screen, including inflating the exported workbook to read the sheet rather than trusting it.
+
+Four things Ro asked for, and the bug hunt that followed.
+
+### A supplier credit is a cost of less than nothing
+
+Ro: *"negative amounts cannot be inserted into the expenses. One of our utility providers gave us a
+credit... specifically when it comes to posting, so for the monthly costs section under utilities and
+expenses, allow a negative number to be posted and reflected on all applicable reports."*
+
+The refusal was `requirePositiveAmount`, in three places: the expense register, the monthly-cost
+template, and **the month-posting run**, which is the one Ro actually met. New `requireSignedAmount`
+on those three and nowhere else. Rent, charges, receipts, deposits and refunds stay strictly positive:
+those are amounts moving in a stated direction, and a negative one is a slip, not a credit. Zero is
+still refused on both, because a cost of nothing reconciles to nothing.
+
+**The dangerous half was never the server.** Allowing the figure took three lines; the faults were in
+every screen that read `> 0` and so treated a credit as nothing having happened:
+
+- the expense register's own totals strip vanished entirely when the filtered rows netted negative,
+  so the rows were on screen and the figures summarising them were not;
+- the management charts and the **board pack** dropped a credited category from the picture while
+  every total beside it still counted it;
+- the month-by-month category chart did the same through `present`;
+- an outstanding credit printed as `-`, meaning nothing, on three tables;
+- a run's added line read "Needs a payee and an amount" with both filled in;
+- the notifications hub showed no figure against a credit awaiting settlement.
+
+The chart rule was pulled out into `categoriesWithSpend` in `finance.ts`, because it had to be wrong
+in two components at once before anybody would have noticed, and a rule inside a `useMemo` is a rule
+no test can reach.
+
+### Itemised costs in the workbook
+
+Ro: *"the expenses on the excel sheet needs to itemize all the expenses, line by line as opposed to
+grouping them by Payroll, Utilities etc."* The sheet was one row per category, which is a figure
+nobody can check: "Payroll 82,000" cannot be questioned, approved or reconciled against a bank
+statement. It is now a row per cost with the date, currency, payee, what it was for, category,
+allocation, which book pays, the reference and the amount, with taken-back costs left off and the
+category totals kept at the foot **after** the detail rather than instead of it.
+
+### Why Received can exceed Billed
+
+Ro: *"the USD billed was 1700, however the amount received is 5400. The received amount is correct as
+the system counted short term rentals as well, however, there is no mention that this was from short
+term rental."* Billed counts rent and maintenance charges; Received counts every receipt, and a guest
+pays against no charge at all. The printed monthly movement gained an **of which short-stay** column
+and a line saying what the two columns mean, the Excel sheet gained the same column, and the
+observations name the figure and what it is made of.
+
+### What the suite could not have told us
+
+**Every one of the 1,982 tests passed before any of the credit work was written, and would have passed
+if all of it were wrong**, because nothing had ever posted a negative cost. New
+`test/supplier-credits.test.mjs` (31) posts one through the register, the template and the run, and
+follows it into the monthly report, the annual report, the operating statement on all three books, the
+breakdown and the recall. `reports-2000` now posts credits too: 97 of them inside 2,000 operations,
+through every invariant.
+
+**Four mutations run, four killed:** the posting path back to positive-only (4 deaths), zero allowed
+(2), the sign flipped (13), credits hidden from the charts again (2).
+
+The last of those mattered: the first version of that test **passed while the mutation killed
+nothing**, because it fed data straight to a component that never did the filtering, and because its
+fixture had the category positive in one month. Both were fixed rather than left green.
+
+### Also
+
+Every em dash the previous session's sweep had flattened into a comma inside a *title* was restored to
+a proper separator (`Expenses, line by line, Everything (both books)` read as a list). Em dashes
+outside comments: still zero.
+
+---
 
 ## Released as v1.13.1 — 2026-09-28
 

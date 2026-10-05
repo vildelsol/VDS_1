@@ -632,17 +632,28 @@ function ExpensesPanel({
       <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
         <div className="flex flex-wrap gap-4 border-b border-slate-100 bg-slate-50 p-4 font-mono text-[11px] text-slate-500">
           <span>{rows.length} expense(s) shown</span>
+          {/*
+            Tested against zero, not against "more than nothing".
+            
+            These read `> 0`, which was right while every cost was a positive
+            figure and became a way to hide money the day supplier credits were
+            allowed (2026-10-05). Filter the register to a month whose only
+            Utilities row is a credit and the whole strip disappeared: the rows
+            were on screen and the figures summarising them were not. A total of
+            exactly zero is still worth nothing on the page; a negative one is
+            the figure that most needs reading.
+          */}
           {(['JMD', 'USD'] as Currency[]).map(c =>
-            totals[c].paid > 0 || totals[c].pending > 0 || totals[c].recalled > 0 ? (
+            totals[c].paid !== 0 || totals[c].pending !== 0 || totals[c].recalled !== 0 ? (
               <span key={c}>
                 {c}: paid {formatMoney(totals[c].paid, c)}
-                {totals[c].pending > 0 ? `, pending ${formatMoney(totals[c].pending, c)}` : ''}
-                {totals[c].recalled > 0 ? `, taken back ${formatMoney(totals[c].recalled, c)} (in no total)` : ''}
+                {totals[c].pending !== 0 ? `, pending ${formatMoney(totals[c].pending, c)}` : ''}
+                {totals[c].recalled !== 0 ? `, taken back ${formatMoney(totals[c].recalled, c)} (in no total)` : ''}
               </span>
             ) : null
           )}
           {(['JMD', 'USD'] as Currency[]).map(c =>
-            byFund.ispo[c] > 0 ? (
+            byFund.ispo[c] !== 0 ? (
               <span key={`fund-${c}`} className="text-slate-400">
                 of which {c}: {formatMoney(byFund.strata[c], c)} strata, {formatMoney(byFund.ispo[c], c)} {MANAGING_COMPANY_NAME}
               </span>
@@ -1127,8 +1138,13 @@ function ExpenseForm({
         </Field>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Amount" htmlFor="ef-amount" required>
-            <input id="ef-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
+          {/*
+            No minimum, deliberately. A supplier credit is a cost of less than
+            nothing, and until Ro met this field there was no way to record one
+            except by editing the original bill, which rewrites history.
+          */}
+          <Field label="Amount" htmlFor="ef-amount" required hint="A credit from a supplier goes in as a negative figure.">
+            <input id="ef-amount" type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
           </Field>
           <Field label="Currency" htmlFor="ef-cur" required>
             <select id="ef-cur" value={currency} onChange={e => setCurrency(e.target.value as Currency)} className={inputClass}>

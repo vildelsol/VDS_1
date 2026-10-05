@@ -34,6 +34,7 @@ import {
   chargedInPeriod,
   collectedInPeriod,
   collectionRate,
+  categoriesWithSpend,
   expenseBreakdown,
   expensesInPeriod,
   occupancySeries,
@@ -172,7 +173,12 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
         const mTo = monthEnd(month) > to ? to : monthEnd(month);
         const byCategory: Record<string, number> = {};
         for (const row of expenseBreakdown(expenses, currency, mFrom, mTo)) {
-          if (row.amount > 0) byCategory[row.category] = row.amount;
+          /*
+           * `!== 0`, not `> 0`. A category that nets to a supplier credit is
+           * still a category, and reading it as "nothing happened" dropped it
+           * from the chart while every total beside it still counted it.
+           */
+          if (row.amount !== 0) byCategory[row.category] = row.amount;
         }
         const collected = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
         return {
@@ -185,7 +191,7 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
         };
       });
 
-      const breakdown = expenseBreakdown(expenses, currency, from, to).filter(row => row.amount > 0);
+      const breakdown = categoriesWithSpend(expenseBreakdown(expenses, currency, from, to));
       const active = rows.some(r => r.billed || r.received || r.paidOut) || breakdown.length > 0;
       return { currency, rows, breakdown, active };
     });
@@ -867,7 +873,12 @@ export function CategoryBarChart({
 
 /** The same spending, split month by month, so a spike is attributable. */
 export function CategoryByMonthChart({ rows, currency }: { rows: MonthRow[]; currency: Currency }) {
-  const present = EXPENSE_CATEGORIES.filter(c => rows.some(r => (r.byCategory[c] || 0) > 0));
+  /*
+   * `!== 0`: a category whose month nets to a supplier credit still happened,
+   * and reading it as absent dropped it from the chart while every total beside
+   * it still counted it (2026-10-05).
+   */
+  const present = EXPENSE_CATEGORIES.filter(c => rows.some(r => (r.byCategory[c] || 0) !== 0));
   const totals = rows.map(r => sumMoney(present.map(c => r.byCategory[c] || 0)));
   const max = Math.max(...totals, 1);
   if (present.length === 0 || max <= 1) return null;
@@ -1025,7 +1036,7 @@ export function CategoryTable({
                 </td>
                 <td className="p-3 text-right font-mono">{formatMoney(row.amount, currency)}</td>
                 <td className="p-3 text-right font-mono text-amber-700">
-                  {row.outstanding > 0 ? formatMoney(row.outstanding, currency) : '-'}
+                  {row.outstanding !== 0 ? formatMoney(row.outstanding, currency) : '-'}
                 </td>
                 <td className="p-3 text-right font-mono text-slate-500">{row.share}%</td>
               </tr>
@@ -1035,7 +1046,7 @@ export function CategoryTable({
             <tr className="border-t-2 border-slate-300 font-mono font-semibold">
               <td className="p-3">Total</td>
               <td className="p-3 text-right">{formatMoney(paid, currency)}</td>
-              <td className="p-3 text-right">{outstanding > 0 ? formatMoney(outstanding, currency) : '-'}</td>
+              <td className="p-3 text-right">{outstanding !== 0 ? formatMoney(outstanding, currency) : '-'}</td>
               <td className="p-3 text-right">100%</td>
             </tr>
           </tfoot>

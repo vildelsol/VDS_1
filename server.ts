@@ -322,6 +322,34 @@ function requireCurrency(value: unknown, field = 'Currency'): Currency {
 /** The complaint made when a figure cannot be read, wherever that happens. */
 const UNREADABLE_AMOUNT = 'is not a figure I can read. Enter it plainly, such as 50000, 50,000 or 50000.50.';
 
+/**
+ * A figure that may legitimately be negative, because a cost can be a credit.
+ *
+ * Ro, 2026-10-05: *"One of our utility providers gave us a credit and we tried
+ * to insert the credit by inserting a negative number in the expenses section."*
+ * The register refused it, so there was no way to record money coming back
+ * except by editing the original bill, which rewrites history, or by leaving it
+ * off, which overstates what the property spent.
+ *
+ * Only costs take this. Rent, a charge, a receipt, a deposit and a refund all
+ * stay strictly positive: those are amounts of money moving in a stated
+ * direction, and a negative one of those is a data-entry slip, not a credit.
+ * A refund already has its own record and its own date.
+ *
+ * Zero is still refused on both. A cost of nothing is not a credit and not a
+ * bill; it is a row somebody half-filled in, and it would sit in the register
+ * reconciling to nothing.
+ */
+function requireSignedAmount(value: unknown, field: string): number {
+  const amount = parseMoneyInput(value);
+  if (amount === null) bad(`${field} ${UNREADABLE_AMOUNT}`);
+  if (amount === 0) {
+    bad(`${field} cannot be zero. Enter what was charged, or a negative figure for a credit.`);
+  }
+  if (Math.abs(amount) > 1_000_000_000) bad(`${field} is implausibly large. Please check the figure.`);
+  return amount;
+}
+
 function requirePositiveAmount(value: unknown, field: string): number {
   const amount = parseMoneyInput(value);
   if (amount === null) bad(`${field} ${UNREADABLE_AMOUNT}`);
@@ -3980,7 +4008,9 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
     description: optionalString(body.description ?? existing?.description, 1000),
     unitId: unit?.id ?? '',
     unitNumber: location,
-    amount: requirePositiveAmount(body.amount ?? existing?.amount, 'Expense amount'),
+    // Signed: a credit from a supplier is a cost of less than nothing. See
+    // `requireSignedAmount` for why this is the only kind of amount that is.
+    amount: requireSignedAmount(body.amount ?? existing?.amount, 'Expense amount'),
     currency: requireCurrency(body.currency ?? existing?.currency),
     date,
     dueDate,
@@ -4236,7 +4266,9 @@ function readRecurringFields(db: Database, body: Record<string, unknown>, existi
     description: optionalString(body.description ?? existing?.description, 1000),
     unitId: unit?.id ?? '',
     unitNumber: unit ? unit.number : isNamedLocation ? rawLocation : 'General',
-    amount: requirePositiveAmount(body.amount ?? existing?.amount, 'Usual amount'),
+    // Signed, for the same reason the register is: a standing credit is a real
+    // monthly line, and the run below posts whatever figure it carries.
+    amount: requireSignedAmount(body.amount ?? existing?.amount, 'Usual amount'),
     currency: requireCurrency(body.currency ?? existing?.currency),
     paymentMethod: requireEnum(
       body.paymentMethod ?? existing?.paymentMethod ?? 'Bank Transfer',
@@ -4535,7 +4567,10 @@ app.post(
               description: optionalString(item.description ?? template.description, 1000),
               unitId: template.unitId,
               unitNumber: template.unitNumber,
-              amount: requirePositiveAmount(item.amount ?? template.amount, `Amount for ${template.vendor}`),
+              // The month's figure, which is where Ro met the refusal: the
+              // credit is known when the run is reviewed, not when the template
+              // was set up.
+              amount: requireSignedAmount(item.amount ?? template.amount, `Amount for ${template.vendor}`),
               currency: requireCurrency(item.currency ?? template.currency),
               paymentMethod: template.paymentMethod,
               dueDay: template.dueDay,

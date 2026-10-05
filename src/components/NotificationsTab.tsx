@@ -452,7 +452,7 @@ export default function NotificationsTab({
               </div>
 
               <div className="flex shrink-0 items-center gap-4 sm:flex-col sm:items-end">
-                {item.type !== 'booking' && item.amount > 0 && (
+                {item.type !== 'booking' && item.amount !== 0 && (
                   <div className="text-right">
                     <span className="block font-mono text-[9px] uppercase text-slate-400">
                       {item.severity === 'scheduled' ? 'Due' : item.type === 'expense' ? 'To pay' : 'Outstanding'}

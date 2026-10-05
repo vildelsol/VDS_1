@@ -214,7 +214,7 @@ export default function OperatingStatement({ units, payments, expenses, book, se
     const sheets = statements.map(s => {
       const rows: XlsxCell[][] = [
         ...documentHeader({
-          documentTitle: `Operating Statement, Income and Expenditure, ${REPORT_BOOK_LABELS[book]} (${s.currency})`,
+          documentTitle: `Operating Statement · Income and Expenditure · ${REPORT_BOOK_LABELS[book]} (${s.currency})`,
           period,
           generatedOn: formatDayLabel(today()),
           generatedBy: session.name,
@@ -358,7 +358,7 @@ export default function OperatingStatement({ units, payments, expenses, book, se
         page that gets photocopied and misread.
       */}
       <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 font-mono text-[10px] leading-relaxed text-slate-600">
-        <strong className="uppercase tracking-wider">{REPORT_BOOK_LABELS[book]}</strong>, {REPORT_BOOK_SCOPE[book]}
+        <strong className="uppercase tracking-wider">{REPORT_BOOK_LABELS[book]}</strong>. {REPORT_BOOK_SCOPE[book]}
       </p>
 
       {/* ---------------- how the lines are shown ---------------- */}

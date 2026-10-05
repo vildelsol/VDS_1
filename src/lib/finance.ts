@@ -984,6 +984,26 @@ export function expenseBreakdown(
  * Owner-billed units. Utilities for these are recovered directly from the owner
  * and are excluded from property operating revenue.
  */
+/**
+ * The categories a spend chart should draw.
+ *
+ * Anything that moved, which from 2026-10-05 includes a category that nets to a
+ * supplier credit. Both the management charts and the board pack filtered this
+ * themselves with `> 0`, and so both dropped a credited category from the
+ * picture while every total beside it still counted it.
+ *
+ * It lives here rather than inside a `useMemo` for the reason `stayValueForRate`
+ * does: a rule written inside a component is a rule no test can reach, and this
+ * one had to be wrong in two places at once before anybody would have noticed.
+ *
+ * A category with nothing paid and something still outstanding is deliberately
+ * left out: this answers "what did the period cost", and the outstanding memo is
+ * its own figure elsewhere.
+ */
+export function categoriesWithSpend<T extends { amount: number }>(breakdown: T[]): T[] {
+  return breakdown.filter(row => row.amount !== 0);
+}
+
 export function ownerBilledUnitIds(units: Unit[]): Set<string> {
   return new Set(units.filter(u => u.status === 'owner-occupied' || u.status === 'short-term').map(u => u.id));
 }

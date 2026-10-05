@@ -265,7 +265,17 @@ function auditReports(db, fin, stays, periods) {
           if (isBadNumber(value)) problems.push(`${currency} ${from}..${to}: the ${book} book's ${name} is not a finite number`);
           else if (cents(value) !== Math.round(cents(value))) problems.push(`${currency} ${from}..${to}: the ${book} book's ${name} is not to the cent`);
         }
-        if (s.totalExpenditure < 0) problems.push(`${currency} ${from}..${to}: the ${book} book spent a negative amount`);
+        /*
+         * Deliberately not "expenditure cannot be negative" any more. A period
+         * whose only cost is a supplier credit genuinely spent less than
+         * nothing, and asserting otherwise would have made the credit work
+         * impossible to land. What must still hold is that the figure is real
+         * money and that the parts make the whole, which the checks above and
+         * below do.
+         */
+        if (isBadNumber(s.totalExpenditure)) {
+          problems.push(`${currency} ${from}..${to}: the ${book} book's expenditure is not a finite number`);
+        }
         if (s.internalTransfer < 0) problems.push(`${currency} ${from}..${to}: the ${book} book's internal transfer is negative`);
         if (!near(s.surplus, s.totalIncome - s.totalExpenditure)) {
           problems.push(`${currency} ${from}..${to}: the ${book} book's surplus is not its income less its expenditure`);
@@ -490,6 +500,7 @@ export default async function run({ port, projectRoot }) {
       bookingEdit: 0,
       bookingCancel: 0,
       loose: 0,
+      credit: 0,
       oneOffNative: 0,
       oneOffStray: 0,
       oneOffRefused: 0,
@@ -506,16 +517,24 @@ export default async function run({ port, projectRoot }) {
       const day = dayIn(month, 1 + Math.floor(rand() * 27));
 
       if (roll < 0.26) {
-        /* --- log a cost, in one book or the other --- */
+        /* --- log a cost, in one book or the other, sometimes a credit --- */
         const fund = rand() < 0.4 ? 'ispo' : 'strata';
         const toVilla = rand() < 0.3;
         const paid = rand() < 0.7;
+        /*
+         * One cost in six is a supplier credit. Added 2026-10-05 with the
+         * negative-amount work: the invariants below are the real test of it,
+         * because they are about the books adding up rather than about the
+         * credit itself, and a sign error shows up there as money appearing from
+         * nowhere.
+         */
+        const isCredit = rand() < 0.17;
         const res = await c.post('/api/expenses', {
           category: pick(rand, COST_CATEGORIES),
           vendor: `Vendor ${Math.floor(rand() * 40)}`,
           description: `op ${i}`,
           ...(toVilla ? { unitId: pick(rand, longTerm.concat(shortLet)) } : { unitNumber: pick(rand, ['General', 'Office']) }),
-          amount: money(rand, 500, 90000),
+          amount: isCredit ? -money(rand, 100, 20000) : money(rand, 500, 90000),
           currency: rand() < 0.25 ? 'USD' : 'JMD',
           fund,
           status: paid ? 'paid' : 'pending',
@@ -526,6 +545,7 @@ export default async function run({ port, projectRoot }) {
         if (ok(res)) {
           performed++;
           did[fund === 'ispo' ? 'ispoCost' : 'strataCost']++;
+          if (isCredit) did.credit++;
         } else refused++;
       } else if (roll < 0.32) {
         /* --- take a cost back --- */
@@ -736,7 +756,8 @@ export default async function run({ port, projectRoot }) {
       ['oneOffNative', 40],
       ['oneOffStray', 20],
       ['oneOffRefused', 5],
-      ['ownAccountToggle', 20]
+      ['ownAccountToggle', 20],
+      ['credit', 25]
     ]) {
       T.check(`the run exercised ${what} at least ${atLeast} times (${did[what]})`, did[what] >= atLeast, String(did[what]));
     }

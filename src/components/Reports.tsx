@@ -12,6 +12,7 @@ import {
   Charge,
   ChargeCategory,
   Currency,
+  EXPENSE_FUND_LABELS,
   Expense,
   MANAGING_COMPANY_NAME,
   Payment,
@@ -19,6 +20,7 @@ import {
   Tenancy,
   Unit,
   UtilityReading,
+  fundOf,
   getAllocationLabel,
   getUnitDisplayName
 } from '../types';
@@ -263,6 +265,18 @@ export default function Reports({
         const collected = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
         const billed = chargedInPeriod(bookCharges, currency, mFrom, mTo);
         row[`${currency}_in`] = collected.total;
+        /*
+         * What came in that is never raised as a charge.
+         *
+         * Ro, 2026-10-05, reading the printed monthly movement: *"the USD billed
+         * was 1700, however the amount received is 5400. The received amount is
+         * correct as the system counted short term rentals as well, however,
+         * there is no mention that this was from short term rental."* Billed
+         * counts rent and maintenance charges; Received counts every receipt. A
+         * guest pays on arrival against no charge at all, so the two columns are
+         * answering different questions and the page never said so.
+         */
+        row[`${currency}_booking`] = collected.booking;
         row[`${currency}_out`] = sumMoney([
           expensesInPeriod(expensesForBook(allExpenses, units, book, currency), currency, mFrom, mTo),
           // Same reason as the summary card above: on ISPO's book the
@@ -340,7 +354,27 @@ export default function Reports({
         say(NOTABLE, `${c}: the largest expense category was ${top.category} at ${formatMoney(top.amount, c)} (${top.share}% of ${c} outflows).`);
       }
 
-      if (entry.collected.total > 0 || entry.spent > 0) {
+      /*
+       * Why Received can exceed Billed, said on the page rather than left for
+       * somebody to work out. Only raised when there is actually a gap to
+       * explain, so it does not become a sentence people stop reading.
+       */
+      const unbilled = sumMoney([entry.collected.booking, entry.collected.utility, entry.collected.other]);
+      if (unbilled > 0) {
+        const parts: string[] = [];
+        if (entry.collected.booking > 0) parts.push(`${formatMoney(entry.collected.booking, c)} short-stay rental`);
+        if (entry.collected.utility > 0) parts.push(`${formatMoney(entry.collected.utility, c)} utilities recovered`);
+        if (entry.collected.other > 0) parts.push(`${formatMoney(entry.collected.other, c)} other income`);
+        say(
+          NOTABLE,
+          `${c}: ${formatMoney(unbilled, c)} of what was received is not raised as a charge, so it appears in nothing that is billed: ` +
+            `${parts.join(', ')}. "Billed" counts rent and maintenance only, which is why it can read lower than "Received".`
+        );
+      }
+
+      // `!== 0` on what went out: a period whose costs are all supplier
+      // credits spent less than nothing, and said nothing about it.
+      if (entry.collected.total !== 0 || entry.spent !== 0) {
         say(
           // Spending more than came in is a fact that belongs at the top.
           entry.net < 0 ? URGENT : NOTABLE,
@@ -431,7 +465,9 @@ export default function Reports({
     const period = `${formatDayLabel(from)} to ${formatDayLabel(to)}`;
     const head = (documentTitle: string, span: number) =>
       documentHeader({
-        documentTitle: `${documentTitle}, ${REPORT_BOOK_LABELS[book]}`,
+        // A separator, not a list. The em dash sweep flattened this to a comma
+        // and the sheet read "Expenses, line by line, Everything (both books)".
+        documentTitle: `${documentTitle} · ${REPORT_BOOK_LABELS[book]}`,
         period,
         generatedOn: formatDayLabel(today()),
         generatedBy: session.name,
@@ -498,17 +534,116 @@ export default function Reports({
       ]);
     }
 
-    /* --- 3. what it cost --- */
+    /* --- 3. what it cost, line by line --- */
+
+    /*
+     * Every cost named, not a total per category.
+     *
+     * Ro, 2026-10-05: *"the expenses on the excel sheet needs to itemize all the
+     * expenses, line by line as opposed to grouping them by Payroll, Utilities
+     * etc."* The sheet was one row per category, which is a figure nobody can
+     * check: "Payroll 82,000" cannot be questioned, approved or reconciled
+     * against a bank statement. The same reasoning the Operating Statement was
+     * built on, applied to the workbook the accountant actually opens.
+     *
+     * Taken back costs are left off, because they are in none of the totals and
+     * a line that is not in the total is a line that will not reconcile. The
+     * category subtotals stay, at the foot, after the detail rather than instead
+     * of it.
+     */
+    const costLines = liveExpenses(expenses)
+      .filter(e => {
+        const when = e.status === 'paid' ? e.datePaid || e.date : e.dueDate || e.date;
+        return when >= from && when <= to;
+      })
+      .sort(
+        (a, b) =>
+          a.currency.localeCompare(b.currency) ||
+          (a.status === 'paid' ? a.datePaid || a.date : a.dueDate || a.date).localeCompare(
+            b.status === 'paid' ? b.datePaid || b.date : b.dueDate || b.date
+          ) ||
+          a.vendor.localeCompare(b.vendor)
+      );
+
     const expenseRows: XlsxCell[][] = [
-      ...head('Expenses by category', 5),
-      [cell.header('Currency'), cell.header('Category'), cell.header('Paid', 'right'), cell.header('Outstanding', 'right'), cell.header('Total', 'right')]
+      ...head('Expenses, line by line', 9),
+      [
+        cell.header('Date'),
+        cell.header('Currency'),
+        cell.header('Paid to'),
+        cell.header('What it was for'),
+        cell.header('Category'),
+        cell.header('Allocation'),
+        cell.header('Paid from'),
+        cell.header('Reference'),
+        cell.header('Amount', 'right')
+      ]
     ];
+
+    for (const e of costLines) {
+      const when = e.status === 'paid' ? e.datePaid || e.date : e.dueDate || e.date;
+      expenseRows.push([
+        cell.date(when),
+        cell.text(e.currency),
+        cell.text(e.vendor || 'not recorded'),
+        cell.text(e.description || '-'),
+        cell.text(e.category),
+        cell.text(e.unitId ? getUnitDisplayName(e.unitNumber) : getAllocationLabel(e.unitNumber)),
+        cell.text(EXPENSE_FUND_LABELS[fundOf(e)]),
+        cell.text(e.reference || ''),
+        e.status === 'paid' ? cell.money(e.amount, e.currency) : cell.muted(`${formatMoney(e.amount, e.currency)} (not yet paid)`)
+      ]);
+    }
+
+    if (costLines.length === 0) {
+      expenseRows.push([cell.muted('Nothing was paid or raised in this period.')]);
+    }
+
+    for (const currency of ['JMD', 'USD'] as Currency[]) {
+      const inCurrency = costLines.filter(e => e.currency === currency);
+      if (inCurrency.length === 0) continue;
+      const paid = sumMoney(inCurrency.filter(e => e.status === 'paid').map(e => e.amount));
+      const due = sumMoney(inCurrency.filter(e => e.status !== 'paid').map(e => e.amount));
+      expenseRows.push([cell.blank()]);
+      expenseRows.push([
+        cell.total(`Total paid (${currency})`),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.totalMoney(paid, currency)
+      ]);
+      expenseRows.push([
+        cell.total(`Still outstanding (${currency})`),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.total(''),
+        cell.totalMoney(due, currency)
+      ]);
+    }
+
+    /*
+     * The category totals, kept as a summary *after* the detail. They are what a
+     * council asks for; the lines above are what an accountant checks them with.
+     */
+    expenseRows.push([cell.blank()]);
+    expenseRows.push([cell.section('Summary by category', 9)]);
+    expenseRows.push([
+      cell.header('Currency'),
+      cell.header('Category'),
+      cell.header('Paid', 'right'),
+      cell.header('Outstanding', 'right'),
+      cell.header('Total', 'right')
+    ]);
     for (const entry of summary) {
-      let paidTot = 0;
-      let outTot = 0;
       for (const b of entry.breakdown) {
-        paidTot = round2(paidTot + b.amount);
-        outTot = round2(outTot + b.outstanding);
         expenseRows.push([
           cell.text(entry.currency),
           cell.text(b.category),
@@ -517,26 +652,33 @@ export default function Reports({
           cell.money(round2(b.amount + b.outstanding), entry.currency)
         ]);
       }
-      if (entry.breakdown.length > 0) {
-        expenseRows.push([
-          cell.total(entry.currency),
-          cell.total('Total'),
-          cell.totalMoney(paidTot, entry.currency),
-          cell.totalMoney(outTot, entry.currency),
-          cell.totalMoney(round2(paidTot + outTot), entry.currency)
-        ]);
-      }
     }
+    expenseRows.push([cell.blank()]);
+    expenseRows.push([
+      cell.note(
+        'Costs taken back are not listed and are in none of these totals. A negative amount is a credit from the supplier, and reduces what the period cost.',
+        9
+      )
+    ]);
 
     /* --- 4. month by month --- */
     const monthlyRows: XlsxCell[][] = [
-      ...head('Monthly cash movement', 6),
-      [cell.header('Month'), cell.header('Currency'), cell.header('Billed', 'right'), cell.header('Received', 'right'), cell.header('Paid out', 'right'), cell.header('Net', 'right')]
+      ...head('Monthly cash movement', 7),
+      [
+        cell.header('Month'),
+        cell.header('Currency'),
+        cell.header('Billed', 'right'),
+        cell.header('Received', 'right'),
+        cell.header('of which short-stay', 'right'),
+        cell.header('Paid out', 'right'),
+        cell.header('Net', 'right')
+      ]
     ];
     for (const row of series) {
       for (const currency of ['JMD', 'USD'] as Currency[]) {
         const billed = Number(row[`${currency}_billed`]);
         const received = Number(row[`${currency}_in`]);
+        const booking = Number(row[`${currency}_booking`] || 0);
         const paidOut = Number(row[`${currency}_out`]);
         if (billed === 0 && received === 0 && paidOut === 0) continue;
         monthlyRows.push([
@@ -544,6 +686,7 @@ export default function Reports({
           cell.text(currency),
           cell.money(billed, currency),
           cell.money(received, currency),
+          cell.money(booking, currency),
           cell.money(paidOut, currency),
           cell.money(round2(received - paidOut), currency)
         ]);
@@ -604,8 +747,15 @@ export default function Reports({
       [
         { name: 'Period summary', widths: [12, 18, 18, 18, 18, 16, 24, 20, 18, 16], rows: summaryRows, freezeRows: headerRow, repeatRow: headerRow, landscape: true },
         { name: 'Income received', widths: [12, 16, 16, 16, 16, 16, 18], rows: incomeRows, freezeRows: headerRow, repeatRow: headerRow, landscape: true },
-        { name: 'Expenses', widths: [12, 24, 16, 16, 16], rows: expenseRows, freezeRows: headerRow, repeatRow: headerRow },
-        { name: 'Monthly cash', widths: [18, 12, 16, 16, 16, 16], rows: monthlyRows, freezeRows: headerRow, repeatRow: headerRow },
+        {
+          name: 'Expenses',
+          widths: [14, 10, 28, 36, 18, 20, 22, 18, 16],
+          rows: expenseRows,
+          freezeRows: headerRow,
+          repeatRow: headerRow,
+          landscape: true
+        },
+        { name: 'Monthly cash', widths: [18, 12, 16, 16, 20, 16, 16], rows: monthlyRows, freezeRows: headerRow, repeatRow: headerRow },
         { name: 'Account balances', widths: [18, 14, 26, 12, 18, 18, 18, 14], rows: balanceSheet, freezeRows: headerRow, repeatRow: headerRow, landscape: true }
       ],
       `VDS Management Report ${book === 'everything' ? 'Both books' : REPORT_BOOK_LABELS[book]} ${from} to ${to}.xlsx`
@@ -768,8 +918,12 @@ export default function Reports({
                             <span className="text-slate-600">{row.category}</span>
                             <span className="font-mono font-medium">
                               {formatMoney(row.amount, entry.currency)}
-                              {row.outstanding > 0 && (
-                                <span className="text-amber-600"> · {formatMoney(row.outstanding, entry.currency)} due</span>
+                              {row.outstanding !== 0 && (
+                                <span className="text-amber-600">
+                                  {' '}
+                                  · {formatMoney(row.outstanding, entry.currency)}
+                                  {row.outstanding < 0 ? ' credit due back' : ' due'}
+                                </span>
                               )}
                               <span className="text-slate-400"> ({row.share}%)</span>
                             </span>
@@ -1218,6 +1372,7 @@ function StatementDocument({
                 <th className="p-2">Currency</th>
                 <th className="p-2 text-right">Billed</th>
                 <th className="p-2 text-right">Received</th>
+                <th className="p-2 text-right">of which short-stay</th>
                 <th className="p-2 text-right">Paid out</th>
                 <th className="p-2 text-right">Net</th>
               </tr>
@@ -1232,6 +1387,7 @@ function StatementDocument({
                       <td className="p-2">{c}</td>
                       <td className="p-2 text-right">{formatMoney(Number(row[`${c}_billed`]), c)}</td>
                       <td className="p-2 text-right">{formatMoney(Number(row[`${c}_in`]), c)}</td>
+                      <td className="p-2 text-right">{formatMoney(Number(row[`${c}_booking`] || 0), c)}</td>
                       <td className="p-2 text-right">{formatMoney(Number(row[`${c}_out`]), c)}</td>
                       <td className="p-2 text-right font-semibold">{formatMoney(round2(Number(row[`${c}_in`]) - Number(row[`${c}_out`])), c)}</td>
                     </tr>
@@ -1240,6 +1396,16 @@ function StatementDocument({
             </tbody>
           </table>
         </TableScroller>
+        {/*
+          The two columns answer different questions, and the page now says so.
+          A council reading "billed 1,700, received 5,400" with no explanation
+          concludes the billing is wrong.
+        */}
+        <p className="mt-1 text-[9px] leading-relaxed text-slate-600">
+          <strong>Billed</strong> is rent and maintenance charges raised in the month. <strong>Received</strong> is every
+          receipt banked in it. Short-stay rental, utilities recovered and other income are never raised as a charge, so
+          they appear under Received and never under Billed. That is why Received can be the larger figure.
+        </p>
       </section>
 
       <section className="mb-6 break-inside-avoid">
@@ -1350,7 +1516,7 @@ function StatementDocument({
                           <tr key={b.category}>
                             <td className="p-2 font-sans">{b.category}</td>
                             <td className="p-2 text-right">{formatMoney(b.amount, s.currency)}</td>
-                            <td className="p-2 text-right">{b.outstanding > 0 ? formatMoney(b.outstanding, s.currency) : '-'}</td>
+                            <td className="p-2 text-right">{b.outstanding !== 0 ? formatMoney(b.outstanding, s.currency) : '-'}</td>
                             <td className="p-2 text-right font-semibold">{formatMoney(round2(b.amount + b.outstanding), s.currency)}</td>
                           </tr>
                         ))}

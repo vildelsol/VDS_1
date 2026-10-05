@@ -23,6 +23,7 @@ import {
   chargedInPeriod,
   collectedInPeriod,
   collectionRate,
+  categoriesWithSpend,
   expenseBreakdown,
   expensesInPeriod,
   strataExpenses,
@@ -90,7 +91,9 @@ export default function BoardPack({
         const mTo = monthEnd(month) > to ? to : monthEnd(month);
         const byCategory: Record<string, number> = {};
         for (const row of expenseBreakdown(strataCosts, currency, mFrom, mTo)) {
-          if (row.amount > 0) byCategory[row.category] = row.amount;
+          // See the note in Charts.tsx: a category that nets to a credit is
+          // still a category, and `> 0` hid it from the pack the board reads.
+          if (row.amount !== 0) byCategory[row.category] = row.amount;
         }
         const collectedInMonth = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
         return {
@@ -118,7 +121,7 @@ export default function BoardPack({
           )
         );
 
-      const breakdown = expenseBreakdown(strataCosts, currency, from, to).filter(row => row.amount > 0);
+      const breakdown = categoriesWithSpend(expenseBreakdown(strataCosts, currency, from, to));
 
       return {
         currency,

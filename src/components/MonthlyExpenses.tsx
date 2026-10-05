@@ -200,7 +200,12 @@ export default function MonthlyExpenses({
   });
 
   const selected = rows.filter(r => r.include);
-  const readyExtras = extras.filter(x => x.vendor.trim() && Number(x.amount) > 0);
+  /*
+   * Ready to post: a payee and a figure that is not nothing. The test was
+   * `> 0`, which silently dropped a supplier credit from the run - it stayed on
+   * screen reading "Needs a payee and an amount" while both were filled in.
+   */
+  const readyExtras = extras.filter(x => x.vendor.trim() && Number.isFinite(Number(x.amount)) && Number(x.amount) !== 0);
 
   /** Run totals, kept per currency — the two are never added together. */
   const totals = useMemo(() => {
@@ -366,9 +371,8 @@ export default function MonthlyExpenses({
                             <span className="text-[11px] text-slate-400">{row.template.currency}</span>
                             <input
                               type="number"
-                              min="0.01"
                               step="0.01"
-                              aria-label={`Amount for ${row.template.vendor}`}
+                              aria-label={`Amount for ${row.template.vendor} (a credit is a negative figure)`}
                               value={row.amount}
                               disabled={!row.include || !canEdit}
                               onChange={e => setOverride(row.template.id, { amount: e.target.value })}
@@ -493,10 +497,9 @@ export default function MonthlyExpenses({
                           </select>
                           <input
                             type="number"
-                            min="0.01"
                             step="0.01"
                             placeholder="0.00"
-                            aria-label="Amount for the added item"
+                            aria-label="Amount for the added item (a credit is a negative figure)"
                             value={extra.amount}
                             onChange={e =>
                               setExtras(prev => prev.map(x => (x.key === extra.key ? { ...x, amount: e.target.value } : x)))
@@ -507,7 +510,11 @@ export default function MonthlyExpenses({
                       </td>
                       <td className="px-4 py-3">
                         <span className="text-[11px] text-slate-500">
-                          {extra.vendor.trim() && Number(extra.amount) > 0 ? 'One-off, will be raised' : 'Needs a payee and an amount'}
+                          {extra.vendor.trim() && Number.isFinite(Number(extra.amount)) && Number(extra.amount) !== 0
+                            ? Number(extra.amount) < 0
+                              ? 'One-off credit, will be raised'
+                              : 'One-off, will be raised'
+                            : 'Needs a payee and an amount'}
                         </span>
                       </td>
                     </tr>
@@ -927,8 +934,13 @@ function RecurringForm({
         </Field>
 
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Usual amount" htmlFor="rf-amount" required hint="A starting figure, correct it each month.">
-            <input id="rf-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
+          <Field
+            label="Usual amount"
+            htmlFor="rf-amount"
+            required
+            hint="A starting figure, correct it each month. A credit is a negative figure."
+          >
+            <input id="rf-amount" type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
           </Field>
           <Field label="Currency" htmlFor="rf-cur" required>
             <select id="rf-cur" value={currency} onChange={e => setCurrency(e.target.value as Currency)} className={inputClass}>
