@@ -144,7 +144,7 @@ export default function MonthlyExpenses({
   const [removing, setRemoving] = useState<RecurringExpense | null>(null);
 
   /** Per-template overrides for this run: whether to post it, and for how much. */
-  const [overrides, setOverrides] = useState<Record<string, { include: boolean; amount: string }>>({});
+  const [overrides, setOverrides] = useState<Record<string, { include: boolean; amount: string; invoiceDate: string }>>({});
   const [extras, setExtras] = useState<ExtraLine[]>([]);
 
   const active = useMemo(
@@ -195,7 +195,13 @@ export default function MonthlyExpenses({
       posted,
       recalled,
       include: posted ? false : (override?.include ?? true),
-      amount: override?.amount ?? String(t.amount)
+      amount: override?.amount ?? String(t.amount),
+      /*
+       * The supplier's date for this month's bill. Blank by default, never
+       * guessed: this is where the utility invoices enter the books, and a date
+       * filled in for the person is a date nobody checked.
+       */
+      invoiceDate: override?.invoiceDate ?? ''
     };
   });
 
@@ -234,9 +240,13 @@ export default function MonthlyExpenses({
   const runTouchesBothBooks =
     (runByFund.ispo.JMD > 0 || runByFund.ispo.USD > 0) && (runByFund.strata.JMD > 0 || runByFund.strata.USD > 0);
 
-  const setOverride = (id: string, patch: Partial<{ include: boolean; amount: string }>) => {
+  const setOverride = (id: string, patch: Partial<{ include: boolean; amount: string; invoiceDate: string }>) => {
     setOverrides(prev => {
-      const current = prev[id] ?? { include: true, amount: String(templates.find(t => t.id === id)?.amount ?? '') };
+      const current = prev[id] ?? {
+        include: true,
+        amount: String(templates.find(t => t.id === id)?.amount ?? ''),
+        invoiceDate: ''
+      };
       return { ...prev, [id]: { ...current, ...patch } };
     });
   };
@@ -255,7 +265,11 @@ export default function MonthlyExpenses({
     setError('');
     try {
       const items = [
-        ...selected.map(r => ({ recurringId: r.template.id, amount: Number(r.amount) })),
+        ...selected.map(r => ({
+          recurringId: r.template.id,
+          amount: Number(r.amount),
+          ...(r.invoiceDate ? { invoiceDate: r.invoiceDate } : {})
+        })),
         ...readyExtras.map(x => ({
           category: x.category,
           vendor: x.vendor.trim(),
@@ -337,6 +351,7 @@ export default function MonthlyExpenses({
                     <th className="px-4 py-3 text-left">Cost</th>
                     <th className="px-4 py-3 text-left">Allocation</th>
                     <th className="px-4 py-3 text-right">Amount for {formatMonthLabel(month)}</th>
+                    <th className="px-4 py-3 text-left">Invoice date</th>
                     <th className="px-4 py-3 text-left">Status</th>
                   </tr>
                 </thead>
@@ -379,6 +394,28 @@ export default function MonthlyExpenses({
                               className={`${monoInputClass} w-32 shrink-0 text-right`}
                             />
                           </div>
+                        )}
+                      </td>
+                      {/*
+                        The supplier's date for this month's bill, typed while
+                        the bill is in front of you. Ro, 2026-10-08: without it a
+                        September invoice posted in October reads as October to
+                        whoever reconciles the month.
+                      */}
+                      <td className="px-4 py-3">
+                        {row.posted ? (
+                          <span className="font-mono text-[11px] text-slate-500">
+                            {row.posted.invoiceDate ? formatDayLabel(row.posted.invoiceDate) : '-'}
+                          </span>
+                        ) : (
+                          <input
+                            type="date"
+                            aria-label={`Invoice date for ${row.template.vendor}`}
+                            value={row.invoiceDate}
+                            disabled={!row.include || !canEdit}
+                            onChange={e => setOverride(row.template.id, { invoiceDate: e.target.value })}
+                            className={`${monoInputClass} w-36 shrink-0`}
+                          />
                         )}
                       </td>
                       <td className="px-4 py-3">

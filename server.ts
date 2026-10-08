@@ -3998,6 +3998,17 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
   // written from now on. Only the exceptions are marked.
   const fund = requireEnum(body.fund ?? existing?.fund ?? 'strata', EXPENSE_FUNDS, 'Which pot pays for this') as ExpenseFund;
   const date = requireDay(body.date ?? existing?.date ?? today(), 'Expense date');
+  /*
+   * The supplier's own date, when it is known. Optional on purpose: it is a
+   * reference for reconciliation, not something to block a cost being recorded
+   * over, and no existing cost has one. Clearing it is explicit - an empty
+   * string removes it rather than leaving the old one in place.
+   */
+  const invoiceDateRaw = body.invoiceDate ?? existing?.invoiceDate;
+  const invoiceDate =
+    invoiceDateRaw === undefined || invoiceDateRaw === null || invoiceDateRaw === ''
+      ? undefined
+      : requireDay(invoiceDateRaw, 'Invoice date');
   const dueDate = body.dueDate || existing?.dueDate ? requireDay(body.dueDate ?? existing?.dueDate, 'Due date') : date;
   const datePaidRaw = body.datePaid ?? existing?.datePaid;
   const datePaid = status === 'paid' ? requireDay(datePaidRaw || date, 'Date paid') : undefined;
@@ -4013,6 +4024,7 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
     amount: requireSignedAmount(body.amount ?? existing?.amount, 'Expense amount'),
     currency: requireCurrency(body.currency ?? existing?.currency),
     date,
+    invoiceDate,
     dueDate,
     datePaid,
     paymentMethod: requireEnum(body.paymentMethod ?? existing?.paymentMethod ?? 'Bank Transfer', PAYMENT_METHODS, 'Payment method') as PaymentMethod,
@@ -4554,6 +4566,16 @@ app.post(
 
       for (const item of items) {
         if (item.skip === true) continue;
+        /*
+         * The supplier's date for this month's bill, typed on the run alongside
+         * the amount. This is where the utility invoices actually enter the
+         * books, so leaving it to a later edit would have missed the case Ro
+         * raised it for.
+         */
+        const itemInvoiceDate =
+          item.invoiceDate === undefined || item.invoiceDate === null || item.invoiceDate === ''
+            ? undefined
+            : requireDay(item.invoiceDate, 'Invoice date');
         const recurringId = String(item.recurringId ?? '').trim();
         const template = recurringId ? db.recurringExpenses.find(t => t.id === recurringId) : undefined;
         if (recurringId && !template) bad('One of the costs being posted no longer exists. Reload and try again.');
@@ -4619,6 +4641,7 @@ app.post(
           // Dated to the month it belongs to, not the day it was typed, so a run
           // posted late still falls in the right period on every report.
           date: dueDate,
+          ...(itemInvoiceDate ? { invoiceDate: itemInvoiceDate } : {}),
           dueDate,
           paymentMethod: fields.paymentMethod,
           status: 'pending',

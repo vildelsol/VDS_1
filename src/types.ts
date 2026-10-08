@@ -671,6 +671,18 @@ export interface UtilityReading {
   paymentId?: string;
 }
 
+/**
+ * The date to show as a cost's invoice date, and whether it is really one.
+ *
+ * A register that silently falls back to the logged date tells an accountant the
+ * supplier dated a bill on the day the office happened to type it up. So the
+ * fallback is reported rather than hidden, and every screen that shows it marks
+ * it.
+ */
+export function invoiceDateOf(expense: Pick<Expense, 'date' | 'invoiceDate'>): { date: string; recorded: boolean } {
+  return expense.invoiceDate ? { date: expense.invoiceDate, recorded: true } : { date: expense.date, recorded: false };
+}
+
 export type ExpenseCategory =
   | 'Maintenance'
   | 'Security'
@@ -766,6 +778,26 @@ export interface Expense {
   amount: number;
   currency: Currency;
   date: string; // YYYY-MM-DD (logged date)
+  /**
+   * The date the supplier put on the bill, which is not the date anybody here
+   * typed it in or paid it.
+   *
+   * Ro, 2026-10-08: *"the date column that is shown represents the date paid,
+   * not the logged date... this creates some confusion as an accountant or
+   * anyone reading could mistake the date shown to be the date of the invoice...
+   * the date could confuse her thinking this is an October invoice when in truth
+   * it is a September invoice."*
+   *
+   * Optional, and deliberately a **new** field rather than a relabelling of
+   * `date`. Every cost written before this carries the day it was entered in
+   * `date`, and calling that the invoice date would restate the whole register:
+   * a September bill typed up in October would start claiming the supplier dated
+   * it in October, which is the fault being fixed, written backwards.
+   *
+   * Read it through `invoiceDateOf`, which says whether it is the real thing or
+   * the logged date standing in.
+   */
+  invoiceDate?: string;
   dueDate?: string;
   datePaid?: string;
   paymentMethod?: PaymentMethod;

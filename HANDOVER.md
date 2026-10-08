@@ -53,7 +53,7 @@ next session from inside `pm-app`.
   it. The account's Actions storage quota is still full; this repo holds only one 34MB artifact and the
   same binary is attached permanently to the v1.12.0 release, so something in another repo is holding
   it.
-- **2,019 automated tests pass** (1,982 at v1.13.1, plus `supplier-credits` and the credits now running inside `reports-2000`). Earlier: 1,982 (1,871 before that session, plus `report-books`,
+- **2,038 automated tests pass** (2,019 at v1.14.0, plus `invoice-dates`). Earlier: 2,019 (1,982 at v1.13.1, plus `supplier-credits` and the credits now running inside `reports-2000`). Earlier: 1,982 (1,871 before that session, plus `report-books`,
   `short-stay-deposits` and a new **2,000-operation `reports-2000`** run over the book filters, the
   deposits and the charges). Six mutations run against the new guards, six killed. Typecheck and
   build clean, and the screens were driven signed in.
@@ -146,6 +146,58 @@ next session from inside `pm-app`.
   — v1.8.3 (version number on screen, docs), v1.8.4 (the migration billing bug), v1.8.5 (tenant name
   intent), v1.9.0 (ownership history + tenant-removal intent). **The HP was running v1.9.0 as of
   2026-09-01 and needs v1.12.0.** Every earlier release is superseded; install the latest only.
+
+## Session of 2026-10-08 — the date on the supplier's bill
+
+🟡 **Uncommitted on `main`.** Tests → **2,038, 0 failed.** Typecheck and build clean. Driven on a real
+signed-in screen, and the exported workbook inflated to read the sheet rather than trusting it.
+
+Ro: *"the date column that is shown represents the date paid, not the logged date which would be the
+date the invoice was printed, logged into the system or date received... an accountant or anyone
+reading could mistake the date shown to be the date of the invoice... the date could confuse her
+thinking this is an October invoice when in truth it is a September invoice."*
+
+### What the register actually held
+
+Three dates, none of them the supplier's: a **logged date** defaulting to whenever somebody typed it
+up, an optional **due date**, and the **date paid**. The column showed `datePaid || date`, so a
+September electricity bill settled on 3 October read **3 Oct** with nothing on the record to say
+otherwise. The meter-reading side has a `billingPeriod`, but that is for recharging owners and has
+nothing to do with the supplier's invoice.
+
+### A new field, not a renaming
+
+`Expense.invoiceDate`, optional, read through `invoiceDateOf` which reports **whether it is real or
+the logged date standing in**. Relabelling `date` would have been less work and would have restated
+the whole register: every cost written before this carries the day the office typed it up, and calling
+that the invoice date makes a September bill claim October — the fault being fixed, written backwards.
+
+Where none was recorded, the register shows the logged date and marks it *"logged, not invoiced"*, and
+the workbook writes *"(logged)"* beside it. Nothing is ever passed off as the supplier's date.
+
+**Scope, sort and output all as Ro chose:** every cost rather than Utilities only, because a payroll
+or contractor bill is dated too and a field that exists on one category is a rule people trip over;
+the register sorts and filters on the invoice date, which is how somebody works through a month's
+bills, and the From/To filter is relabelled to say so; both the printed register and the itemised
+Excel sheet carry Invoice date and Paid as separate columns.
+
+Set on the expense form, and **on the monthly run**, which is where the utility bills actually enter
+the books. Leaving it to a later edit would have missed the case it was asked for.
+
+### What it deliberately does not change
+
+**Reporting stays cash basis.** A cost counts when it is paid, so the surplus reconciles to the bank.
+The invoice date is a reference for whoever is reconciling, not a reporting date, and reporting by it
+would be accrual accounting and a far larger change. `test/invoice-dates.test.mjs` asserts this
+directly: the September bill paid in October is still counted in October, and the month it was dated
+still counts only what was paid in it.
+
+### Tests
+
+New `test/invoice-dates.test.mjs` (19). **Two mutations run, two killed:** the run dropping the typed
+date (1 death), and the fallback claiming to be a real invoice date (1).
+
+---
 
 ## Session of 2026-10-05 — supplier credits, itemised costs, and where the money came from
 

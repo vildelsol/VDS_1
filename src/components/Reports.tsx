@@ -22,6 +22,7 @@ import {
   UtilityReading,
   fundOf,
   getAllocationLabel,
+  invoiceDateOf,
   getUnitDisplayName
 } from '../types';
 import {
@@ -566,9 +567,10 @@ export default function Reports({
       );
 
     const expenseRows: XlsxCell[][] = [
-      ...head('Expenses, line by line', 9),
+      ...head('Expenses, line by line', 10),
       [
-        cell.header('Date'),
+        cell.header('Invoice date'),
+        cell.header('Paid'),
         cell.header('Currency'),
         cell.header('Paid to'),
         cell.header('What it was for'),
@@ -581,9 +583,13 @@ export default function Reports({
     ];
 
     for (const e of costLines) {
-      const when = e.status === 'paid' ? e.datePaid || e.date : e.dueDate || e.date;
+      const invoiced = invoiceDateOf(e);
       expenseRows.push([
-        cell.date(when),
+        // The supplier's date where it is known, and the logged date marked as a
+        // stand-in where it is not. An accountant reconciling a month needs to
+        // know which of the two she is reading.
+        invoiced.recorded ? cell.date(invoiced.date) : cell.muted(`${formatDayLabel(invoiced.date)} (logged)`),
+        e.datePaid ? cell.date(e.datePaid) : cell.muted('not yet'),
         cell.text(e.currency),
         cell.text(e.vendor || 'not recorded'),
         cell.text(e.description || '-'),
@@ -605,28 +611,9 @@ export default function Reports({
       const paid = sumMoney(inCurrency.filter(e => e.status === 'paid').map(e => e.amount));
       const due = sumMoney(inCurrency.filter(e => e.status !== 'paid').map(e => e.amount));
       expenseRows.push([cell.blank()]);
-      expenseRows.push([
-        cell.total(`Total paid (${currency})`),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.totalMoney(paid, currency)
-      ]);
-      expenseRows.push([
-        cell.total(`Still outstanding (${currency})`),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.totalMoney(due, currency)
-      ]);
+      const spacer = () => [cell.total(''), cell.total(''), cell.total(''), cell.total(''), cell.total(''), cell.total(''), cell.total(''), cell.total('')];
+      expenseRows.push([cell.total(`Total paid (${currency})`), ...spacer(), cell.totalMoney(paid, currency)]);
+      expenseRows.push([cell.total(`Still outstanding (${currency})`), ...spacer(), cell.totalMoney(due, currency)]);
     }
 
     /*
@@ -634,7 +621,7 @@ export default function Reports({
      * council asks for; the lines above are what an accountant checks them with.
      */
     expenseRows.push([cell.blank()]);
-    expenseRows.push([cell.section('Summary by category', 9)]);
+    expenseRows.push([cell.section('Summary by category', 10)]);
     expenseRows.push([
       cell.header('Currency'),
       cell.header('Category'),
@@ -656,8 +643,9 @@ export default function Reports({
     expenseRows.push([cell.blank()]);
     expenseRows.push([
       cell.note(
-        'Costs taken back are not listed and are in none of these totals. A negative amount is a credit from the supplier, and reduces what the period cost.',
-        9
+        'Costs taken back are not listed and are in none of these totals. A negative amount is a credit from the supplier, and reduces what the period cost. ' +
+          'Where no invoice date was recorded the date this was logged here is shown and marked; it is not the supplier\u2019s date.',
+        10
       )
     ]);
 
@@ -749,7 +737,7 @@ export default function Reports({
         { name: 'Income received', widths: [12, 16, 16, 16, 16, 16, 18], rows: incomeRows, freezeRows: headerRow, repeatRow: headerRow, landscape: true },
         {
           name: 'Expenses',
-          widths: [14, 10, 28, 36, 18, 20, 22, 18, 16],
+          widths: [16, 14, 10, 28, 36, 18, 20, 22, 18, 16],
           rows: expenseRows,
           freezeRows: headerRow,
           repeatRow: headerRow,

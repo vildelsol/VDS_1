@@ -22,6 +22,7 @@ import {
   UtilityReading,
   fundOf,
   getAllocationLabel,
+  invoiceDateOf,
   getUnitDisplayName
 } from '../types';
 import { utilitiesForUnit } from '../lib/finance';
@@ -503,8 +504,17 @@ function ExpensesPanel({
       .filter(e => (statusFilter === 'all' ? e.status !== 'void' : e.status === statusFilter))
       .filter(e => categoryFilter === 'all' || e.category === categoryFilter)
       .filter(e => fundFilter === 'all' || fundOf(e) === fundFilter)
-      .filter(e => !fromDate || (e.datePaid || e.date) >= fromDate)
-      .filter(e => !toDate || (e.datePaid || e.date) <= toDate)
+      /*
+       * Filtered and sorted on the invoice date, which is how somebody works
+       * through a month's bills. It read the paid date, so asking for September
+       * returned the bills whose money moved in September rather than the bills
+       * September was billed for - and those are different piles.
+       *
+       * Where no invoice date was recorded the logged date stands in, and the
+       * column marks it, so a row is never silently dated by the wrong thing.
+       */
+      .filter(e => !fromDate || invoiceDateOf(e).date >= fromDate)
+      .filter(e => !toDate || invoiceDateOf(e).date <= toDate)
       .filter(e =>
         !needle
           ? true
@@ -513,7 +523,7 @@ function ExpensesPanel({
             e.reference.toLowerCase().includes(needle) ||
             e.unitNumber.toLowerCase().includes(needle)
       )
-      .sort((a, b) => (b.datePaid || b.date).localeCompare(a.datePaid || a.date));
+      .sort((a, b) => invoiceDateOf(b).date.localeCompare(invoiceDateOf(a).date));
   }, [expenses, search, statusFilter, categoryFilter, fundFilter, fromDate, toDate]);
 
   /*
@@ -565,10 +575,11 @@ function ExpensesPanel({
           subtitle={`${rows.length} expense${rows.length === 1 ? '' : 's'}`}
           generatedBy={generatedBy}
           onClose={() => setPrinting(false)}
-          headers={['Date', 'Vendor', 'Category', 'Paid from', 'Allocation', 'Reference', 'Status', 'Amount']}
-          alignRight={[7]}
+          headers={['Invoice date', 'Paid', 'Vendor', 'Category', 'Paid from', 'Allocation', 'Reference', 'Status', 'Amount']}
+          alignRight={[8]}
           rows={rows.map(e => [
-            formatDayLabel(e.datePaid || e.date),
+            `${formatDayLabel(invoiceDateOf(e).date)}${invoiceDateOf(e).recorded ? '' : ' (logged)'}`,
+            e.datePaid ? formatDayLabel(e.datePaid) : '-',
             e.vendor,
             e.category,
             fundOf(e) === 'ispo' ? MANAGING_COMPANY_NAME : 'Strata',
@@ -621,10 +632,10 @@ function ExpensesPanel({
             ))}
           </select>
         </Field>
-        <Field label="From" htmlFor="ex-from">
+        <Field label="Invoice date from" htmlFor="ex-from" hint="Filters on the supplier's date, not the day it was paid.">
           <input id="ex-from" type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className={monoInputClass} />
         </Field>
-        <Field label="To" htmlFor="ex-to">
+        <Field label="Invoice date to" htmlFor="ex-to">
           <input id="ex-to" type="date" value={toDate} onChange={e => setToDate(e.target.value)} className={monoInputClass} />
         </Field>
       </div>
@@ -670,7 +681,8 @@ function ExpensesPanel({
             <table className="w-full min-w-[900px] border-collapse text-left text-xs">
               <thead>
                 <tr className={tableHeadRowClass}>
-                  <th scope="col" className="p-4">Date</th>
+                  <th scope="col" className="p-4">Invoice date</th>
+                  <th scope="col" className="p-4">Paid</th>
                   <th scope="col" className="p-4">Vendor</th>
                   <th scope="col" className="p-4">Category</th>
                   <th scope="col" className="p-4">Paid from</th>
@@ -684,7 +696,20 @@ function ExpensesPanel({
               <tbody className="divide-y divide-slate-50">
                 {rows.map(e => (
                   <tr key={e.id} className={e.status === 'void' ? 'bg-slate-50/60 text-slate-400' : 'hover:bg-slate-50/50'}>
-                    <td className="p-4 font-mono text-[11px] text-slate-500">{formatDayLabel(e.datePaid || e.date)}</td>
+                    <td className="p-4 font-mono text-[11px] text-slate-500">
+                      {formatDayLabel(invoiceDateOf(e).date)}
+                      {!invoiceDateOf(e).recorded && (
+                        <span
+                          className="block text-[9px] text-slate-400"
+                          title="No invoice date was recorded, so the date this was logged is shown instead."
+                        >
+                          logged, not invoiced
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-4 font-mono text-[11px] text-slate-500">
+                      {e.datePaid ? formatDayLabel(e.datePaid) : <span className="text-slate-300">not yet</span>}
+                    </td>
                     <td className="p-4">
                       <p className="font-medium text-slate-900">{e.vendor}</p>
                       {e.description && <p className="max-w-xs truncate text-[10px] text-slate-400">{e.description}</p>}
@@ -1037,6 +1062,12 @@ function ExpenseForm({
   const [amount, setAmount] = useState(expense ? String(expense.amount) : '');
   const [currency, setCurrency] = useState<Currency>(expense?.currency || 'JMD');
   const [date, setDate] = useState(expense?.date || today());
+  /*
+   * Blank by default, never today. A date filled in for the person is a date
+   * nobody checked, and this one goes in front of an accountant as a statement
+   * about what the supplier wrote.
+   */
+  const [invoiceDate, setInvoiceDate] = useState(expense?.invoiceDate || '');
   const [dueDate, setDueDate] = useState(expense?.dueDate || today());
   const [status, setStatus] = useState<Expense['status']>(expense?.status || 'paid');
   const [fund, setFund] = useState<ExpenseFund>(expense ? fundOf(expense) : 'strata');
@@ -1062,6 +1093,7 @@ function ExpenseForm({
         amount: Number(amount),
         currency,
         date,
+        invoiceDate,
         dueDate,
         status,
         datePaid: status === 'paid' ? datePaid : undefined,
@@ -1154,10 +1186,32 @@ function ExpenseForm({
           </Field>
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
-          <Field label="Logged date" htmlFor="ef-date" required>
+        {/*
+          The supplier's own date, asked for separately from the day this was
+          typed in. Ro, 2026-10-08: a September invoice paid in October read as
+          October everywhere, and an accountant reconciling the month has no way
+          to tell which it was.
+        */}
+        <div className="grid grid-cols-2 gap-3">
+          <Field
+            label="Invoice date"
+            htmlFor="ef-invoice"
+            hint="The date on the supplier's bill. Leave blank if the bill carries none."
+          >
+            <input
+              id="ef-invoice"
+              type="date"
+              value={invoiceDate}
+              onChange={e => setInvoiceDate(e.target.value)}
+              className={monoInputClass}
+            />
+          </Field>
+          <Field label="Logged date" htmlFor="ef-date" required hint="When this was entered here, not the supplier's date.">
             <input id="ef-date" type="date" value={date} onChange={e => setDate(e.target.value)} required className={monoInputClass} />
           </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
           <Field label="Due date" htmlFor="ef-due">
             <input id="ef-due" type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className={monoInputClass} />
           </Field>
