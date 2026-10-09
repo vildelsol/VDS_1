@@ -43,9 +43,12 @@ next session from inside `pm-app`.
   The dangling `v1.15.0` tag was deleted and re-cut on the fixed commit rather than left behind as a
   second tag with nothing under it — it had published no `.exe`, so nothing was ever downloadable from
   it. See the note on v1.13.0 for why a tag that *has* published is never re-pointed.
-- ✅ **v1.15.0 is the current release** (2026-10-09, tag `v1.15.0`) — the invoice date, recorded and
-  shown apart from the date paid, so a September bill settled in October no longer reads as October.
-  **2,038 tests.** It contains everything in v1.14.0 below.
+- ✅ **v1.15.0 is the current release** (published 2026-10-09 16:42 UTC, tag `v1.15.0` on `d3e66f3`,
+  `Villaggio-Del-Sol.exe` **96,256,000 bytes**, run `37957451042` green in 29m35s, every gate passed)
+  — the invoice date, recorded and shown apart from the date paid, so a September bill settled in
+  October no longer reads as October. **2,038 tests.** It contains everything in v1.14.0 below.
+  ⚠️ **These two cannot be told apart by file size: v1.14.0 was 96,252,416 bytes, 3,584 bytes
+  smaller.** Confirm the version from the console line or `/api/health`, never the sidebar.
 - **v1.14.0** (2026-10-05, tag `v1.14.0`) — supplier credits as negative
   costs, the itemised expense sheet in the workbook, and the short-stay column that explains why
   Received can exceed Billed. **2,019 tests.** It contains everything in v1.13.1 below.
