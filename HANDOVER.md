@@ -26,7 +26,10 @@ next session from inside `pm-app`.
 
 ## State right now
 
-- ✅ **v1.14.0 is the current release** (2026-10-05, tag `v1.14.0`) — supplier credits as negative
+- ✅ **v1.15.0 is the current release** (2026-10-09, tag `v1.15.0`) — the invoice date, recorded and
+  shown apart from the date paid, so a September bill settled in October no longer reads as October.
+  **2,038 tests.** It contains everything in v1.14.0 below.
+- **v1.14.0** (2026-10-05, tag `v1.14.0`) — supplier credits as negative
   costs, the itemised expense sheet in the workbook, and the short-stay column that explains why
   Received can exceed Billed. **2,019 tests.** It contains everything in v1.13.1 below.
 - **v1.13.1** (published 2026-09-28 20:54 UTC, tag `v1.13.1` on `0fb6007`,
@@ -149,7 +152,7 @@ next session from inside `pm-app`.
 
 ## Session of 2026-10-08 — the date on the supplier's bill
 
-🟡 **Uncommitted on `main`.** Tests → **2,038, 0 failed.** Typecheck and build clean. Driven on a real
+✅ **Released as v1.15.0.** Tests → **2,038, 0 failed.** Typecheck and build clean. Driven on a real
 signed-in screen, and the exported workbook inflated to read the sheet rather than trusting it.
 
 Ro: *"the date column that is shown represents the date paid, not the logged date which would be the
@@ -3418,7 +3421,8 @@ ahead of the suite for a faster, clearer failure. `npm ci` was already installin
 
 ### Where to pick up
 
-⚠️ **Install v1.14.0.** It is the current release and contains everything before it: supplier
+⚠️ **Install v1.15.0.** It is the current release and contains everything before it: the invoice
+date kept apart from the date paid on the register, the printed list and the Excel sheet, supplier
 credits recorded as negative costs, the expense sheet itemised line by line in the Excel export, the
 short-stay column that explains why Received can read higher than Billed, the
 Strata / ISPO / Everything book filter on Operational Reports, reservation deposits reaching the
@@ -3445,14 +3449,14 @@ needs nothing.
 shortfall report and the ISPO statement's contribution line both depend on it, and nothing infers it
 from an owner's name.
 
-**1. Install v1.14.0 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
+**1. Install v1.15.0 on the HP. It was last confirmed on v1.9.0.** Download `Villaggio-Del-Sol.exe` from
 `https://github.com/vildelsol/VDS_1/releases/latest`, close the running program, drop the new file
 **in the same folder**, replacing the old one, and double-click it.
 
 **Then confirm it took — and confirm it the right way.** The v1.10.0 upgrade was correct and looked
 like a failure because the only check available read from a browser cache. In order of trust:
 
-   - **The black console window** now prints `Villaggio Del Sol operations server v1.14.0 running
+   - **The black console window** now prints `Villaggio Del Sol operations server v1.15.0 running
      at …` and, underneath, `Records folder: …`. This is the program speaking; nothing caches it.
      **Read the folder line too** — if it is not the folder the records have always been in, the
      program is looking at a different (probably empty) set of books, because the data folder is the
