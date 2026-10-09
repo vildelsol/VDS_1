@@ -26,6 +26,23 @@ next session from inside `pm-app`.
 
 ## State right now
 
+- ⚠️ **v1.15.0's first build was stopped by the advisory gate, 48 seconds in.** Five advisories had
+  been published against the dependency tree since v1.14.0 built clean four days earlier: `proxy-addr`
+  **critical** (IP spoofing via an IPv4-mapped IPv6 trust subnet), `source-map-js` **high** (event-loop
+  denial of service), and `qs` moderate twice, reaching the tree through `express`. The gate is
+  `npm audit --omit=dev --audit-level=high` and it did exactly what it is there for: a release carrying
+  tenants' financial records on an office desk does not ship with a known critical.
+  **The high one was there because of a packaging fault.** `@tailwindcss/vite` and
+  `@vitejs/plugin-react` were declared as *production* dependencies although both are used only by
+  `vite.config.ts` at build time, so the whole of vite and postcss sat in the runtime tree. They are
+  devDependencies now, which is where `vite` and `tailwindcss` already were, and the runtime tree is
+  down to five packages: dotenv, express, lucide-react, react, react-dom. The rest was `npm audit fix`,
+  all patch bumps inside the existing ranges (express 4.22.2 to 4.22.3, qs 6.15.3 to 6.16.0,
+  proxy-addr 2.0.7 to 2.0.8, body-parser 1.20.6 to 1.20.8). **0 vulnerabilities**, 2,038 tests still
+  green, and both the production and the dev server paths smoke-tested by hand.
+  The dangling `v1.15.0` tag was deleted and re-cut on the fixed commit rather than left behind as a
+  second tag with nothing under it — it had published no `.exe`, so nothing was ever downloadable from
+  it. See the note on v1.13.0 for why a tag that *has* published is never re-pointed.
 - ✅ **v1.15.0 is the current release** (2026-10-09, tag `v1.15.0`) — the invoice date, recorded and
   shown apart from the date paid, so a September bill settled in October no longer reads as October.
   **2,038 tests.** It contains everything in v1.14.0 below.
