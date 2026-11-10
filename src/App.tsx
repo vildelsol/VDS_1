@@ -49,7 +49,7 @@ import {
   subscribeConnection,
   subscribeSync
 } from './lib/api';
-import { countBookingOverlaps, delinquentAccounts } from './lib/finance';
+import { countBookingOverlaps, delinquentAccounts, settledFromRent } from './lib/finance';
 import { today } from './lib/dates';
 import { clearSnapshot, loadSnapshot, saveSnapshot } from './lib/snapshot';
 import { forgetScreenState } from './lib/screenState';
@@ -403,16 +403,23 @@ export default function App() {
 
   const permissions = session?.permissions;
 
+  /**
+   * Stored receipts plus the maintenance credited out of rent received on rented
+   * villas (see `settledFromRent`). Everything that adds up money reads this;
+   * the bank reconciliation reads the stored receipts only.
+   */
+  const settledPayments = useMemo(() => [...data.payments, ...settledFromRent(data.charges, data.payments)], [data.payments, data.charges]);
+
   const outstandingCount = useMemo(() => {
     if (!session) return 0;
     // As of today, so a charge posted for a month but not yet due does not
     // count against the badge. Posting the month is not the same as the money
     // falling due, and the badge is a count of things needing doing now.
-    const accounts = delinquentAccounts(data.units, data.charges, data.payments, today());
+    const accounts = delinquentAccounts(data.units, data.charges, settledPayments, today());
     const unpaidUtilities = data.utilities.filter(u => u.status === 'unpaid').length;
     const pendingExpenses = data.expenses.filter(e => e.status === 'pending').length;
     return accounts.length + unpaidUtilities + pendingExpenses + countBookingOverlaps(data.bookings);
-  }, [session, data.units, data.charges, data.payments, data.utilities, data.expenses, data.bookings]);
+  }, [session, data.units, data.charges, settledPayments, data.utilities, data.expenses, data.bookings]);
 
   /* ---------------- gates ---------------- */
 
@@ -671,7 +678,7 @@ export default function App() {
             units={data.units}
             bookings={data.bookings}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             expenses={data.expenses}
             tenancies={data.tenancies}
             settings={settings}
@@ -686,7 +693,7 @@ export default function App() {
             units={data.units}
             settings={settings}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             utilities={data.utilities}
             expenses={data.expenses}
             bookings={data.bookings}
@@ -704,7 +711,7 @@ export default function App() {
           <Units
             units={data.units}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             utilities={data.utilities}
             bookings={data.bookings}
             tenancies={data.tenancies}
@@ -728,7 +735,7 @@ export default function App() {
           <FinanceHub
             units={data.units}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             bookings={data.bookings}
             session={session}
             onRecordPayment={recordPayment}
@@ -737,6 +744,7 @@ export default function App() {
             onRefundPayment={(id, fields) => mutate(() => api.post(`/api/payments/${id}/refund`, fields))}
             onUpdatePayment={(id, fields) => mutate(() => api.put(`/api/payments/${id}`, fields))}
             onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}
+            onRestateRent={() => mutate(() => api.post<{ restated: number }>('/api/charges/restate-rent', { confirm: true }))}
             onVoidCharge={(id, reason) => mutate(() => api.post(`/api/charges/${id}/void`, { reason }))}
             onAddCharge={payload => mutate(() => api.post('/api/charges', payload))}
             onOpenReceipt={setActiveReceipt}
@@ -787,7 +795,7 @@ export default function App() {
           <Reports
             units={data.units}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             expenses={data.expenses}
             utilities={data.utilities}
             bookings={data.bookings}
@@ -810,7 +818,7 @@ export default function App() {
           <OwnerStatements
             units={data.units}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             expenses={data.expenses}
             utilities={data.utilities}
             settings={settings}
@@ -822,7 +830,7 @@ export default function App() {
           <Charts
             units={data.units}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             expenses={data.expenses}
             tenancies={data.tenancies}
             bookings={data.bookings}
@@ -835,7 +843,7 @@ export default function App() {
           <Projections
             units={data.units}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             expenses={data.expenses}
             settings={settings}
             session={session}
@@ -846,7 +854,7 @@ export default function App() {
           <AnnualReport
             units={data.units}
             charges={data.charges}
-            payments={data.payments}
+            payments={settledPayments}
             expenses={data.expenses}
             settings={settings}
             reports={data.annualReports}

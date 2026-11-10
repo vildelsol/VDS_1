@@ -26,7 +26,7 @@ import {
   Unit,
   getUnitDisplayName
 } from '../types';
-import { AccountBalance, accountBalance, chargeCurrency } from '../lib/finance';
+import { AccountBalance, accountBalance, chargeAmount, chargeCurrency } from '../lib/finance';
 import { formatMoneyLong } from '../lib/money';
 import { formatMonthLabel, today } from '../lib/dates';
 import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
@@ -118,7 +118,7 @@ export default function ReceivePaymentModal({
       setCurrency(chargeCurrency(u, nextCategory));
       const next = accountBalance(u, nextCategory, charges, payments, undefined, units);
       const outstanding = next.balance > 0 ? next.balance : 0;
-      const fallback = nextCategory === 'Maintenance' ? u.monthlyMaintenance : u.monthlyRent;
+      const fallback = chargeAmount(u, nextCategory);
       const suggested = outstanding > 0 ? outstanding : fallback;
       // A villa with no rate configured yields zero, and a zero in the box reads
       // as a figure someone has already checked. Leave it empty so it asks to be

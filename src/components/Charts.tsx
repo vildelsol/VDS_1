@@ -33,6 +33,7 @@ import {
   arrearsAgeing,
   chargedInPeriod,
   collectedInPeriod,
+  consolidateEverything,
   collectionRate,
   categoriesWithSpend,
   expenseBreakdown,
@@ -167,6 +168,7 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
   /** Monthly series and category breakdown, per currency. */
   const byCurrency = useMemo(() => {
     if (invalidRange) return [];
+    const combined = consolidateEverything(charges, payments);
     return (['JMD', 'USD'] as Currency[]).map(currency => {
       const rows: MonthRow[] = months.map(month => {
         const mFrom = monthStart(month) < from ? from : monthStart(month);
@@ -180,10 +182,10 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
            */
           if (row.amount !== 0) byCategory[row.category] = row.amount;
         }
-        const collected = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
+        const collected = collectedInPeriod(combined.payments, currency, mFrom, mTo, ownerBilled);
         return {
           month,
-          billed: chargedInPeriod(charges, currency, mFrom, mTo).total,
+          billed: chargedInPeriod(combined.charges, currency, mFrom, mTo).total,
           received: collected.total,
           receivedAgainstBilled: sumMoney([collected.rent, collected.maintenance]),
           paidOut: expensesInPeriod(expenses, currency, mFrom, mTo),

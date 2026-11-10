@@ -21,6 +21,7 @@ import {
   AccountBalance,
   collectedInPeriod,
   chargedInPeriod,
+  consolidateEverything,
   collectionRate,
   delinquentAccounts,
   expensesInPeriod,
@@ -203,15 +204,17 @@ export default function Dashboard({
   /* ---------------- money for the selected period ---------------- */
 
   const ledger = useMemo(() => {
+    // Money on both books counted once: see consolidateEverything.
+    const combined = consolidateEverything(charges, payments);
     return (['JMD', 'USD'] as Currency[]).map(currency => {
-      const collected = collectedInPeriod(payments, currency, periodStart, periodEnd, ownerBilled);
-      const billed = chargedInPeriod(charges, currency, periodStart, periodEnd);
+      const collected = collectedInPeriod(combined.payments, currency, periodStart, periodEnd, ownerBilled);
+      const billed = chargedInPeriod(combined.charges, currency, periodStart, periodEnd);
       const spent = expensesInPeriod(expenses, currency, periodStart, periodEnd);
 
       // The same three figures for the preceding month, so the screen can say
       // which way each one moved rather than only where it stands.
-      const priorCollected = collectedInPeriod(payments, currency, previousStart, previousEnd, ownerBilled);
-      const priorBilled = chargedInPeriod(charges, currency, previousStart, previousEnd);
+      const priorCollected = collectedInPeriod(combined.payments, currency, previousStart, previousEnd, ownerBilled);
+      const priorBilled = chargedInPeriod(combined.charges, currency, previousStart, previousEnd);
       const priorSpent = expensesInPeriod(expenses, currency, previousStart, previousEnd);
 
       const rate = collectionRate(billed.total, sumMoney([collected.rent, collected.maintenance]));

@@ -544,6 +544,14 @@ export interface Charge {
   periodMonth: string; // YYYY-MM
   dueDate: string; // YYYY-MM-DD
   amount: number;
+  /**
+   * For a tenant's monthly rent charge, how `amount` splits: the rent proper and
+   * the HOA maintenance the tenant also pays. `rentPortion + maintenancePortion`
+   * always equals `amount`. Absent on charges raised before the tenant's total
+   * included maintenance (they are whole rent), and on every non-rent charge.
+   */
+  rentPortion?: number;
+  maintenancePortion?: number;
   currency: Currency;
   status: 'open' | 'void';
   payerName: string;
@@ -650,6 +658,13 @@ export interface Payment {
   reconciledReference?: string;
   /** Number of times this receipt has been rendered for printing. >0 means a reprint. */
   printCount?: number;
+  /**
+   * Not a stored receipt: a maintenance credit worked out from rent collected on a
+   * rented villa ("settled from rent"). Created in the browser by
+   * `settledFromRent`, never sent to or kept by the server, never listed as a
+   * receipt and never offered for voiding, refunding or reconciling.
+   */
+  derived?: boolean;
   /** Set when the payment was generated from another record, so the two stay in step. */
   bookingId?: string;
   utilityId?: string;

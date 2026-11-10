@@ -22,6 +22,7 @@ import {
   arrearsAgeing,
   chargedInPeriod,
   collectedInPeriod,
+  consolidateEverything,
   collectionRate,
   categoriesWithSpend,
   expenseBreakdown,
@@ -83,6 +84,8 @@ export default function BoardPack({
    * forget, and a pack that disagrees with the operating statement beside it.
    */
   const strataCosts = strataExpenses(expenses);
+  // Money on both books counted once; see consolidateEverything.
+  const combined = consolidateEverything(charges, payments);
 
   const byCurrency = (['JMD', 'USD'] as Currency[])
     .map(currency => {
@@ -95,10 +98,10 @@ export default function BoardPack({
           // still a category, and `> 0` hid it from the pack the board reads.
           if (row.amount !== 0) byCategory[row.category] = row.amount;
         }
-        const collectedInMonth = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
+        const collectedInMonth = collectedInPeriod(combined.payments, currency, mFrom, mTo, ownerBilled);
         return {
           month,
-          billed: chargedInPeriod(charges, currency, mFrom, mTo).total,
+          billed: chargedInPeriod(combined.charges, currency, mFrom, mTo).total,
           received: collectedInMonth.total,
           receivedAgainstBilled: sumMoney([collectedInMonth.rent, collectedInMonth.maintenance]),
           paidOut: expensesInPeriod(strataCosts, currency, mFrom, mTo),
@@ -106,8 +109,8 @@ export default function BoardPack({
         };
       });
 
-      const collected = collectedInPeriod(payments, currency, from, to, ownerBilled);
-      const billed = chargedInPeriod(charges, currency, from, to);
+      const collected = collectedInPeriod(combined.payments, currency, from, to, ownerBilled);
+      const billed = chargedInPeriod(combined.charges, currency, from, to);
       const spent = expensesInPeriod(strataCosts, currency, from, to);
 
       // Same opening/closing receivable construction as the operating statement.

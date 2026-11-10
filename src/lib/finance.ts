@@ -34,7 +34,7 @@ import {
   fundOf,
   getUnitDisplayName
 } from '../types';
-import { round2, sumMoney, addMoney, subtractMoney } from './money';
+import { round2, sumMoney, addMoney, subtractMoney, formatMoney } from './money';
 
 /* ------------------------------------------------------------------ *
  * Engines with no screen — deliberately kept
@@ -479,9 +479,237 @@ export function chargeCurrency(unit: Unit, category: ChargeCategory): Currency {
   return category === 'Maintenance' ? (unit.maintCurrency || unit.currency) : unit.currency;
 }
 
+/**
+ * What a tenant pays each month, and how it divides.
+ *
+ * Ro, 2026-11-10: the **agreed rent** is the one figure the tenant pays
+ * (J$75,000), and the HOA maintenance (J$20,000) is taken out of it, leaving ISPO
+ * J$55,000. Raising the maintenance to J$27,000 does not change what the tenant
+ * pays; it only leaves ISPO less (J$48,000). *"Increase in maintenance does not
+ * change the total, it just means after maintenance is subtracted, ISPO will
+ * naturally receive less income. The only way the totals change is if the rent is
+ * increased."*
+ *
+ * So `monthlyRent` in the register is the whole agreed rent, `monthlyMaintenance`
+ * is the part of it that goes to the corporation, and this is the only place the
+ * two are divided: `total` is what is billed, `maintenance` is the corporation's
+ * share inside it, and `rent` (total less maintenance) is what is left for ISPO.
+ *
+ * The share is taken only when maintenance is in the same currency as the rent,
+ * since USD and JMD are never combined, and can never exceed the rent itself.
+ * A villa with no rent has nothing for a tenant to pay.
+ */
+export interface RentBreakdown {
+  /** What is left for ISPO once the corporation's share is taken out. */
+  rent: number;
+  /** The corporation's maintenance, taken out of the agreed rent. */
+  maintenance: number;
+  /** The agreed rent: the single figure the tenant is billed. */
+  total: number;
+}
+
+export function rentBreakdown(unit: Unit, rent: number = unit.monthlyRent, currency: Currency = unit.currency): RentBreakdown {
+  const total = round2(rent);
+  if (!(total > 0)) return { rent: total, maintenance: 0, total };
+  const levy = round2(unit.monthlyMaintenance || 0);
+  const maintenance = levy > 0 && chargeCurrency(unit, 'Maintenance') === currency ? Math.min(levy, total) : 0;
+  return { rent: round2(total - maintenance), maintenance, total };
+}
+
+/**
+ * "HOA maintenance J$20,000.00 taken from this; ISPO receives J$55,000.00", for a
+ * charge that carries both parts; empty otherwise (internal screens only; the
+ * tenant never sees it). Read from the charge itself, never recomputed from
+ * the register, so a statement keeps telling the truth about a month after the
+ * levy has moved.
+ */
+export function chargeBreakdownNote(charge: Charge): string {
+  const m = charge.maintenancePortion || 0;
+  if (charge.category !== 'Rent' || !(m > 0) || charge.rentPortion === undefined) return '';
+  return `HOA maintenance ${formatMoney(m, charge.currency)} taken from this; ISPO receives ${formatMoney(charge.rentPortion, charge.currency)}`;
+}
+
+/**
+ * Rent charges raised before the tenant's total included maintenance.
+ *
+ * Those are whole-rent charges with no recorded split. Restating one means
+ * voiding it and raising a replacement at rent + maintenance, so the record is
+ * kept and the correction is auditable. Only a charge billed at the old rent (the
+ * agreed rent less the maintenance) or already at the agreed rent is touched:
+ * anything else was billed at some other figure and is reported, not guessed at.
+ * Restate before raising the maintenance, so the old rent can still be recognised.
+ */
+export interface RentRestatement {
+  charge: Charge;
+  unit: Unit;
+  breakdown: RentBreakdown;
+}
+
+export function rentChargesToRestate(
+  units: Unit[],
+  charges: Charge[]
+): { restate: RentRestatement[]; skipped: { charge: Charge; reason: string }[] } {
+  const restate: RentRestatement[] = [];
+  const skipped: { charge: Charge; reason: string }[] = [];
+  for (const charge of charges) {
+    if (charge.category !== 'Rent' || charge.status !== 'open' || charge.kind === 'one-off') continue;
+    if (charge.rentPortion !== undefined || charge.maintenancePortion !== undefined) continue;
+    const unit = units.find(u => u.id === charge.unitId);
+    if (!unit || unit.status !== 'long-term') continue;
+    const breakdown = rentBreakdown(unit);
+    if (!(breakdown.maintenance > 0) || charge.currency !== unit.currency) continue;
+    // A charge raised before the maintenance was part of the rent is the old rent
+    // (agreed rent less the maintenance) and is restated to the agreed rent. One
+    // already at the agreed rent only lacks its split.
+    const wasNet = round2(charge.amount) === round2(breakdown.total - breakdown.maintenance);
+    const wasTotal = round2(charge.amount) === breakdown.total;
+    if (!wasNet && !wasTotal) {
+      skipped.push({ charge, reason: 'billed at a figure other than the agreed rent' });
+      continue;
+    }
+    restate.push({ charge, unit, breakdown });
+  }
+  return { restate, skipped };
+}
+
+/**
+ * The combined ("everything") view, with money that is on both books counted once.
+ *
+ * A tenant pays one figure, rent, J$75,000 of which the corporation takes
+ * J$20,000 as the villa's maintenance. The tenant's Rent charge therefore already
+ * contains that J$20,000, and the corporation's own Maintenance charge for the
+ * villa is the same J$20,000 again. Each book is right on its own: ISPO billed
+ * J$75,000 and passes J$20,000 on, the corporation billed J$20,000. Added into
+ * one total, though, the J$20,000 is counted twice, and "billed" reads J$95,000
+ * for a month in which the tenant is asked for J$75,000.
+ *
+ * This takes it out once, for the combined view only: the Rent charge is reduced
+ * by the maintenance that has its own Maintenance charge for the same villa,
+ * month and currency, and the maintenance receipts on those villas (ISPO paying
+ * the corporation its share) are dropped, being a transfer between the two books,
+ * not money from anyone. The single-book views are not given these lists and so
+ * are untouched. Inputs are never modified; adjusted copies are returned.
+ */
+export function consolidateEverything(
+  charges: Charge[],
+  payments: Payment[]
+): { charges: Charge[]; payments: Payment[]; eliminatedCharges: number } {
+  const maintenance = new Map<string, Charge>();
+  for (const c of charges) {
+    if (c.category === 'Maintenance' && c.status === 'open' && c.kind === undefined) {
+      maintenance.set(`${c.unitId}|${c.periodMonth}|${c.currency}`, c);
+    }
+  }
+  const fundedFromRent = new Set<string>(); // unitId|currency
+  let eliminated = 0;
+  const adjusted = charges.map(c => {
+    if (c.category !== 'Rent' || c.status !== 'open' || !(c.maintenancePortion && c.maintenancePortion > 0)) return c;
+    const pair = maintenance.get(`${c.unitId}|${c.periodMonth}|${c.currency}`);
+    if (!pair) return c;
+    const intra = Math.min(c.maintenancePortion, pair.amount);
+    if (!(intra > 0)) return c;
+    fundedFromRent.add(`${c.unitId}|${c.currency}`);
+    eliminated++;
+    return { ...c, amount: round2(c.amount - intra), maintenancePortion: round2(c.maintenancePortion - intra) };
+  });
+  const keptPayments = payments.filter(p => !(p.category === 'Maintenance' && fundedFromRent.has(`${p.unitId}|${p.currency}`)));
+  return { charges: adjusted, payments: keptPayments, eliminatedCharges: eliminated };
+}
+
+/**
+ * Maintenance on a rented villa is settled out of the rent, not paid separately.
+ *
+ * Ro, 2026-11-10: the tenant pays one figure, the corporation takes its share
+ * from it, and it should not take a second click to say so. So as rent is
+ * received, the maintenance inside it is credited to the villa's maintenance
+ * account automatically.
+ *
+ * It is **worked out, never stored**, and it only follows money that has really
+ * arrived:
+ *   - completed Rent receipts are applied to the villa's rent charges oldest
+ *     first (a receipt never pays a charge that is not yet due ahead of an older
+ *     one), and each charge is credited its maintenance share in proportion to
+ *     the part of it that has been paid. A tenant a month behind therefore leaves
+ *     that month's maintenance owing too.
+ *   - pending, voided and refunded money does not count, and a refund takes the
+ *     credit back with it.
+ *   - the credit can never exceed what is still owed on the maintenance account,
+ *     so a maintenance receipt entered by hand as well cannot be counted twice.
+ *   - charges raised before the split existed carry no maintenance share and give
+ *     no credit; restating them brings them in.
+ *
+ * Each credit is returned as a derived Payment dated the day the rent arrived, so
+ * every screen that already sums maintenance receipts, statements included, picks
+ * it up without having to know about it.
+ */
+export function settledFromRent(charges: Charge[], payments: Payment[]): Payment[] {
+  const out: Payment[] = [];
+  const cents = (n: number) => Math.round((Number(n) || 0) * 100);
+  const keys = new Set<string>();
+  for (const c of charges) {
+    if (c.status === 'open' && c.category === 'Rent' && (c.maintenancePortion || 0) > 0) keys.add(`${c.unitId}|${c.currency}`);
+  }
+  for (const key of keys) {
+    const [unitId, currency] = key.split('|') as [string, Currency];
+    const rentCharges = charges
+      .filter(c => c.unitId === unitId && c.currency === currency && c.category === 'Rent' && c.status === 'open')
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
+    const maintCharged = charges
+      .filter(c => c.unitId === unitId && c.currency === currency && c.category === 'Maintenance' && c.status === 'open')
+      .reduce((a, c) => a + cents(c.amount), 0);
+    const settled = (p: Payment) => p.status === 'completed' && p.unitId === unitId && p.currency === currency && !p.derived;
+    const maintReceived = payments
+      .filter(p => settled(p) && p.category === 'Maintenance')
+      .reduce((a, p) => a + cents(netPaidAsOf(p)), 0);
+    let cap = Math.max(0, maintCharged - maintReceived);
+    const rentReceipts = payments
+      .filter(p => settled(p) && p.category === 'Rent')
+      .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+
+    const queue = rentCharges.map(c => ({ total: cents(c.amount), left: cents(c.amount), share: cents(c.maintenancePortion || 0) }));
+    let idx = 0;
+    let exact = 0; // running, unrounded credit in cents
+    let emitted = 0;
+    for (const receipt of rentReceipts) {
+      let money = cents(netPaidAsOf(receipt));
+      while (money > 0 && idx < queue.length) {
+        const q = queue[idx];
+        const take = Math.min(money, q.left);
+        if (q.total > 0) exact += (q.share * take) / q.total;
+        q.left -= take;
+        money -= take;
+        if (q.left <= 0) idx++;
+      }
+      const credit = Math.min(Math.round(exact) - emitted, cap);
+      if (credit > 0) {
+        emitted += credit;
+        cap -= credit;
+        out.push({
+          id: `from-rent-${receipt.id}`,
+          receiptNo: '',
+          payerName: 'Settled from rent',
+          unitId,
+          unitNumber: receipt.unitNumber,
+          category: 'Maintenance',
+          amount: credit / 100,
+          currency,
+          date: receipt.date,
+          method: 'Other',
+          reference: 'Settled from rent',
+          notes: 'Maintenance taken out of the rent received. Worked out, not a separate receipt.',
+          staffMember: 'System',
+          status: 'completed',
+          derived: true
+        });
+      }
+    }
+  }
+  return out;
+}
+
 /** The recurring amount a unit is billed for a given category. */
 export function chargeAmount(unit: Unit, category: ChargeCategory): number {
-  return round2(category === 'Maintenance' ? unit.monthlyMaintenance : unit.monthlyRent);
+  return category === 'Maintenance' ? round2(unit.monthlyMaintenance) : rentBreakdown(unit).total;
 }
 
 /** Who is billed: the tenant pays rent, the owner pays HOA maintenance. */
@@ -1443,11 +1671,11 @@ export function unbilledOccupancy(
 
   for (const tenancy of tenancies) {
     if (!tenancy.startedOn) continue;
-    const rent = round2(tenancy.monthlyRent);
-    if (!(rent > 0)) continue;
+    if (!(round2(tenancy.monthlyRent) > 0)) continue;
 
     const unit = units.find(u => u.id === tenancy.unitId);
     if (!unit) continue;
+    const rent = rentBreakdown(unit, tenancy.monthlyRent, tenancy.currency || unit.currency).total;
 
     // A closed tenancy stops at its final month; that month is covered by the
     // advance and is deliberately not billed, so it is not "missing".

@@ -187,26 +187,20 @@ export default async function run({ projectRoot }) {
       !tenantDoc.includes('MARKER-MAINT-RECEIPT'),
       'maintenance receipt leaked onto the tenant record'
     );
+    // Ro, 2026-11-10: tenants pay rent, not maintenance; the corporation takes its
+    // share out of the rent. The tenant's record says nothing about maintenance at all.
     T.check(
-      'but it declares that maintenance is excluded',
-      /Not included on this record/i.test(tenantDoc),
-      tenantDoc.slice(0, 400)
-    );
-    T.check(
-      'naming the amount billed, so nothing looks lost',
-      tenantDoc.includes('20,000.00'),
+      'and it carries no maintenance section or wording of any kind',
+      !/maintenance/i.test(tenantDoc) && !/Not included on this record/i.test(tenantDoc),
       tenantDoc.slice(0, 500)
     );
+    T.check('and no details block with an agreed-rent figure (Ro, 2026-11-10)', !/Agreed rent/i.test(tenantDoc), tenantDoc.slice(0, 300));
     T.check(
-      'and saying it was received rather than leaving it ambiguous',
-      /receipt/i.test(tenantDoc) && /recorded/i.test(tenantDoc),
+      'and showing the receipt, so it is clear the rent was received',
+      /receipt/i.test(tenantDoc) && /Payment received/i.test(tenantDoc),
       tenantDoc.slice(0, 500)
     );
-    T.check(
-      'and pointing at the document that does carry it',
-      /unit ledger/i.test(tenantDoc),
-      tenantDoc.slice(0, 500)
-    );
+    T.check('and no boilerplate about other occupancies or the unit ledger (Ro, 2026-11-10)', !/unit ledger/i.test(tenantDoc) && !/own rent account/i.test(tenantDoc), tenantDoc.slice(0, 500));
 
     /* ---------------- a villa with nothing on it ---------------- */
     {
@@ -238,11 +232,11 @@ export default async function run({ projectRoot }) {
         )
       );
       T.check(
-        'with no maintenance on the villa, nothing is declared as excluded',
+        'with no maintenance on the villa, nothing about maintenance appears',
         !/Not included on this record/i.test(rentOnly),
         rentOnly.slice(0, 300)
       );
-      T.check('though the document still explains it covers rent only', /covers rent only/i.test(rentOnly), rentOnly.slice(0, 400));
+      T.check('and it still carries the account history', /Account history/i.test(rentOnly), rentOnly.slice(0, 400));
     }
 
     /* ---------------- the ISPO Operations statement ----------------

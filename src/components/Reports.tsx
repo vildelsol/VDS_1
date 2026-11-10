@@ -33,6 +33,7 @@ import {
   accountBalance,
   chargeCategoriesInBook,
   chargedInPeriod,
+  consolidateEverything,
   chargesInBook,
   collectedInPeriod,
   collectionRate,
@@ -159,7 +160,16 @@ export default function Reports({
    */
   const [book, setBook] = useRemembered<ReportBook>('reports.book', 'everything');
 
-  const payments = useMemo(() => paymentsInBook(allPayments, book), [allPayments, book]);
+  /*
+   * On the combined view only, money that sits on both books is counted once
+   * (the maintenance inside a tenant's rent is the corporation's maintenance
+   * charge too). The single-book views are untouched.
+   */
+  const combined = useMemo(
+    () => (book === 'everything' ? consolidateEverything(charges, allPayments) : { charges, payments: allPayments }),
+    [book, charges, allPayments]
+  );
+  const payments = useMemo(() => paymentsInBook(combined.payments, book), [combined, book]);
 
   /*
    * `expensesForBook`, not `expensesInBook`: on ISPO's book a contribution typed
@@ -172,7 +182,7 @@ export default function Reports({
    * list of outgoings, which shows both currencies together.
    */
   const expenses = useMemo(() => expensesForBook(allExpenses, units, book), [allExpenses, units, book]);
-  const bookCharges = useMemo(() => chargesInBook(charges, book), [charges, book]);
+  const bookCharges = useMemo(() => chargesInBook(combined.charges, book), [combined, book]);
   /*
    * A balance is computed per unit **per category**, so the book is applied by
    * choosing which categories to walk rather than by filtering an answer after

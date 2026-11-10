@@ -27,7 +27,10 @@ import {
   ACCOUNT_STATUS_LABEL,
   AccountBalance,
   accountBalance,
+  chargeAmount,
+  chargeBreakdownNote,
   chargeCurrency,
+  rentChargesToRestate,
   chargesForUnit,
   currencyMismatchWarnings,
   isBillable,
@@ -86,6 +89,8 @@ interface FinanceHubProps {
   onRefundPayment: (paymentId: string, fields: Record<string, unknown>) => Promise<unknown>;
   onUpdatePayment: (paymentId: string, fields: Record<string, unknown>) => Promise<unknown>;
   onPostMonth: (month: string) => Promise<{ message: string }>;
+  /** Voids and re-raises old whole-rent charges at rent + maintenance. */
+  onRestateRent?: () => Promise<{ restated: number }>;
   onVoidCharge: (chargeId: string, reason: string) => Promise<unknown>;
   onAddCharge: (payload: Record<string, unknown>) => Promise<unknown>;
   onOpenReceipt: (payment: Payment) => void;
@@ -105,6 +110,7 @@ export default function FinanceHub({
   onRefundPayment,
   onUpdatePayment,
   onPostMonth,
+  onRestateRent,
   onVoidCharge,
   onAddCharge,
   onOpenReceipt
@@ -136,6 +142,26 @@ export default function FinanceHub({
   );
 
   const mismatches = useMemo(() => currencyMismatchWarnings(units, charges, payments), [units, charges, payments]);
+
+  /* ---------------- restate old rent charges ---------------- */
+
+  const restatable = useMemo(() => rentChargesToRestate(units, charges), [units, charges]);
+  const handleRestate = async () => {
+    if (!onRestateRent) return;
+    const n = restatable.restate.length;
+    if (!window.confirm(`Restate ${n} rent charge(s) to rent plus maintenance? Each old charge is voided (kept on record) and replaced.`)) return;
+    setBusy(true);
+    setError('');
+    setSuccess('');
+    try {
+      const r = await onRestateRent();
+      setSuccess(`Restated ${r.restated} rent charge(s) to rent plus maintenance.`);
+    } catch (err) {
+      setError(errorMessage(err, 'Could not restate the rent charges.'));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   /* ---------------- post month ---------------- */
 
@@ -208,6 +234,7 @@ export default function FinanceHub({
   const filteredPayments = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return payments
+      .filter(p => !p.derived)
       .filter(p => {
         if (filterCategory !== 'all' && p.category !== filterCategory) return false;
         if (filterStatus !== 'all' && p.status !== filterStatus) return false;
@@ -374,6 +401,18 @@ export default function FinanceHub({
           </div>
         )}
       </div>
+
+      {tab === 'tenants' && perms.postCharges && onRestateRent && restatable.restate.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+          <span>
+            {restatable.restate.length} rent charge(s) were raised at the old rent, before the maintenance was counted as part of it. The tenant pays the agreed rent.
+            {restatable.skipped.length > 0 ? ` ${restatable.skipped.length} billed at another figure are left as they are.` : ''}
+          </span>
+          <SubmitButton type="button" busy={busy} busyLabel="Restating…" onClick={() => void handleRestate()} className="px-3 py-2 text-[11px]">
+            Restate to rent + maintenance
+          </SubmitButton>
+        </div>
+      )}
 
       {tab === 'tenants' && (
         <AccountTable
@@ -846,7 +885,7 @@ function AccountTable({
             <tbody className="divide-y divide-slate-50">
               {accounts.map(account => {
                 const { unit } = account;
-                const monthly = category === 'Rent' ? unit.monthlyRent : unit.monthlyMaintenance;
+                const monthly = chargeAmount(unit, category);
                 const overdue = account.balance > 0;
                 return (
                   <tr key={unit.id} className="hover:bg-slate-50/50">
@@ -1949,6 +1988,9 @@ function ChargeHistoryModal({
                         {charge.description && (
                           <span className="mt-0.5 block text-[10px] font-normal text-slate-500">{charge.description}</span>
                         )}
+                        {chargeBreakdownNote(charge) && (
+                          <span className="mt-0.5 block text-[10px] font-normal text-slate-500">{chargeBreakdownNote(charge)}</span>
+                        )}
                       </td>
                       <td className="p-2 font-mono text-slate-500">{formatDayLabel(charge.dueDate)}</td>
                       <td className={`p-2 text-right font-mono ${charge.status === 'void' ? 'text-slate-400 line-through' : ''}`}>
@@ -2068,7 +2110,7 @@ function AccountStatementDocument({
       }));
     const credits = paymentsForUnit(payments, unit, units)
       .filter(p => p.category === category && p.status === 'completed' && p.currency === currency)
-      .map(p => ({ date: p.date, kind: 'payment' as const, label: `Payment received (${p.method})`, ref: p.receiptNo, debit: 0, credit: p.amount }));
+      .map(p => ({ date: p.date, kind: 'payment' as const, label: p.derived ? 'Maintenance settled from rent' : `Payment received (${p.method})`, ref: p.receiptNo, debit: 0, credit: p.amount }));
     const merged = [...debits, ...credits].sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'charge' ? -1 : 1));
     let running = 0;
     return merged.map(row => {

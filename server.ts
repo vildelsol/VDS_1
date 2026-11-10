@@ -54,7 +54,7 @@ import {
 } from './src/types';
 import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
-import { accountBalance, bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable } from './src/lib/finance';
+import { accountBalance, bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable, rentBreakdown, rentChargesToRestate } from './src/lib/finance';
 import {
   DATA_DIR,
   DB_FILE,
@@ -1191,11 +1191,14 @@ function activeTenancy(db: Database, unitId: string): Tenancy | undefined {
 function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string, role: UserRole): boolean {
   if (!tenancy.startedOn) return false;
   if (tenancy.advanceRentChargeId) return false;
-  const amount = round2(tenancy.monthlyRent);
-  if (!(amount > 0)) return false;
+  if (!(round2(tenancy.monthlyRent) > 0)) return false;
 
   const unit = db.units.find(u => u.id === tenancy.unitId);
   if (!unit) return false;
+  // The tenant's monthly total is the rent plus the HOA maintenance, so first and
+  // last month are each billed at that total, split on the charge.
+  const parts = rentBreakdown(unit, tenancy.monthlyRent, tenancy.currency || unit.currency);
+  const amount = parts.total;
 
   const month = monthOf(tenancy.startedOn);
 
@@ -1306,6 +1309,8 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
       periodMonth: month,
       dueDate: dueDateForMonth(month, dueDay),
       amount,
+      rentPortion: parts.rent,
+      maintenancePortion: parts.maintenance,
       currency,
       status: 'open',
       payerName: tenancy.tenantName,
@@ -1325,6 +1330,8 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
     periodMonth: month,
     dueDate: dueDateForMonth(month, dueDay),
     amount,
+    rentPortion: parts.rent,
+    maintenancePortion: parts.maintenance,
     currency,
     status: 'open',
     payerName: tenancy.tenantName,
@@ -2456,6 +2463,7 @@ app.post(
             continue;
           }
           const dueDay = category === 'Rent' ? unit.rentDueDay || 1 : unit.maintDueDay || 1;
+          const split = category === 'Rent' ? rentBreakdown(unit) : null;
           const charge: Charge = {
             // Re-posting a month after a charge was voided must raise a *new*
             // charge, not a second row wearing the voided one's id.
@@ -2466,6 +2474,7 @@ app.post(
             periodMonth: monthString,
             dueDate: dueDateForMonth(monthString, dueDay),
             amount: chargeAmount(unit, category),
+            ...(split ? { rentPortion: split.rent, maintenancePortion: split.maintenance } : {}),
             currency: chargeCurrency(unit, category),
             status: 'open',
             payerName: chargePayer(unit, category),
@@ -2499,6 +2508,72 @@ app.post(
           ? `Posted ${result.created} charge(s) for ${monthString}.` +
             (result.skipped > 0 ? ` ${result.skipped} were already posted and were left untouched.` : '')
           : `Nothing to post, all ${result.skipped} billable charge(s) for ${monthString} already exist.`
+    });
+  })
+);
+
+/**
+ * Restate rent charges raised before the tenant's total included maintenance.
+ *
+ * Without `confirm: true` this only reports what it would do. With it, each
+ * affected charge is voided (kept, with the reason) and replaced by a charge at
+ * rent + HOA maintenance, in one transaction. Safe to run again: restated charges
+ * carry a split and are not picked up a second time.
+ */
+app.post(
+  '/api/charges/restate-rent',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'modify_settled');
+    const confirm = req.body?.confirm === true;
+    const result = await transaction(db => {
+      const { restate, skipped } = rentChargesToRestate(db.units, db.charges);
+      if (!confirm) return { restate, skipped, done: 0 };
+      const who = actor(req);
+      for (const item of restate) {
+        const old = db.charges.find(c => c.id === item.charge.id)!;
+        const before = { ...old };
+        old.status = 'void';
+        old.voidedBy = who.name;
+        old.voidedAt = new Date().toISOString();
+        old.voidReason = `Restated: the tenant's monthly total is rent plus HOA maintenance (${item.charge.currency} ${item.breakdown.total.toFixed(2)}).`;
+        const fresh: Charge = {
+          ...before,
+          id: uniqueRecordId(db.charges, `${old.id}-restated`),
+          amount: item.breakdown.total,
+          rentPortion: item.breakdown.rent,
+          maintenancePortion: item.breakdown.maintenance,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+          createdBy: who.name
+        };
+        delete fresh.voidedBy;
+        delete fresh.voidedAt;
+        delete fresh.voidReason;
+        db.charges.push(fresh);
+        for (const t of db.tenancies) {
+          if (t.advanceRentChargeId === old.id) t.advanceRentChargeId = fresh.id;
+        }
+        addAudit(
+          db,
+          who.name,
+          who.role,
+          `Restated ${old.unitNumber} rent for ${old.periodMonth} to rent plus maintenance`,
+          'Charge',
+          old.id,
+          before,
+          fresh,
+          who.name
+        );
+      }
+      return { restate, skipped, done: restate.length };
+    });
+    res.json({
+      success: true,
+      confirmed: confirm,
+      count: result.restate.length,
+      restated: result.done,
+      skipped: result.skipped.map(s => ({ id: s.charge.id, unit: s.charge.unitNumber, period: s.charge.periodMonth, amount: s.charge.amount, reason: s.reason })),
+      plan: result.restate.map(r => ({ id: r.charge.id, unit: r.charge.unitNumber, period: r.charge.periodMonth, from: r.charge.amount, to: r.breakdown.total }))
     });
   })
 );

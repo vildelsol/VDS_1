@@ -440,11 +440,13 @@ export default async function run({ port, projectRoot }) {
           const maintInWindow =
             maintReceipts.some(p => inWindow(p.date)) ||
             db.charges.some(ch => ch.unitId === unit.id && ch.category === 'Maintenance' && ch.status === 'open' && inWindow(ch.dueDate));
-          if (maintInWindow && !/Not included on this record/i.test(tenantDoc)) {
-            paperworkFaults.push(`${label}: ${tenancy.tenantName}'s record omits maintenance without declaring it`);
+          // Tenants pay rent only; maintenance is taken from it by the corporation
+          // and must never appear on the tenant's own record (Ro, 2026-11-10).
+          if (maintInWindow && /maintenance|Not included on this record/i.test(tenantDoc)) {
+            paperworkFaults.push(`${label}: ${tenancy.tenantName}'s record mentions maintenance`);
           }
-          if (!/covers rent only/i.test(tenantDoc)) {
-            paperworkFaults.push(`${label}: ${tenancy.tenantName}'s record does not say what it covers`);
+          if (!/Account history/i.test(tenantDoc)) {
+            paperworkFaults.push(`${label}: ${tenancy.tenantName}'s record has no account history`);
           }
         }
       }

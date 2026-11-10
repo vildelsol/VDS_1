@@ -27,6 +27,7 @@ import {
   AccountBalance,
   AccountStatus,
   accountBalance,
+  chargeAmount,
   chargeCurrency,
   entitlementShare,
   levyProportionality,
@@ -35,6 +36,7 @@ import {
   expensesForUnit,
   liveUnitState,
   paymentsForUnit,
+  rentBreakdown,
   utilitiesForUnit
 } from '../lib/finance';
 import { convertIndicative, formatMoney, formatMoneyLong, round2, sumMoney } from '../lib/money';
@@ -217,7 +219,7 @@ export default function Units({
                       <div className="flex items-center justify-between">
                         <dt className="font-mono text-[10px] text-slate-400">{unit.status === 'long-term' ? 'Rent' : 'Nightly'}</dt>
                         <dd className="font-mono font-semibold text-slate-700">
-                          {formatMoney(unit.monthlyRent, unit.currency)}
+                          {formatMoney(unit.status === 'long-term' ? chargeAmount(unit, 'Rent') : unit.monthlyRent, unit.currency)}
                           <span className="text-[10px] font-normal text-slate-400">{unit.status === 'long-term' ? '/mo' : '/night'}</span>
                         </dd>
                       </div>
@@ -624,8 +626,11 @@ function UnitDetail({
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <BillingCard
-            title={unit.status === 'short-term' ? 'Nightly charge' : 'Monthly rent'}
-            amount={unit.monthlyRent}
+            title={unit.status === 'short-term' ? 'Nightly charge' : 'Agreed monthly rent'}
+            amount={unit.status === 'long-term' ? chargeAmount(unit, 'Rent') : unit.monthlyRent}
+            note={unit.status === 'long-term' && rentBreakdown(unit).maintenance > 0
+              ? `HOA maintenance ${formatMoney(rentBreakdown(unit).maintenance, unit.currency)} is taken from this; ISPO receives ${formatMoney(rentBreakdown(unit).rent, unit.currency)}`
+              : undefined}
             currency={unit.currency}
             fxRate={settings.fxRateJmdPerUsd}
             dueNote={unit.status === 'long-term' ? `Due on the ${unit.rentDueDay || 1}${ordinal(unit.rentDueDay || 1)} of each month` : undefined}
@@ -949,6 +954,7 @@ function BillingCard({
   amount,
   currency,
   fxRate,
+  note,
   dueNote,
   balance,
   balanceCurrency,
@@ -959,6 +965,7 @@ function BillingCard({
   amount: number;
   currency: Currency;
   fxRate: number;
+  note?: string;
   dueNote?: string;
   balance?: number;
   balanceCurrency: Currency;
@@ -975,6 +982,7 @@ function BillingCard({
       <span className="mt-0.5 block border-b border-slate-50 pb-1 font-mono text-[9px] text-slate-400">
         ≈ {formatMoney(convertIndicative(amount, currency, other, fxRate), other)} {other} (indicative)
       </span>
+      {note && <p className="mt-1.5 font-mono text-[10px] text-slate-500">{note}</p>}
       {dueNote && <p className="mt-1.5 text-[10px] font-medium text-slate-500">{dueNote}</p>}
       {balance !== undefined && (
         <p
@@ -1546,7 +1554,7 @@ function UnitEditor({
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <fieldset className="space-y-3 rounded-xl border border-slate-100 p-4">
             <legend className="font-mono text-[10px] font-semibold uppercase text-slate-400">
-              {form.status === 'short-term' ? 'Nightly rate' : 'Monthly rent'}
+              {form.status === 'short-term' ? 'Nightly rate' : 'Agreed monthly rent'}
             </legend>
             {rentApplies ? (
               <>
@@ -1616,6 +1624,14 @@ function UnitEditor({
                   )}{' '}
                   indicative
                 </p>
+                {form.status === 'long-term' && (
+                  <p className="rounded-lg bg-slate-50 p-2 font-mono text-[10px] leading-relaxed text-slate-500">
+                    On a rented villa this is taken out of the agreed rent, so changing it does not change what the tenant
+                    pays; ISPO receives the difference. It applies to months posted <strong>after</strong> the change; months
+                    already posted keep the amount they were billed at. To start a new rate on 1 January, save it after
+                    December is posted and before January is.
+                  </p>
+                )}
                 <Field label="Maintenance due day" htmlFor="ue-maintday">
                   <select id="ue-maintday" value={form.maintDueDay} onChange={e => set('maintDueDay', Number(e.target.value))} className={monoInputClass}>
                     {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
@@ -2366,40 +2382,6 @@ export function TenancyRecordDocument({
     return [...debits, ...credits].sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'charge' ? -1 : 1));
   }, [charges, payments, unit, units, start, end]);
 
-  /*
-   * What this document deliberately leaves out, measured so it can be declared.
-   *
-   * A tenant record is a record of the tenant's own account, and maintenance is
-   * the proprietor's liability — so rent is the whole of it, by design. What was
-   * missing was saying so. On 2026-09-02 Ro recorded a rent payment and a
-   * maintenance payment against C11, printed this document, and found only the
-   * rent: the reasonable conclusion is that the maintenance receipt was never
-   * saved. It was. It is simply not a tenant's business, and nothing on the page
-   * said that.
-   *
-   * The rule this now follows is the property's own, already written down for the
-   * operating statement: a document that quietly omits a class of money is not a
-   * narrower document, it is a misleading one. So the amount is named, with where
-   * to find it.
-   */
-  const excludedMaintenance = useMemo(() => {
-    if (!unit) return null;
-    const paid = paymentsForUnit(payments, unit, units).filter(
-      p => p.category === 'Maintenance' && p.status === 'completed' && inWindow(p.date)
-    );
-    const billed = chargesForUnit(charges, unit, units).filter(
-      c => c.category === 'Maintenance' && c.status === 'open' && inWindow(c.dueDate)
-    );
-    if (paid.length === 0 && billed.length === 0) return null;
-    const cur = billed[0]?.currency || paid[0]?.currency || 'JMD';
-    return {
-      currency: cur,
-      billed: sumMoney(billed.filter(c => c.currency === cur).map(c => c.amount)),
-      paid: sumMoney(paid.filter(p => p.currency === cur).map(p => p.amount)),
-      receipts: paid.length
-    };
-  }, [charges, payments, unit, units, start, end]);
-
   const currency = tenancy.currency || unit?.currency || 'JMD';
   const charged = sumMoney(rows.filter(r => r.currency === currency).map(r => r.debit));
   const paid = sumMoney(rows.filter(r => r.currency === currency).map(r => r.credit));
@@ -2418,27 +2400,6 @@ export function TenancyRecordDocument({
         generatedBy={generatedBy}
       />
 
-      <section className="mb-5 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
-        {[
-          ['Tenant', tenancy.tenantName],
-          ['Villa', getUnitDisplayName(tenancy.unitNumber)],
-          ['Moved in', tenancy.startedOn ? formatDayLabel(tenancy.startedOn) : 'Not recorded'],
-          [
-            'Moved out',
-            tenancy.endedOn ? formatDayLabel(tenancy.endedOn) : tenancy.status === 'active' ? 'Still in occupancy' : 'Not recorded'
-          ],
-          ['Agreed rent', `${formatMoney(tenancy.monthlyRent, currency)} per month`],
-          ['Rent due day', tenancy.rentDueDay ? `${tenancy.rentDueDay} of each month` : '-'],
-          ['Email', tenancy.tenantEmail || 'Not recorded'],
-          ['Telephone', tenancy.tenantPhone || 'Not recorded']
-        ].map(([label, value]) => (
-          <div key={label}>
-            <span className="block font-mono text-[9px] uppercase text-slate-500">{label}</span>
-            <span className="font-semibold text-slate-900">{value}</span>
-          </div>
-        ))}
-      </section>
-
       {tenancy.evicted && (
         <div className="print-emphasis mb-5 rounded-lg border-2 border-red-600 bg-red-50 p-3">
           <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-red-700">Tenancy ended by eviction</p>
@@ -2455,13 +2416,8 @@ export function TenancyRecordDocument({
       )}
 
       <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">
-        Rent account for this occupancy
+        Account history
       </h3>
-      <p className="mb-2 text-[10px] italic text-slate-600">
-        This is the tenant&rsquo;s own account and covers rent only. Maintenance contributions are the
-        proprietor&rsquo;s liability, not the tenant&rsquo;s, and are never charged to this account.
-      </p>
-
       {rows.length === 0 ? (
         <p className="text-xs italic text-slate-500">No rent charges or receipts fall inside this occupancy period.</p>
       ) : (
@@ -2504,28 +2460,6 @@ export function TenancyRecordDocument({
         <strong>
           Closing position: {balance > 0 ? `${formatMoneyLong(balance, currency)} outstanding` : balance < 0 ? `${formatMoneyLong(Math.abs(balance), currency)} in credit` : 'settled in full'}
         </strong>
-      </p>
-
-      {excludedMaintenance && (
-        <p className="mt-4 rounded-lg border border-slate-300 bg-slate-50 p-3 text-[11px] text-slate-700 print-outline">
-          <strong>Not included on this record:</strong> maintenance contributions for this villa -{' '}
-          {formatMoney(excludedMaintenance.billed, excludedMaintenance.currency)} billed
-          {excludedMaintenance.receipts > 0 && (
-            <>
-              {' '}and {formatMoney(excludedMaintenance.paid, excludedMaintenance.currency)} received across{' '}
-              {excludedMaintenance.receipts} receipt{excludedMaintenance.receipts === 1 ? '' : 's'}
-            </>
-          )}
-          . That is the proprietor&rsquo;s account, not the tenant&rsquo;s. It is recorded, and it appears on the
-          villa&rsquo;s unit ledger and on the owner&rsquo;s statement.
-        </p>
-      )}
-
-      <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
-        This record covers {tenancy.tenantName} only, for the occupancy dates shown above. Rent charged and received
-        outside those dates belongs to another occupancy and is deliberately excluded. For everything that has happened
-        to this villa across all occupants, every charge, every receipt in every category, utilities, expenses and
-        activity, print the unit ledger instead.
       </p>
 
       <PrintSignatures left="Prepared by" leftName={generatedBy} right="Tenant acknowledgement" rightName={tenancy.tenantName} />

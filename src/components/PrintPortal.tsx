@@ -165,8 +165,8 @@ export function PrintLetterhead({
   const [markFailed, setMarkFailed] = useState(false);
 
   return (
-    <div className="mb-6 flex items-start justify-between gap-4 border-b-2 border-slate-900 pb-4">
-      <div>
+    <div className="mb-6 flex items-stretch justify-between gap-4 border-b-2 border-slate-900 pb-4">
+      <div className="flex flex-col items-start justify-between">
         {markFailed ? (
           <h1 className="font-display text-xl font-bold uppercase tracking-wider text-slate-900">Villaggio Del Sol</h1>
         ) : (
@@ -176,21 +176,27 @@ export function PrintLetterhead({
             onError={() => setMarkFailed(true)}
             /* Forced, so the gold is not dropped by a printer set to ignore
                background graphics or by a print-to-PDF default. */
-            className="vds-letterhead-mark h-24 w-auto"
+            className="vds-letterhead-mark h-24 w-auto max-w-none shrink-0 object-contain"
           />
         )}
         <p className="mt-1 font-mono text-xs text-slate-500">Ocho Rios, St. Ann, Jamaica</p>
-        <p className="mt-0.5 text-[10px] text-slate-400">16-Unit Gated Residence, Internal Operations Record</p>
       </div>
-      <div className="text-right">
+      {/*
+        Same height as the left column, so the two sides share a top and a bottom:
+        the document label sits level with the top of the mark, and the name, date
+        and author finish on the line the address does.
+      */}
+      <div className="flex flex-col items-end justify-between text-right">
         <div className="print-outline inline-block rounded-lg border border-slate-900 bg-white px-3 py-1 font-mono text-[10px] font-bold uppercase text-slate-900">
           {documentTitle}
         </div>
-        {meta && <p className="mt-2 font-mono text-[10px] text-slate-500">{meta}</p>}
-        <p className="mt-1 font-mono text-[10px] text-slate-500">
-          Generated {new Date().toLocaleDateString()} {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-        </p>
-        {generatedBy && <p className="font-mono text-[10px] text-slate-500">by {generatedBy}</p>}
+        <div>
+          {meta && <p className="font-mono text-[10px] text-slate-500">{meta}</p>}
+          <p className="mt-0.5 font-mono text-[10px] text-slate-500">
+            Generated {new Date().toLocaleDateString()} {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </p>
+          {generatedBy && <p className="font-mono text-[10px] text-slate-500">by {generatedBy}</p>}
+        </div>
       </div>
     </div>
   );
