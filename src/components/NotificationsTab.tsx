@@ -20,7 +20,7 @@ import {
   Tenancy,
   AppSettings
 } from '../types';
-import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, maintenanceFundedFromRent, scheduledCharges, unbilledOccupancy } from '../lib/finance';
+import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, maintenanceFundedFromRent, tenanciesMissingMoveInDate, scheduledCharges, unbilledOccupancy } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
 import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
@@ -211,6 +211,26 @@ export default function NotificationsTab({
       unbilledMonths: row.months
     }));
 
+    /*
+     * A sitting tenant with no move-in date. Shown because the absence is what
+     * silently disables the unbilled-months alarm for that villa — the warning
+     * has to come from here, since nothing else would ever mention it.
+     */
+    const missingMoveIn = tenanciesMissingMoveInDate(units, tenancies).map<Item>(row => ({
+      id: `movein-${row.tenancy.id}`,
+      type: 'unbilled',
+      title: `Move-in date missing, ${getUnitDisplayName(row.unit.number)}`,
+      description:
+        `${row.tenancy.tenantName || 'The sitting tenant'} has no move-in date on record. ` +
+        'Until one is entered this villa is left out of the check for occupied months that were never billed, ' +
+        'is not counted as occupied, and will not have first and last month\'s rent raised. ' +
+        'Set it on the tenancy from the villa page.',
+      amount: 0,
+      currency: row.unit.currency,
+      severity: 'medium',
+      ageDays: 0
+    }));
+
     // Leases running out. A fixed term that lapses unnoticed rolls the tenant
     // onto month-to-month terms nobody chose, at the old rent — so this has to be
     // visible before the date, not after it.
@@ -278,7 +298,7 @@ export default function NotificationsTab({
       isBooking: true
     }));
 
-    return [...overlapItems, ...leaseItems, ...unbilledItems, ...accounts, ...utilityItems, ...expenseItems, ...scheduledItems].sort(
+    return [...overlapItems, ...leaseItems, ...unbilledItems, ...missingMoveIn, ...accounts, ...utilityItems, ...expenseItems, ...scheduledItems].sort(
       (a, b) => b.ageDays - a.ageDays
     );
   }, [units, charges, payments, utilities, expenses, bookings, tenancies]);

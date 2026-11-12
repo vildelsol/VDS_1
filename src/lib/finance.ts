@@ -608,6 +608,37 @@ export interface MaintenanceReceiptMove {
   unit: Unit;
 }
 
+/**
+ * Let villas whose sitting tenancy has no move-in date recorded.
+ *
+ * The date looks administrative, and mostly is — but `unbilledOccupancy` skips a
+ * tenancy without one entirely, so the alarm that catches "this tenant has lived
+ * here four months and was never billed" is silently switched off for exactly
+ * those villas. First and last month's rent is not raised either, and the villa
+ * does not count towards occupancy. None of that announces itself.
+ *
+ * A tenancy opened by a plain status change deliberately carries no date
+ * (`syncTenancy`: unknown is left unknown, because stamping today invented
+ * move-in dates for tenants of many years). That decision stands; what was
+ * missing is anybody being told which villas are in that state.
+ */
+export interface TenancyMissingMoveIn {
+  unit: Unit;
+  tenancy: Tenancy;
+}
+
+export function tenanciesMissingMoveInDate(units: Unit[], tenancies: Tenancy[]): TenancyMissingMoveIn[] {
+  const out: TenancyMissingMoveIn[] = [];
+  for (const tenancy of tenancies) {
+    if (tenancy.status !== 'active' || tenancy.endedOn) continue;
+    if (tenancy.startedOn) continue;
+    const unit = units.find(u => u.id === tenancy.unitId);
+    if (!unit || unit.status !== 'long-term') continue;
+    out.push({ unit, tenancy });
+  }
+  return out.sort((a, b) => a.unit.number.localeCompare(b.unit.number, undefined, { numeric: true }));
+}
+
 export function maintenanceReceiptsToMove(
   units: Unit[],
   charges: Charge[],
@@ -643,37 +674,36 @@ export function maintenanceReceiptsToMove(
      * tenancy on file there is no window at all and nothing is moved, because
      * there is then no tenant for the money to belong to.
      */
-    const here = tenancies
-      .filter(t => t.unitId === unit.id && t.status === 'active' && !t.endedOn)
-      .sort((a, b) => (b.startedOn || '').localeCompare(a.startedOn || ''))[0];
-    const from = here?.startedOn || '';
-    const mine = payments.filter(p => p.unitId === unit.id && p.currency === currency && p.status === 'completed' && !p.derived);
     /*
-     * No window, so nothing can be judged — but say so rather than going quiet.
+     * Which months this villa's maintenance could have come out of rent at all.
      *
-     * A tenancy opened by a plain status change deliberately carries no move-in
-     * date (`syncTenancy`: unknown is left unknown, because stamping today
-     * invented move-in dates for tenants of many years). Without one there is no
-     * way to tell this tenant's money from the owner's, and silently moving
-     * nothing would read in the office as "there was nothing to fix". Every
-     * candidate is reported instead, with what to do about it.
+     * Deliberately NOT the move-in date. That is an administrative field, very
+     * often blank (a tenancy opened by a plain status change carries none on
+     * purpose), and Ro's ruling (2026-11-12) is that it must not change what the
+     * system does. It is used only as an extra lower bound where it happens to be
+     * filled in.
+     *
+     * The ledger answers it on its own: a receipt can only be part of a tenant's
+     * rent if the villa was actually billed rent for the month that receipt falls
+     * in. A month with no rent charge is a month nobody was renting, so the levy
+     * came out of the proprietor's own pocket and stays theirs. This is the same
+     * per-month rule `settledFromRent` uses, and it holds with no dates kept up:
+     * a villa let, emptied, owner-occupied and let again keeps each stretch's
+     * money with whoever actually paid it, even where the first tenant's charges
+     * are still open years later.
      */
-    if (!from) {
-      for (const p of mine.filter(x => x.category === 'Maintenance')) {
-        skipped.push({
-          payment: p,
-          reason: here
-            ? "this villa's tenancy has no move-in date on record, so the tenant's money cannot be told from the owner's — set the move-in date on the tenancy first"
-            : 'this villa is let but has no tenancy on record, so there is no tenant for this money to belong to'
-        });
-      }
-      continue;
-    }
+    const rentMonths = new Set(rentCharges.map(c => c.periodMonth));
+    const movedIn = tenancies
+      .filter(t => t.unitId === unit.id && t.status === 'active' && !t.endedOn)
+      .map(t => t.startedOn || '')
+      .sort()
+      .pop() || '';
+    const mine = payments.filter(p => p.unitId === unit.id && p.currency === currency && p.status === 'completed' && !p.derived);
     const billed = rentCharges.reduce((a, c) => a + cents(c.amount), 0);
     const received = mine.filter(p => p.category === 'Rent').reduce((a, p) => a + cents(netPaidAsOf(p)), 0);
     let owed = Math.max(0, billed - received);
     const candidates = mine
-      .filter(p => p.category === 'Maintenance' && p.date >= from)
+      .filter(p => p.category === 'Maintenance' && rentMonths.has(p.date.slice(0, 7)) && p.date >= movedIn)
       .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
     for (const p of candidates) {
       const amount = cents(p.amount);

@@ -212,9 +212,18 @@ export default async function run({ port, projectRoot }) {
     T.check('and the old tenant\'s still-open charges do not reopen the window',
       !r2.move.some(m => m.payment.date < '2026-10-01'));
 
-    // No tenancy on file at all: a long-term villa with nobody recorded in it.
-    const r3 = F.maintenanceReceiptsToMove([u], charges, [tenantPaid, pay('w', 'Rent', 80000, '2026-10-07')], []);
-    T.check('with no tenancy on record nothing is moved, because there is no tenant for it to belong to', r3.move.length === 0);
+    /*
+     * No tenancy on file, or one with no move-in date. Ro's ruling (2026-11-12):
+     * the move-in date is administrative and must not change what the system
+     * does. The villa's own rent history has to carry the judgement instead, and
+     * it still keeps the owner's money out.
+     */
+    const money = [...ownerPaid, tenantPaid, pay('w', 'Rent', 80000, '2026-10-07')];
+    for (const [label, tens] of [['no tenancy at all', []], ['a tenancy with no move-in date', [{ id: 't', unitId: 'w', status: 'active', startedOn: '' }]]]) {
+      const r3 = F.maintenanceReceiptsToMove([u], charges, money, tens);
+      T.check(`with ${label}, the move still works from the villa's rent history`, r3.move.length === 1 && r3.move[0].payment.id === tenantPaid.id, JSON.stringify(r3.move.map(m => [m.payment.date, m.payment.payerName])));
+      T.check(`and with ${label}, the owner's own money is still left alone`, !r3.move.some(m => m.payment.payerName === 'The owner'));
+    }
   }
 
   /* ================= 2. 2,000 randomised books ================= */
