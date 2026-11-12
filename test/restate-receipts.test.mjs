@@ -14,7 +14,17 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 import { startServer, makeClient, reporter, activateAdmin, makeLongTermUnit, recordAndConfirmPayment } from './harness.mjs';
+
+/** The real finance library, bundled, so the documents are built the way the app builds them. */
+async function bundleFinance(projectRoot) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-fin-'));
+  const out = path.join(dir, 'finance.mjs');
+  await build({ entryPoints: [path.join(projectRoot, 'src', 'lib', 'finance.ts')], bundle: true, format: 'esm', platform: 'neutral', outfile: out, logLevel: 'silent' });
+  return pathToFileURL(out).href;
+}
 
 export const title = 'Moving separately keyed maintenance receipts into rent';
 
@@ -107,6 +117,7 @@ let db = (await c.get('/api/db')).body;
     T.check('without a session it is refused', (await anon.post('/api/payments/restate-maintenance-receipts', { confirm: true })).status === 401);
 
     // --- confirm ---
+    const dbBefore = JSON.parse(JSON.stringify(db));
     const before = Object.fromEntries(db.payments.map(p => [p.id, { ...p }]));
     const done = await c.post('/api/payments/restate-maintenance-receipts', { confirm: true });
     db = (await c.get('/api/db')).body;
@@ -132,6 +143,75 @@ let db = (await c.get('/api/db')).body;
     const again = await c.post('/api/payments/restate-maintenance-receipts', { confirm: true });
     const db2 = (await c.get('/api/db')).body;
     T.check('running it again moves nothing', again.body.moved === 0 && JSON.stringify(db2.payments) === JSON.stringify(db.payments));
+    /* ===== the rest of the ecosystem, after the move (Ro, 2026-11-12) =====
+     *
+     * Moving a receipt from Maintenance to Rent moves income between the two
+     * books: ISPO's rent goes up, the corporation's cash levy goes down, and the
+     * levy is made good by a derived credit that exists only in the browser. The
+     * balances were checked above; these are the documents built on top of them.
+     */
+    const F = await import(await bundleFinance(projectRoot));
+    const settled = p => [...p, ...F.settledFromRent(dbBefore.charges, p)];
+    const cashOf = list => list.filter(x => x.status === 'completed' && !x.derived).reduce((a, x) => a + cents(x.amount), 0);
+
+    T.check('the property holds exactly the same cash as before the move',
+      cashOf(db.payments) === cashOf(dbBefore.payments), `${cashOf(db.payments)} vs ${cashOf(dbBefore.payments)}`);
+
+    const UNIT = db.units.find(u => u.id === 'unit-1');
+    const snapBefore = { charges: dbBefore.charges, payments: settled(dbBefore.payments) };
+    const after = { charges: db.charges, payments: [...db.payments, ...F.settledFromRent(db.charges, db.payments)] };
+
+    /*
+     * 1. The combined view, per villa. It deliberately drops a let villa's
+     * Maintenance receipts, because those are ISPO handing the corporation the
+     * levy out of rent it has already counted — a transfer, not money from
+     * anybody. That is why this is checked per villa against what the TENANT
+     * actually handed over, not against the property's whole cash position.
+     *
+     * Before the move, a tenant who paid 100,000 as 80,000 rent + 20,000 levy had
+     * the levy half dropped as a transfer, so the combined view reported only
+     * 80,000 of their money. Moving the receipt is what makes it read 100,000.
+     */
+    const combinedFor = (snap, unitId) => {
+      const comb = F.consolidateEverything(snap.charges, snap.payments);
+      return comb.payments.filter(p => p.unitId === unitId && p.status === 'completed' && p.currency === 'JMD')
+        .reduce((a, p) => a + cents(p.amount) - cents(p.refundedAmount || 0), 0);
+    };
+    const handedOver = (snap, unitId) =>
+      snap.payments.filter(p => p.unitId === unitId && p.status === 'completed' && !p.derived && p.currency === 'JMD')
+        .reduce((a, p) => a + cents(p.amount) - cents(p.refundedAmount || 0), 0);
+
+    for (const id of ['unit-1', 'unit-2']) {
+      T.check(`${id}: before the move the combined view under-reported the tenant, counting only the rent half`,
+        combinedFor(snapBefore, id) < handedOver(snapBefore, id), `${combinedFor(snapBefore, id)} vs ${handedOver(snapBefore, id)}`);
+      T.check(`${id}: after the move it reports every penny that tenant actually handed over, once`,
+        combinedFor(after, id) === handedOver(after, id), `${combinedFor(after, id)} vs ${handedOver(after, id)}`);
+    }
+
+    /*
+     * The residual, recorded deliberately: a Maintenance receipt on a let villa
+     * that the move did NOT take — unit-3's 50,000, which is not a whole number
+     * of months of the levy — is still dropped by the combined view as though it
+     * were a transfer. On a let villa that assumption no longer always holds once
+     * genuine levy money can sit outside the transfer pattern. Flagged for Ro's
+     * ruling 2026-11-12; asserted here so the behaviour cannot drift unnoticed.
+     */
+    T.check('a let villa\'s leftover maintenance receipt is still treated as an inter-book transfer by the combined view (known, pending Ro)',
+      combinedFor(after, 'unit-3') === 0 && handedOver(after, 'unit-3') === cents(50000),
+      `${combinedFor(after, 'unit-3')} vs ${handedOver(after, 'unit-3')}`);
+
+    // 2. The corporation is still shown its levy, now funded from the rent.
+    const own = F.ownerStatement(UNIT, db.units, after.charges, after.payments, [], [], 'JMD', '2026-09-01', '2026-11-30');
+    T.check("the owner statement still shows the villa's levy settled after its receipts moved into rent",
+      cents(own.maintenanceOutstanding) === 0, String(own.maintenanceOutstanding));
+
+    // 3. What the proprietors' contributions paid for is unchanged by a re-categorisation.
+    const opsBefore = F.operationsStatement([], snapBefore.payments, 'JMD', '2026-09-01', '2026-11-30');
+    const opsAfter = F.operationsStatement([], after.payments, 'JMD', '2026-09-01', '2026-11-30');
+    T.check('the operations statement reports the same maintenance collected before and after',
+      cents(opsBefore.maintenanceCollected) === cents(opsAfter.maintenanceCollected),
+      `${opsBefore.maintenanceCollected} vs ${opsAfter.maintenanceCollected}`);
+
     T.check('server healthy', (await c.get('/api/health')).status === 200);
   } catch (err) {
     T.check('test ran without error', false, err.stack || err.message);

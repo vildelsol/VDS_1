@@ -31,6 +31,7 @@
  */
 
 import type { Database } from './db';
+import { settledFromRent } from '../src/lib/finance';
 
 export type IntegritySeverity =
   /** The books contradict themselves. Money is misstated somewhere. */
@@ -483,6 +484,71 @@ export function checkIntegrity(db: Database): IntegrityReport {
       'A charge or payment points at a villa that is no longer on the register, so it will not appear on any statement.',
       orphaned
     );
+
+    /* ------------- the two books accounting for each other -------------
+     *
+     * The levy a tenant pays is inside their rent, and the corporation raises
+     * the same levy as its own charge. Three separate figures therefore have to
+     * agree at all times: the split recorded on the rent charge, the levy the
+     * corporation charged, and the credit worked out from rent received. Each is
+     * produced by different code on a different screen, so a change to one can
+     * drift from the others without anything failing — which is precisely the
+     * kind of silent misstatement this file exists to catch.
+     */
+
+    // A split that does not add up misstates the tenant's bill or ISPO's share.
+    const brokenSplit = charges
+      .filter(c => c.category === 'Rent' && (c.rentPortion !== undefined || c.maintenancePortion !== undefined))
+      .filter(c => cents(c.rentPortion || 0) + cents(c.maintenancePortion || 0) !== cents(c.amount))
+      .map(c => `charge ${c.id} (${c.unitNumber} ${c.periodMonth})`);
+    add(
+      'serious',
+      'rent-split-does-not-add-up',
+      'A rent charge says the tenant pays one figure but its rent and maintenance parts add up to another.',
+      brokenSplit
+    );
+
+    const negativeSplit = charges
+      .filter(c => c.category === 'Rent' && ((c.rentPortion || 0) < 0 || (c.maintenancePortion || 0) < 0))
+      .map(c => `charge ${c.id} (${c.unitNumber} ${c.periodMonth})`);
+    add('serious', 'negative-rent-split', 'A rent charge carries a negative rent or maintenance part.', negativeSplit);
+
+    /*
+     * The levy settled out of rent, against the levy actually charged. This is
+     * the one figure nobody can see directly: it is worked out in the browser and
+     * never stored, so if it ever exceeded what was charged the corporation would
+     * read as paid on money that was never owed, and no record would show why.
+     */
+    try {
+      const derived = settledFromRent(charges, payments);
+      const overSettled: string[] = [];
+      const byUnit = new Map<string, number>();
+      for (const d of derived) byUnit.set(`${d.unitId}|${d.currency}`, (byUnit.get(`${d.unitId}|${d.currency}`) || 0) + cents(d.amount));
+      for (const [key, credited] of byUnit) {
+        const [unitId, currency] = key.split('|');
+        const unit = units.find(u => u.id === unitId);
+        const chargedLevy = charges
+          .filter(c => c.unitId === unitId && c.category === 'Maintenance' && c.status === 'open' && c.currency === currency)
+          .reduce((a, c) => a + cents(c.amount), 0);
+        const cashLevy = payments
+          .filter(p => p.unitId === unitId && p.category === 'Maintenance' && p.status === 'completed' && p.currency === currency)
+          .reduce((a, p) => a + cents(p.amount) - cents(p.refundedAmount || 0), 0);
+        const rentIn = payments
+          .filter(p => p.unitId === unitId && p.category === 'Rent' && p.status === 'completed' && p.currency === currency)
+          .reduce((a, p) => a + cents(p.amount) - cents(p.refundedAmount || 0), 0);
+        const where = `villa ${unit?.number || unitId} (${currency})`;
+        if (cashLevy <= chargedLevy && cashLevy + credited > chargedLevy) overSettled.push(`${where}: settled ${(cashLevy + credited) / 100} against ${chargedLevy / 100} charged`);
+        else if (credited > rentIn) overSettled.push(`${where}: ${credited / 100} taken from rent, but only ${rentIn / 100} of rent was received`);
+      }
+      add(
+        'serious',
+        'levy-settled-beyond-what-was-charged',
+        'More maintenance has been settled out of rent than the villa was charged, or than the rent actually received.',
+        overSettled
+      );
+    } catch {
+      add('warning', 'levy-from-rent-uncheckable', 'The maintenance settled from rent could not be worked out, so it has not been checked.', ['settledFromRent']);
+    }
 
     return {
       checkedAt: new Date().toISOString(),
