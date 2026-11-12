@@ -60,7 +60,7 @@ export default async function run({ port, projectRoot }) {
     T.check('the corporation still bills its maintenance: 4 villas x 3 x 20,000 = 240,000', strataBilled.total === 240000, String(strataBilled.total));
 
     // ---- the combined view ----
-    const merged = F.consolidateEverything(db.charges, db.payments);
+    const merged = F.consolidateEverything(db.charges, db.payments, db.units);
     const billed = F.chargedInPeriod(merged.charges, 'JMD', from, to);
     const collected = F.collectedInPeriod(merged.payments, 'JMD', from, to);
     const rawBilled = F.chargedInPeriod(db.charges, 'JMD', from, to);
@@ -86,7 +86,7 @@ export default async function run({ port, projectRoot }) {
     const c1 = db.charges.find(x => x.unitId === 'unit-1' && x.category === 'Maintenance' && x.periodMonth === '2026-06');
     await c.post(`/api/charges/${c1.id}/void`, { reason: 'Voided to test pairing.' });
     const db2 = (await c.get('/api/db')).body;
-    const m2 = F.consolidateEverything(db2.charges, db2.payments);
+    const m2 = F.consolidateEverything(db2.charges, db2.payments, db2.units);
     const rentJune = m2.charges.find(x => x.unitId === 'unit-1' && x.category === 'Rent' && x.periodMonth === '2026-06' && x.status === 'open');
     T.check('with no maintenance charge to pair with, the rent keeps all 75,000', rentJune.amount === 75000, String(rentJune.amount));
     T.check('a rent charge with no split (legacy) is never touched', F.consolidateEverything([{ ...rentJune, maintenancePortion: undefined, rentPortion: undefined }], []).charges[0].amount === 75000);

@@ -31,7 +31,7 @@
  */
 
 import type { Database } from './db';
-import { settledFromRent } from '../src/lib/finance';
+import { ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
 
 export type IntegritySeverity =
   /** The books contradict themselves. Money is misstated somewhere. */
@@ -512,6 +512,39 @@ export function checkIntegrity(db: Database): IntegrityReport {
       .filter(c => c.category === 'Rent' && ((c.rentPortion || 0) < 0 || (c.maintenancePortion || 0) < 0))
       .map(c => `charge ${c.id} (${c.unitNumber} ${c.periodMonth})`);
     add('serious', 'negative-rent-split', 'A rent charge carries a negative rent or maintenance part.', negativeSplit);
+
+    /*
+     * The two screens must agree on what an inter-book transfer is.
+     *
+     * The combined view treats a let villa's levy receipts as ISPO handing the
+     * corporation its share, because the levy sits inside the rent. The ISPO
+     * operating statement asks a different question — `letOnOwnAccount` — and
+     * shows the same money as "contributions paid to the corporation". Where the
+     * two answers differ, one screen counts a receipt as income arriving and the
+     * other as money moving between the books, and the property's own reports
+     * disagree about how much came in.
+     *
+     * Not an error on its own: a villa genuinely owned by somebody else, and let,
+     * is funded from rent and is correctly NOT on VDS's own account. So this is
+     * reported as something to look at, not as a contradiction in the money.
+     */
+    const own = ownAccountUnitIds(units);
+    const disagree = units
+      .filter(u => u.status === 'long-term')
+      .filter(u => {
+        const funded = charges.some(c => c.unitId === u.id && c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0);
+        return funded && !own.has(u.id);
+      })
+      .filter(u => payments.some(p => p.unitId === u.id && p.category === 'Maintenance' && p.status === 'completed'))
+      .map(u => `villa ${u.number} (owner ${u.ownerName || 'not recorded'})`);
+    add(
+      'warning',
+      'transfer-rule-disagrees-between-screens',
+      'This villa\'s levy comes out of its rent, but it is not marked as let on VDS\'s own account. ' +
+        'The combined view treats its maintenance receipts as money moved between the two books; the ISPO operating statement does not. ' +
+        'If VDS owns it, tick "let on own account" on the villa. If somebody else owns it, nothing is wrong.',
+      disagree
+    );
 
     /*
      * The levy settled out of rent, against the levy actually charged. This is

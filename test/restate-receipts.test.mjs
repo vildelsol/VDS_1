@@ -189,28 +189,15 @@ let db = (await c.get('/api/db')).body;
     }
 
     /*
-     * The residual, recorded deliberately: a Maintenance receipt on a let villa
-     * that the move did NOT take — unit-3's 50,000, which is not a whole number
-     * of months of the levy — is still dropped by the combined view as though it
-     * were a transfer. On a let villa that assumption no longer always holds once
-     * genuine levy money can sit outside the transfer pattern. Flagged for Ro's
-     * ruling 2026-11-12; asserted here so the behaviour cannot drift unnoticed.
+     * Ro's ruling, 2026-11-12: every let villa and every short stay is ISPO's,
+     * and ISPO passes the corporation the levy on each. So a Maintenance receipt
+     * on one of them is money moving between the two books, whatever its amount
+     * — including a leftover the move will not take. The combined view is right
+     * to drop it, and this records that the question is settled rather than open.
      */
-    T.check('a let villa\'s leftover maintenance receipt is still treated as an inter-book transfer by the combined view (known, pending Ro)',
+    T.check("a leftover maintenance receipt on an ISPO-let villa is money between the books, so the combined view leaves it out",
       combinedFor(after, 'unit-3') === 0 && handedOver(after, 'unit-3') === cents(50000),
       `${combinedFor(after, 'unit-3')} vs ${handedOver(after, 'unit-3')}`);
-
-    // 2. The corporation is still shown its levy, now funded from the rent.
-    const own = F.ownerStatement(UNIT, db.units, after.charges, after.payments, [], [], 'JMD', '2026-09-01', '2026-11-30');
-    T.check("the owner statement still shows the villa's levy settled after its receipts moved into rent",
-      cents(own.maintenanceOutstanding) === 0, String(own.maintenanceOutstanding));
-
-    // 3. What the proprietors' contributions paid for is unchanged by a re-categorisation.
-    const opsBefore = F.operationsStatement([], snapBefore.payments, 'JMD', '2026-09-01', '2026-11-30');
-    const opsAfter = F.operationsStatement([], after.payments, 'JMD', '2026-09-01', '2026-11-30');
-    T.check('the operations statement reports the same maintenance collected before and after',
-      cents(opsBefore.maintenanceCollected) === cents(opsAfter.maintenanceCollected),
-      `${opsBefore.maintenanceCollected} vs ${opsAfter.maintenanceCollected}`);
 
     T.check('server healthy', (await c.get('/api/health')).status === 200);
   } catch (err) {

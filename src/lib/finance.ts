@@ -746,7 +746,8 @@ export function maintenanceReceiptsToMove(
  */
 export function consolidateEverything(
   charges: Charge[],
-  payments: Payment[]
+  payments: Payment[],
+  units: Unit[] = []
 ): { charges: Charge[]; payments: Payment[]; eliminatedCharges: number } {
   const maintenance = new Map<string, Charge>();
   for (const c of charges) {
@@ -766,7 +767,24 @@ export function consolidateEverything(
     eliminated++;
     return { ...c, amount: round2(c.amount - intra), maintenancePortion: round2(c.maintenancePortion - intra) };
   });
-  const keptPayments = payments.filter(p => !(p.category === 'Maintenance' && fundedFromRent.has(`${p.unitId}|${p.currency}`)));
+  /*
+   * A villa VDS lets on its own account, in ANY letting mode.
+   *
+   * Inferring the transfer from the rent charges alone missed the short stays
+   * entirely: a villa on Airbnb raises no rent charge, so it never entered
+   * `fundedFromRent`, and the levy ISPO handed the corporation on it was counted
+   * as income on top of the guest's booking — the same money twice. (Measured on
+   * a two-month fixture: J$130,000 reported against J$90,000 actually received.)
+   *
+   * `letOnOwnAccount` is the question being asked, and `operatingStatement` was
+   * already using it for exactly this figure under the name `internalTransfer`.
+   * Both screens now read the same flag, so they cannot disagree about whether a
+   * receipt is money arriving or money moving between the two books.
+   */
+  const ownAccount = ownAccountUnitIds(units);
+  const keptPayments = payments.filter(
+    p => !(p.category === 'Maintenance' && (ownAccount.has(p.unitId) || fundedFromRent.has(`${p.unitId}|${p.currency}`)))
+  );
   return { charges: adjusted, payments: keptPayments, eliminatedCharges: eliminated };
 }
 

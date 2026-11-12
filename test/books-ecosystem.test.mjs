@@ -123,7 +123,7 @@ export default async function run({ port, projectRoot }) {
         raw2.filter(p => p.status === 'completed' && p.currency === cur && p.date >= FROM && p.date <= TO)
           .filter(p => !(p.category === 'Maintenance' && fundedFromRent.has(`${p.unitId}|${p.currency}`)))
           .reduce((a, p) => a + C(p.amount) - C(p.refundedAmount || 0), 0);
-      const comb = F.consolidateEverything(db.charges, settled);
+      const comb = F.consolidateEverything(db.charges, settled, db.units);
       const everything = F.collectedInPeriod(comb.payments, cur, FROM, TO).total;
       T.check(`${cur}: the combined view reports exactly the money that came in from outside, counting the levy passed between the books once`,
         C(everything) === expected, `${C(everything)} vs ${expected}`);
@@ -139,6 +139,29 @@ export default async function run({ port, projectRoot }) {
           .reduce((a, p) => a + C(p.amount) - C(p.refundedAmount || 0), 0);
         T.check(`${cur}: villa ${u.number}'s tenant is counted for every penny they paid, and no more`, counted === handed, `${counted} vs ${handed}`);
       }
+    }
+
+    /* ---------- 2b. a short stay ISPO lets on its own account ---------- */
+    /*
+     * A villa on Airbnb raises no rent charge, so inferring the transfer from the
+     * rent charges never reached it: the levy ISPO handed the corporation was
+     * counted as income on top of the guest's money. Ro, 2026-11-12: every let
+     * villa AND every short stay is ISPO's, and ISPO passes the corporation its
+     * levy on each.
+     */
+    {
+      const short = { id: 'sx', number: 'SX', ownerName: 'VDS', status: 'short-term', letOnOwnAccount: true,
+        monthlyRent: 0, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1 };
+      const mc = m => ({ id: `mx-${m}`, unitId: 'sx', unitNumber: 'SX', category: 'Maintenance', periodMonth: m, dueDate: `${m}-01`,
+        amount: 20000, currency: 'JMD', status: 'open', payerName: 'VDS', createdAt: '', createdBy: '' });
+      const px = (cat, amt, date, who) => ({ id: `px-${cat}-${date}`, receiptNo: `RX${date}`, payerName: who, unitId: 'sx', unitNumber: 'SX',
+        category: cat, amount: amt, currency: 'JMD', date, method: 'Cash', reference: '', notes: '', staffMember: 's', status: 'completed' });
+      const ch = ['2026-09', '2026-10'].map(mc);
+      const ps = [px('Booking', 90000, '2026-09-10', 'A guest'), px('Maintenance', 20000, '2026-09-11', 'VDS'), px('Maintenance', 20000, '2026-10-11', 'VDS')];
+      const got = F.collectedInPeriod(F.consolidateEverything(ch, ps, [short]).payments, 'JMD', '2026-09-01', '2026-10-31').total;
+      T.check('a short stay counts the guest\'s money and not the levy ISPO passed across', C(got) === C(90000), `${got} vs 90000`);
+      const blind = F.collectedInPeriod(F.consolidateEverything(ch, ps, []).payments, 'JMD', '2026-09-01', '2026-10-31').total;
+      T.check('and without the own-account flag it would double count — which is what makes the flag load-bearing', C(blind) === C(130000), `${blind}`);
     }
 
     /* ---------- 3. Owners Statements roll up to the corporation's book ---------- */

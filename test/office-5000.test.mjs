@@ -158,7 +158,7 @@ export default async function run({ port, projectRoot }) {
       }
 
       // 5. The combined view may not ask for more than the two books separately do.
-      const combined = F.consolidateEverything(db.charges, db.payments.concat(derived));
+      const combined = F.consolidateEverything(db.charges, db.payments.concat(derived), db.units);
       const rawBilled = db.charges.filter(x => x.status === 'open').reduce((a, x) => a + C(x.amount), 0);
       const combBilled = combined.charges.filter(x => x.status === 'open').reduce((a, x) => a + C(x.amount), 0);
       if (combBilled > rawBilled) problems.push(`the combined view bills ${combBilled} against ${rawBilled} raised`);

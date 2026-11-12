@@ -85,7 +85,7 @@ export default function BoardPack({
    */
   const strataCosts = strataExpenses(expenses);
   // Money on both books counted once; see consolidateEverything.
-  const combined = consolidateEverything(charges, payments);
+  const combined = consolidateEverything(charges, payments, units);
 
   const byCurrency = (['JMD', 'USD'] as Currency[])
     .map(currency => {

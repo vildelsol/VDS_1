@@ -166,8 +166,8 @@ export default function Reports({
    * charge too). The single-book views are untouched.
    */
   const combined = useMemo(
-    () => (book === 'everything' ? consolidateEverything(charges, allPayments) : { charges, payments: allPayments }),
-    [book, charges, allPayments]
+    () => (book === 'everything' ? consolidateEverything(charges, allPayments, units) : { charges, payments: allPayments }),
+    [book, charges, allPayments, units]
   );
   const payments = useMemo(() => paymentsInBook(combined.payments, book), [combined, book]);
 

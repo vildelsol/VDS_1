@@ -206,7 +206,7 @@ export default function Dashboard({
 
   const ledger = useMemo(() => {
     // Money on both books counted once: see consolidateEverything.
-    const combined = consolidateEverything(charges, payments);
+    const combined = consolidateEverything(charges, payments, units);
     return (['JMD', 'USD'] as Currency[]).map(currency => {
       const collected = collectedInPeriod(combined.payments, currency, periodStart, periodEnd, ownerBilled);
       const billed = chargedInPeriod(combined.charges, currency, periodStart, periodEnd);
@@ -233,7 +233,7 @@ export default function Dashboard({
         priorReceived: priorCollected.total
       };
     });
-  }, [payments, charges, expenses, periodStart, periodEnd, previousStart, previousEnd, ownerBilled]);
+  }, [payments, charges, expenses, units, periodStart, periodEnd, previousStart, previousEnd, ownerBilled]);
 
   /* ---------------- short-term ---------------- */
 

@@ -168,7 +168,7 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
   /** Monthly series and category breakdown, per currency. */
   const byCurrency = useMemo(() => {
     if (invalidRange) return [];
-    const combined = consolidateEverything(charges, payments);
+    const combined = consolidateEverything(charges, payments, units);
     return (['JMD', 'USD'] as Currency[]).map(currency => {
       const rows: MonthRow[] = months.map(month => {
         const mFrom = monthStart(month) < from ? from : monthStart(month);
@@ -197,7 +197,7 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
       const active = rows.some(r => r.billed || r.received || r.paidOut) || breakdown.length > 0;
       return { currency, rows, breakdown, active };
     });
-  }, [months, charges, payments, expenses, from, to, ownerBilled, invalidRange]);
+  }, [months, charges, payments, expenses, units, from, to, ownerBilled, invalidRange]);
 
   const shown = byCurrency.filter(c => c.active);
 
