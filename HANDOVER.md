@@ -13,7 +13,13 @@ Runs on the **HP EliteDesk** (the server, holds the records); the **Kamrui** and
 browser clients reaching it over Tailscale on plain-HTTP LAN.
 
 **Project path (Mac):**
-`/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app`
+`/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/VDS MGMT APP/pm-app`
+
+⚠️ This folder was **renamed on or before 2026-10-15**: `New_vildelsol` → `VDS MGMT APP`. Older
+notes, peer sessions and memory may still pass the dead path, and a `change_directory` to it fails
+with "could not be resolved" — that means a rename, not a missing project. Find it with
+`find "/Users/rogeanedwards/Desktop/River Oaks" -maxdepth 5 -name pm-app -type d`, then confirm
+`git remote get-url origin` is `VDS_1` before trusting the folder.
 
 ⚠️ Sessions have been launched from the *EGES-Platform* folder, so Claude's memory/sidebar shows
 EGES context — **a different, unrelated project**. All work is in `pm-app` above. Ideally open the
@@ -2275,7 +2281,7 @@ expenses are therefore **excluded** from what is recharged to an owner (`ownerSt
 ## How to run and test
 
 ```bash
-cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/New_vildelsol/pm-app"
+cd "/Users/rogeanedwards/Desktop/River Oaks/Villaggio Del Sol/Website/VDS MGMT APP/pm-app"
 ```
 
 - `npm test` — build + full suite (**1,655 checks, 6m25s measured on 2026-09-03**). Each test file boots its

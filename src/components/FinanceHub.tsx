@@ -30,6 +30,7 @@ import {
   chargeAmount,
   chargeBreakdownNote,
   chargeCurrency,
+  maintenanceReceiptsToMove,
   rentChargesToRestate,
   chargesForUnit,
   currencyMismatchWarnings,
@@ -91,6 +92,8 @@ interface FinanceHubProps {
   onPostMonth: (month: string) => Promise<{ message: string }>;
   /** Voids and re-raises old whole-rent charges at rent + maintenance. */
   onRestateRent?: () => Promise<{ restated: number }>;
+  /** Moves a let villa's separately keyed maintenance receipts into its rent. */
+  onRestateMaintenanceReceipts?: () => Promise<{ moved: number }>;
   onVoidCharge: (chargeId: string, reason: string) => Promise<unknown>;
   onAddCharge: (payload: Record<string, unknown>) => Promise<unknown>;
   onOpenReceipt: (payment: Payment) => void;
@@ -111,6 +114,7 @@ export default function FinanceHub({
   onUpdatePayment,
   onPostMonth,
   onRestateRent,
+  onRestateMaintenanceReceipts,
   onVoidCharge,
   onAddCharge,
   onOpenReceipt
@@ -146,6 +150,28 @@ export default function FinanceHub({
   /* ---------------- restate old rent charges ---------------- */
 
   const restatable = useMemo(() => rentChargesToRestate(units, charges), [units, charges]);
+  const movableReceipts = useMemo(() => maintenanceReceiptsToMove(units, charges, payments), [units, charges, payments]);
+  const handleMoveReceipts = async () => {
+    if (!onRestateMaintenanceReceipts) return;
+    const list = movableReceipts.move;
+    // The payer is shown because a receipt keyed against the owner rather than the
+    // tenant is the one case the rules cannot tell apart, and only Ro can.
+    const lines = list
+      .map(m => `${m.unit.number}  ${m.payment.date}  ${formatMoney(m.payment.amount, m.payment.currency)}  receipt ${m.payment.receiptNo || '-'}  from ${m.payment.payerName || '-'}`)
+      .join('\n');
+    if (!window.confirm(`Move ${list.length} maintenance receipt(s) into the tenants' rent?\n\n${lines}\n\nEach keeps its number, date and amount.`)) return;
+    setBusy(true);
+    setError('');
+    setSuccess('');
+    try {
+      const r = await onRestateMaintenanceReceipts();
+      setSuccess(`Moved ${r.moved} receipt(s) into the tenants' rent.`);
+    } catch (err) {
+      setError(errorMessage(err, 'Could not move the receipts.'));
+    } finally {
+      setBusy(false);
+    }
+  };
   const handleRestate = async () => {
     if (!onRestateRent) return;
     const n = restatable.restate.length;
@@ -410,6 +436,18 @@ export default function FinanceHub({
           </span>
           <SubmitButton type="button" busy={busy} busyLabel="Restating…" onClick={() => void handleRestate()} className="px-3 py-2 text-[11px]">
             Restate to rent + maintenance
+          </SubmitButton>
+        </div>
+      )}
+
+      {tab === 'tenants' && perms.postCharges && onRestateMaintenanceReceipts && restatable.restate.length === 0 && movableReceipts.move.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+          <span>
+            {movableReceipts.move.length} maintenance receipt(s) on let villas were keyed separately from the rent. The tenant pays one rent figure, so they belong in the rent account.
+            {movableReceipts.skipped.length > 0 ? ` ${movableReceipts.skipped.length} other maintenance receipt(s) on let villas are left as they are.` : ''}
+          </span>
+          <SubmitButton type="button" busy={busy} busyLabel="Moving…" onClick={() => void handleMoveReceipts()} className="px-3 py-2 text-[11px]">
+            Move receipts into rent
           </SubmitButton>
         </div>
       )}

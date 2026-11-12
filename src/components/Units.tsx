@@ -1577,6 +1577,39 @@ function UnitEditor({
                   )}{' '}
                   indicative
                 </p>
+                {/*
+                  The one figure that is easy to key wrong, and expensive when it
+                  is: the agreed rent is what the TENANT pays in total, not what
+                  ISPO keeps after the levy. Entering ISPO's share here bills every
+                  tenant short by the levy, every month, and nothing downstream can
+                  tell. So the split is spelled out live, from the two numbers on
+                  this form, before it is saved.
+                */}
+                {form.status === 'long-term' && (Number(form.monthlyRent) || 0) > 0 && (
+                  <div className="rounded-lg border border-teal-100 bg-teal-50/60 p-2.5 text-[10px] leading-relaxed text-teal-900">
+                    {(() => {
+                      const b = rentBreakdown(
+                        { ...unit, status: 'long-term', monthlyMaintenance: Number(form.monthlyMaintenance) || 0, currency: form.currency, maintCurrency: form.maintCurrency } as Unit,
+                        Number(form.monthlyRent) || 0,
+                        form.currency
+                      );
+                      return b.maintenance > 0 ? (
+                        <>
+                          The tenant pays <strong>{formatMoney(b.total, form.currency)}</strong> in total, on one line.{' '}
+                          HOA maintenance of {formatMoney(b.maintenance, form.currency)} comes out of it, so ISPO receives{' '}
+                          <strong>{formatMoney(b.rent, form.currency)}</strong>. The tenant never sees the maintenance.
+                        </>
+                      ) : (
+                        <>
+                          The tenant pays <strong>{formatMoney(b.total, form.currency)}</strong>. No maintenance is taken from it
+                          {form.maintCurrency !== form.currency
+                            ? ', because this villa is billed maintenance in another currency.'
+                            : ', because no monthly HOA maintenance is set.'}
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
                 {form.status === 'long-term' && (
                   <Field label="Rent due day" htmlFor="ue-rentday">
                     <select id="ue-rentday" value={form.rentDueDay} onChange={e => set('rentDueDay', Number(e.target.value))} className={monoInputClass}>

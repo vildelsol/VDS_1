@@ -665,6 +665,11 @@ export interface Payment {
    * receipt and never offered for voiding, refunding or reconciling.
    */
   derived?: boolean;
+  /**
+   * Set when a hand-keyed Maintenance receipt on a let villa was moved into the
+   * tenant's rent (restate-maintenance-receipts). Internal only: never printed.
+   */
+  movedFrom?: PaymentCategory;
   /** Set when the payment was generated from another record, so the two stay in step. */
   bookingId?: string;
   utilityId?: string;

@@ -24,6 +24,7 @@ import {
   consolidateEverything,
   collectionRate,
   delinquentAccounts,
+  maintenanceFundedFromRent,
   expensesInPeriod,
   residentialOccupancy,
   shortLetOccupancy,
@@ -421,6 +422,11 @@ export default function Dashboard({
                     </p>
                     {account.oldestUnpaidDays > 0 && (
                       <p className="mt-1 font-mono text-[10px] text-red-600">{account.oldestUnpaidDays} days overdue</p>
+                    )}
+                    {maintenanceFundedFromRent(account.unit) && (
+                      <p className="mt-1 text-[10px] font-medium text-teal-700">
+                        {account.category === 'Maintenance' ? 'Settled from rent as it is received' : 'HOA maintenance settled from this rent'}
+                      </p>
                     )}
                   </div>
                   <div className="shrink-0 text-right">

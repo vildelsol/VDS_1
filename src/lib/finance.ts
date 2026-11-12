@@ -573,6 +573,97 @@ export function rentChargesToRestate(
 }
 
 /**
+ * Is this villa's maintenance taken out of the tenant's rent?
+ *
+ * True for a let villa whose agreed rent carries a maintenance share. Internal
+ * screens (Dashboard, Notifications hub) say "settled from rent" for these; the
+ * tenant never sees it.
+ */
+export function maintenanceFundedFromRent(unit: Unit): boolean {
+  return unit.status === 'long-term' && rentBreakdown(unit).maintenance > 0;
+}
+
+/**
+ * Maintenance receipts that belong to the tenant's rent.
+ *
+ * Before the tenant's rent was one figure, a let villa's money was keyed twice:
+ * the rent as a Rent receipt and the maintenance share as a separate Maintenance
+ * receipt. Once the rent charge includes the maintenance, that second receipt
+ * leaves the rent account short by the same amount while the maintenance account
+ * shows paid, so the one payment is counted on both sides.
+ *
+ * This finds those receipts so they can be moved into the rent account, where
+ * `settledFromRent` then covers the maintenance again. It is deliberately narrow:
+ *   - only a completed, un-refunded, hand-keyed Maintenance receipt in the villa's
+ *     own currency, on a long-term villa whose open rent charges already carry the
+ *     split (so Restate has been run);
+ *   - only a whole number of months of the villa's maintenance, so an unrelated
+ *     special-assessment payment is left alone;
+ *   - oldest first, and never more than the rent still owed, so a tenant can never
+ *     be moved into credit.
+ * Anything else is skipped with its reason.
+ */
+export interface MaintenanceReceiptMove {
+  payment: Payment;
+  unit: Unit;
+}
+
+export function maintenanceReceiptsToMove(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[]
+): { move: MaintenanceReceiptMove[]; skipped: { payment: Payment; reason: string }[] } {
+  const move: MaintenanceReceiptMove[] = [];
+  const skipped: { payment: Payment; reason: string }[] = [];
+  const cents = (n: number) => Math.round((Number(n) || 0) * 100);
+  for (const unit of units) {
+    if (unit.status !== 'long-term') continue;
+    const levy = cents(unit.monthlyMaintenance);
+    if (!(levy > 0)) continue;
+    const currency = unit.currency;
+    const rentCharges = charges.filter(
+      c => c.unitId === unit.id && c.category === 'Rent' && c.status === 'open' && c.currency === currency
+    );
+    if (!rentCharges.some(c => (c.maintenancePortion || 0) > 0)) continue;
+    /*
+     * A villa that has only just been let was billing its owner for maintenance
+     * until the day the tenant moved in, and those receipts are the owner's own
+     * money, not part of anybody's rent. Sweeping one into the tenant's rent
+     * would credit the tenant with a payment they never made and leave the owner
+     * looking as though they had never paid. So nothing earlier than the first
+     * month this villa was billed rent for is ever a candidate.
+     */
+    const firstRentMonth = rentCharges.map(c => c.periodMonth).sort()[0] || '';
+    const from = firstRentMonth ? `${firstRentMonth}-01` : '';
+    const mine = payments.filter(p => p.unitId === unit.id && p.currency === currency && p.status === 'completed' && !p.derived);
+    const billed = rentCharges.reduce((a, c) => a + cents(c.amount), 0);
+    const received = mine.filter(p => p.category === 'Rent').reduce((a, p) => a + cents(netPaidAsOf(p)), 0);
+    let owed = Math.max(0, billed - received);
+    const candidates = mine
+      .filter(p => p.category === 'Maintenance' && p.date >= from)
+      .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+    for (const p of candidates) {
+      const amount = cents(p.amount);
+      if (p.refundedAmount) {
+        skipped.push({ payment: p, reason: 'it has been refunded in part or in full' });
+      } else if (p.bookingId || p.utilityId) {
+        // Generated from a reservation or a meter reading: the two are kept in
+        // step by id, and re-categorising one strands the record it came from.
+        skipped.push({ payment: p, reason: 'it belongs to a reservation or a utility reading' });
+      } else if (amount <= 0 || amount % levy !== 0) {
+        skipped.push({ payment: p, reason: 'it is not a whole number of months of this villa\'s maintenance' });
+      } else if (amount > owed) {
+        skipped.push({ payment: p, reason: 'moving it would put the tenant in credit' });
+      } else {
+        owed -= amount;
+        move.push({ payment: p, unit });
+      }
+    }
+  }
+  return { move, skipped };
+}
+
+/**
  * The combined ("everything") view, with money that is on both books counted once.
  *
  * A tenant pays one figure, rent, J$75,000 of which the corporation takes

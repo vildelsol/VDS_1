@@ -18,3 +18,6 @@ db-backups/
 
 # stray test cookie jars
 *.jar
+
+# graphify output: a local analysis artifact, rebuilt on demand
+graphify-out/

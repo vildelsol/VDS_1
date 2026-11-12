@@ -20,7 +20,7 @@ import {
   Tenancy,
   AppSettings
 } from '../types';
-import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, scheduledCharges, unbilledOccupancy } from '../lib/finance';
+import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, maintenanceFundedFromRent, scheduledCharges, unbilledOccupancy } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
 import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
@@ -156,7 +156,12 @@ export default function NotificationsTab({
       description:
         `${account.unpaidCharges[0]?.payerName || 'The account holder'} has ${account.unpaidCharges.length} unpaid ` +
         `month${account.unpaidCharges.length === 1 ? '' : 's'} from ${formatMonthLabel(account.unpaidCharges[0]?.periodMonth || '')}. ` +
-        `Billed ${formatMoney(account.charged, account.currency)}, received ${formatMoney(account.paid, account.currency)}.`,
+        `Billed ${formatMoney(account.charged, account.currency)}, received ${formatMoney(account.paid, account.currency)}.` +
+        (maintenanceFundedFromRent(account.unit)
+          ? account.category === 'Maintenance'
+            ? ' Settled from rent: it is taken out of the tenant\'s rent as each payment arrives, so nothing is collected separately.'
+            : ' The HOA maintenance is settled from this rent as it is received.'
+          : ''),
       amount: account.balance,
       currency: account.currency,
       severity: account.oldestUnpaidDays > 30 ? 'high' : 'medium',

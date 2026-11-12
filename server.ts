@@ -54,7 +54,7 @@ import {
 } from './src/types';
 import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
-import { accountBalance, bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable, rentBreakdown, rentChargesToRestate } from './src/lib/finance';
+import { accountBalance, bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate } from './src/lib/finance';
 import {
   DATA_DIR,
   DB_FILE,
@@ -2574,6 +2574,54 @@ app.post(
       restated: result.done,
       skipped: result.skipped.map(s => ({ id: s.charge.id, unit: s.charge.unitNumber, period: s.charge.periodMonth, amount: s.charge.amount, reason: s.reason })),
       plan: result.restate.map(r => ({ id: r.charge.id, unit: r.charge.unitNumber, period: r.charge.periodMonth, from: r.charge.amount, to: r.breakdown.total }))
+    });
+  })
+);
+
+/**
+ * Move a let villa's separately keyed Maintenance receipts into its rent account.
+ *
+ * Without `confirm: true` this only reports. With it, each receipt keeps its
+ * number, date, amount and method and changes category to Rent, with a note and an
+ * audit entry. Run Restate first. Safe to run again: a moved receipt is no longer a
+ * Maintenance receipt, so it is not picked up twice.
+ */
+app.post(
+  '/api/payments/restate-maintenance-receipts',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'modify_settled');
+    const confirm = req.body?.confirm === true;
+    const result = await transaction(db => {
+      const { move, skipped } = maintenanceReceiptsToMove(db.units, db.charges, db.payments);
+      if (!confirm) return { move, skipped, done: 0 };
+      const who = actor(req);
+      for (const item of move) {
+        const live = db.payments.find(p => p.id === item.payment.id)!;
+        const before = { ...live };
+        live.category = 'Rent';
+        // Recorded here and in the audit trail, never in `notes`: the receipt prints its notes to the tenant.
+        live.movedFrom = 'Maintenance';
+        addAudit(
+          db,
+          who.name,
+          who.role,
+          `Moved receipt ${live.receiptNo} on ${live.unitNumber} from Maintenance to Rent`,
+          'Payment',
+          live.id,
+          before,
+          live,
+          who.name
+        );
+      }
+      return { move, skipped, done: move.length };
+    });
+    res.json({
+      success: true,
+      confirmed: confirm,
+      count: result.move.length,
+      moved: result.done,
+      skipped: result.skipped.map(s => ({ id: s.payment.id, unit: s.payment.unitNumber, receiptNo: s.payment.receiptNo, amount: s.payment.amount, reason: s.reason })),
+      plan: result.move.map(m => ({ id: m.payment.id, unit: m.payment.unitNumber, receiptNo: m.payment.receiptNo, date: m.payment.date, amount: m.payment.amount, payer: m.payment.payerName }))
     });
   })
 );
