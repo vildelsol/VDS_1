@@ -4,6 +4,12 @@
  *
  * Maintenance on a rented villa is settled out of the rent (Ro, 2026-11-10).
  *
+ * The rule: the levy inside a month's rent settles THAT month's levy. It is
+ * deliberately NOT pooled across the villa's whole maintenance balance — pooling
+ * let a tenant's late arrears settle a levy raised long after they had gone, and
+ * where the villa had since been sold, pay the new proprietor's contribution out
+ * of the old tenant's money.
+ *
  * Part 1: worked examples, including the J$75,000 / J$20,000 case.
  * Part 2: 5,000 randomised books checked against invariants and an independent
  *         oracle written here, not against settledFromRent itself.
@@ -124,19 +130,41 @@ export default async function run({ port, projectRoot }) {
       const d = F.settledFromRent(charges, payments);
       if (JSON.stringify([charges, payments]) !== snapshot) note('inputs mutated', n);
 
-      // independent oracle
+      /*
+       * Independent oracle, written from the rule rather than from the code:
+       * the levy inside a given month's rent settles THAT month's levy and no
+       * other. Worked out here as two separate month-by-month ledgers, not as a
+       * walk over receipts, so agreeing with the implementation means something.
+       */
       const openRent = charges.filter(c => c.category === 'Rent' && c.status === 'open').sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
-      const openMaint = charges.filter(c => c.category === 'Maintenance' && c.status === 'open');
+      const openMaint = charges.filter(c => c.category === 'Maintenance' && c.status === 'open').sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
       const rentPaid = payments.filter(p => p.category === 'Rent' && p.status === 'completed' && p.currency === 'JMD').reduce((a, p) => a + C(p.amount) - C(p.refundedAmount || 0), 0);
       const maintPaid = payments.filter(p => p.category === 'Maintenance' && p.status === 'completed' && p.currency === 'JMD').reduce((a, p) => a + C(p.amount) - C(p.refundedAmount || 0), 0);
       const maintOwed = Math.max(0, openMaint.reduce((a, c) => a + C(c.amount), 0) - maintPaid);
       const shareAvail = openRent.reduce((a, c) => a + C(c.maintenancePortion || 0), 0);
-      let left = rentPaid, exact = 0;
-      for (const c of openRent) { const take = Math.min(left, C(c.amount)); if (C(c.amount) > 0) exact += (C(c.maintenancePortion || 0) * take) / C(c.amount); left -= take; }
-      const expected = Math.min(Math.round(exact), maintOwed);
+      // What each month's levy still needs, after cash maintenance ages oldest first.
+      let cashLeft = maintPaid;
+      const owedPerMonth = new Map();
+      for (const c of openMaint) {
+        const amt = C(c.amount);
+        const covered = Math.min(cashLeft, amt);
+        cashLeft -= covered;
+        owedPerMonth.set(c.periodMonth, (owedPerMonth.get(c.periodMonth) || 0) + (amt - covered));
+      }
+      // What each month's rent has actually funded, as a share of that month's charge.
+      let left = rentPaid;
+      const fundedPerMonth = new Map();
+      for (const c of openRent) {
+        const amt = C(c.amount);
+        const take = Math.min(left, amt);
+        if (amt > 0 && take > 0) fundedPerMonth.set(c.periodMonth, (fundedPerMonth.get(c.periodMonth) || 0) + (C(c.maintenancePortion || 0) * take) / amt);
+        left -= take;
+      }
+      let expected = 0;
+      for (const [month, funded] of fundedPerMonth) expected += Math.min(Math.round(funded), owedPerMonth.get(month) || 0);
       const got = d.reduce((a, p) => a + C(p.amount), 0);
-      // cap can bind earlier than the end-state total only through rounding of per-receipt emission, allow 1 cent per receipt
-      if (Math.abs(got - expected) > Math.max(1, payments.length)) note('credit differs from oracle', `${n}: got ${got} expected ${expected}`);
+      // Per-receipt emission rounds per month as it goes: allow a cent each way.
+      if (Math.abs(got - expected) > Math.max(1, payments.length + openMaint.length)) note('credit differs from oracle', `${n}: got ${got} expected ${expected}`);
       if (got > maintOwed) note('credit exceeds what is owed', `${n}: ${got} > ${maintOwed}`);
       if (got > rentPaid) note('credit exceeds rent received', `${n}`);
       if (got > shareAvail) note('credit exceeds the maintenance inside the rent', `${n}`);

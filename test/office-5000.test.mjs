@@ -185,6 +185,11 @@ export default async function run({ port, projectRoot }) {
     for (const ch of raw.charges) {
       if (ch.category === 'Rent' && ch.kind !== 'one-off') { delete ch.rentPortion; delete ch.maintenancePortion; stripped++; }
     }
+    // Long-standing tenants, as the real let villas are. Written into the file for
+    // the same reason the split is stripped here: setting it through the unit form
+    // is a changeover, which raises first and last month's rent. Without a move-in
+    // date the receipt move correctly refuses to judge whose money is whose.
+    for (const t of raw.tenancies || []) if (t.status === 'active') t.startedOn = '2026-07-01';
     fs.writeFileSync(dbPath, JSON.stringify(raw));
     srv = await startServer({ port, adminPassword: 'unused', projectRoot, dataDir });
     c = makeClient(srv.baseUrl);

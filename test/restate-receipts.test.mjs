@@ -54,10 +54,20 @@ export default async function run({ port, projectRoot }) {
         delete ch.maintenancePortion;
       }
     }
+    /*
+     * These are long-standing tenants, as the real let villas are. The move-in
+     * date is written straight into the file for the same reason the split is
+     * stripped here: entering it through the unit form is a changeover, which
+     * correctly raises first and last month's rent and would change every figure
+     * this test is about. The receipt move needs the date, because it is what
+     * tells the tenant's money from the owner's.
+     */
+    for (const t of raw.tenancies || []) if (t.status === 'active') t.startedOn = '2026-09-01';
     fs.writeFileSync(dbPath, JSON.stringify(raw));
     srv = await startServer({ port, adminPassword: 'unused', projectRoot, dataDir });
     c = makeClient(srv.baseUrl);
     await c.post('/api/auth/login', { username: 'admin', password: 'ReceiptsNew-9876!' }, { captureCookie: true });
+
 
     const pay = (unitId, category, amount, date) =>
       recordAndConfirmPayment(c, { unitId, category, amount, currency: 'JMD', payerName: unitId, method: 'Cash', date });
@@ -68,7 +78,7 @@ export default async function run({ port, projectRoot }) {
     await pay('unit-4', 'Maintenance', 20000, '2026-11-06'); // whole months, but the rent is already clear: moving it would put the tenant in credit
     await pay('unit-6', 'Maintenance', 20000, '2026-11-02');
 
-    let db = (await c.get('/api/db')).body;
+let db = (await c.get('/api/db')).body;
 
     // Before Restate, receipts are not touched: the rent charges carry no split yet.
     const early = await c.post('/api/payments/restate-maintenance-receipts', { confirm: true });

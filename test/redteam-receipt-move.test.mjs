@@ -52,6 +52,9 @@ const pay = (unitId, category, amount, date, over = {}) => ({
   method: 'Cash', reference: '', notes: '', staffMember: 's', status: 'completed', ...over
 });
 
+/** An active tenancy for a villa, started on the given day. */
+const tenantSince = (unitId, startedOn) => [{ id: `t-${unitId}`, unitId, status: 'active', startedOn }];
+
 export default async function run({ port, projectRoot }) {
   const outdir = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-rtmove-'));
   const outfile = path.join(outdir, 'finance.mjs');
@@ -70,14 +73,14 @@ export default async function run({ port, projectRoot }) {
     const owner = pay('u1', 'Maintenance', 20000, '2026-09-03', { payerName: 'Owner' });
     const tenantMaint = pay('u1', 'Maintenance', 20000, '2026-10-07');
     const rent = pay('u1', 'Rent', 80000, '2026-10-07');
-    const r = F.maintenanceReceiptsToMove([u], charges, [owner, tenantMaint, rent]);
+    const r = F.maintenanceReceiptsToMove([u], charges, [owner, tenantMaint, rent], tenantSince('u1', '2026-10-01'));
     T.check("the owner's maintenance from before the letting is never moved", !ids(r).includes(owner.id), JSON.stringify(ids(r)));
     T.check('the tenant-era one is', ids(r).includes(tenantMaint.id));
 
     // Same villa, same receipts, but it has only just become long-term with one
     // month billed: everything earlier stays with the owner.
     const justLet = [rentCharge('u1', '2026-11', 100000, 20000), maintCharge('u1', '2026-11', 20000)];
-    const r2 = F.maintenanceReceiptsToMove([u], justLet, [owner, tenantMaint, pay('u1', 'Rent', 80000, '2026-11-05')]);
+    const r2 = F.maintenanceReceiptsToMove([u], justLet, [owner, tenantMaint, pay('u1', 'Rent', 80000, '2026-11-05')], tenantSince('u1', '2026-11-01'));
     T.check('a villa let only this month keeps every earlier maintenance receipt with the owner', r2.move.length === 0, JSON.stringify(ids(r2)));
   }
   {
@@ -91,7 +94,7 @@ export default async function run({ port, projectRoot }) {
     const pending = pay('u2', 'Maintenance', 20000, '2026-09-12', { status: 'pending', receiptNo: '' });
     const odd = pay('u2', 'Maintenance', 17500, '2026-09-13');
     const good = pay('u2', 'Maintenance', 20000, '2026-09-14');
-    const r = F.maintenanceReceiptsToMove([u], charges, [...base, booking, utility, refunded, reversed, pending, odd, good]);
+    const r = F.maintenanceReceiptsToMove([u], charges, [...base, booking, utility, refunded, reversed, pending, odd, good], tenantSince('u2', '2026-09-01'));
     const moved = ids(r);
     T.check('a receipt tied to a reservation is left alone', !moved.includes(booking.id));
     T.check('a receipt tied to a meter reading is left alone', !moved.includes(utility.id));
@@ -108,7 +111,7 @@ export default async function run({ port, projectRoot }) {
     const u = unit('u3', { monthlyRent: 107000, monthlyMaintenance: 27000 });
     const charges = months.map(m => rentCharge('u3', m, 107000, 27000));
     const old = months.map(m => pay('u3', 'Maintenance', 20000, `${m}-07`));
-    const r = F.maintenanceReceiptsToMove([u], charges, [...old, ...months.map(m => pay('u3', 'Rent', 80000, `${m}-07`))]);
+    const r = F.maintenanceReceiptsToMove([u], charges, [...old, ...months.map(m => pay('u3', 'Rent', 80000, `${m}-07`))], tenantSince('u3', '2026-09-01'));
     T.check('after the levy rises, receipts at the old levy are reported, not guessed at', r.move.length === 0 && r.skipped.length === 3, JSON.stringify(r.skipped.map(s => s.reason)));
   }
   {
@@ -122,7 +125,7 @@ export default async function run({ port, projectRoot }) {
       { ...rentCharge('u6', '2026-09', 80000, 20000), rentPortion: undefined, maintenancePortion: undefined }
     ];
     const pays = [pay('u4', 'Maintenance', 20000, '2026-09-07'), pay('u5', 'Maintenance', 20000, '2026-09-07'), pay('u6', 'Maintenance', 20000, '2026-09-07')];
-    const r = F.maintenanceReceiptsToMove([owned, noLevy, legacy], charges, pays);
+    const r = F.maintenanceReceiptsToMove([owned, noLevy, legacy], charges, pays, [...tenantSince('u5', '2026-09-01'), ...tenantSince('u6', '2026-09-01')]);
     T.check('an owner-occupied villa is never touched', !r.move.some(m => m.unit.id === 'u4') && !r.skipped.some(s => s.payment.unitId === 'u4'));
     T.check('a villa with no levy is never touched', !r.move.some(m => m.unit.id === 'u5'));
     T.check('a villa whose rent has not been restated yet is left for Restate first', !r.move.some(m => m.unit.id === 'u6'));
@@ -134,6 +137,84 @@ export default async function run({ port, projectRoot }) {
     const usd = unit('u8', { currency: 'USD', maintCurrency: 'USD', monthlyRent: 800, monthlyMaintenance: 125 });
     T.check('a wholly USD villa is funded from rent', F.maintenanceFundedFromRent(usd) === true);
     T.check('an owner-occupied villa is never funded from rent', F.maintenanceFundedFromRent(unit('u9', { status: 'owner-occupied' })) === false);
+  }
+
+  /* ====== 1b. EVERY path a villa can take through its four states ====== */
+  {
+    /*
+     * A villa is let, then taken off the market, then lived in by its owner, then
+     * let again — in any order, any number of times. The owner pays the levy
+     * through every stretch in which nobody is renting, and a tenant who left
+     * owing leaves their charges open behind them. So rather than reason about
+     * which orders matter, every ordered chain of four states is built here and
+     * checked, which is all of them.
+     */
+    const STATUSES = ['long-term', 'short-term', 'owner-occupied', 'unavailable'];
+    const ERAS = ['2026-08', '2026-09', '2026-10', '2026-11'];
+    let chains = 0;
+    let offered = 0;
+    let firstBad = '';
+
+    for (const a of STATUSES) for (const b of STATUSES) for (const cc of STATUSES) for (const d of STATUSES) {
+      const chain = [a, b, cc, d];
+      if (chain[3] !== 'long-term') continue; // only a villa let TODAY can have anything moved
+      chains++;
+      const u = unit('w', { status: 'long-term' });
+      const charges = [];
+      const pays = [];
+      const tenancies = [];
+      let openTenancy = null;
+      chain.forEach((st, i) => {
+        const m = ERAS[i];
+        charges.push(maintCharge('w', m, 20000));
+        if (st === 'long-term') {
+          charges.push(rentCharge('w', m, 100000, 20000));
+          if (!openTenancy) {
+            openTenancy = { id: `t-${i}`, unitId: 'w', status: 'active', startedOn: `${m}-01` };
+            tenancies.push(openTenancy);
+          }
+          // The tenant's money, keyed the old way: rent short, levy separate.
+          pays.push(pay('w', 'Rent', 80000, `${m}-07`, { payerName: 'Tenant' }));
+          pays.push(pay('w', 'Maintenance', 20000, `${m}-08`, { payerName: 'Tenant' }));
+        } else {
+          // Nobody is renting: the owner pays the levy out of their own pocket,
+          // and any tenancy that was running has ended.
+          if (openTenancy) { openTenancy.status = 'ended'; openTenancy.endedOn = `${m}-01`; openTenancy = null; }
+          pays.push(pay('w', 'Maintenance', 20000, `${m}-08`, { payerName: 'The owner' }));
+        }
+      });
+
+      const res = F.maintenanceReceiptsToMove([u], charges, pays, tenancies);
+      offered += res.move.length;
+      const active = tenancies.find(t => t.status === 'active');
+      const bad =
+        (!active && res.move.length > 0 && 'moved something with no tenant in residence') ||
+        (active && res.move.some(m => m.payment.date < active.startedOn) && "moved money paid before this tenant moved in") ||
+        (res.move.some(m => m.payment.payerName === 'The owner') && "moved the owner's own money") ||
+        '';
+      if (bad && !firstBad) firstBad = `${chain.join(' -> ')}: ${bad}`;
+    }
+    T.check(`every one of the ${chains} four-state histories ending in a letting was built`, chains === 64, String(chains));
+    T.check('across all of them, the receipts offered are real money that moved', offered > 0, String(offered));
+    T.check("in none of them was an owner's own money, or money from before this tenant moved in, ever taken", firstBad === '', firstBad);
+
+    // The case that is easy to get wrong, spelled out: let, emptied, owner-occupied,
+    // let again, with the first tenant's charges still open behind them.
+    const u = unit('w');
+    const charges = [rentCharge('w', '2026-06', 100000, 20000), rentCharge('w', '2026-10', 100000, 20000), rentCharge('w', '2026-11', 100000, 20000),
+      ...['2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11'].map(m => maintCharge('w', m, 20000))];
+    const ownerPaid = ['2026-07-03', '2026-08-03', '2026-09-03'].map(dt => pay('w', 'Maintenance', 20000, dt, { payerName: 'The owner' }));
+    const tenantPaid = pay('w', 'Maintenance', 20000, '2026-10-07', { payerName: 'New tenant' });
+    const r2 = F.maintenanceReceiptsToMove([u], charges, [...ownerPaid, tenantPaid, pay('w', 'Rent', 80000, '2026-10-07')],
+      [{ id: 't1', unitId: 'w', status: 'ended', startedOn: '2026-06-01', endedOn: '2026-06-30' }, { id: 't2', unitId: 'w', status: 'active', startedOn: '2026-10-01' }]);
+    T.check('a villa let before, emptied, owner-occupied and let again takes only the new tenant\'s money',
+      r2.move.length === 1 && r2.move[0].payment.id === tenantPaid.id, JSON.stringify(r2.move.map(m => [m.payment.date, m.payment.payerName])));
+    T.check('and the old tenant\'s still-open charges do not reopen the window',
+      !r2.move.some(m => m.payment.date < '2026-10-01'));
+
+    // No tenancy on file at all: a long-term villa with nobody recorded in it.
+    const r3 = F.maintenanceReceiptsToMove([u], charges, [tenantPaid, pay('w', 'Rent', 80000, '2026-10-07')], []);
+    T.check('with no tenancy on record nothing is moved, because there is no tenant for it to belong to', r3.move.length === 0);
   }
 
   /* ================= 2. 2,000 randomised books ================= */
@@ -156,7 +237,8 @@ export default async function run({ port, projectRoot }) {
         if (r() < 0.8) pays.push(pay('x', 'Rent', pick([rent - levy, rent, Math.round((rent - levy) / 2)]), `${m}-07`));
         if (r() < 0.6) pays.push(pay('x', 'Maintenance', pick([levy, levy, levy * 2, Math.round(levy / 3)]), `${m}-08`));
       }
-      const res = F.maintenanceReceiptsToMove([u], charges, pays);
+      const tens = tenantSince('x', `${ms[0]}-01`);
+      const res = F.maintenanceReceiptsToMove([u], charges, pays, tens);
       anyMoved += res.move.length;
 
       const moneyBefore = pays.reduce((a, p) => a + C(p.amount), 0);
@@ -166,7 +248,7 @@ export default async function run({ port, projectRoot }) {
       const billed = charges.filter(c => c.category === 'Rent').reduce((a, c) => a + C(c.amount), 0);
       const rentAfter = after.filter(p => p.category === 'Rent').reduce((a, p) => a + C(p.amount), 0);
       const rentBefore = pays.filter(p => p.category === 'Rent').reduce((a, p) => a + C(p.amount), 0);
-      const again = F.maintenanceReceiptsToMove([u], charges, after);
+      const again = F.maintenanceReceiptsToMove([u], charges, after, tens);
 
       // Maintenance is never settled beyond what was charged, counting the real
       // receipts that are left and the credits worked out from rent.
@@ -180,12 +262,28 @@ export default async function run({ port, projectRoot }) {
         F.settledFromRent(charges, list).reduce((a, p) => a + C(p.amount), 0);
       const settledBefore = settledOf(pays);
       const settledAfter = settledOf(after);
+      /*
+       * The precise rule, worked out here from the ledger: the levy inside a
+       * month's rent can only settle THAT month's levy, and only the part of it
+       * still unpaid once cash maintenance has aged onto it oldest first. (An
+       * earlier draft asserted that moving receipts could never raise the total
+       * settled. That is not a property of per-month allocation — moving cash out
+       * of the maintenance account changes which months the rest ages onto — and
+       * it fired 198 times on books where nothing was actually over-settled.)
+       */
+      const openMaint = charges.filter(x => x.category === 'Maintenance' && x.status === 'open').sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+      let cashLeft = after.filter(x => x.category === 'Maintenance' && !x.derived).reduce((a, x) => a + C(x.amount), 0);
+      const owedPerMonth = new Map();
+      for (const x of openMaint) { const amt = C(x.amount); const cov = Math.min(cashLeft, amt); cashLeft -= cov; owedPerMonth.set(x.periodMonth, (owedPerMonth.get(x.periodMonth) || 0) + amt - cov); }
+      const rentMonths = new Set(charges.filter(x => x.category === 'Rent' && x.status === 'open').map(x => x.periodMonth));
+      const capAfter = [...owedPerMonth].filter(([m]) => rentMonths.has(m)).reduce((a, [, v]) => a + v, 0);
+      const creditedAfter = F.settledFromRent(charges, after).reduce((a, x) => a + C(x.amount), 0);
 
       const fail =
         (moneyAfter !== moneyBefore && 'money changed') ||
         (rentAfter > billed && rentBefore <= billed && 'the tenant was put in credit') ||
         (again.move.length !== 0 && 'it was not idempotent') ||
-        (settledAfter > settledBefore && 'the move increased what maintenance counts as settled') ||
+        (creditedAfter > capAfter && 'more was settled from rent than the unpaid levy of the months that rent covers') ||
         (settledBefore <= maintCharged && settledAfter > maintCharged && 'maintenance over-settled') ||
         (u.status !== 'long-term' && res.move.length > 0 && 'a villa that is not let was touched') ||
         (!split && res.move.length > 0 && 'an un-restated villa was touched') ||
@@ -193,7 +291,7 @@ export default async function run({ port, projectRoot }) {
       if (fail) { bad++; if (!worst) worst = `${fail} — levy ${levy} rent ${rent} ${JSON.stringify(pays.map(p => [p.category, p.amount]))}`; }
     }
     T.check('2,000 randomised books were generated and moved', anyMoved > 500, `moved ${anyMoved}`);
-    T.check('in none of them did money change, a tenant go into credit, maintenance over-settle, or a second run do anything', bad === 0, `${bad} bad — ${worst}`);
+    T.check('in none of them did money change, a tenant go into credit, a levy over-settle beyond the months its rent covers, or a second run do anything', bad === 0, `${bad} bad — ${worst}`);
   }
 
   /* ================= 3. hostile requests ================= */
@@ -202,7 +300,7 @@ export default async function run({ port, projectRoot }) {
   try {
     const c = makeClient(srv.baseUrl);
     await activateAdmin(c, 'Hostile-1234!', 'HostileNew-9876!');
-    await makeLongTermUnit(c, 'unit-1', { monthlyRent: 100000, monthlyMaintenance: 20000 });
+    await makeLongTermUnit(c, 'unit-1', { monthlyRent: 100000, monthlyMaintenance: 20000, tenantMovedInOn: '2026-09-01' });
     for (const m of months) await c.post('/api/charges/post-month', { monthString: m });
     await recordAndConfirmPayment(c, { unitId: 'unit-1', category: 'Rent', amount: 100000, currency: 'JMD', payerName: 'T', method: 'Cash', date: '2026-09-07' });
 
@@ -211,7 +309,7 @@ export default async function run({ port, projectRoot }) {
     await c.post('/api/charges/post-month', { monthString: '2026-09' });
     await recordAndConfirmPayment(c, { unitId: 'unit-2', category: 'Maintenance', amount: 20000, currency: 'JMD', payerName: 'Owner Two', method: 'Cash', date: '2026-09-03' });
     // Now it is let, at an agreed total of 100,000 with the same 20,000 levy.
-    await c.put('/api/units/unit-2', { number: '2', ownerName: 'Owner Two', tenantName: 'New Tenant', status: 'long-term', monthlyRent: 100000, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 7, maintDueDay: 1 });
+    await c.put('/api/units/unit-2', { number: '2', ownerName: 'Owner Two', tenantName: 'New Tenant', status: 'long-term', monthlyRent: 100000, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 7, maintDueDay: 1, tenantMovedInOn: '2026-10-01' });
     await c.post('/api/charges/post-month', { monthString: '2026-10' });
     let db2 = (await c.get('/api/db')).body;
     const oct = db2.charges.find(x => x.unitId === 'unit-2' && x.category === 'Rent' && x.periodMonth === '2026-10');

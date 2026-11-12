@@ -7,6 +7,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import {
   Booking,
+  Tenancy,
   CURRENCIES,
   Charge,
   ChargeCategory,
@@ -83,6 +84,8 @@ interface FinanceHubProps {
   payments: Payment[];
   /** Needed to spot a deposit that is on the ledger twice. See `BookingDeposits`. */
   bookings: Booking[];
+  /** Needed to tell whose money a maintenance receipt was: the tenant's or the owner's. */
+  tenancies: Tenancy[];
   session: SessionUser;
   onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
   onConfirmPayment: (paymentId: string, fields?: Record<string, unknown>) => Promise<Payment>;
@@ -106,6 +109,7 @@ export default function FinanceHub({
   charges,
   payments,
   bookings,
+  tenancies,
   session,
   onRecordPayment,
   onConfirmPayment,
@@ -150,7 +154,7 @@ export default function FinanceHub({
   /* ---------------- restate old rent charges ---------------- */
 
   const restatable = useMemo(() => rentChargesToRestate(units, charges), [units, charges]);
-  const movableReceipts = useMemo(() => maintenanceReceiptsToMove(units, charges, payments), [units, charges, payments]);
+  const movableReceipts = useMemo(() => maintenanceReceiptsToMove(units, charges, payments, tenancies), [units, charges, payments, tenancies]);
   const handleMoveReceipts = async () => {
     if (!onRestateMaintenanceReceipts) return;
     const list = movableReceipts.move;

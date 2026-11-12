@@ -611,7 +611,8 @@ export interface MaintenanceReceiptMove {
 export function maintenanceReceiptsToMove(
   units: Unit[],
   charges: Charge[],
-  payments: Payment[]
+  payments: Payment[],
+  tenancies: Tenancy[] = []
 ): { move: MaintenanceReceiptMove[]; skipped: { payment: Payment; reason: string }[] } {
   const move: MaintenanceReceiptMove[] = [];
   const skipped: { payment: Payment; reason: string }[] = [];
@@ -626,16 +627,48 @@ export function maintenanceReceiptsToMove(
     );
     if (!rentCharges.some(c => (c.maintenancePortion || 0) > 0)) continue;
     /*
-     * A villa that has only just been let was billing its owner for maintenance
-     * until the day the tenant moved in, and those receipts are the owner's own
-     * money, not part of anybody's rent. Sweeping one into the tenant's rent
-     * would credit the tenant with a payment they never made and leave the owner
-     * looking as though they had never paid. So nothing earlier than the first
-     * month this villa was billed rent for is ever a candidate.
+     * Only the money of the tenancy living there now.
+     *
+     * A villa moves through states over its life — let, short stay, owner
+     * occupied, let again — and the owner pays the levy themselves through every
+     * stretch in which nobody is renting. Those receipts are the owner's own
+     * money. Sweeping one into a later tenant's rent credits that tenant with a
+     * payment they never made and leaves the owner reading as though they never
+     * paid.
+     *
+     * The window is therefore the CURRENT tenancy's own dates, not the villa's
+     * whole history. Anchoring it to the earliest open rent charge is not enough:
+     * a tenant who left owing leaves their charges open for years, which would
+     * reopen the window back past every owner-paid month since. With no active
+     * tenancy on file there is no window at all and nothing is moved, because
+     * there is then no tenant for the money to belong to.
      */
-    const firstRentMonth = rentCharges.map(c => c.periodMonth).sort()[0] || '';
-    const from = firstRentMonth ? `${firstRentMonth}-01` : '';
+    const here = tenancies
+      .filter(t => t.unitId === unit.id && t.status === 'active' && !t.endedOn)
+      .sort((a, b) => (b.startedOn || '').localeCompare(a.startedOn || ''))[0];
+    const from = here?.startedOn || '';
     const mine = payments.filter(p => p.unitId === unit.id && p.currency === currency && p.status === 'completed' && !p.derived);
+    /*
+     * No window, so nothing can be judged — but say so rather than going quiet.
+     *
+     * A tenancy opened by a plain status change deliberately carries no move-in
+     * date (`syncTenancy`: unknown is left unknown, because stamping today
+     * invented move-in dates for tenants of many years). Without one there is no
+     * way to tell this tenant's money from the owner's, and silently moving
+     * nothing would read in the office as "there was nothing to fix". Every
+     * candidate is reported instead, with what to do about it.
+     */
+    if (!from) {
+      for (const p of mine.filter(x => x.category === 'Maintenance')) {
+        skipped.push({
+          payment: p,
+          reason: here
+            ? "this villa's tenancy has no move-in date on record, so the tenant's money cannot be told from the owner's — set the move-in date on the tenancy first"
+            : 'this villa is let but has no tenancy on record, so there is no tenant for this money to belong to'
+        });
+      }
+      continue;
+    }
     const billed = rentCharges.reduce((a, c) => a + cents(c.amount), 0);
     const received = mine.filter(p => p.category === 'Rent').reduce((a, p) => a + cents(netPaidAsOf(p)), 0);
     let owed = Math.max(0, billed - received);
@@ -742,39 +775,65 @@ export function settledFromRent(charges: Charge[], payments: Payment[]): Payment
   }
   for (const key of keys) {
     const [unitId, currency] = key.split('|') as [string, Currency];
-    const rentCharges = charges
-      .filter(c => c.unitId === unitId && c.currency === currency && c.category === 'Rent' && c.status === 'open')
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
-    const maintCharged = charges
-      .filter(c => c.unitId === unitId && c.currency === currency && c.category === 'Maintenance' && c.status === 'open')
-      .reduce((a, c) => a + cents(c.amount), 0);
+    const mine = (c: Charge, cat: ChargeCategory) => c.unitId === unitId && c.currency === currency && c.category === cat && c.status === 'open';
+    const rentCharges = charges.filter(c => mine(c, 'Rent')).sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
+    const maintCharges = charges.filter(c => mine(c, 'Maintenance')).sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
     const settled = (p: Payment) => p.status === 'completed' && p.unitId === unitId && p.currency === currency && !p.derived;
-    const maintReceived = payments
-      .filter(p => settled(p) && p.category === 'Maintenance')
-      .reduce((a, p) => a + cents(netPaidAsOf(p)), 0);
-    let cap = Math.max(0, maintCharged - maintReceived);
-    const rentReceipts = payments
-      .filter(p => settled(p) && p.category === 'Rent')
-      .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
 
-    const queue = rentCharges.map(c => ({ total: cents(c.amount), left: cents(c.amount), share: cents(c.maintenancePortion || 0) }));
+    /*
+     * What each month's levy still needs, after the maintenance actually paid in
+     * cash has been applied to it oldest first — the same ageing rule every other
+     * balance in this system uses.
+     */
+    const owedByMonth = new Map<string, number>();
+    let cash = payments.filter(p => settled(p) && p.category === 'Maintenance').reduce((a, p) => a + cents(netPaidAsOf(p)), 0);
+    for (const c of maintCharges) {
+      const amount = cents(c.amount);
+      const covered = Math.min(cash, amount);
+      cash -= covered;
+      owedByMonth.set(c.periodMonth, (owedByMonth.get(c.periodMonth) || 0) + (amount - covered));
+    }
+
+    const rentReceipts = payments.filter(p => settled(p) && p.category === 'Rent').sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+    const queue = rentCharges.map(c => ({ month: c.periodMonth, total: cents(c.amount), left: cents(c.amount), share: cents(c.maintenancePortion || 0) }));
     let idx = 0;
-    let exact = 0; // running, unrounded credit in cents
-    let emitted = 0;
+    /*
+     * Credited per month, not against the villa's whole maintenance balance.
+     *
+     * The levy inside September's rent settles September's levy and nothing else.
+     * Pooling it instead let a tenant's late arrears pay a levy raised long after
+     * they had gone — and, where the villa had since been sold, settle the NEW
+     * proprietor's contribution out of the old tenant's money, which is exactly
+     * what the sale rules exist to prevent.
+     */
+    const exactByMonth = new Map<string, number>();
+    const emittedByMonth = new Map<string, number>();
     for (const receipt of rentReceipts) {
       let money = cents(netPaidAsOf(receipt));
+      const touched = new Set<string>();
       while (money > 0 && idx < queue.length) {
         const q = queue[idx];
         const take = Math.min(money, q.left);
-        if (q.total > 0) exact += (q.share * take) / q.total;
+        if (q.total > 0 && take > 0) {
+          exactByMonth.set(q.month, (exactByMonth.get(q.month) || 0) + (q.share * take) / q.total);
+          touched.add(q.month);
+        }
         q.left -= take;
         money -= take;
         if (q.left <= 0) idx++;
       }
-      const credit = Math.min(Math.round(exact) - emitted, cap);
+      let credit = 0;
+      for (const month of touched) {
+        const owed = owedByMonth.get(month) || 0;
+        const already = emittedByMonth.get(month) || 0;
+        const want = Math.min(Math.round(exactByMonth.get(month) || 0) - already, owed);
+        if (want > 0) {
+          emittedByMonth.set(month, already + want);
+          owedByMonth.set(month, owed - want);
+          credit += want;
+        }
+      }
       if (credit > 0) {
-        emitted += credit;
-        cap -= credit;
         out.push({
           id: `from-rent-${receipt.id}`,
           receiptNo: '',

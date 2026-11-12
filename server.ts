@@ -2592,7 +2592,7 @@ app.post(
     requirePermission(req, 'modify_settled');
     const confirm = req.body?.confirm === true;
     const result = await transaction(db => {
-      const { move, skipped } = maintenanceReceiptsToMove(db.units, db.charges, db.payments);
+      const { move, skipped } = maintenanceReceiptsToMove(db.units, db.charges, db.payments, db.tenancies);
       if (!confirm) return { move, skipped, done: 0 };
       const who = actor(req);
       for (const item of move) {

@@ -737,6 +737,7 @@ export default function App() {
             charges={data.charges}
             payments={settledPayments}
             bookings={data.bookings}
+            tenancies={data.tenancies}
             session={session}
             onRecordPayment={recordPayment}
             onConfirmPayment={confirmPayment}
