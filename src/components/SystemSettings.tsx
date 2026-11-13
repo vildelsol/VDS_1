@@ -910,6 +910,28 @@ function BackupPanel({
     void load();
   }, [load]);
 
+  /*
+   * Watch for a drive being plugged in while this screen is open. Detection used to
+   * run only when the screen opened or "Look again" was pressed, so a stick
+   * plugged in afterwards was invisible until somebody went and asked.
+   */
+  const backupSet = !!status?.externalBackupDir;
+  React.useEffect(() => {
+    const timer = window.setInterval(async () => {
+      if (folderBusy) return;
+      try {
+        const res = await api.get<{ drives: DetectedDrive[] }>('/api/backup/drives');
+        setDrives(res.drives);
+        const removable = res.drives.filter(d => d.writable && d.removable);
+        if (!backupSet && removable.length === 1) void useDrive(removable[0].path);
+      } catch {
+        /* the next tick tries again */
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backupSet, folderBusy]);
+
   const testFolder = async () => {
     setFolderBusy(true);
     setFolderResult(null);
@@ -1168,12 +1190,14 @@ function BackupPanel({
           </div>
         </dl>
         <InfoNote>
-          <strong>To restore:</strong> stop the application, copy the backup file you want over{' '}
-          <code className="rounded bg-white px-1 font-mono">db.json</code>, and start it again. If{' '}
-          <code className="rounded bg-white px-1 font-mono">db.json</code> is ever damaged, the application refuses to
-          start rather than overwriting it, so nothing is lost while you recover.
+          <strong>To go back to an earlier day,</strong> use <em>Restore records</em> below: pick a backup from the list
+          or choose a snapshot file you downloaded. Nothing is changed until you have seen what the file holds and typed
+          RESTORE. If <code className="rounded bg-white px-1 font-mono">db.json</code> is ever damaged, the application
+          refuses to start rather than overwriting it, so nothing is lost while you recover.
         </InfoNote>
       </div>
+
+      <RestorePanel backups={status.backups} onError={onError} />
 
       <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
         <div className="border-b border-slate-100 bg-slate-50 p-4">
@@ -1212,6 +1236,187 @@ function BackupPanel({
           </TableScroller>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+interface RestorePreview {
+  summary: { madeAt: string; counts: Record<string, number>; staffNotRecreated: string[] };
+  present: { units: number; charges: number; payments: number; expenses: number };
+}
+
+type RestoreSource = { source: 'backup'; file: string; location: 'local' | 'external' } | { source: 'snapshot'; snapshot: unknown };
+
+/**
+ * Going back to an earlier day, from a daily backup or a downloaded snapshot.
+ * The file is read and described first; nothing changes until RESTORE is typed.
+ */
+function RestorePanel({ backups, onError }: { backups: BackupRecord[]; onError: (err: unknown) => void }) {
+  const [source, setSource] = useState<RestoreSource | null>(null);
+  const [label, setLabel] = useState('');
+  const [preview, setPreview] = useState<RestorePreview | null>(null);
+  const [word, setWord] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState('');
+  const [done, setDone] = useState<{ safetyCopy: string; findings: number } | null>(null);
+
+  const reset = () => {
+    setSource(null);
+    setPreview(null);
+    setWord('');
+    setProblem('');
+  };
+
+  const look = async (src: RestoreSource, name: string) => {
+    setBusy(true);
+    setProblem('');
+    setDone(null);
+    try {
+      const res = await api.post<RestorePreview>('/api/backup/restore', { ...src, dryRun: true });
+      setSource(src);
+      setLabel(name);
+      setPreview(res);
+      setWord('');
+    } catch (err) {
+      reset();
+      setProblem(errorMessage(err, 'That file could not be read.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const chooseFile = async (file: File | undefined) => {
+    if (!file) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch {
+      reset();
+      setProblem('That file is not a snapshot or backup. It could not be read as records.');
+      return;
+    }
+    await look({ source: 'snapshot', snapshot: parsed }, file.name);
+  };
+
+  const restore = async () => {
+    if (!source) return;
+    setBusy(true);
+    setProblem('');
+    try {
+      const res = await api.post<{ safetyCopy: string; integrity: { findings: unknown[] } }>('/api/backup/restore', {
+        ...source,
+        confirm: word.trim()
+      });
+      setDone({ safetyCopy: res.safetyCopy, findings: res.integrity.findings.length });
+      reset();
+    } catch (err) {
+      setProblem(errorMessage(err, 'The restore failed. Nothing was changed.'));
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const c = preview?.summary.counts;
+  return (
+    <div className="space-y-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-xs sm:p-6">
+      <h3 className="font-display text-sm font-semibold text-slate-900">Restore records</h3>
+      <p className="text-xs text-slate-600">
+        Go back to how the records stood on an earlier day. Staff accounts and passwords are not touched, so everyone
+        can still sign in. A copy of today&apos;s records is kept first, so a restore can itself be undone.
+      </p>
+
+      {done && (
+        <SuccessNote>
+          Records restored. Reload the page to see them.{' '}
+          {done.findings > 0 ? `${done.findings} item(s) on the integrity check are worth a look. ` : ''}
+          The earlier records were kept at {done.safetyCopy}.{' '}
+          <button type="button" className="font-semibold underline" onClick={() => window.location.reload()}>
+            Reload now
+          </button>
+        </SuccessNote>
+      )}
+      {problem && <ErrorNote>{problem}</ErrorNote>}
+
+      {!preview && (
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="cursor-pointer rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50">
+            Choose a snapshot file…
+            <input
+              type="file"
+              accept=".json,application/json"
+              className="sr-only"
+              disabled={busy}
+              onChange={e => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                void chooseFile(f);
+              }}
+            />
+          </label>
+          <span className="text-xs text-slate-500">or use “Restore” beside a backup in the list below.</span>
+        </div>
+      )}
+
+      {!preview && backups.length > 0 && (
+        <ul className="divide-y divide-slate-100 rounded-xl border border-slate-100">
+          {backups.slice(0, 14).map(b => (
+            <li key={`${b.location}-${b.file}`} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+              <span className="min-w-0">
+                <span className="font-medium text-slate-800">{formatDayLabel(b.date)}</span>
+                <span className="ml-2 text-slate-400">{b.location === 'external' ? 'off-machine' : 'this machine'}</span>
+              </span>
+              <SecondaryButton onClick={() => void look({ source: 'backup', file: b.file, location: b.location }, `${formatDayLabel(b.date)} backup`)} disabled={busy}>
+                Restore…
+              </SecondaryButton>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {preview && c && (
+        <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+          <p className="text-sm font-semibold">Go back to: {label}</p>
+          <p>
+            That file was made {preview.summary.madeAt.slice(0, 10)} and holds {c.units} {c.units === 1 ? 'villa' : 'villas'},{' '}
+            {c.charges} {c.charges === 1 ? 'charge' : 'charges'}, {c.payments} {c.payments === 1 ? 'payment' : 'payments'} and{' '}
+            {c.expenses} {c.expenses === 1 ? 'expense' : 'expenses'}. The records today hold {preview.present.charges}{' '}
+            {preview.present.charges === 1 ? 'charge' : 'charges'}, {preview.present.payments}{' '}
+            {preview.present.payments === 1 ? 'payment' : 'payments'} and {preview.present.expenses}{' '}
+            {preview.present.expenses === 1 ? 'expense' : 'expenses'}.
+          </p>
+          <p>
+            <strong>Everything entered after that day will be removed from the records</strong>, including payments and
+            receipts. A copy of today&apos;s records is kept first.
+          </p>
+          {preview.summary.staffNotRecreated.length > 0 && (
+            <p>
+              These staff are in the file but have no account here and are not recreated (the file cannot give them a
+              password): {preview.summary.staffNotRecreated.join(', ')}. Add them again under Staff if needed.
+            </p>
+          )}
+          <label className="block">
+            <span className="font-semibold">Type RESTORE to go ahead</span>
+            <input
+              value={word}
+              onChange={e => setWord(e.target.value)}
+              className={`${inputClass} mt-1 max-w-[12rem]`}
+              autoComplete="off"
+              aria-label="Type RESTORE to confirm"
+            />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <SubmitButton type="button" busy={busy} busyLabel="Restoring…" disabled={word.trim() !== 'RESTORE'} onClick={() => void restore()}>
+              Restore these records
+            </SubmitButton>
+            <SecondaryButton onClick={reset} disabled={busy}>
+              Cancel
+            </SecondaryButton>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

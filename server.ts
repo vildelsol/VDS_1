@@ -64,6 +64,10 @@ import {
   backupStatus,
   checkBackupTarget,
   detectDrives,
+  migrate,
+  readBackupFile,
+  saveSafetyCopy,
+  SCHEMA_VERSION,
   markBackupFolder,
   setBackupRelocationHandler,
   getDb,
@@ -77,6 +81,7 @@ import {
   transaction
 } from './server/db';
 import { checkIntegrity, describeIntegrity, ledgerFingerprint } from './server/integrity';
+import { applyRestore, checkRestoreFile, RestoreRefused, summariseRestore } from './server/restore';
 import {
   ACTION_DENIED_MESSAGE,
   AuthedRequest,
@@ -107,7 +112,11 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const IS_PROD = process.env.NODE_ENV === 'production';
 
-app.use(express.json({ limit: '1mb' }));
+// Everything is limited to 1 MB except the restore upload, which carries a whole
+// snapshot and is read further down, after sign-in, so nobody can stream tens of
+// megabytes at the server without a session.
+const smallJson = express.json({ limit: '1mb' });
+app.use((req, res, next) => (req.path === '/api/backup/restore' ? next() : smallJson(req, res, next)));
 app.disable('x-powered-by');
 
 /**
@@ -803,6 +812,7 @@ app.get(
  * ------------------------------------------------------------------ */
 
 app.use('/api', requireAuth(getDb));
+app.use('/api/backup/restore', express.json({ limit: '60mb' }));
 
 /**
  * Hold an account to its forced password change.
@@ -1171,12 +1181,15 @@ app.get(
       schemaVersion: db.schemaVersion,
       note: 'Villaggio Del Sol records export. Credentials and sessions are deliberately excluded.',
       units: db.units,
+      ownerships: db.ownerships,
       tenancies: db.tenancies,
       bookings: db.bookings,
       charges: db.charges,
       payments: db.payments,
       utilities: db.utilities,
       expenses: db.expenses,
+      recurringExpenses: db.recurringExpenses,
+      annualReports: db.annualReports,
       unitActivities: db.unitActivities,
       auditLogs: db.auditLogs,
       counters: db.counters,
@@ -1191,6 +1204,98 @@ app.get(
       addAudit(db2, who.name, who.role, 'Downloaded a records snapshot', 'Backup', 'download', '', `Snapshot dated ${stamp}`);
     });
     res.send(JSON.stringify(snapshot, null, 2));
+  })
+);
+
+
+/**
+ * Put the records back from a daily backup or from a downloaded snapshot.
+ *
+ * Two steps, one route. With `dryRun` it only reads the file and says what it
+ * holds, so the screen can show "this is what you are about to go back to". The
+ * real restore needs the word RESTORE typed, takes a copy of the present records
+ * first, and replaces the records but never the accounts (see server/restore.ts).
+ * Administrators only: it is the one action that can erase work.
+ */
+app.post(
+  '/api/backup/restore',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_settings');
+    if (req.auth!.user.role !== 'ADMINISTRATOR') throw new ApiError(403, 'Only an administrator can restore records from a backup.');
+    const body = req.body || {};
+
+    let raw: unknown;
+    let source: string;
+    let madeAtFallback = '';
+    try {
+      if (body.source === 'backup') {
+        const location = body.location === 'external' ? 'external' : 'local';
+        raw = readBackupFile(String(body.file ?? ''), location);
+        source = `backup ${String(body.file)} (${location === 'external' ? 'off-machine' : 'this machine'})`;
+        madeAtFallback = String(body.file).slice(3, 13);
+      } else if (body.source === 'snapshot') {
+        raw = body.snapshot;
+        source = 'a downloaded snapshot';
+      } else {
+        bad('Choose a backup from the list or a snapshot file.');
+      }
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new ApiError(400, (err as Error).message);
+    }
+
+    let file: Record<string, unknown>;
+    let summary: ReturnType<typeof summariseRestore>;
+    try {
+      file = checkRestoreFile(raw, SCHEMA_VERSION);
+      summary = summariseRestore(file, getDb(), madeAtFallback);
+    } catch (err) {
+      if (err instanceof RestoreRefused) throw new ApiError(400, err.message);
+      throw err;
+    }
+
+    const now = getDb();
+    const present = {
+      units: now.units.length,
+      charges: now.charges.length,
+      payments: now.payments.length,
+      expenses: now.expenses.length
+    };
+    if (body.dryRun) return res.json({ success: true, dryRun: true, summary, present });
+
+    if (String(body.confirm ?? '').trim() !== 'RESTORE') {
+      bad('Type the word RESTORE to confirm. Nothing was changed.');
+    }
+
+    const safetyCopy = saveSafetyCopy();
+    const who = actor(req);
+    await transaction(
+      db => {
+        applyRestore(db, file);
+        migrate(db);
+        addAudit(
+          db,
+          who.name,
+          who.role,
+          'Restored the records from a backup',
+          'Backup',
+          'restore',
+          `${present.charges} charges, ${present.payments} payments before`,
+          `${source}, dated ${summary.madeAt}; ${summary.counts.charges} charges, ${summary.counts.payments} payments after. ` +
+            `A copy of the earlier records was kept at ${safetyCopy}.`
+        );
+      },
+      // The file is a past state of the books, not a new write on top of the present
+      // ones: its own faults are reported below, never a reason to refuse it.
+      { skipGuard: true }
+    );
+    const report = checkIntegrity(getDb());
+    res.json({
+      success: true,
+      summary,
+      safetyCopy,
+      integrity: { ok: report.findings.length === 0, findings: report.findings.slice(0, 20).map(f => ({ code: f.code, severity: f.severity, message: f.message })) }
+    });
   })
 );
 

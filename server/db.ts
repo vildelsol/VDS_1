@@ -281,7 +281,11 @@ export function detectDrives(currentTarget: string): DetectedDrive[] {
     const folder = path.join(root, 'Villaggio-Backups');
     let writable = false;
     try {
-      const probe = path.join(root, `.vds-detect-${Date.now()}`);
+      // Probe the backup folder when it exists, else the root. A machine's own
+      // disk usually refuses a file at its root while the folder is fine, and
+      // reporting that as "not writable" was misleading.
+      const probeDir = fs.existsSync(folder) ? folder : root;
+      const probe = path.join(probeDir, `.vds-detect-${Date.now()}`);
       fs.writeFileSync(probe, 'ok');
       fs.unlinkSync(probe);
       writable = true;
@@ -675,6 +679,41 @@ export function listBackups(): BackupRecord[] {
   return out.sort((a, b) => b.date.localeCompare(a.date) || a.location.localeCompare(b.location));
 }
 
+/** Folder for the copy taken just before a restore. Never pruned by the daily rotation. */
+const SAFETY_DIR = path.join(DATA_DIR, 'db-before-restore');
+
+/**
+ * Read one backup file named in the Available backups list.
+ *
+ * The name is matched against the exact pattern the backup writes, and the folder
+ * comes from the location, never from the request, so a request cannot reach any
+ * other file on the machine.
+ */
+export function readBackupFile(file: string, location: 'local' | 'external'): unknown {
+  if (!/^db-\d{4}-\d{2}-\d{2}\.json$/.test(file)) throw new Error('That is not the name of a backup file.');
+  const dir = location === 'external' ? externalBackupDir() : BACKUP_DIR;
+  if (!dir) throw new Error('No backup folder is set at that location.');
+  const full = path.join(dir, file);
+  if (!fs.existsSync(full)) throw new Error('That backup file is no longer there.');
+  return JSON.parse(fs.readFileSync(full, 'utf-8'));
+}
+
+/**
+ * Keep a copy of the records as they are right now, before a restore replaces
+ * them, so a restore chosen by mistake can itself be undone. Returns the file name.
+ */
+export function saveSafetyCopy(): string {
+  if (!fs.existsSync(SAFETY_DIR)) fs.mkdirSync(SAFETY_DIR, { recursive: true });
+  const name = `before-restore-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  fs.writeFileSync(path.join(SAFETY_DIR, name), backupPayload(), 'utf-8');
+  const kept = fs.readdirSync(SAFETY_DIR).filter(f => f.startsWith('before-restore-') && f.endsWith('.json')).sort();
+  while (kept.length > 10) {
+    const oldest = kept.shift();
+    if (oldest) fs.unlinkSync(path.join(SAFETY_DIR, oldest));
+  }
+  return path.join(SAFETY_DIR, name);
+}
+
 let backupTimer: NodeJS.Timeout | null = null;
 
 /** Check hourly whether today's backup exists yet. Cheap, and survives a long uptime. */
@@ -796,7 +835,7 @@ function baselineReport(committed: Database) {
   return lastReport.report;
 }
 
-export function transaction<T>(fn: (db: Database) => T): Promise<T> {
+export function transaction<T>(fn: (db: Database) => T, opts: { skipGuard?: boolean } = {}): Promise<T> {
   const run = queue.then(async () => {
     const committed = getDb();
     const working = structuredClone(committed);
@@ -808,7 +847,7 @@ export function transaction<T>(fn: (db: Database) => T): Promise<T> {
     // this morning is worse than one running on records with a known fault.
     const before = baselineReport(committed);
     const after = checkIntegrity(working);
-    const introduced = newBlockingFindings(before, after);
+    const introduced = opts.skipGuard ? [] : newBlockingFindings(before, after);
     if (introduced.length > 0) {
       throw new IntegrityGuardError(
         'That change was refused and nothing was saved: it would have left the records contradicting themselves. ' +
@@ -905,7 +944,7 @@ export function nextReceiptNo(db: Database): string {
  * collected for July 2026. Records are relinked here, and every repair is written
  * to the audit trail rather than done silently.
  */
-function migrate(db: Database): boolean {
+export function migrate(db: Database): boolean {
   let changed = false;
   const note = (action: string, recordType: string, recordId: string, detail: string) => {
     addAudit(db, 'System Migration', 'ADMINISTRATOR', action, recordType, recordId, '', detail);
