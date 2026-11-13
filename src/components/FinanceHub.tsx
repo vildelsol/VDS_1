@@ -468,6 +468,7 @@ export default function FinanceHub({
           onReceive={openPaymentFor}
           onViewCharges={setChargesTarget}
           onPrintStatement={setStatementTarget}
+          generatedBy={session.name}
         />
       )}
 
@@ -482,6 +483,7 @@ export default function FinanceHub({
           onReceive={openPaymentFor}
           onViewCharges={setChargesTarget}
           onPrintStatement={setStatementTarget}
+          generatedBy={session.name}
         />
       )}
 
@@ -854,6 +856,102 @@ export default function FinanceHub({
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * The whole ledger on paper: every account on the screen, the balance of each,
+ * and a total for each currency. The two currencies are totalled separately and
+ * never added together. It is built from the same account list the screen shows,
+ * so the page and the paper cannot disagree.
+ */
+export function LedgerDocument({
+  accounts,
+  category,
+  asOf,
+  payments,
+  nameOf,
+  generatedBy,
+  onClose
+}: {
+  accounts: AccountBalance[];
+  category: ChargeCategory;
+  asOf: string;
+  payments: Payment[];
+  nameOf: (u: Unit) => string;
+  generatedBy: string;
+  onClose: () => void;
+}) {
+  const lastPaid = (a: AccountBalance): string => {
+    const dates = payments
+      .filter(p => p.unitId === a.unit.id && p.category === category && p.status === 'completed' && p.currency === a.currency)
+      .map(p => p.date)
+      .sort();
+    return dates.length ? formatDayLabel(dates[dates.length - 1]) : 'never';
+  };
+  const currencies = Array.from(new Set(accounts.map(a => a.currency)));
+  const title = category === 'Rent' ? 'Tenants rent ledger' : 'HOA maintenance ledger';
+
+  return (
+    <PrintPortal title={`${title} as at ${formatDayLabel(asOf)}`} onClose={onClose} maxWidthClass="max-w-5xl">
+      <PrintLetterhead documentTitle={title} meta={`As at ${formatDayLabel(asOf)}`} generatedBy={generatedBy} />
+      {currencies.map(currency => {
+        const rows = accounts.filter(a => a.currency === currency);
+        const charged = round2(rows.reduce((t, a) => t + a.charged, 0));
+        const paid = round2(rows.reduce((t, a) => t + a.paid, 0));
+        const owing = round2(rows.filter(a => a.balance > 0).reduce((t, a) => t + a.balance, 0));
+        const credit = round2(rows.filter(a => a.balance < 0).reduce((t, a) => t + Math.abs(a.balance), 0));
+        return (
+          <section key={currency} className="mb-6">
+            <h2 className="mb-2 font-display text-sm font-semibold text-slate-900">
+              {currency === 'USD' ? 'United States dollar accounts' : 'Jamaican dollar accounts'}
+            </h2>
+            <table className="w-full text-left text-[11px]">
+              <thead>
+                <tr className="border-b-2 border-slate-400 font-mono text-[9px] uppercase text-slate-600">
+                  <th className="p-2">Villa</th>
+                  <th className="p-2">{category === 'Rent' ? 'Tenant' : 'Registered owner'}</th>
+                  <th className="p-2 text-right">Billed</th>
+                  <th className="p-2 text-right">Received</th>
+                  <th className="p-2">Last payment</th>
+                  <th className="p-2 text-right">Balance</th>
+                  <th className="p-2 text-right">Days</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {rows.map(a => (
+                  <tr key={a.unit.id} className="border-b border-slate-100">
+                    <td className="p-2 font-semibold">{getUnitDisplayName(a.unit.number)}</td>
+                    <td className="p-2 font-sans">{nameOf(a.unit)}</td>
+                    <td className="p-2 text-right">{formatMoney(a.charged, currency)}</td>
+                    <td className="p-2 text-right">{formatMoney(a.paid, currency)}</td>
+                    <td className="p-2">{lastPaid(a)}</td>
+                    <td className="p-2 text-right font-semibold">
+                      {a.balance > 0 ? formatMoney(a.balance, currency) : a.balance < 0 ? `${formatMoney(Math.abs(a.balance), currency)} credit` : 'Settled'}
+                    </td>
+                    <td className="p-2 text-right">{a.balance > 0 && a.oldestUnpaidDays > 0 ? a.oldestUnpaidDays : '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-slate-400 font-mono font-bold">
+                  <td className="p-2" colSpan={2}>Total ({currency})</td>
+                  <td className="p-2 text-right">{formatMoney(charged, currency)}</td>
+                  <td className="p-2 text-right">{formatMoney(paid, currency)}</td>
+                  <td className="p-2" />
+                  <td className="p-2 text-right">{formatMoney(owing, currency)} owing</td>
+                  <td className="p-2" />
+                </tr>
+              </tfoot>
+            </table>
+            {credit > 0 && <p className="mt-1 text-[10px] text-slate-600">Credit balances held: {formatMoney(credit, currency)}</p>}
+          </section>
+        );
+      })}
+      <PrintSignatures left="Prepared by" leftName={generatedBy} right="Reviewed by" />
+    </PrintPortal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
 function AccountTable({
   accounts,
   category,
@@ -863,7 +961,8 @@ function AccountTable({
   contactOf,
   onReceive,
   onViewCharges,
-  onPrintStatement
+  onPrintStatement,
+  generatedBy
 }: {
   accounts: AccountBalance[];
   category: ChargeCategory;
@@ -874,7 +973,9 @@ function AccountTable({
   onReceive: (a: AccountBalance) => void;
   onViewCharges: (a: AccountBalance) => void;
   onPrintStatement: (a: AccountBalance) => void;
+  generatedBy: string;
 }) {
+  const [printingLedger, setPrintingLedger] = useState(false);
   // The most recent completed payment date for an account, so the ledger shows
   // when money last came in without opening the full statement.
   const lastPaymentDate = (account: AccountBalance): string | null => {
@@ -901,6 +1002,24 @@ function AccountTable({
 
   return (
     <div className="space-y-3">
+      <div className="flex justify-end">
+        <SecondaryButton onClick={() => setPrintingLedger(true)}>
+          <span className="flex items-center gap-1.5">
+            <Printer className="h-3.5 w-3.5" /> Print ledger
+          </span>
+        </SecondaryButton>
+      </div>
+      {printingLedger && (
+        <LedgerDocument
+          accounts={accounts}
+          category={category}
+          asOf={asOf}
+          payments={payments}
+          nameOf={nameOf}
+          generatedBy={generatedBy}
+          onClose={() => setPrintingLedger(false)}
+        />
+      )}
       {noCharges && (
         <InfoNote tone="amber">
           No {category.toLowerCase()} charges have been posted yet, so every balance reads zero. Use{' '}

@@ -1236,6 +1236,23 @@ export function periodStatement(
   };
 }
 
+/**
+ * What is receivable from the units in one currency, as at a date: rent plus
+ * maintenance, counting a let villa's levy once (it is part of the rent) and netting
+ * credits. The board pack's "receivable" rows use this so they agree with its own
+ * "accounts in arrears" figure.
+ */
+export function receivableAsOf(units: Unit[], charges: Charge[], payments: Payment[], asOf: string, currency: Currency): number {
+  return sumMoney(
+    units.flatMap(unit => {
+      const rent = accountBalance(unit, 'Rent', charges, payments, asOf, units);
+      const maintenance = accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
+      const insideRent = maintenanceFundedFromRent(unit) && rent.balance > 0 && maintenance.balance > 0 && maintenance.balance <= rent.balance;
+      return [rent, ...(insideRent ? [] : [maintenance])].filter(a => a.currency === currency).map(a => a.balance);
+    })
+  );
+}
+
 /** Every account (unit x category) that currently owes money, worst first. */
 export function delinquentAccounts(
   units: Unit[],
@@ -1245,10 +1262,20 @@ export function delinquentAccounts(
 ): AccountBalance[] {
   const accounts: AccountBalance[] = [];
   for (const unit of units) {
-    for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
-      const account = accountBalance(unit, category, charges, payments, asOf, units);
-      if (account.balance > 0) accounts.push(account);
-    }
+    const rent = accountBalance(unit, 'Rent', charges, payments, asOf, units);
+    const maintenance = accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
+    if (rent.balance > 0) accounts.push(rent);
+    /*
+     * A let villa's maintenance is part of the rent the tenant owes: the agreed
+     * rent is one figure and the levy is taken out of it. While the rent is
+     * unpaid the levy is unpaid too, but it is the same money, so listing both
+     * counts it twice (a tenant owing 100,000 with a 25,000 levy showed as
+     * 125,000 owing, and every total and grade built on the list was inflated).
+     * The levy still stands on the HOA ledger and in the corporation's returns;
+     * it just is not a second debt here.
+     */
+    const insideRent = maintenanceFundedFromRent(unit) && rent.balance > 0 && maintenance.balance <= rent.balance;
+    if (maintenance.balance > 0 && !insideRent) accounts.push(maintenance);
   }
   return accounts.sort((a, b) => b.oldestUnpaidDays - a.oldestUnpaidDays || b.balance - a.balance);
 }
@@ -2208,7 +2235,19 @@ export function ownerStatement(
    */
   const maintenanceOwedForPeriod = subtractMoney(maintenanceBilled, maintenancePaid);
 
-  const net = round2(collected - maintenanceOwedForPeriod - utilityBilled - unitExpenses);
+  /*
+   * What the proprietor owes the corporation for the period, and nothing else.
+   *
+   * Rent and short-stay income are the proprietor's own: they never pass through
+   * the corporation and the printed statement says so. They used to be netted
+   * against the contribution here, which was harmless while no proprietor's villa
+   * had rent on the books. Since every villa not owner-occupied belongs to ISPO,
+   * and ISPO lets them, that netting turned ISPO's own rent into a credit against
+   * its levies: a statement showed "Due to ISPO J$50,000" for a villa whose tenant
+   * had paid ISPO rent, and the group balance read J$37,000 owing when J$97,000
+   * was. Utility recoveries stay in: they offset the villa's own utility bill.
+   */
+  const net = round2(utilityCollected - maintenanceOwedForPeriod - utilityBilled - unitExpenses);
 
   return {
     unit,
@@ -2506,9 +2545,22 @@ export function arrearsAgeing(
     .map(currency => {
       const totals = emptyBuckets();
       for (const unit of units) {
+        // A let villa's levy is part of the rent its tenant owes: age it once. This is
+        // the same rule `delinquentAccounts` applies, so the dashboard, the charts, the
+        // board pack and the health grade all total the same money.
+        const rentAged = ageAccountArrears(unit, 'Rent', charges, payments, asOf, units);
         for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
-          const aged = ageAccountArrears(unit, category, charges, payments, asOf, units);
+          const aged = category === 'Rent' ? rentAged : ageAccountArrears(unit, category, charges, payments, asOf, units);
           if (aged.currency !== currency || aged.buckets.total <= 0) continue;
+          if (
+            category === 'Maintenance' &&
+            maintenanceFundedFromRent(unit) &&
+            rentAged.currency === currency &&
+            rentAged.buckets.total > 0 &&
+            aged.buckets.total <= rentAged.buckets.total
+          ) {
+            continue;
+          }
           totals.d30 = round2(totals.d30 + aged.buckets.d30);
           totals.d60 = round2(totals.d60 + aged.buckets.d60);
           totals.d90 = round2(totals.d90 + aged.buckets.d90);
@@ -2740,6 +2792,8 @@ export interface AnnualOwnersReport {
   feeBilled: number;
   /** What that raised across every contributing villa: fee × villas × 12. */
   contributionsAnnual: number;
+  /** Months of the report year that have records (12 when no start date is on file). */
+  monthsRecorded: number;
   /**
    * feeBilled - perUnitMonthly. Negative is the deficit absorbed on owners'
    * behalf, per villa per month — the headline figure of the whole document.
@@ -2820,7 +2874,7 @@ export function annualOwnersReport(
   allExpenses: Expense[],
   currency: Currency,
   reportYear: number,
-  options?: { budgetByCategory?: Record<string, number>; proposedFee?: number }
+  options?: { budgetByCategory?: Record<string, number>; proposedFee?: number; booksBeginOn?: string }
 ): AnnualOwnersReport {
   /*
    * The corporation's costs only, and this is the one that mattered most.
@@ -2851,7 +2905,28 @@ export function annualOwnersReport(
   // than assumed equal, because an entitlement-weighted contribution is lawful
   // and a single "the fee" figure must not pretend otherwise.
   const feeBilled = contributingUnits > 0 ? round2(sumMoney(contributing.map(u => chargeAmount(u, 'Maintenance'))) / divisor) : 0;
-  const contributionsAnnual = round2(feeBilled * contributingUnits * 12);
+  /*
+   * Only the months this property has records for. The contribution used to be
+   * the fee times twelve whatever the books covered, so a year that was never
+   * recorded printed a "surplus" of twelve months' fees against no expenditure
+   * (J$4,500,000 for a year with nothing in it). Recording began on `booksBeginOn`;
+   * a year before that has no months, and the books' own year counts from that
+   * month to December, or to this month while the year is still running.
+   * With no start date on file the full year is assumed, as before.
+   */
+  const monthsRecorded = (() => {
+    const begin = options?.booksBeginOn;
+    if (!begin) return 12;
+    const beginYear = Number(begin.slice(0, 4));
+    const beginMonth = Number(begin.slice(5, 7));
+    if (reportYear < beginYear) return 0;
+    const nowDay = today();
+    const lastMonth = reportYear < Number(nowDay.slice(0, 4)) ? 12 : reportYear > Number(nowDay.slice(0, 4)) ? 0 : Number(nowDay.slice(5, 7));
+    const firstMonth = reportYear === beginYear ? beginMonth : 1;
+    return Math.max(0, lastMonth - firstMonth + 1);
+  })();
+  const contributionsFullYear = round2(feeBilled * contributingUnits * 12);
+  const contributionsAnnual = round2(feeBilled * contributingUnits * monthsRecorded);
 
   const perUnitAnnual = round2(expenditure / divisor);
   const perUnitMonthly = round2(perUnitAnnual / 12);
@@ -2947,7 +3022,7 @@ export function annualOwnersReport(
   const reserveShare = proposedFee > 0 ? round2((reservePerUnitMonthly / proposedFee) * 100) : null;
 
   /* --- lever 2: cut the expenditure to fit the contribution --- */
-  const expenditureCeiling = contributionsAnnual;
+  const expenditureCeiling = contributionsFullYear;
   const reductionRequired = round2(Math.max(0, budgetExpenditure - expenditureCeiling));
   const cutsThatWouldClose = categories
     .filter(l => l.budget > 0)
@@ -2985,6 +3060,7 @@ export function annualOwnersReport(
     perUnitMonthly,
     feeBilled,
     contributionsAnnual,
+    monthsRecorded,
     monthlyPositionPerUnit,
     annualCommunityPosition,
     received,

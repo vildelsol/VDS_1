@@ -191,9 +191,12 @@ function auditReporting(db, fin, asOf) {
     const summed = cents(b.d30) + cents(b.d60) + cents(b.d90) + cents(b.over90);
     if (summed !== cents(b.total)) problems.push(`ageing ${entry.currency} columns do not total`);
 
+    // A let villa's levy is part of the unpaid rent it sits inside: owed once, not twice.
     const owed = units.reduce((total, unit) => {
-      for (const category of ['Rent', 'Maintenance']) {
-        const account = fin.accountBalance(unit, category, charges, payments, asOf, units);
+      const rent = fin.accountBalance(unit, 'Rent', charges, payments, asOf, units);
+      const maint = fin.accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
+      const inside = fin.maintenanceFundedFromRent(unit) && rent.balance > 0 && maint.balance > 0 && maint.balance <= rent.balance;
+      for (const account of inside ? [rent] : [rent, maint]) {
         if (account.currency === entry.currency && account.balance > 0) total += cents(account.balance);
       }
       return total;
@@ -241,7 +244,7 @@ function auditReporting(db, fin, asOf) {
       if (isBadNumber(value)) problems.push(`statement ${s.unit.number} ${s.currency}: ${field} is not finite`);
     }
     const owedForPeriod = cents(s.maintenanceBilled) - cents(s.maintenancePaid);
-    const expected = cents(s.collected) - owedForPeriod - cents(s.utilityBilled) - cents(s.expenses);
+    const expected = cents(s.utilityCollected) - owedForPeriod - cents(s.utilityBilled) - cents(s.expenses);
     if (cents(s.net) !== expected) {
       problems.push(`statement ${s.unit.number} ${s.currency}: net ${cents(s.net)} does not equal ${expected}`);
     }

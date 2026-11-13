@@ -25,7 +25,7 @@
  * with every figure recomputed rather than from a blank page.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import { AppSettings, Charge, Currency, Expense, Payment, Unit, AnnualReport as AnnualReportRecord, ANNUAL_REPORT_SECTIONS, AnnualReportSectionKey, bodyCorporateName } from '../types';
 import { AnnualOwnersReport, annualOwnersReport } from '../lib/finance';
@@ -70,7 +70,12 @@ export default function AnnualReport({
    * cover and whether anything on them is written by hand.
    */
   const [view, setView] = useRemembered<'annual' | 'monthly'>('annual-report.view', 'annual');
-  const [year, setYear] = useRemembered('annual-report.year', () => new Date().getFullYear() - 1);
+  const [year, setYear] = useRemembered('annual-report.year', () => {
+    // Last year once there is one to report; the current year while recording is still in its first.
+    const now = new Date().getFullYear();
+    const began = settings.booksBeginOn ? Number(settings.booksBeginOn.slice(0, 4)) : 0;
+    return began >= now ? now : now - 1;
+  });
   const [currency, setCurrency] = useRemembered<Currency>('annual-report.currency', 'JMD');
   const [printing, setPrinting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -99,9 +104,10 @@ export default function AnnualReport({
     () =>
       annualOwnersReport(units, charges, payments, expenses, currency, year, {
         budgetByCategory,
-        proposedFee: proposedFee || undefined
+        proposedFee: proposedFee || undefined,
+        booksBeginOn: settings.booksBeginOn
       }),
-    [units, charges, payments, expenses, currency, year, JSON.stringify(budgetByCategory), proposedFee]
+    [units, charges, payments, expenses, currency, year, JSON.stringify(budgetByCategory), proposedFee, settings.booksBeginOn]
   );
 
   const dirty = Object.keys(draft).length > 0;
@@ -267,11 +273,19 @@ export default function AnnualReport({
   };
 
   const years = useMemo(() => {
+    // Nothing can be reported for a year before recording began, so those years are not offered.
     const now = new Date().getFullYear();
-    return Array.from({ length: 7 }, (_, i) => now + 1 - i);
-  }, []);
+    const first = settings.booksBeginOn ? Number(settings.booksBeginOn.slice(0, 4)) : now - 5;
+    return Array.from({ length: Math.max(1, now + 1 - first + 1) }, (_, i) => now + 1 - i);
+  }, [settings.booksBeginOn]);
 
-  const hasFigures = report.expenditure > 0 || report.contributingUnits > 0;
+  // A year remembered from before recording began would sit outside the list.
+  const earliestYear = years[years.length - 1];
+  useEffect(() => {
+    if (year < earliestYear) setYear(earliestYear);
+  }, [year, earliestYear, setYear]);
+
+  const hasFigures = report.monthsRecorded > 0 && (report.expenditure > 0 || report.contributingUnits > 0);
 
   const tabClass = (active: boolean) =>
     `rounded-lg px-3 py-1.5 font-mono text-xs font-semibold transition-colors ${
@@ -360,7 +374,11 @@ export default function AnnualReport({
       {!hasFigures ? (
         <EmptyState
           title={`Nothing recorded for ${year} in ${currency}`}
-          hint="Record the year's expenditure and set each villa's maintenance contribution, then the report can be built."
+          hint={
+            report.monthsRecorded === 0
+              ? `Recording began in ${settings.booksBeginOn ? formatMonthLabel(settings.booksBeginOn.slice(0, 7)) : 'a later year'}, so there is nothing to report for ${year}.`
+              : "Record the year's expenditure and set each villa's maintenance contribution, then the report can be built."
+          }
         />
       ) : (
         <>

@@ -282,7 +282,7 @@ function PermissionsPanel({
                     */}
                     {key === 'viewShortfall' && (
                       <span className="mt-0.5 block text-[10px] text-slate-500">
-                        VDS&rsquo;s own position as a landlord, never an owner or council document. On for everyone by default.
+                        ISPO&rsquo;s own position as a landlord, never an owner or council document. On for everyone by default.
                         Withdrawing it hides the screen, not the receipts underneath.
                       </span>
                     )}

@@ -616,6 +616,16 @@ function ItemAction({
       </SecondaryButton>
     );
   }
+  // "Move-in date missing" is raised as an unbilled item but has no months to post:
+  // the fix is to set the date on the tenancy. It used to offer "Post the undefined
+  // months", a button that posted nothing.
+  if (item.type === 'unbilled' && !item.unbilledMonths?.length) {
+    return (
+      <SecondaryButton onClick={onOpenUnits} className="whitespace-nowrap px-3 py-2 text-[11px]">
+        Open the tenancy
+      </SecondaryButton>
+    );
+  }
   if (item.type === 'unbilled') {
     if (!perms.postCharges) return <span className="text-[10px] text-slate-400">Requires the post-charges permission</span>;
     // Posts from here rather than navigating to the ledger. The work is one

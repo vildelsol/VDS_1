@@ -291,9 +291,12 @@ export default async function run({ port, projectRoot }) {
     const owing = [];
     const settledAccounts = [];
     for (const unit of units) {
+      const rentAcc = fin.accountBalance(unit, 'Rent', db.charges, db.payments, asOf, units);
       for (const category of ['Rent', 'Maintenance']) {
         const a = fin.accountBalance(unit, category, db.charges, db.payments, asOf, units);
-        if (a.balance > 0) owing.push(a);
+        // A let villa's levy sits inside the unpaid rent: one debt, listed once.
+        const inside = category === 'Maintenance' && fin.maintenanceFundedFromRent(unit) && rentAcc.balance > 0 && a.balance > 0 && a.balance <= rentAcc.balance;
+        if (a.balance > 0 && !inside) owing.push(a);
         else if (a.charged > 0 && a.balance === 0) settledAccounts.push(a);
       }
     }

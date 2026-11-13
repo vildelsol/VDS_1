@@ -188,9 +188,9 @@ export default async function run({ port, projectRoot }) {
     T.check('maintenance billed is deducted', villa1?.maintenanceBilled === 10000, `${villa1?.maintenanceBilled}`);
     T.check('only the villa\'s own paid expense is charged to it', villa1?.expenses === 8000, `${villa1?.expenses}`);
     T.check(
-      'net is collected less maintenance billed less expenses',
-      villa1?.net === 32000,
-      `net ${villa1?.net} (expected 50000 - 10000 - 8000)`
+      'net is what the proprietor owes the corporation: maintenance billed plus expenses, never offset by the rent they collect',
+      villa1?.net === -18000,
+      `net ${villa1?.net} (expected -10000 - 8000: rent is the proprietor's own and does not pass through the corporation)`
     );
     T.check(
       'unpaid maintenance is disclosed as still outstanding',
@@ -212,7 +212,7 @@ export default async function run({ port, projectRoot }) {
     T.check('booking income is collected for the owner', villa2Usd?.bookingCollected === 1200, `${villa2Usd?.bookingCollected}`);
     T.check(
       'the JMD maintenance is not deducted from the USD statement',
-      villa2Usd?.maintenanceBilled === 0 && villa2Usd?.net === 1200,
+      villa2Usd?.maintenanceBilled === 0 && villa2Usd?.net === 0,
       `billed ${villa2Usd?.maintenanceBilled}, net ${villa2Usd?.net}`
     );
     T.check(
@@ -279,8 +279,8 @@ export default async function run({ port, projectRoot }) {
     T.check('the owner holds both villas', alba?.statements.length === 3, `${alba?.statements.length} statements`);
     T.check(
       'the net position is totalled per currency and never across',
-      alba?.netByCurrency.find(r => r.currency === 'JMD')?.net === 32000 &&
-        alba?.netByCurrency.find(r => r.currency === 'USD')?.net === 1200,
+      alba?.netByCurrency.find(r => r.currency === 'JMD')?.net === -18000 &&
+        (alba?.netByCurrency.find(r => r.currency === 'USD')?.net ?? 0) === 0,
       JSON.stringify(alba?.netByCurrency)
     );
 

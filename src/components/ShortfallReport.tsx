@@ -2,12 +2,12 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * The out-of-pocket shortfall — what VDS funded on the villas it lets.
+ * The out-of-pocket shortfall — what ISPO funded on the villas it lets.
  *
  * Designed 2026-09-02 when Ro asked what such a report would look like, and
- * built on his yes. The gap it fills is not an arithmetic one: on the villas VDS
+ * built on his yes. The gap it fills is not an arithmetic one: on the villas ISPO
  * lets on its own account the maintenance contribution is paid out of the rent
- * that villa collects, so a month with no tenant is a month VDS finds the
+ * that villa collects, so a month with no tenant is a month ISPO finds the
  * contribution from somewhere else. The books bill a vacant villa perfectly
  * correctly and have never had any concept that the rent was what paid it.
  *
@@ -21,7 +21,7 @@
  * **It sits under Operational Reports, below the operating statement, and it is
  * badged internal.** That placement was specified and it is load-bearing: the
  * operating statement is the strata corporation's income and expenditure, this
- * is VDS's own trading position as a landlord, and the two entities must stay
+ * is ISPO's own trading position as a landlord, and the two entities must stay
  * apart. On one page they would be read as one set of books.
  *
  * Two views come off one engine, because there are two questions:
@@ -111,7 +111,7 @@ type View = 'villa' | 'month';
  * ⚠️ **This is a visibility rule, not a security boundary**, and it must not be
  * described as one. Every screen in this application computes from `/api/db`,
  * which any signed-in session can fetch, and the receipts underneath are already
- * on the ledger. Withdrawing the permission keeps VDS's trading position off a
+ * on the ledger. Withdrawing the permission keeps ISPO's trading position off a
  * colleague's page; it does not put it behind a lock. A real boundary would need
  * the figures computed on the server behind that permission, which is a
  * different piece of work and has not been asked for.
@@ -128,7 +128,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
   /*
    * Closed until it is asked for. Ro, 2026-09-02: *"make it a toggle switch as it
    * is not something we need to have open permanently."* Operational Reports is a
-   * screen people leave open in front of whoever is at the desk, and VDS's own
+   * screen people leave open in front of whoever is at the desk, and ISPO's own
    * trading position does not belong on it by default. Nothing is computed while
    * it is shut.
    */
@@ -202,7 +202,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
           generatedBy: session.name,
           span: 8
         }),
-        [cell.note('Internal to VDS. Not a strata document and not the corporation’s income and expenditure.', 8)],
+        [cell.note('Internal to ISPO. Not a strata document and not the corporation’s income and expenditure.', 8)],
         [cell.blank()],
         [cell.section('By villa', 8)],
         [
@@ -213,7 +213,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
           cell.header('Short stay received', 'right'),
           cell.header('Earned', 'right'),
           cell.header('Maintenance paid', 'right'),
-          cell.header('Funded by VDS', 'right')
+          cell.header('Funded by ISPO', 'right')
         ]
       ];
 
@@ -250,7 +250,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
         cell.header('Short stay received', 'right'),
         cell.header('Earned', 'right'),
         cell.header('Maintenance paid', 'right'),
-        cell.header('Funded by VDS', 'right')
+        cell.header('Funded by ISPO', 'right')
       ]);
       for (const m of r.byMonth) {
         rows.push([
@@ -275,7 +275,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
         cell.header('Short stay received', 'right'),
         cell.header('Earned', 'right'),
         cell.header('Maintenance paid', 'right'),
-        cell.header('Funded by VDS', 'right')
+        cell.header('Funded by ISPO', 'right')
       ]);
       for (const l of r.lines) {
         rows.push([
@@ -291,7 +291,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
       }
 
       rows.push([cell.blank()]);
-      rows.push([cell.section('The months VDS funded', 8)]);
+      rows.push([cell.section('The months ISPO funded', 8)]);
       if (r.fundedMonths.length === 0) {
         rows.push([cell.text('None in this period, every villa covered its own contribution.')]);
       } else {
@@ -355,7 +355,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
     });
 
     if (sheets.length === 0) return;
-    downloadWorkbook(sheets, `VDS Out-of-pocket shortfall ${from} to ${to}.xlsx`);
+    downloadWorkbook(sheets, `ISPO Out-of-pocket shortfall ${from} to ${to}.xlsx`);
   };
 
   return (
@@ -369,7 +369,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
             </span>
           </div>
           <p className="text-xs text-slate-500">
-            What VDS funded from its own account on the villas it lets, in the months the villa did not earn its contribution.
+            What ISPO funded from its own account on the villas it lets, in the months the villa did not earn its contribution.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -416,7 +416,7 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
       */}
       {!open ? (
         <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">
-          Closed by default. This is VDS&rsquo;s own trading position as a landlord, not the strata corporation&rsquo;s money, and not
+          Closed by default. This is ISPO&rsquo;s own trading position as a landlord, not the strata corporation&rsquo;s money, and not
           something to leave open on a screen in front of the desk. Switch it on when you need it.
         </p>
       ) : (
@@ -492,9 +492,9 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
           </p>
 
           <InfoNote>
-            <strong>Internal to VDS.</strong> This is not a strata document: the operating statement above is the corporation&rsquo;s income
-            and expenditure, this is VDS&rsquo;s own position as a landlord and the two are different entities. Only villas ticked as{' '}
-            <strong>let on the corporation&rsquo;s own account</strong> in the villa register appear here. Cash basis &mdash; earnings
+            <strong>Internal to ISPO.</strong> This is not a strata document: the operating statement above is the corporation&rsquo;s income
+            and expenditure, this is ISPO&rsquo;s own position as a landlord and the two are different entities. Every villa not marked{' '}
+            <strong>owner-occupied</strong> belongs to ISPO and appears here. Cash basis &mdash; earnings
             counted when they were received, the contribution when it was paid. <strong>Earned is rent plus short-stay receipts:</strong> a
             villa let on Airbnb pays towards its own contribution the same way a long-term let does, so both are subtracted from it and a
             villa only shows a shortfall where what it earned fell short. <strong>Each currency is a separate report</strong> and no figure
@@ -503,13 +503,13 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
 
           {noneFlagged ? (
             <EmptyState
-              title="No villa is marked as let on the corporation's own account"
-              hint="Open a villa in the Units Register, tick “Let on the corporation’s own account”, and it will appear here. Nothing else in the register can answer which villas are VDS’s own, an owner name is free text and matching on it breaks the day it is typed differently."
+              title="Every villa is owner-occupied"
+              hint="Villas not marked owner-occupied belong to ISPO and appear here. Set a villa's status in the Units Register; an owner name is free text and is never used to decide ownership."
             />
           ) : reports.length === 0 ? (
             <EmptyState
               title="No rent received and no contribution paid in this period"
-              hint="On the villas marked as let on the corporation's own account. Choose a different period above."
+              hint="On the villas ISPO owns. Choose a different period above."
             />
           ) : (
             reports.map(r => <CurrencyBlock key={r.currency} report={r} view={view} />)
@@ -543,7 +543,7 @@ function headline(r: Report): string {
   /*
    * The empty months are called out inside the sentence rather than being the
    * whole of it. A villa let on Airbnb that did not earn its contribution cost
-   * VDS money too — that is the case Ro raised, and a headline counting only
+   * ISPO money too — that is the case Ro raised, and a headline counting only
    * wholly-empty months would leave it out of the figure it belongs in.
    */
   const empty =
@@ -552,7 +552,7 @@ function headline(r: Report): string {
       : r.vacantVillaMonths === r.fundedVillaMonths
         ? ' Every one of them stood empty for the whole month.'
         : ` ${r.vacantVillaMonths} of them stood empty for the whole month, accounting for ${formatMoney(r.vacantShortfall, r.currency)}.`;
-  return `VDS funded ${formatMoney(r.totalShortfall, r.currency)} from its own account across ${months}.${empty}`;
+  return `ISPO funded ${formatMoney(r.totalShortfall, r.currency)} from its own account across ${months}.${empty}`;
 }
 
 function CurrencyBlock({ report: r, view }: { report: Report; view: View }) {
@@ -566,7 +566,7 @@ function CurrencyBlock({ report: r, view }: { report: Report; view: View }) {
         <Tile label="Rent received" value={formatMoney(r.totalRentReceived, r.currency)} tone="positive" />
         <Tile label="Short stay received" value={formatMoney(r.totalShortStayReceived, r.currency)} tone="positive" />
         <Tile label="Maintenance paid" value={formatMoney(r.totalMaintenancePaid, r.currency)} tone="negative" />
-        <Tile label="Funded by VDS" value={formatMoney(r.totalShortfall, r.currency)} tone="negative" strong />
+        <Tile label="Funded by ISPO" value={formatMoney(r.totalShortfall, r.currency)} tone="negative" strong />
       </dl>
 
       {view === 'villa' ? (
@@ -596,7 +596,7 @@ function CurrencyBlock({ report: r, view }: { report: Report; view: View }) {
                   Maintenance paid
                 </th>
                 <th scope="col" className="p-3 text-right">
-                  Funded by VDS
+                  Funded by ISPO
                 </th>
               </tr>
             </thead>
@@ -658,7 +658,7 @@ function CurrencyBlock({ report: r, view }: { report: Report; view: View }) {
                   Maintenance paid
                 </th>
                 <th scope="col" className="p-3 text-right">
-                  Funded by VDS
+                  Funded by ISPO
                 </th>
               </tr>
             </thead>
@@ -700,7 +700,7 @@ function CurrencyBlock({ report: r, view }: { report: Report; view: View }) {
 }
 
 /**
- * The villa-months VDS funded, named, with what each one cost and why.
+ * The villa-months ISPO funded, named, with what each one cost and why.
  *
  * "Empty all month" and "let, but earned less than the contribution" are both
  * on the list. Restricting it to empty months would hide the short-let month
@@ -797,7 +797,7 @@ export function ShortfallDocument({
 
       <p className="mb-4 text-[11px] leading-relaxed">
         On the villas let on the corporation&rsquo;s own account the maintenance contribution is funded out of what that villa earns. This
-        report states what was funded from VDS&rsquo;s own account where those earnings did not cover the contribution paid.{' '}
+        report states what was funded from ISPO&rsquo;s own account where those earnings did not cover the contribution paid.{' '}
         <strong>Earnings are rent and short-stay receipts together</strong>, a villa let on short stay pays towards its own contribution
         the same way a long-term let does, and both are subtracted from it. It is <strong>not</strong> the corporation&rsquo;s income and
         expenditure, that is the operating statement, and the two are different entities. Prepared on a cash basis.{' '}
@@ -823,7 +823,7 @@ export function ShortfallDocument({
                 <th className="p-1.5 text-right">Short stay</th>
                 <th className="p-1.5 text-right">Earned</th>
                 <th className="p-1.5 text-right">Maintenance paid</th>
-                <th className="p-1.5 text-right">Funded by VDS</th>
+                <th className="p-1.5 text-right">Funded by ISPO</th>
               </tr>
             </thead>
             <tbody className="font-mono">
@@ -868,7 +868,7 @@ export function ShortfallDocument({
                 <th className="p-1.5 text-right">Short stay</th>
                 <th className="p-1.5 text-right">Earned</th>
                 <th className="p-1.5 text-right">Maintenance paid</th>
-                <th className="p-1.5 text-right">Funded by VDS</th>
+                <th className="p-1.5 text-right">Funded by ISPO</th>
               </tr>
             </thead>
             <tbody className="font-mono">
@@ -900,7 +900,7 @@ export function ShortfallDocument({
 
           {r.fundedMonths.length > 0 && (
             <>
-              <h4 className="mb-1 text-xs font-bold uppercase tracking-wider">The months VDS funded</h4>
+              <h4 className="mb-1 text-xs font-bold uppercase tracking-wider">The months ISPO funded</h4>
               <table className="mb-3 w-full text-left text-[10px]">
                 <tbody className="font-mono">
                   {r.fundedMonths.map(v => (

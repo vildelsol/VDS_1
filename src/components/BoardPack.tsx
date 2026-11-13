@@ -18,8 +18,9 @@
 
 import { AppSettings, Booking, Charge, Currency, Expense, Payment, Tenancy, Unit } from '../types';
 import {
-  accountBalance,
   arrearsAgeing,
+  delinquentAccounts,
+  receivableAsOf,
   chargedInPeriod,
   collectedInPeriod,
   consolidateEverything,
@@ -114,15 +115,7 @@ export default function BoardPack({
       const spent = expensesInPeriod(strataCosts, currency, from, to);
 
       // Same opening/closing receivable construction as the operating statement.
-      const receivableAt = (asOf: string) =>
-        sumMoney(
-          units.flatMap(unit =>
-            (['Rent', 'Maintenance'] as const)
-              .map(category => accountBalance(unit, category, charges, payments, asOf, units))
-              .filter(account => account.currency === currency)
-              .map(account => account.balance)
-          )
-        );
+      const receivableAt = (asOf: string) => receivableAsOf(units, charges, payments, asOf, currency);
 
       const breakdown = categoriesWithSpend(expenseBreakdown(strataCosts, currency, from, to));
 
@@ -174,13 +167,7 @@ export default function BoardPack({
           />
           <SummaryTile
             label="Accounts in arrears"
-            value={String(
-              units.flatMap(unit =>
-                (['Rent', 'Maintenance'] as const)
-                  .map(category => accountBalance(unit, category, charges, payments, to, units))
-                  .filter(account => account.balance > 0)
-              ).length
-            )}
+            value={String(delinquentAccounts(units, charges, payments, to).length)}
             note={
               ageing.length > 0
                 ? ageing.map(entry => formatMoney(entry.buckets.total, entry.currency)).join(' + ') + ' outstanding'

@@ -210,9 +210,12 @@ function auditReporting(db, fin, asOf) {
     }
 
     // The whole point: the schedule must equal the money actually outstanding.
+    // A let villa's levy is part of the unpaid rent it sits inside: owed once, not twice.
     const owed = units.reduce((total, unit) => {
-      for (const category of ['Rent', 'Maintenance']) {
-        const account = fin.accountBalance(unit, category, charges, payments, asOf, units);
+      const rent = fin.accountBalance(unit, 'Rent', charges, payments, asOf, units);
+      const maint = fin.accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
+      const inside = fin.maintenanceFundedFromRent(unit) && rent.balance > 0 && maint.balance > 0 && maint.balance <= rent.balance;
+      for (const account of inside ? [rent] : [rent, maint]) {
         if (account.currency === entry.currency && account.balance > 0) total += cents(account.balance);
       }
       return total;
@@ -277,7 +280,7 @@ function auditReporting(db, fin, asOf) {
      * "Due from <name>" beside a line confirming the money had been received.
      */
     const maintenanceOwed = cents(s.maintenanceBilled) - cents(s.maintenancePaid);
-    const expected = cents(s.collected) - maintenanceOwed - cents(s.utilityBilled) - cents(s.expenses);
+    const expected = cents(s.utilityCollected) - maintenanceOwed - cents(s.utilityBilled) - cents(s.expenses);
     if (cents(s.net) !== expected) {
       problems.push(`statement ${s.unit.number} ${s.currency}: net ${cents(s.net)} does not equal ${expected}`);
     }

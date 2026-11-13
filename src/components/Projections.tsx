@@ -20,18 +20,8 @@
 import { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, bodyCorporateName } from '../types';
-import {
-  accountBalance,
-  chargeAmount,
-  chargeCurrency,
-  chargedInPeriod,
-  collectedInPeriod,
-  collectionRate,
-  expensesInPeriod,
-  strataExpenses,
-  isBillable
-} from '../lib/finance';
-import { formatMoney, round2, sumMoney } from '../lib/money';
+import { formatMoney, round2 } from '../lib/money';
+import { CurrencyProjection, LookbackWindow, buildProjection } from '../lib/projection';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import {
   addMonths,
@@ -56,154 +46,8 @@ interface ProjectionsProps {
   session: SessionUser;
 }
 
-/** A month of the straight-line forecast. */
-interface ForecastMonth {
-  month: string; // YYYY-MM
-  income: number;
-  expenditure: number;
-  net: number;
-  cumulative: number;
-}
-
-/** Everything projected for one currency. */
-export interface CurrencyProjection {
-  currency: Currency;
-  /** Number of completed months the run-rate is averaged over. */
-  lookback: number;
-  from: string;
-  to: string;
-  /** Maintenance contributions actually received over the look-back window. */
-  maintReceived: number;
-  /** Maintenance billed over the look-back window. */
-  maintBilled: number;
-  /** Operating expenses paid over the look-back window. */
-  expensesPaid: number;
-  avgReceived: number;
-  avgExpense: number;
-  /** Collection rate over the window, or null when nothing was billed. */
-  rate: number | null;
-  /** Current monthly maintenance assessment across contributing proprietors. */
-  contractedMonthly: number;
-  contributingUnits: number;
-  /** Forward projection. */
-  projectedIncome: number;
-  projectedExpense: number;
-  projectedNet: number;
-  forecast: ForecastMonth[];
-  horizonIncome: number;
-  horizonExpense: number;
-  horizonNet: number;
-  /** Maintenance arrears outstanding today. */
-  arrears: number;
-  arrearsAccounts: number;
-  arrearsOver60: number;
-  /** Whether this currency has enough activity to be worth showing. */
-  active: boolean;
-}
-
 const LOOKBACK_OPTIONS = [3, 6, 12] as const;
 const HORIZON_OPTIONS = [3, 6, 12] as const;
-
-/** The historical window a projection is averaged over. */
-interface LookbackWindow {
-  from: string;
-  to: string;
-  /** Whole months in the window — the divisor for every average below. */
-  months: number;
-}
-
-function buildProjection(
-  currency: Currency,
-  units: Unit[],
-  charges: Charge[],
-  payments: Payment[],
-  expenses: Expense[],
-  window: LookbackWindow,
-  horizon: number
-): CurrencyProjection {
-  const { from, to } = window;
-  // Never divide by zero if a range somehow collapses to nothing.
-  const lookback = Math.max(1, window.months);
-
-  const maintReceived = collectedInPeriod(payments, currency, from, to).maintenance;
-  const maintBilled = chargedInPeriod(charges, currency, from, to).maintenance;
-  /*
-   * The corporation's costs only.
-   *
-   * This projection already excludes rent and booking income "because they
-   * belong to individual proprietors, not to the corporation" — see the note at
-   * the head of this file. Counting ISPO's costs against contributions while
-   * excluding ISPO's income would project a deficit for the fund out of money
-   * that was never the fund's, which is the same fault as the annual report's
-   * and worse for being on a page that says what it excludes.
-   */
-  const expensesPaid = expensesInPeriod(strataExpenses(expenses), currency, from, to);
-
-  const avgReceived = round2(maintReceived / lookback);
-  const avgExpense = round2(expensesPaid / lookback);
-  const rate = collectionRate(maintBilled, maintReceived);
-
-  // Current fee schedule: what every contributing proprietor is assessed per month.
-  const contributing = units.filter(u => isBillable(u, 'Maintenance') && chargeCurrency(u, 'Maintenance') === currency);
-  const contractedMonthly = sumMoney(contributing.map(u => chargeAmount(u, 'Maintenance')));
-
-  // Projected monthly contributions: the current assessment tempered by the recent
-  // collection rate (a rate above 100% is arrears catch-up, not a sustainable
-  // run-rate, so it is capped). With no assessment on file, fall back to the plain
-  // average actually received.
-  const effRate = rate === null ? 1 : Math.min(rate, 100) / 100;
-  const projectedIncome = contractedMonthly > 0 ? round2(contractedMonthly * effRate) : avgReceived;
-  const projectedExpense = avgExpense;
-  const projectedNet = round2(projectedIncome - projectedExpense);
-
-  const forecast: ForecastMonth[] = [];
-  let cumulative = 0;
-  for (let i = 1; i <= horizon; i++) {
-    cumulative = round2(cumulative + projectedNet);
-    forecast.push({
-      month: addMonths(currentMonth(), i),
-      income: projectedIncome,
-      expenditure: projectedExpense,
-      net: projectedNet,
-      cumulative
-    });
-  }
-
-  // Maintenance arrears outstanding today — money owed to the corporation, and the
-  // clearest upside to the projected position if collected.
-  const arrearsBalances = units
-    .map(u => accountBalance(u, 'Maintenance', charges, payments, today(), units))
-    .filter(a => a.currency === currency && a.balance > 0);
-  const arrears = sumMoney(arrearsBalances.map(a => a.balance));
-
-  const active = contractedMonthly > 0 || maintBilled > 0 || maintReceived > 0 || expensesPaid > 0;
-
-  return {
-    currency,
-    lookback,
-    from,
-    to,
-    maintReceived,
-    maintBilled,
-    expensesPaid,
-    avgReceived,
-    avgExpense,
-    rate,
-    contractedMonthly,
-    contributingUnits: contributing.length,
-    projectedIncome,
-    projectedExpense,
-    projectedNet,
-    forecast,
-    horizonIncome: round2(projectedIncome * horizon),
-    horizonExpense: round2(projectedExpense * horizon),
-    horizonNet: round2(projectedNet * horizon),
-    arrears,
-    arrearsAccounts: arrearsBalances.length,
-    arrearsOver60: arrearsBalances.filter(a => a.oldestUnpaidDays > 60).length,
-    active
-  };
-}
 
 /**
  * Plain-language analysis for one currency, addressed to the corporation. Every
@@ -224,8 +68,8 @@ function analysisFor(p: CurrencyProjection, horizon: number): string[] {
 
   if (p.contractedMonthly > 0) {
     out.push(
-      `The current maintenance assessment across ${p.contributingUnits} contributing proprietor ` +
-        `account${p.contributingUnits === 1 ? '' : 's'} totals ${formatMoney(p.contractedMonthly, c)} per month. ` +
+      `The current maintenance assessment across ${p.contributingUnits} contributing ` +
+        `villa${p.contributingUnits === 1 ? '' : 's'} totals ${formatMoney(p.contractedMonthly, c)} per month. ` +
         (p.rate === null
           ? 'No maintenance was billed in the look-back period, so the projection uses the current assessment in full.'
           : `At the ${p.rate}% collection rate observed over the period, projected monthly contributions are ${formatMoney(p.projectedIncome, c)}.`)
@@ -240,7 +84,7 @@ function analysisFor(p: CurrencyProjection, horizon: number): string[] {
 
   if (p.arrears > 0) {
     out.push(
-      `${formatMoney(p.arrears, c)} in maintenance contributions is outstanding across ${p.arrearsAccounts} proprietor ` +
+      `${formatMoney(p.arrears, c)} in maintenance contributions is outstanding across ${p.arrearsAccounts} villa ` +
         `account${p.arrearsAccounts === 1 ? '' : 's'} as at ${formatDayLabel(today())}` +
         (p.arrearsOver60 > 0 ? `, of which ${p.arrearsOver60} exceed 60 days` : '') +
         `. Recovering these arrears would improve the corporation's position by ${formatMoney(p.arrears, c)}.`
@@ -323,7 +167,7 @@ export default function Projections({ units, charges, payments, expenses, settin
         }),
         [cell.header('Measure'), cell.header('Amount', 'right')],
         [cell.text('Current monthly assessment'), cell.money(p.contractedMonthly, p.currency)],
-        [cell.text('Contributing proprietors'), cell.number(p.contributingUnits)],
+        [cell.text('Contributing villas'), cell.number(p.contributingUnits)],
         [cell.text(`Received over basis (${p.lookback} mo.)`), cell.money(p.maintReceived, p.currency)],
         [cell.text(`Billed over basis (${p.lookback} mo.)`), cell.money(p.maintBilled, p.currency)],
         [cell.text(`Expenses paid over basis (${p.lookback} mo.)`), cell.money(p.expensesPaid, p.currency)],
@@ -538,7 +382,7 @@ function ProjectionCard({ p, horizon }: { p: CurrencyProjection; horizon: number
       </div>
 
       <dl className="space-y-2 text-xs">
-        <ProjRow label="Current monthly assessment" value={formatMoney(p.contractedMonthly, p.currency)} detail={`${p.contributingUnits} contributing proprietor${p.contributingUnits === 1 ? '' : 's'}`} />
+        <ProjRow label="Current monthly assessment" value={formatMoney(p.contractedMonthly, p.currency)} detail={`${p.contributingUnits} contributing villa${p.contributingUnits === 1 ? '' : 's'}`} />
         <ProjRow label={`Average received (last ${p.lookback} mo.)`} value={formatMoney(p.avgReceived, p.currency)} />
         <ProjRow label="Collection rate" value={p.rate === null ? 'n/a, nothing billed' : `${p.rate}%`} />
       </dl>

@@ -220,15 +220,14 @@ export default function IspoOperations({ units, expenses, payments, settings, se
       <InfoNote>
         Rent and short-stay receipts against {MANAGING_COMPANY_NAME}&rsquo;s own costs, the cell phone, the company vehicle and
         its insurance, and anything else marked <strong>paid from rental income</strong>. The corporation&rsquo;s costs are on the
-        owners&rsquo; statement instead, and no cost is on both. The maintenance line is the contribution paid on the villas VDS
+        owners&rsquo; statement instead, and no cost is on both. The maintenance line is the contribution paid on the villas ISPO
         lets, which the rent is what funds. Cash basis; USD and JMD never combined.
       </InfoNote>
 
       {statements.some(s => s.noVillasFlagged) && (
         <InfoNote tone="amber">
-          No villa is yet ticked as <strong>let on the corporation&rsquo;s own account</strong> in the Units Register, so the
-          maintenance line reads nil. That is the flag being unset rather than a statement that no contributions were paid -
-          nothing guesses it from an owner&rsquo;s name.
+          Every villa is marked <strong>owner-occupied</strong> in the Units Register, so ISPO owns none and the maintenance
+          line reads nil. Ownership comes from each villa&rsquo;s status, never from an owner&rsquo;s name.
         </InfoNote>
       )}
 

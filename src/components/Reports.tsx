@@ -1006,7 +1006,7 @@ export default function Reports({
         session={session}
       />
 
-      <OperationsStatement expenses={expenses} payments={payments} settings={settings} session={session} />
+      <OperationsStatement expenses={allExpenses} payments={allPayments} settings={settings} session={session} />
 
       {/*
         The other side of the same register: ISPO's own income and costs.
@@ -1022,10 +1022,10 @@ export default function Reports({
         Do not wrap this in a role check — that is exactly the mistake corrected
         below it.
       */}
-      <IspoOperations units={units} expenses={expenses} payments={payments} settings={settings} session={session} />
+      <IspoOperations units={units} expenses={allExpenses} payments={allPayments} settings={settings} session={session} />
 
       {/*
-        VDS's own trading position on the villas it lets — deliberately the last
+        ISPO's own trading position on the villas it lets — deliberately the last
         thing on the screen and badged internal, because it is not the strata
         corporation's money. It carries its own period for the same reason the
         statements above do.
@@ -1041,7 +1041,7 @@ export default function Reports({
 
         The permission lives in the component, once. Do not re-wrap this.
       */}
-      <ShortfallReport units={units} tenancies={tenancies} bookings={bookings} payments={payments} session={session} />
+      <ShortfallReport units={units} tenancies={tenancies} bookings={bookings} payments={allPayments} session={session} />
 
       {printing && (
         <StatementDocument
