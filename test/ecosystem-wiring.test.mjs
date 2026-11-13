@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { startServer, makeClient, reporter, activateAdmin, recordAndConfirmPayment } from './harness.mjs';
 
@@ -33,7 +34,7 @@ export default async function run({ port, projectRoot }) {
   const lib = name => JSON.stringify(path.join(projectRoot, 'src', 'lib', name).split(path.sep).join('/'));
   fs.writeFileSync(entry, `export * from ${lib('finance')}; export * from ${lib('projection')};`);
   await build({ entryPoints: [entry], bundle: true, format: 'esm', platform: 'neutral', outfile: path.join(dir, 'e.mjs'), logLevel: 'silent' });
-  const F = await import(path.join(dir, 'e.mjs'));
+  const F = await import(pathToFileURL(path.join(dir, 'e.mjs')).href);
   const srv = await startServer({ port, adminPassword: 'Wiring-1234567!', projectRoot });
   try {
     const c = makeClient(srv.baseUrl);
