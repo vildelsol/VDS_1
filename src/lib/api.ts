@@ -62,6 +62,13 @@ export class ApiError extends Error {
 export const ALREADY_SETTLED = 'account-already-settled';
 
 /**
+ * The same payment was entered a few minutes ago: a double click, or a colleague
+ * entering the same money. Refused once; the screen asks whether it really is a
+ * second payment. Kept in step with `POSSIBLE_DUPLICATE` in server.ts.
+ */
+export const POSSIBLE_DUPLICATE = 'possible-duplicate-payment';
+
+/**
  * The server refused a correction because it would change the receipt's
  * currency. Nothing converts the amount and the receipt moves to the other
  * currency's account, so it is refused once and has to be confirmed. Kept in

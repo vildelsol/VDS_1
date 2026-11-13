@@ -206,6 +206,15 @@ export interface ICalFeed {
 
 export interface AppSettings {
   /**
+   * The last month whose books have been closed (YYYY-MM). Money dated in or
+   * before it can no longer change without reopening the period.
+   */
+  closedThrough?: string;
+  /** When true, voiding, correcting or refunding a received payment needs a second person's approval. */
+  requireCosign?: boolean;
+  /** What was closed: a fingerprint of that money, checked on every write. */
+  closeFingerprint?: string;
+  /**
    * Who this body corporate is, on the register.
    *
    * "Strata corporation" in the Act means **this body corporate** — the
@@ -290,6 +299,43 @@ export function bodyCorporateName(settings?: { strataPlanNumber?: string } | nul
   return plan ? `Villaggio Del Sol (Strata Plan No. ${plan})` : 'Villaggio Del Sol';
 }
 
+/**
+ * What a villa's status means. Read this before using it for anything.
+ *
+ * These five values were declared here for years with no note on what any of
+ * them meant, and that silence cost real money: `consolidateEverything` could
+ * not tell whose villa it was looking at, so it guessed from the rent charges
+ * instead, and a short stay raises no rent charge. ISPO's levy on an Airbnb
+ * villa was counted as income on top of the guest's booking — the same money
+ * twice, J$130,000 reported against J$90,000 received on a two-month fixture.
+ *
+ * Ro, 2026-11-12: *"owners are all responsible for their own tenants and rental
+ * payments. this was made clear since this program was build"*, and *"thats why
+ * we have the status owner occupied, which denotes its owned by someone else and
+ * therefore from that status the system only charges maintenance"*.
+ *
+ * So the question this field answers is **who owns the villa**, and only
+ * secondarily what is happening in it:
+ *
+ *   - **`owner-occupied`** — owned by **somebody other than ISPO**. The
+ *     corporation bills it maintenance only, never rent, and the levy payments
+ *     that arrive against it are a proprietor's own money: income. It is about
+ *     ownership, NOT occupancy — a third party's villa standing empty is still
+ *     `owner-occupied`, and nothing else records that fact.
+ *   - **`long-term`** — ISPO's, let to a tenant. One rent figure, the levy taken
+ *     out of it (`settledFromRent`).
+ *   - **`short-term`** — ISPO's, on Airbnb. Guests pay bookings; no rent charge
+ *     is ever raised, which is the case that broke the old inference.
+ *   - **`vacant`** — ISPO's, nothing in it at the moment. Ro, 2026-11-12: *"yes
+ *     vacant and unavailable are ispo's"*. ISPO still passes the corporation its
+ *     levy every month, so this is not a gap in the money.
+ *   - **`unavailable`** — ISPO's, off the market (works, a family stay).
+ *
+ * Everything except `owner-occupied` is therefore ISPO's, and that is exactly
+ * what `isOwnAccount` in `src/lib/finance.ts` returns. Do not re-derive this
+ * question anywhere else, and do not infer it from `ownerName`, which is free
+ * text (see the note on that field).
+ */
 export type UnitStatus = 'long-term' | 'short-term' | 'owner-occupied' | 'vacant' | 'unavailable';
 
 export const UNIT_STATUSES: UnitStatus[] = ['long-term', 'short-term', 'owner-occupied', 'vacant', 'unavailable'];
@@ -340,19 +386,20 @@ export interface Unit {
    */
   strataLotNumber?: string;
   /**
-   * Does VDS let this villa on its own account?
+   * **Retired 2026-11-13. Read, written and acted on by nothing.**
    *
-   * On the villas VDS lets, the maintenance contribution is funded out of the
-   * rent that villa collects — so a month with no tenant in it is a month VDS
-   * pays the contribution out of its own pocket. Sizing that is the whole
-   * purpose of the shortfall report, and nothing else in the register can
-   * answer it: `ownerName` is free text, and matching a name breaks silently
-   * the day somebody types "Villaggio Del Sol Ltd." instead of "VDS".
+   * This was a hand-ticked "VDS lets this villa on its own account" box, and the
+   * question it answered is now read from `status` by `isOwnAccount` — every
+   * status except `owner-occupied` is ISPO's. The flag was right wherever
+   * somebody remembered to tick it and silently wrong wherever they did not: an
+   * unticked let villa made the combined view count ISPO's levy as income on top
+   * of the rent, and made the shortfall report drop a villa VDS was really
+   * funding.
    *
-   * Optional, and **absent means no**. A register written before this field
-   * existed cannot be assumed to be VDS's own — claiming villas that are not
-   * ours would overstate the shortfall, which is the one number this report
-   * exists to state honestly. The boxes are ticked by hand once.
+   * The field is kept so that an existing `db.json` still loads and so a later
+   * reader meeting it in old data knows why it is ignored. **Do not read it, and
+   * do not bring it back.** If a villa is being classified wrongly, its status is
+   * wrong and the status is what to fix.
    */
   letOnOwnAccount?: boolean;
   currency: Currency;
@@ -603,6 +650,8 @@ export interface Payment {
   reversedBy?: string;
   reversalReason?: string;
   reversalDate?: string;
+  /** When the entry was first made. Lets the desk tell a double click from a genuine second payment. */
+  createdAt?: string;
 
   /**
    * Money genuinely handed back — which is **not** the same as voiding a receipt.
@@ -907,6 +956,9 @@ export interface AuditLog {
   previousValue: string;
   newValue: string;
   approvedBy?: string;
+  /** SHA-256 over this entry and the seal of the entry before it. Absent on entries written before the chain began. */
+  seal?: string;
+  prevSeal?: string;
 }
 
 /**

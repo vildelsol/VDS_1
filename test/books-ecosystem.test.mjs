@@ -111,25 +111,27 @@ export default async function run({ port, projectRoot }) {
 
       /*
        * The combined view. Worked out here from the ledger rather than by
-       * re-running the screen's own expression: ISPO's rent, plus the levy the
-       * corporation took in cash from villas NOT funded out of rent. The levy on
-       * a let villa is ISPO handing the corporation its share, and must be
-       * counted once, on ISPO's side, not twice.
+       * re-running the screen's own expression: ISPO's rent and bookings, plus
+       * the levy the corporation took in cash from villas belonging to OTHER
+       * proprietors. The levy on one of ISPO's villas is ISPO handing the
+       * corporation its share, and must be counted once, on ISPO's side.
+       *
+       * Restated from the status rather than from the rent charges. Inferring it
+       * from the charges was the bug: a short stay raises no rent charge, so its
+       * levy was counted as income on top of the guest's booking.
        */
-      const fundedFromRent = new Set(
-        db.charges.filter(x => x.category === 'Rent' && x.status === 'open' && (x.maintenancePortion || 0) > 0).map(x => `${x.unitId}|${x.currency}`)
-      );
+      const ownAccount = new Set(db.units.filter(u => u.status !== 'owner-occupied').map(u => u.id));
       const expected =
         raw2.filter(p => p.status === 'completed' && p.currency === cur && p.date >= FROM && p.date <= TO)
-          .filter(p => !(p.category === 'Maintenance' && fundedFromRent.has(`${p.unitId}|${p.currency}`)))
+          .filter(p => !(p.category === 'Maintenance' && ownAccount.has(p.unitId)))
           .reduce((a, p) => a + C(p.amount) - C(p.refundedAmount || 0), 0);
       const comb = F.consolidateEverything(db.charges, settled, db.units);
       const everything = F.collectedInPeriod(comb.payments, cur, FROM, TO).total;
       T.check(`${cur}: the combined view reports exactly the money that came in from outside, counting the levy passed between the books once`,
         C(everything) === expected, `${C(everything)} vs ${expected}`);
       T.check(`${cur}: and never more than the cash that actually arrived`, C(everything) <= cash, `${C(everything)} vs ${cash}`);
-      T.check(`${cur}: not one levy receipt on a rent-funded villa survives into it`,
-        !comb.payments.some(p => p.category === 'Maintenance' && fundedFromRent.has(`${p.unitId}|${p.currency}`)));
+      T.check(`${cur}: not one levy receipt on one of ISPO's villas survives into it`,
+        !comb.payments.some(p => p.category === 'Maintenance' && ownAccount.has(p.unitId)));
 
       // Per villa: a tenant is counted for every penny they handed over, once.
       for (const u of db.units.filter(x => x.status === 'long-term' && x.currency === cur)) {
@@ -150,7 +152,7 @@ export default async function run({ port, projectRoot }) {
      * levy on each.
      */
     {
-      const short = { id: 'sx', number: 'SX', ownerName: 'VDS', status: 'short-term', letOnOwnAccount: true,
+      const short = { id: 'sx', number: 'SX', ownerName: 'VDS', status: 'short-term',
         monthlyRent: 0, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1 };
       const mc = m => ({ id: `mx-${m}`, unitId: 'sx', unitNumber: 'SX', category: 'Maintenance', periodMonth: m, dueDate: `${m}-01`,
         amount: 20000, currency: 'JMD', status: 'open', payerName: 'VDS', createdAt: '', createdBy: '' });
@@ -160,8 +162,39 @@ export default async function run({ port, projectRoot }) {
       const ps = [px('Booking', 90000, '2026-09-10', 'A guest'), px('Maintenance', 20000, '2026-09-11', 'VDS'), px('Maintenance', 20000, '2026-10-11', 'VDS')];
       const got = F.collectedInPeriod(F.consolidateEverything(ch, ps, [short]).payments, 'JMD', '2026-09-01', '2026-10-31').total;
       T.check('a short stay counts the guest\'s money and not the levy ISPO passed across', C(got) === C(90000), `${got} vs 90000`);
-      const blind = F.collectedInPeriod(F.consolidateEverything(ch, ps, []).payments, 'JMD', '2026-09-01', '2026-10-31').total;
-      T.check('and without the own-account flag it would double count — which is what makes the flag load-bearing', C(blind) === C(130000), `${blind}`);
+      /*
+       * The rule itself, every status, stated once.
+       *
+       * `owner-occupied` means the villa belongs to another proprietor — Ro,
+       * 2026-11-12, it is what "denotes its owned by someone else" — and it is
+       * the only status that does. Vacant and unavailable are ISPO's: it pays
+       * the corporation their levy whether anybody is in them or not.
+       *
+       * Written as a table rather than as one example, because the bug this
+       * replaced was precisely a rule that happened to be right for the status
+       * somebody tested and wrong for the one they did not.
+       */
+      for (const [status, mine] of [
+        ['long-term', true],
+        ['short-term', true],
+        ['vacant', true],
+        ['unavailable', true],
+        ['owner-occupied', false]
+      ]) {
+        T.check(
+          `a ${status} villa ${mine ? 'is' : 'is not'} on the corporation's own account`,
+          F.isOwnAccount({ status }) === mine,
+          `${status} -> ${F.isOwnAccount({ status })}`
+        );
+      }
+      T.check(
+        'and the levy on one ISPO villa is a transfer while the same levy on a proprietor\'s villa is income',
+        F.ownAccountUnitIds([short]).has('sx') && !F.ownAccountUnitIds([{ ...short, status: 'owner-occupied' }]).has('sx')
+      );
+
+      const elsewhere = [{ ...short, status: 'owner-occupied' }];
+      const blind = F.collectedInPeriod(F.consolidateEverything(ch, ps, elsewhere).payments, 'JMD', '2026-09-01', '2026-10-31').total;
+      T.check('and the same villa owned by somebody else counts their levy as income, which is what makes the rule load-bearing', C(blind) === C(130000), `${blind}`);
     }
 
     /* ---------- 3. Owners Statements roll up to the corporation's book ---------- */
@@ -202,6 +235,86 @@ export default async function run({ port, projectRoot }) {
     T.check('and every receipt it can tick exists on the server', raw2.length === db.payments.length);
     T.check('a settled-from-rent credit is never reconcilable, because it never reached a bank',
       derived.length > 0 && derived.every(d => d.derived === true && !d.receiptNo));
+
+    /* ---------- 5b. the two screens cannot drift apart again ---------- */
+    /*
+     * The whole class of bug this suite keeps catching is one question —
+     * *whose money is this?* — answered in two places by two different rules.
+     * The combined view and the ISPO operating statement must put the SAME
+     * figure on it: every penny the combined view drops as an internal transfer
+     * is exactly what the operating statement calls `internalTransfer`.
+     *
+     * Asserted as an equality on real money, not on which helper each screen
+     * calls, so it still holds if somebody later rewrites one of them.
+     */
+    for (const cur of ['JMD', 'USD']) {
+      const everything = F.consolidateEverything(db.charges, settled, db.units);
+      const droppedByCombined =
+        settled.filter(p => p.status === 'completed' && p.currency === cur && p.date >= FROM && p.date <= TO)
+          .filter(p => !everything.payments.some(q => q.id === p.id))
+          .reduce((a, p) => a + C(p.amount) - C(p.refundedAmount || 0), 0);
+      const op = F.operatingStatement(settled, db.expenses || [], db.units, cur, FROM, TO, { book: 'ispo' });
+      T.check(
+        `${cur}: the money the combined view drops is exactly the transfer the ISPO statement names`,
+        droppedByCombined === C(op.internalTransfer),
+        `combined dropped ${droppedByCombined}, statement says ${C(op.internalTransfer)}`
+      );
+    }
+
+    /* ---------- 5c. one rule, in one place ---------- */
+    /*
+     * "Is this villa ISPO's?" is decided by `isOwnAccount`, and nowhere else.
+     * It was decided in two places once — the combined view inferred it from the
+     * rent charges while the operating statement read a flag — and the two
+     * disagreed about every short stay, which is how a levy got counted as
+     * income on top of a guest's booking.
+     *
+     * So the source itself is checked: exactly one file may contain the
+     * expression that makes the decision. A second copy is how the rules drift,
+     * and a second copy will fail here before it reaches the property.
+     */
+    const decidingFiles = [];
+    const walk = dir => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { if (entry.name !== 'node_modules') walk(full); continue; }
+        if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+        const text = fs.readFileSync(full, 'utf8');
+        if (/(!==?|===?)\s*'owner-occupied'/.test(text.replace(/^\s*\*.*$/gm, ''))) {
+          decidingFiles.push(path.relative(projectRoot, full));
+        }
+      }
+    };
+    for (const dir of ['src', 'server']) walk(path.join(projectRoot, dir));
+    const stray = decidingFiles.filter(f => f !== path.join('src', 'lib', 'finance.ts'));
+    T.check(
+      'only finance.ts decides whether a villa is the corporation\'s own',
+      stray.length === 0,
+      stray.join(', ')
+    );
+    T.check(
+      'and it really is deciding it there — the check is not passing on an empty search',
+      decidingFiles.includes(path.join('src', 'lib', 'finance.ts')),
+      decidingFiles.join(', ')
+    );
+    T.check(
+      'the retired flag is read by no production file at all',
+      (() => {
+        const readers = [];
+        const scan = dir => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) { if (entry.name !== 'node_modules') scan(full); continue; }
+            if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+            const text = fs.readFileSync(full, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+            if (/letOnOwnAccount/.test(text) && !/^src[\\/]types\.ts$/.test(path.relative(projectRoot, full))) readers.push(path.relative(projectRoot, full));
+          }
+        };
+        for (const dir of ['src', 'server']) scan(path.join(projectRoot, dir));
+        return readers.every(f => f === path.join('server.ts'));
+      })(),
+      'a production file still reads the retired own-account flag'
+    );
 
     /* ---------- 6. nothing was invented or lost ---------- */
     const cashAll = raw2.filter(p => p.status === 'completed').reduce((a, p) => a + C(p.amount) - C(p.refundedAmount || 0), 0);

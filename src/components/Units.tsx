@@ -1069,10 +1069,7 @@ function UnitEditor({
     // Held as strings so the fields can be genuinely empty. An entitlement of ''
     // means "not recorded", which is different from an entitlement of zero.
     entitlement: unit.entitlement === undefined ? '' : String(unit.entitlement),
-    strataLotNumber: unit.strataLotNumber || '',
-    // Absent means no. A register written before this field existed cannot be
-    // assumed to hold VDS's own villas.
-    letOnOwnAccount: unit.letOnOwnAccount === true
+    strataLotNumber: unit.strataLotNumber || ''
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1464,30 +1461,6 @@ function UnitEditor({
           </Field>
         </div>
 
-        {/*
-          A tick box, not a name match. The shortfall report needs to know which
-          villas VDS lets on its own account, and `ownerName` cannot be trusted
-          to answer it — the day somebody types "Villaggio Del Sol Ltd." instead
-          of "VDS" a name match drops the villa and the report understates what
-          was funded, silently. This is one field, it survives a rename, and it
-          is explicit.
-        */}
-        <label className="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
-          <input
-            id="ue-own-account"
-            type="checkbox"
-            checked={form.letOnOwnAccount}
-            onChange={e => set('letOnOwnAccount', e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>
-            <span className="font-semibold text-slate-900">Let on the corporation&rsquo;s own account.</span> Tick this
-            where VDS lets the villa itself and funds the maintenance contribution out of the rent it collects. It
-            changes nothing about how the villa is billed &mdash; it is what scopes the{' '}
-            <strong>out-of-pocket shortfall report</strong> under Operational Reports, which sizes what VDS paid in the
-            months a villa stood empty.
-          </span>
-        </label>
 
         <fieldset className="space-y-3 rounded-xl bg-slate-50 p-4">
           <legend className="font-mono text-[10px] font-semibold uppercase text-slate-400">Registered owner</legend>

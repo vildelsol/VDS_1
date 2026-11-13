@@ -394,7 +394,7 @@ export default async function run({ projectRoot }) {
           id: 'iu', number: 'V9', ownerName: 'VDS', ownerEmail: '', ownerPhone: '',
           tenantName: 'T', tenantEmail: '', tenantPhone: '', status: 'long-term',
           monthlyRent: 50000, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD',
-          rentDueDay: 1, maintDueDay: 1, meterNumber: '', notes: '', letOnOwnAccount: true
+          rentDueDay: 1, maintDueDay: 1, meterNumber: '', notes: ''
         }
       ];
       const ispoPayments = [
@@ -465,7 +465,7 @@ export default async function run({ projectRoot }) {
           id: 'iu', number: 'V9', ownerName: 'VDS', ownerEmail: '', ownerPhone: '',
           tenantName: 'T', tenantEmail: '', tenantPhone: '', status: 'long-term',
           monthlyRent: 50000, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD',
-          rentDueDay: 1, maintDueDay: 1, meterNumber: '', notes: '', letOnOwnAccount: true
+          rentDueDay: 1, maintDueDay: 1, meterNumber: '', notes: ''
         }
       ];
       const session = { name: 'Boss', role: 'ADMINISTRATOR', permissions: {} };

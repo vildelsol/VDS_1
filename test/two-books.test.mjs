@@ -93,9 +93,25 @@ export default async function run({ port, projectRoot }) {
     const to = `${month}-28`;
     const year = Number(month.substring(0, 4));
 
-    // Villa 1 is let by VDS on its own account; villa 2 belongs to a proprietor.
-    await makeLongTermUnit(c, 'unit-1', { ownerName: 'Villaggio Del Sol', letOnOwnAccount: true });
-    await makeLongTermUnit(c, 'unit-2', { ownerName: 'A Proprietor' });
+    /*
+     * Villa 1 is VDS's and let. Villa 2 belongs to a proprietor, which the
+     * register records as `owner-occupied` — Ro, 2026-11-12: owners are
+     * responsible for their own tenants and rental payments, so the corporation
+     * bills a proprietor's villa maintenance only and never its rent. That
+     * status is what `isOwnAccount` reads, so it is what keeps villa 2's
+     * contribution out of the transfer between the books.
+     */
+    await makeLongTermUnit(c, 'unit-1', { ownerName: 'Villaggio Del Sol' });
+    await c.put('/api/units/unit-2', {
+      number: '2',
+      ownerName: 'A Proprietor',
+      status: 'owner-occupied',
+      monthlyRent: 0,
+      monthlyMaintenance: 10000,
+      currency: 'JMD',
+      maintCurrency: 'JMD',
+      maintDueDay: 1
+    });
 
     await c.post('/api/charges/post-month', { monthString: month });
 

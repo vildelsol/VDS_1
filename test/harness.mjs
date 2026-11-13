@@ -95,7 +95,7 @@ export async function startServer({ port, adminPassword, projectRoot, dataDir: r
 }
 
 /** An HTTP client with a cookie jar. Options are always forwarded (a real one bit us before). */
-export function makeClient(baseUrl) {
+export function makeClient(baseUrl, { autoConfirmDuplicates = true } = {}) {
   let cookie = '';
   /**
    * Every 404 this client received, in order.
@@ -115,6 +115,16 @@ export function makeClient(baseUrl) {
 
   async function call(method, apiPath, body, opts = {}) {
     const headers = { ...(opts.headers || {}) };
+    /*
+     * The server refuses the same payment entered twice within minutes unless the
+     * cashier confirms it is separate money. A simulation posts identical receipts
+     * seconds apart on purpose (fixed dates, fixed amounts), which is exactly what
+     * that guard exists to stop, so the client confirms by default. The guard has
+     * its own suite (ecosystem-guards), which turns this off.
+     */
+    if (autoConfirmDuplicates && method === 'POST' && apiPath === '/api/payments' && body && typeof body === 'object' && body.confirmDuplicate === undefined) {
+      body = { ...body, confirmDuplicate: true };
+    }
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (cookie && !opts.noCookie) headers.Cookie = cookie;
     const res = await fetch(baseUrl + apiPath, {

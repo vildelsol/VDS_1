@@ -29,9 +29,10 @@ import {
 import { AccountBalance, accountBalance, chargeAmount, chargeCurrency } from '../lib/finance';
 import { formatMoneyLong } from '../lib/money';
 import { formatMonthLabel, today } from '../lib/dates';
-import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
+import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, errorMessage } from '../lib/api';
 import {
   AlreadySettledNote,
+  DuplicateEntryNote,
   ErrorNote,
   Field,
   Modal,
@@ -71,6 +72,8 @@ export default function ReceivePaymentModal({
   // whoever else banked the money saved it, so it cannot know in advance.
   const [alreadySettled, setAlreadySettled] = useState('');
   const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
+  const [duplicateNote, setDuplicateNote] = useState('');
+  const [confirmDuplicate, setConfirmDuplicate] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -162,10 +165,14 @@ export default function ReceivePaymentModal({
         receivedNow: true,
         confirmCurrencyMismatch: confirmMismatch,
         confirmNoOpenCharge: confirmNoCharge,
-        confirmAlreadySettled
+        confirmAlreadySettled,
+        confirmDuplicate
       });
     } catch (err) {
-      if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
+      if (err instanceof ApiError && err.code === POSSIBLE_DUPLICATE) {
+        setDuplicateNote(err.message);
+        setError('');
+      } else if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
         setAlreadySettled(err.message);
         setError('');
       } else {
@@ -194,6 +201,7 @@ export default function ReceivePaymentModal({
         {error && <ErrorNote>{error}</ErrorNote>}
 
         <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
+        <DuplicateEntryNote message={duplicateNote} confirmed={confirmDuplicate} onConfirm={setConfirmDuplicate} />
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Villa unit" htmlFor="qr-unit" required>

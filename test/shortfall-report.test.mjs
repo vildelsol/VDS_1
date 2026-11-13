@@ -92,7 +92,7 @@ export default async function run({ port, projectRoot }) {
   const T = reporter(title);
   const { mod, cleanup } = await loadModules(projectRoot);
   const { fin, React, renderToStaticMarkup, ShortfallDocument, ShortfallScreen, OwnerStatements } = mod;
-  const { outOfPocketShortfall } = fin;
+  const { outOfPocketShortfall, isOwnAccount } = fin;
 
   try {
     const c = makeClient(srv.baseUrl);
@@ -121,23 +121,25 @@ export default async function run({ port, projectRoot }) {
       currency: 'JMD',
       maintCurrency: 'JMD',
       rentDueDay: 1,
-      maintDueDay: 1,
-      letOnOwnAccount: true
+      maintDueDay: 1
     });
 
-    // Villa 2 — somebody else's villa, deliberately not ticked.
+    // Villa 2 — somebody else's villa. `owner-occupied` is what records that.
+    /*
+     * Ro, 2026-11-12: owners are responsible for their own tenants and rental
+     * payments, so a villa belonging to another proprietor carries no tenancy and
+     * no rent in this register at all — only its maintenance. `owner-occupied` is
+     * the status that records third-party ownership, whether or not anybody is
+     * living in it, and it is the one status `isOwnAccount` excludes.
+     */
     await c.put('/api/units/unit-2', {
       number: '2',
       ownerName: 'A Private Proprietor',
-      tenantName: 'Their Tenant',
-      tenantChangeIntent: 'changeover',
-      tenantMovedInOn: '2026-01-01',
-      status: 'long-term',
-      monthlyRent: 75000,
+      status: 'owner-occupied',
+      monthlyRent: 0,
       monthlyMaintenance: 20000,
       currency: 'JMD',
       maintCurrency: 'JMD',
-      rentDueDay: 1,
       maintDueDay: 1
     });
 
@@ -151,8 +153,7 @@ export default async function run({ port, projectRoot }) {
       monthlyMaintenance: 200,
       currency: 'USD',
       maintCurrency: 'USD',
-      maintDueDay: 1,
-      letOnOwnAccount: true
+      maintDueDay: 1
     });
 
     // Villa 4 — VDS's own, but rent in JMD and the contribution billed in USD.
@@ -164,45 +165,90 @@ export default async function run({ port, projectRoot }) {
       monthlyMaintenance: 150,
       currency: 'JMD',
       maintCurrency: 'USD',
-      maintDueDay: 1,
-      letOnOwnAccount: true
+      maintDueDay: 1
     });
 
+    /*
+     * The rest of the register: proprietors' villas.
+     *
+     * The real register holds no `vacant` villa at all — every villa is either
+     * VDS's (let or on Airbnb) or marked owner occupied with a named proprietor.
+     * The seed leaves villas 5-16 `vacant`, which would make this fixture claim
+     * twelve villas the property does not own, so they are put where they really
+     * belong: owner occupied, maintenance only, no rent.
+     */
+    for (let i = 5; i <= 16; i++) {
+      await c.put(`/api/units/unit-${i}`, {
+        number: String(i),
+        ownerName: `Proprietor ${i}`,
+        status: 'owner-occupied',
+        monthlyRent: 0,
+        monthlyMaintenance: 20000,
+        currency: 'JMD',
+        maintCurrency: 'JMD',
+        maintDueDay: 1
+      });
+    }
+
     let db = (await c.get('/api/db')).body;
-    const flagged = db.units.filter(u => u.letOnOwnAccount === true).map(u => u.number);
-    T.check('the tick box saves against the villa', flagged.join(',') === '1,3,4', flagged.join(','));
+
+    /*
+     * Which villas the corporation counts as its own, and what decides it.
+     *
+     * This replaced a hand-ticked `letOnOwnAccount` box. The box was right
+     * wherever somebody remembered it and silently wrong wherever they did not,
+     * and "wrong" meant the combined view counting ISPO's levy as income on top
+     * of the rent. The register already records who owns each villa, in `status`,
+     * so that is what is read: everything except `owner-occupied` is ISPO's.
+     */
+    const own = db.units.filter(u => isOwnAccount(u)).map(u => u.number);
     T.check(
-      'and every other villa is left alone — absent means no, never a guess from the owner name',
-      db.units.filter(u => u.letOnOwnAccount !== true).length === 13,
-      `${db.units.filter(u => u.letOnOwnAccount !== true).length} villa(s) not flagged`
+      'the own-account villas are the ones not marked owner occupied',
+      own.join(',') === '1,3,4',
+      own.join(',')
+    );
+    T.check(
+      'and villa 2, which belongs to a proprietor, is not one of them',
+      !isOwnAccount(db.units.find(u => u.id === 'unit-2')),
+      db.units.find(u => u.id === 'unit-2').status
     );
 
-    /* --- the flag survives an edit that says nothing about it --- */
-    await c.put('/api/units/unit-1', { number: '1', ownerName: 'Villaggio Del Sol', notes: 'Gate remote replaced.' });
-    db = (await c.get('/api/db')).body;
-    T.check(
-      'an unrelated edit that omits the field does not clear it',
-      db.units.find(u => u.id === 'unit-1').letOnOwnAccount === true,
-      String(db.units.find(u => u.id === 'unit-1').letOnOwnAccount)
-    );
-
-    /* --- only a genuine boolean turns it on --- */
-    await c.put('/api/units/unit-5', { number: '5', ownerName: 'Someone Else', letOnOwnAccount: 'yes' });
-    db = (await c.get('/api/db')).body;
-    T.check(
-      'a string is not a tick — only a real boolean sets the flag',
-      db.units.find(u => u.id === 'unit-5').letOnOwnAccount !== true,
-      String(db.units.find(u => u.id === 'unit-5').letOnOwnAccount)
-    );
-
-    /* --- and it can be unticked --- */
+    /* --- the retired flag is inert, in both directions --- */
     await c.put('/api/units/unit-1', { number: '1', ownerName: 'Villaggio Del Sol', letOnOwnAccount: false });
     db = (await c.get('/api/db')).body;
-    T.check('it can be unticked again', db.units.find(u => u.id === 'unit-1').letOnOwnAccount === false);
-    await c.put('/api/units/unit-1', { number: '1', ownerName: 'Villaggio Del Sol', letOnOwnAccount: true });
+    T.check(
+      'writing the retired flag false does not take a villa off the corporation\'s account',
+      isOwnAccount(db.units.find(u => u.id === 'unit-1')) === true,
+      `${db.units.find(u => u.id === 'unit-1').status} / ${db.units.find(u => u.id === 'unit-1').letOnOwnAccount}`
+    );
+    await c.put('/api/units/unit-2', { number: '2', ownerName: 'A Private Proprietor', letOnOwnAccount: true });
+    db = (await c.get('/api/db')).body;
+    T.check(
+      'and writing it true does not claim a proprietor\'s villa',
+      isOwnAccount(db.units.find(u => u.id === 'unit-2')) === false,
+      `${db.units.find(u => u.id === 'unit-2').status} / ${db.units.find(u => u.id === 'unit-2').letOnOwnAccount}`
+    );
+    T.check(
+      'the retired field is not writable at all — a live database keeps whatever it held',
+      db.units.find(u => u.id === 'unit-2').letOnOwnAccount === undefined,
+      String(db.units.find(u => u.id === 'unit-2').letOnOwnAccount)
+    );
 
-    const audits = (await c.get('/api/db')).body.auditLogs.filter(a => /own account/i.test(a.action));
-    T.check('and both directions are written to the audit trail', audits.length >= 2, `${audits.length} entr(ies)`);
+    /* --- status is what moves a villa, and it is on the audit trail --- */
+    await c.put('/api/units/unit-4', { number: '4', ownerName: 'VDS', status: 'owner-occupied', monthlyRent: 0, monthlyMaintenance: 150, currency: 'JMD', maintCurrency: 'USD' });
+    db = (await c.get('/api/db')).body;
+    T.check(
+      'moving a villa to owner occupied takes it off the corporation\'s account',
+      isOwnAccount(db.units.find(u => u.id === 'unit-4')) === false
+    );
+    const statusAudits = db.auditLogs.filter(a => /status .* to owner-occupied/i.test(a.action));
+    T.check('and the change that did it is on the audit trail', statusAudits.length >= 1, `${statusAudits.length} entr(ies)`);
+    await c.put('/api/units/unit-4', { number: '4', ownerName: 'VDS', status: 'vacant', monthlyRent: 40000, monthlyMaintenance: 150, currency: 'JMD', maintCurrency: 'USD' });
+    db = (await c.get('/api/db')).body;
+    T.check(
+      'and moving it back returns it, with nothing to tick',
+      isOwnAccount(db.units.find(u => u.id === 'unit-4')) === true
+    );
 
     /* ================================================================
      * Occupancy, and the money
@@ -274,18 +320,10 @@ export default async function run({ port, projectRoot }) {
       });
     }
 
-    // Villa 2's money: a villa that is not VDS's own, in the same currency and
-    // the same months. Nothing of it may reach this report.
-    await recordAndConfirmPayment(c, {
-      unitId: 'unit-2',
-      category: 'Rent',
-      amount: 75000,
-      currency: 'JMD',
-      payerName: 'Their Tenant',
-      method: 'Cash',
-      date: '2026-05-05',
-      confirmNoOpenCharge: true
-    });
+    // Villa 2's money: a proprietor paying their own levy on a villa that is not
+    // VDS's own, in the same currency and the same months. Nothing of it may
+    // reach this report. There is no rent here on purpose — the proprietor
+    // collects that themselves, and this register never sees it.
     await recordAndConfirmPayment(c, {
       unitId: 'unit-2',
       category: 'Maintenance',
@@ -375,7 +413,7 @@ export default async function run({ port, projectRoot }) {
      * ================================================================ */
 
     T.check(
-      'only villas ticked as let on the corporation’s own account appear',
+      'only the villas the corporation owns and lets appear',
       jmd.byVilla.map(v => v.villa).join(',') === 'Villa Unit 1',
       jmd.byVilla.map(v => v.villa).join(',')
     );
@@ -562,10 +600,10 @@ export default async function run({ port, projectRoot }) {
      * Nothing ticked is a different state from nothing to report
      * ================================================================ */
 
-    const noneUnits = db.units.map(u => ({ ...u, letOnOwnAccount: false }));
+    const noneUnits = db.units.map(u => ({ ...u, status: 'owner-occupied' }));
     const none = outOfPocketShortfall(noneUnits, db.tenancies, db.bookings, db.payments, 'JMD', FROM, TO);
-    T.check('with no villa ticked the report says so, rather than reporting zero', none.noneFlagged === true && none.lines.length === 0);
-    T.check('and a report with villas ticked never claims otherwise', jmd.noneFlagged === false);
+    T.check('with every villa owned by somebody else the report says so, rather than reporting zero', none.noneFlagged === true && none.lines.length === 0);
+    T.check('and a report with villas of our own never claims otherwise', jmd.noneFlagged === false);
 
     /* ================================================================
      * The printed document carries the report
@@ -777,10 +815,10 @@ export default async function run({ port, projectRoot }) {
     const ownerFacing = ['OwnerStatements.tsx', 'BoardPack.tsx', 'AnnualReport.tsx', 'OperatingStatement.tsx', 'OperationsStatement.tsx'];
     const leaked = ownerFacing.filter(f => {
       const text = fs.readFileSync(path.join(projectRoot, 'src', 'components', f), 'utf8');
-      return /letOnOwnAccount|outOfPocketShortfall|Shortfall(Report|Document)/.test(text);
+      return /letOnOwnAccount|isOwnAccount|outOfPocketShortfall|Shortfall(Report|Document)/.test(text);
     });
     T.check(
-      'and no owner- or council-facing document reads the own-account flag or the engine',
+      'and no owner- or council-facing document reads the own-account rule or the engine',
       leaked.length === 0,
       leaked.join(', ')
     );

@@ -338,13 +338,14 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
       {s.incomeFromUnflaggedVillas > 0 && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
           <p className="mb-1 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-800">
-            {formatMoney(s.incomeFromUnflaggedVillas, s.currency)} of the income above came from villas not ticked as own account
+            {formatMoney(s.incomeFromUnflaggedVillas, s.currency)} of the income above came from villas marked owner occupied
           </p>
           <p>
-            {s.unflaggedVillasWithIncome.join(', ')}. It is counted as {MANAGING_COMPANY_NAME}&rsquo;s, because the corporation
-            never collects a proprietor&rsquo;s rent. But the shortfall report only counts villas that are ticked, so the two
-            documents will quote different rent for this month until this is resolved. It means one of two things: a villa VDS
-            lets that nobody has ticked yet, or rent recorded against a proprietor&rsquo;s villa.
+            {s.unflaggedVillasWithIncome.join(', ')}. A villa marked owner occupied belongs to another proprietor, so the
+            corporation bills it maintenance only and never collects its rent. This money is counted as{' '}
+            {MANAGING_COMPANY_NAME}&rsquo;s all the same, because it arrived. It means one of two things: the villa&rsquo;s
+            status is wrong, or the money is recorded against the wrong villa. Fix the status and both this statement and the
+            shortfall report follow it &mdash; nothing else has to be set.
           </p>
         </div>
       )}

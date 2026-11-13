@@ -31,7 +31,9 @@
  */
 
 import type { Database } from './db';
-import { ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
+import { createHash } from 'crypto';
+import { accountBalance, chargeCurrency, isOwnAccount, netPaidAsOf, ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
+import { auditEntryHash } from './auditChain';
 
 export type IntegritySeverity =
   /** The books contradict themselves. Money is misstated somewhere. */
@@ -47,6 +49,8 @@ export interface IntegrityFinding {
   message: string;
   /** The records involved, so a person can go and look at them. */
   records: string[];
+  /** How many records matched; `records` is capped for readability. */
+  total?: number;
 }
 
 export interface IntegrityReport {
@@ -80,7 +84,8 @@ export function checkIntegrity(db: Database): IntegrityReport {
       severity,
       code,
       message: records.length > MAX_LISTED ? `${message} (${records.length} records; first ${MAX_LISTED} listed)` : message,
-      records: records.slice(0, MAX_LISTED)
+      records: records.slice(0, MAX_LISTED),
+      total: records.length
     });
   };
 
@@ -379,7 +384,8 @@ export function checkIntegrity(db: Database): IntegrityReport {
       'serious',
       'impossible-expense-amount',
       'A recorded cost has an amount that cannot be right.',
-      expenses.filter(e => isBadNumber(e.amount) || e.amount < 0).map(e => `${e.id} (${e.amount})`)
+      // A negative amount is a supplier credit, recorded as a negative cost on purpose: only a non-number is impossible.
+      expenses.filter(e => isBadNumber(e.amount)).map(e => `${e.id} (${e.amount})`)
     );
 
     /*
@@ -404,7 +410,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
      * the specific shape that is never right: a Maintenance-category ISPO cost
      * allocated to a villa VDS lets on its own account.
      */
-    const ownAccountVillas = new Set(units.filter(u => u.letOnOwnAccount === true).map(u => u.id));
+    const ownAccountVillas = ownAccountUnitIds(units);
     add(
       'warning',
       'contribution-entered-as-a-cost',
@@ -514,36 +520,53 @@ export function checkIntegrity(db: Database): IntegrityReport {
     add('serious', 'negative-rent-split', 'A rent charge carries a negative rent or maintenance part.', negativeSplit);
 
     /*
-     * The two screens must agree on what an inter-book transfer is.
+     * Money on a villa the register says belongs to somebody else.
      *
-     * The combined view treats a let villa's levy receipts as ISPO handing the
-     * corporation its share, because the levy sits inside the rent. The ISPO
-     * operating statement asks a different question — `letOnOwnAccount` — and
-     * shows the same money as "contributions paid to the corporation". Where the
-     * two answers differ, one screen counts a receipt as income arriving and the
-     * other as money moving between the books, and the property's own reports
-     * disagree about how much came in.
+     * Own-account is derived from status: anything that is not `owner-occupied`
+     * is ISPO's (`isOwnAccount`). That removed a hand-ticked flag nobody could be
+     * relied on to tick, and with it the warning that used to live here — a let
+     * villa left unticked is no longer a state this register can hold.
      *
-     * Not an error on its own: a villa genuinely owned by somebody else, and let,
-     * is funded from rent and is correctly NOT on VDS's own account. So this is
-     * reported as something to look at, not as a contradiction in the money.
+     * It moved the risk rather than removing it. A villa belonging to another
+     * proprietor but recorded as `vacant` or `unavailable` is now claimed as
+     * ISPO's: the combined view drops that proprietor's real levy payments as if
+     * they were internal, and the shortfall report bills ISPO for a villa it does
+     * not own. The old field's note warned about exactly this — "claiming villas
+     * that are not ours would overstate the shortfall, which is the one number
+     * this report exists to state honestly."
+     *
+     * Status alone cannot prove that mistake: a villa ISPO owns and has never let
+     * looks identical to a stranger's villa left on the wrong status. What CAN be
+     * proved is the opposite shape, and it catches the same data error from the
+     * other side — a villa marked `owner-occupied`, which this corporation only
+     * bills maintenance on, that is nevertheless being let **right now**.
+     *
+     * Only what is live counts. A villa ISPO let for years and then sold is
+     * legitimately `owner-occupied` today and keeps every rent charge and closed
+     * tenancy it ever had: Ro, 2026-11-12, a sale is off books and only who is
+     * billed changes. Reporting that history would fire on every sale the
+     * property has ever made. An **open** rent charge or a **sitting** tenant is
+     * a different thing — that is rent being billed, now, on a villa the register
+     * says belongs to somebody else.
+     *
+     * The over-claiming direction is not silent either: `outOfPocketShortfall`
+     * names every villa it counts and the status it counted it under, so a villa
+     * that does not belong there is visible in the report that would overstate.
      */
-    const own = ownAccountUnitIds(units);
-    const disagree = units
-      .filter(u => u.status === 'long-term')
-      .filter(u => {
-        const funded = charges.some(c => c.unitId === u.id && c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0);
-        return funded && !own.has(u.id);
-      })
-      .filter(u => payments.some(p => p.unitId === u.id && p.category === 'Maintenance' && p.status === 'completed'))
+    const letButOwnerOccupied = units
+      .filter(u => !isOwnAccount(u))
+      .filter(
+        u =>
+          tenancies.some(t => t.unitId === u.id && t.status === 'active' && !t.endedOn) ||
+          charges.some(c => c.unitId === u.id && c.category === 'Rent' && c.status === 'open')
+      )
       .map(u => `villa ${u.number} (owner ${u.ownerName || 'not recorded'})`);
     add(
-      'warning',
-      'transfer-rule-disagrees-between-screens',
-      'This villa\'s levy comes out of its rent, but it is not marked as let on VDS\'s own account. ' +
-        'The combined view treats its maintenance receipts as money moved between the two books; the ISPO operating statement does not. ' +
-        'If VDS owns it, tick "let on own account" on the villa. If somebody else owns it, nothing is wrong.',
-      disagree
+      'serious',
+      'rent-billed-on-a-villa-owned-by-somebody-else',
+      'This villa is marked owner occupied, so the corporation bills it maintenance only and treats its levy payments as a proprietor\'s money. ' +
+        'It has a sitting tenant or an open rent charge all the same. Either the status is wrong, or that rent belongs on another villa.',
+      letButOwnerOccupied
     );
 
     /*
@@ -581,6 +604,92 @@ export function checkIntegrity(db: Database): IntegrityReport {
       );
     } catch {
       add('warning', 'levy-from-rent-uncheckable', 'The maintenance settled from rent could not be worked out, so it has not been checked.', ['settledFromRent']);
+    }
+
+
+    /* ---------------- the audit trail's hash chain ---------------- */
+
+    {
+      const logs = db.auditLogs || [];
+      const broken: string[] = [];
+      let seenHashedOlder = false;
+      // Oldest first: once the chain has begun, every later entry must be in it.
+      for (let i = logs.length - 1; i >= 0; i--) {
+        const e = logs[i];
+        const older = logs[i + 1];
+        if (!e.seal) {
+          if (seenHashedOlder) broken.push(`${e.id} (added outside the audit trail's chain)`);
+          continue;
+        }
+        seenHashedOlder = true;
+        if (auditEntryHash(e) !== e.seal) broken.push(`${e.id} (its content no longer matches its seal)`);
+        else if (older?.seal && e.prevSeal !== older.seal) broken.push(`${e.id} (an earlier entry was altered or removed)`);
+      }
+      add('serious', 'audit-trail-broken', 'The audit trail has been altered: an entry was edited, inserted or removed after it was written.', broken);
+    }
+
+    /* ---------------- a closed period must not move ---------------- */
+
+    if (db.settings?.closedThrough) {
+      const now = ledgerFingerprint(db, db.settings.closedThrough);
+      if (db.settings.closeFingerprint && now !== db.settings.closeFingerprint) {
+        add(
+          'serious',
+          'closed-period-changed',
+          `Money dated in or before ${db.settings.closedThrough}, a month that has been closed, no longer matches what was closed. ` +
+            `A statement already issued for that month would now read differently. Reopen the period first, with a reason, to correct it.`,
+          [`through ${db.settings.closedThrough}`]
+        );
+      }
+    }
+
+    /* ---------------- one statement line, one receipt ---------------- */
+
+    {
+      const byRef = new Map<string, string[]>();
+      for (const p of payments) {
+        const ref = (p.reconciledReference || '').trim().toLowerCase();
+        if (!ref || !p.reconciledOn || p.status !== 'completed') continue;
+        byRef.set(ref, [...(byRef.get(ref) || []), p.receiptNo || p.id]);
+      }
+      add(
+        'warning',
+        'bank-line-matched-twice',
+        'The same bank reference is matched to more than one receipt. One line on a statement settles one receipt.',
+        [...byRef.entries()].filter(([, ids]) => ids.length > 1).map(([ref, ids]) => `"${ref}": ${ids.join(', ')}`)
+      );
+    }
+
+    /* ---------------- every account balance, recomputed independently ---------------- */
+
+    {
+      const off: string[] = [];
+      for (const unit of units) {
+        for (const category of ['Rent', 'Maintenance'] as const) {
+          let currency;
+          try {
+            currency = chargeCurrency(unit, category);
+          } catch {
+            continue;
+          }
+          // Straight from the raw rows, sharing no code with accountBalance beyond the currency choice.
+          const owed = charges
+            .filter(c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === currency)
+            .reduce((a, c) => a + cents(c.amount), 0);
+          const received = payments
+            .filter(p => p.unitId === unit.id && p.category === category && p.status === 'completed' && p.currency === currency)
+            .reduce((a, p) => a + cents(netPaidAsOf(p)), 0);
+          let shown: number;
+          try {
+            shown = cents(accountBalance(unit, category, charges, payments, undefined, units).balance);
+          } catch {
+            continue;
+          }
+          if (shown !== owed - received) off.push(`${unit.number} ${category} (${currency}): screens show ${shown / 100}, raw ledger says ${(owed - received) / 100}`);
+        }
+      }
+      // A warning, not a block: a difference can be a real ownership transfer the raw rows do not model.
+      add('warning', 'balance-does-not-reconcile', 'An account balance shown by the application differs from the same balance rebuilt from the raw ledger.', off);
     }
 
     return {
@@ -625,4 +734,87 @@ export function describeIntegrity(report: IntegrityReport): string {
   }
   const parts = [`${report.serious} serious`, `${report.warnings} warning${report.warnings === 1 ? '' : 's'}`];
   return `RECORDS CHECK FOUND PROBLEMS (${parts.join(', ')}):\n` + report.findings.map(f => `  [${f.severity}] ${f.message}`).join('\n');
+}
+
+
+/**
+ * A fingerprint of every money record dated in or before a month: what was
+ * closed. Refunds are counted only if paid by the end of that month, because a
+ * refund paid later belongs to the later month and must not disturb this one.
+ */
+export function ledgerFingerprint(db: Database, throughMonth: string): string {
+  const endOfMonth = `${throughMonth}-31`;
+  const rows: string[] = [];
+  for (const p of db.payments || []) {
+    if ((p.date || '').slice(0, 7) > throughMonth) continue;
+    rows.push(`P|${p.id}|${p.category}|${p.currency}|${p.date}|${p.status}|${cents(p.amount)}|${cents(netPaidAsOf(p, endOfMonth))}|${p.unitId}`);
+  }
+  for (const c of db.charges || []) {
+    if ((c.periodMonth || '').slice(0, 7) > throughMonth) continue;
+    rows.push(`C|${c.id}|${c.category}|${c.currency}|${c.periodMonth}|${c.status}|${cents(c.amount)}|${c.unitId}`);
+  }
+  rows.sort();
+  return createHash('sha256').update(rows.join('\n')).digest('hex');
+}
+
+/**
+ * Serious findings present after a change that were not present before it.
+ * A finding is new if its code is new, if it lists a record the earlier one did
+ * not, or if it covers more records than before.
+ */
+export function newSeriousFindings(before: IntegrityReport, after: IntegrityReport): IntegrityFinding[] {
+  const known = new Map(before.findings.filter(f => f.severity === 'serious').map(f => [f.code, f]));
+  return after.findings.filter(f => {
+    if (f.severity !== 'serious') return false;
+    const old = known.get(f.code);
+    if (!old) return true;
+    if ((f.total ?? f.records.length) > (old.total ?? old.records.length)) return true;
+    const oldRecords = new Set(old.records);
+    return f.records.some(r => !oldRecords.has(r));
+  });
+}
+
+/**
+ * The findings that refuse a write.
+ *
+ * Only contradictions in the arithmetic or the identity of money: a receipt
+ * issued twice, a refund beyond the receipt, a month billed twice, a levy settled
+ * beyond what was charged, a closed month that moved, a tampered audit trail.
+ * These are never a legitimate state, so no sequence of ordinary actions may end
+ * in one.
+ *
+ * Deliberately not here: findings about how a villa is *classified* or about
+ * history, such as rent still owed on a villa that has gone back to its owner
+ * (a tenant who left owing a month is ordinary), a villa sold twice, or an
+ * amount in a currency the villa is not billed in (which has its own
+ * confirmation). Those stay as warnings on the screen. Blocking them would stop
+ * the desk working on states the business really passes through, which is worse
+ * than the fault.
+ */
+export const WRITE_BLOCKING_CODES = new Set([
+  'duplicate-payment-id',
+  'duplicate-receipt-number',
+  'received-without-receipt',
+  'impossible-payment-amount',
+  'refunded-beyond-worth',
+  'voided-and-refunded',
+  'duplicate-charge-id',
+  'month-billed-twice',
+  'impossible-charge-amount',
+  'damage-deposit-over-settled',
+  'deposit-over-settled',
+  'work-order-cost-raised-twice',
+  'impossible-expense-amount',
+  'monthly-cost-posted-twice',
+  'duplicate-unit-id',
+  'rent-split-does-not-add-up',
+  'negative-rent-split',
+  'levy-settled-beyond-what-was-charged',
+  'audit-trail-broken',
+  'closed-period-changed'
+]);
+
+/** New serious findings, restricted to those that refuse a write. */
+export function newBlockingFindings(before: IntegrityReport, after: IntegrityReport): IntegrityFinding[] {
+  return newSeriousFindings(before, after).filter(f => WRITE_BLOCKING_CODES.has(f.code));
 }

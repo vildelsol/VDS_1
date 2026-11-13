@@ -437,7 +437,12 @@ function auditReporting(db, fin, asOf) {
    * bookings and receipts without the simulation itself being changed.
    */
   {
-    const flagged = units.map((u, i) => (i % 3 === 0 ? { ...u, letOnOwnAccount: true } : u));
+    /*
+     * The register as it stands. Own-account is read from the status now, so
+     * there is no copy to flag: villa 13 is `owner-occupied` and must stay off
+     * this report, every other villa is ISPO's and belongs on it.
+     */
+    const flagged = units;
     let linesSeen = 0;
 
     for (const currency of ['JMD', 'USD']) {
@@ -500,7 +505,7 @@ function auditReporting(db, fin, asOf) {
         }
       }
       // A villa that is not VDS's own has no business on this report.
-      const own = new Set(flagged.filter(u => u.letOnOwnAccount === true).map(u => u.id));
+      const own = new Set(flagged.filter(u => u.status !== 'owner-occupied').map(u => u.id));
       for (const v of r.byVilla) {
         if (!own.has(v.unitId)) problems.push(`${currency} shortfall reports ${v.villa}, which is not let on the corporation's own account`);
       }
@@ -544,25 +549,11 @@ export default async function run({ port, projectRoot }) {
       } else if (i === 13) {
         body = { number, ownerName: `Owner ${i}`, status: 'owner-occupied', monthlyMaintenance: money(setup, 8000, 18000), currency: 'JMD', maintCurrency: 'JMD' };
       } else if (i === 12) {
-        /*
-         * Every let villa carries `letOnOwnAccount`.
-         *
-         * Ro, 2026-11-12: owners are responsible for their own tenants and rental
-         * payments, and `owner-occupied` is the status that marks a villa as
-         * somebody else's. So a villa this register shows as let is ISPO's, always.
-         * A let villa left unflagged is not a register this property can produce,
-         * and building one here made `checkIntegrity` report the disagreement it
-         * exists to report — correctly, against data that could not occur.
-         *
-         * Do not take these flags out to "simplify the fixture": the self-check at
-         * the end of this file asserts a clean database, and an unflagged let villa
-         * is not one.
-         */
         // One villa billed entirely in USD, so no currency is ever the only one.
-        body = { number, ownerName: `Owner ${i}`, tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: `Tenant ${i}`, status: 'long-term', letOnOwnAccount: true, monthlyRent: money(setup, 700, 2400), monthlyMaintenance: money(setup, 100, 400), currency: 'USD', maintCurrency: 'USD', rentDueDay: 1, maintDueDay: 1 };
+        body = { number, ownerName: `Owner ${i}`, tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: `Tenant ${i}`, status: 'long-term', monthlyRent: money(setup, 700, 2400), monthlyMaintenance: money(setup, 100, 400), currency: 'USD', maintCurrency: 'USD', rentDueDay: 1, maintDueDay: 1 };
         longLets.push(id);
       } else {
-        body = { number, ownerName: `Owner ${i}`, tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: `Tenant ${i}`, status: 'long-term', letOnOwnAccount: true, monthlyRent: money(setup, 45000, 140000), monthlyMaintenance: money(setup, 8000, 20000), currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1 };
+        body = { number, ownerName: `Owner ${i}`, tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: `Tenant ${i}`, status: 'long-term', monthlyRent: money(setup, 45000, 140000), monthlyMaintenance: money(setup, 8000, 20000), currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1 };
         longLets.push(id);
       }
       await c.put(`/api/units/${id}`, body);
@@ -709,7 +700,6 @@ export default async function run({ port, projectRoot }) {
           tenantChangeIntent: 'changeover',
           ownerChangeIntent: 'correction',
           status: 'long-term',
-          letOnOwnAccount: true,
           monthlyRent: money(rand, 40000, 120000),
           monthlyMaintenance: money(rand, 6000, 15000),
           currency: 'JMD',
@@ -774,7 +764,7 @@ export default async function run({ port, projectRoot }) {
       // And brought back into service.
       async ({ rand }) => {
         const unitId = anyLong(rand);
-        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: 'Returned', status: 'long-term', letOnOwnAccount: true, monthlyRent: money(rand, 40000, 90000), monthlyMaintenance: money(rand, 6000, 14000), currency: 'JMD', maintCurrency: 'JMD' });
+        await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: 'Returned', status: 'long-term', monthlyRent: money(rand, 40000, 90000), monthlyMaintenance: money(rand, 6000, 14000), currency: 'JMD', maintCurrency: 'JMD' });
       },
 
       // Two people at the desk at once, on one account.

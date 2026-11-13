@@ -89,8 +89,8 @@ export default async function run({ port, projectRoot }) {
     const m2 = F.consolidateEverything(db2.charges, db2.payments, db2.units);
     const rentJune = m2.charges.find(x => x.unitId === 'unit-1' && x.category === 'Rent' && x.periodMonth === '2026-06' && x.status === 'open');
     T.check('with no maintenance charge to pair with, the rent keeps all 75,000', rentJune.amount === 75000, String(rentJune.amount));
-    T.check('a rent charge with no split (legacy) is never touched', F.consolidateEverything([{ ...rentJune, maintenancePortion: undefined, rentPortion: undefined }], []).charges[0].amount === 75000);
-    const empty = F.consolidateEverything([], []);
+    T.check('a rent charge with no split (legacy) is never touched', F.consolidateEverything([{ ...rentJune, maintenancePortion: undefined, rentPortion: undefined }], [], db2.units).charges[0].amount === 75000);
+    const empty = F.consolidateEverything([], [], []);
     T.check('empty books consolidate to empty', empty.charges.length === 0 && empty.payments.length === 0);
   } catch (err) {
     T.check('test ran without error', false, err.stack || err.message);

@@ -14,6 +14,8 @@
  */
 
 import fs from 'fs';
+import { auditEntryHash } from './auditChain';
+import { checkIntegrity, newBlockingFindings } from './integrity';
 import path from 'path';
 import {
   AppSettings,
@@ -781,13 +783,41 @@ export function getDb(): Database {
  */
 let queue: Promise<unknown> = Promise.resolve();
 
+/** A write refused because it would have made the records contradict themselves. */
+export class IntegrityGuardError extends Error {
+  status = 409;
+  code = 'integrity-guard';
+}
+
+/** The integrity report for the committed state, computed once per state rather than once per write. */
+let lastReport: { db: Database; report: ReturnType<typeof checkIntegrity> } | null = null;
+function baselineReport(committed: Database) {
+  if (!lastReport || lastReport.db !== committed) lastReport = { db: committed, report: checkIntegrity(committed) };
+  return lastReport.report;
+}
+
 export function transaction<T>(fn: (db: Database) => T): Promise<T> {
   const run = queue.then(async () => {
     const committed = getDb();
     const working = structuredClone(committed);
     const result = await fn(working);
+    // The books must not get worse. Compare what the integrity check finds in the
+    // new state with what it found in the committed one, and refuse the write if
+    // it introduced a serious contradiction that was not already there. Faults
+    // already present do not block work: a property that cannot take a payment
+    // this morning is worse than one running on records with a known fault.
+    const before = baselineReport(committed);
+    const after = checkIntegrity(working);
+    const introduced = newBlockingFindings(before, after);
+    if (introduced.length > 0) {
+      throw new IntegrityGuardError(
+        'That change was refused and nothing was saved: it would have left the records contradicting themselves. ' +
+          introduced.map(f => f.message).join(' ')
+      );
+    }
     writeAtomic(working);
     cache = working;
+    lastReport = { db: working, report: after };
     return result;
   });
   // Keep the chain alive even when a transaction rejects.
@@ -816,7 +846,7 @@ export function addAudit(
 ) {
   const stringify = (v: unknown) =>
     v === undefined || v === null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
-  db.auditLogs.unshift({
+  const entry: AuditLog = {
     id: `audit-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
     user,
     role: String(role),
@@ -827,7 +857,12 @@ export function addAudit(
     previousValue: stringify(previousValue),
     newValue: stringify(newValue),
     approvedBy
-  });
+  };
+  // Chain each entry to the one before it, so an entry edited or removed by
+  // hand in db.json no longer verifies. checkIntegrity walks the chain.
+  entry.prevSeal = db.auditLogs[0]?.seal || '';
+  entry.seal = auditEntryHash(entry);
+  db.auditLogs.unshift(entry);
   // The audit trail is append-only and unbounded by design; trim only the
   // in-memory tail beyond a very high water mark to keep the file manageable.
   if (db.auditLogs.length > 20000) db.auditLogs.length = 20000;

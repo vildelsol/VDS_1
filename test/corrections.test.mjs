@@ -370,7 +370,7 @@ export default async function run({ port, projectRoot }) {
     const firstOccupantTenancy = activeTenancy(db, 'unit-9')?.id;
     T.check('a first occupant is recorded', !!firstOccupantTenancy);
 
-    await c.put('/api/units/unit-9', villa({ number: '9', tenantName: 'Second Occupant', tenantChangeIntent: 'changeover' }));
+    await c.put('/api/units/unit-9', villa({ number: '9', tenantName: 'Second Occupant', tenantChangeIntent: 'changeover', formerArrears: 'write-off' }));
     db = (await c.get('/api/db')).body;
     T.check('a changeover closes the outgoing tenancy', db.tenancies.find(t => t.id === firstOccupantTenancy)?.status === 'ended');
     T.check('and keeps it, never deletes it', !!db.tenancies.find(t => t.id === firstOccupantTenancy));

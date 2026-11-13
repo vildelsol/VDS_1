@@ -210,7 +210,12 @@ function auditBooks(db, fin, periods) {
       if (op.internalTransfer < 0) problems.push(`${currency} ${from}: the internal transfer is negative`);
 
       /* ---- 5. the contribution is counted once ---- */
-      const ownIds = new Set(units.filter(u => u.letOnOwnAccount === true && (u.maintCurrency || u.currency) === currency).map(u => u.id));
+      /*
+       * The same rule `isOwnAccount` applies, restated here on purpose: a check
+       * that imported the function it is checking would agree with it by
+       * construction. Everything except `owner-occupied` is ISPO's.
+       */
+      const ownIds = new Set(units.filter(u => u.status !== 'owner-occupied' && (u.maintCurrency || u.currency) === currency).map(u => u.id));
       const receivedOnOwn = payments
         .filter(p => p.status === 'completed' && p.currency === currency && p.category === 'Maintenance' && ownIds.has(p.unitId))
         .filter(p => p.date >= from && p.date <= to)
@@ -342,9 +347,6 @@ export default async function run({ port, projectRoot }) {
         maintCurrency: currency,
         rentDueDay: 1,
         maintDueDay: 1,
-        // The first three are VDS's own, which is what makes the shortfall report
-        // and the ISPO statement have anything to agree about.
-        letOnOwnAccount: i <= 3
       });
       if (ok(res)) unitIds.push(id);
     }

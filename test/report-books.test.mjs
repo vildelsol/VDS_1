@@ -107,8 +107,22 @@ export default async function run({ port, projectRoot }) {
     const to = `${month}-28`;
 
     // Villa 1 is let by VDS on its own account. Villa 2 belongs to a proprietor.
-    await makeLongTermUnit(c, 'unit-1', { ownerName: 'Villaggio Del Sol', letOnOwnAccount: true });
-    await makeLongTermUnit(c, 'unit-2', { ownerName: 'A Proprietor' });
+    await makeLongTermUnit(c, 'unit-1', { ownerName: 'Villaggio Del Sol' });
+    /*
+     * A proprietor's villa is `owner-occupied`: the corporation bills it
+     * maintenance only and never collects its rent, so its contribution is a
+     * proprietor's money arriving, not VDS moving money between its own books.
+     */
+    await c.put('/api/units/unit-2', {
+      number: '2',
+      ownerName: 'A Proprietor',
+      status: 'owner-occupied',
+      monthlyRent: 0,
+      monthlyMaintenance: 10000,
+      currency: 'JMD',
+      maintCurrency: 'JMD',
+      maintDueDay: 1
+    });
     await c.post('/api/charges/post-month', { monthString: month });
 
     /* ---------------- the money ---------------- */

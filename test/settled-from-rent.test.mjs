@@ -213,7 +213,10 @@ export default async function run({ port, projectRoot }) {
     T.check('with the maintenance already receipted by hand, nothing more is credited', total(dd) === 0);
     // consolidation: derived credit on a funded villa disappears from the combined view, stays in the strata book
     const all = [paid, ...F.settledFromRent(base, [paid])];
-    const merged = F.consolidateEverything(base, all);
+    // Villa 'u' is one of ISPO's — a levy settled out of rent only happens on a
+    // villa ISPO lets. The register has to say so, because that is what the
+    // combined view reads to know whose money the credit is.
+    const merged = F.consolidateEverything(base, all, [{ id: 'u', number: 'u', status: 'long-term', currency: 'JMD', maintCurrency: 'JMD' }]);
     T.check('combined view drops the derived maintenance credit (it is a transfer between books)', !merged.payments.some(p => p.derived));
     T.check('strata book keeps it as maintenance received: 20,000', F.collectedInPeriod(F.paymentsInBook(all, 'strata'), 'JMD', '2026-09-01', '2026-09-30').maintenance === 20000);
     T.check('ISPO book does not see it', F.collectedInPeriod(F.paymentsInBook(all, 'ispo'), 'JMD', '2026-09-01', '2026-09-30').maintenance === 0);

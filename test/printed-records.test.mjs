@@ -249,7 +249,7 @@ export default async function run({ projectRoot }) {
      * carries ISPO's income and ISPO's costs, and **no strata cost is on it**.
      */
     {
-      const ispoUnit = { ...unit, id: 'iu1', number: 'V1', letOnOwnAccount: true, ownerName: 'MARKER-VDS' };
+      const ispoUnit = { ...unit, id: 'iu1', number: 'V1', ownerName: 'MARKER-VDS' };
       const ispoPayments = [
         { id: 'ip1', unitId: 'iu1', unitNumber: 'V1', category: 'Rent', amount: 50000, currency: 'JMD', date: '2026-08-03', status: 'completed', payerName: 'MARKER-TENANT', method: 'Cash', receiptNo: 'R1' },
         { id: 'ip2', unitId: 'iu1', unitNumber: 'V1', category: 'Booking', amount: 22000, currency: 'JMD', date: '2026-08-11', status: 'completed', payerName: 'MARKER-GUEST', method: 'Cash', receiptNo: 'R2' },

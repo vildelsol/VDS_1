@@ -23,10 +23,11 @@ import {
 import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, maintenanceFundedFromRent, tenanciesMissingMoveInDate, scheduledCharges, unbilledOccupancy } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
-import { ALREADY_SETTLED, ApiError, errorMessage } from '../lib/api';
+import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, errorMessage } from '../lib/api';
 import type { TabKey } from '../App';
 import {
   AlreadySettledNote,
+  DuplicateEntryNote,
   Badge,
   EmptyState,
   ErrorNote,
@@ -669,6 +670,8 @@ function SettleAccountModal({
   // money saved it, so only the server can tell us, and only at submit.
   const [alreadySettled, setAlreadySettled] = useState('');
   const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
+  const [duplicateNote, setDuplicateNote] = useState('');
+  const [confirmDuplicate, setConfirmDuplicate] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -693,10 +696,14 @@ function SettleAccountModal({
         // Actioning an alert here means the money has been taken, so the receipt
         // is issued now and the alert clears from here and the dashboard at once.
         receivedNow: true,
-        confirmAlreadySettled
+        confirmAlreadySettled,
+        confirmDuplicate
       });
     } catch (err) {
-      if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
+      if (err instanceof ApiError && err.code === POSSIBLE_DUPLICATE) {
+        setDuplicateNote(err.message);
+        setError('');
+      } else if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
         setAlreadySettled(err.message);
         setError('');
       } else {
@@ -725,6 +732,7 @@ function SettleAccountModal({
         {error && <ErrorNote>{error}</ErrorNote>}
 
         <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
+        <DuplicateEntryNote message={duplicateNote} confirmed={confirmDuplicate} onConfirm={setConfirmDuplicate} />
 
         <InfoNote>
           Unpaid months on this account:{' '}

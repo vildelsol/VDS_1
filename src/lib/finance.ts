@@ -24,6 +24,7 @@ import {
   PaymentCategory,
   Tenancy,
   Unit,
+  UnitStatus,
   UtilityReading,
   Expense,
   ExpenseCategory,
@@ -354,11 +355,42 @@ export function isContributionCountedFromReceipts(expense: Expense, ownAccountUn
   return expense.category === 'Maintenance' && !!expense.unitId && ownAccountUnitIds.has(expense.unitId);
 }
 
+/**
+ * Is this villa one of ISPO's, rather than a villa owned by somebody else?
+ *
+ * Read from the status, which the register already holds for every villa.
+ *
+ * Ro, 2026-11-12: *"owners are all responsible for their own tenants and rental
+ * payments. this was made clear since this program was build"*, and *"thats why
+ * we have the status owner occupied, which denotes its owned by someone else and
+ * therefore from that status the system only charges maintenance"*.
+ *
+ * So `owner-occupied` records **ownership by a third party, not occupancy** — a
+ * stranger's villa standing empty is still `owner-occupied`. Every other status
+ * is ISPO's, and ISPO passes the corporation that villa's levy every month,
+ * occupied or not, which is why `vacant` and `unavailable` count too.
+ *
+ * This replaced a hand-ticked `letOnOwnAccount` flag. The flag was correct
+ * wherever somebody remembered it and silently wrong wherever they did not: a
+ * let villa left unticked made the combined view count ISPO's levy as income on
+ * top of the rent, the same money twice. Status cannot be forgotten on a new
+ * letting, because nothing in the register works without it.
+ *
+ * The field's old note warned that claiming villas which are not ours would
+ * overstate the shortfall. That risk did not vanish, it moved: it is now a
+ * third-party villa recorded as `vacant` instead of `owner-occupied`.
+ * `checkIntegrity` names the villas this rule claims which have never earned
+ * anything, so such a mistake is visible rather than silent.
+ */
+export function isOwnAccount(unit: Pick<Unit, 'status'>): boolean {
+  return unit.status !== 'owner-occupied';
+}
+
 /** The villas VDS lets on the corporation's own account, optionally in one currency. */
 export function ownAccountUnitIds(units: Unit[], currency?: Currency): Set<string> {
   return new Set(
     units
-      .filter(u => u.letOnOwnAccount === true && (!currency || (u.maintCurrency || u.currency) === currency))
+      .filter(u => isOwnAccount(u) && (!currency || (u.maintCurrency || u.currency) === currency))
       .map(u => u.id)
   );
 }
@@ -747,7 +779,16 @@ export function maintenanceReceiptsToMove(
 export function consolidateEverything(
   charges: Charge[],
   payments: Payment[],
-  units: Unit[] = []
+  /**
+   * The register. **Required, deliberately.**
+   *
+   * It used to default to `[]`, and an empty register means "no villa is ISPO's",
+   * which means every levy receipt is counted as income arriving from outside.
+   * A caller who simply forgot this argument therefore got the double count back,
+   * silently and with no type error — two test files were doing exactly that. The
+   * argument is required now so that forgetting it cannot compile.
+   */
+  units: Unit[]
 ): { charges: Charge[]; payments: Payment[]; eliminatedCharges: number } {
   const maintenance = new Map<string, Charge>();
   for (const c of charges) {
@@ -768,23 +809,32 @@ export function consolidateEverything(
     return { ...c, amount: round2(c.amount - intra), maintenancePortion: round2(c.maintenancePortion - intra) };
   });
   /*
-   * A villa VDS lets on its own account, in ANY letting mode.
+   * Whose money is this? Ownership decides, in ANY letting mode.
    *
-   * Inferring the transfer from the rent charges alone missed the short stays
+   * A Maintenance receipt on one of ISPO's villas is ISPO handing the
+   * corporation that villa's levy: VDS's own money crossing between its two
+   * books, not income arriving from outside. A Maintenance receipt on somebody
+   * else's villa is a real proprietor paying, and it is income.
+   *
+   * This was inferred from the rent charges once, and that missed the short stays
    * entirely: a villa on Airbnb raises no rent charge, so it never entered
    * `fundedFromRent`, and the levy ISPO handed the corporation on it was counted
    * as income on top of the guest's booking — the same money twice. (Measured on
    * a two-month fixture: J$130,000 reported against J$90,000 actually received.)
    *
-   * `letOnOwnAccount` is the question being asked, and `operatingStatement` was
-   * already using it for exactly this figure under the name `internalTransfer`.
-   * Both screens now read the same flag, so they cannot disagree about whether a
-   * receipt is money arriving or money moving between the two books.
+   * `isOwnAccount` is the question being asked, and `operatingStatement` asks the
+   * same one for the same figure under the name `internalTransfer`. Both screens
+   * read one definition, so they cannot disagree about whether a receipt is money
+   * arriving or money moving between the two books.
+   *
+   * `fundedFromRent` deliberately does NOT appear here any more. It describes how
+   * a levy is settled, not who owns the villa, and using it would drop a receipt
+   * on an `owner-occupied` villa that happens to carry a rent split — real money
+   * from a real proprietor, hidden as an internal transfer. It still governs the
+   * charge elimination above, which is what it is actually about.
    */
   const ownAccount = ownAccountUnitIds(units);
-  const keptPayments = payments.filter(
-    p => !(p.category === 'Maintenance' && (ownAccount.has(p.unitId) || fundedFromRent.has(`${p.unitId}|${p.currency}`)))
-  );
+  const keptPayments = payments.filter(p => !(p.category === 'Maintenance' && ownAccount.has(p.unitId)));
   return { charges: adjusted, payments: keptPayments, eliminatedCharges: eliminated };
 }
 
@@ -3902,7 +3952,7 @@ export function ispoOperations(
    * The own-account villas, needed before the cost groups are built because a
    * contribution typed into the register has to be kept out of them.
    */
-  const ownAccountUnits = units.filter(u => u.letOnOwnAccount === true);
+  const ownAccountUnits = units.filter(isOwnAccount);
   const inThisCurrency = ownAccountUnits.filter(u => (u.maintCurrency || u.currency) === currency);
   const ownIds = ownAccountUnitIds(units, currency);
 
@@ -3950,10 +4000,16 @@ export function ispoOperations(
   );
 
   /*
-   * How much of the income above came from villas nobody has ticked as let on
-   * VDS's own account. Stated, never quietly dropped — see the field's note.
+   * How much of the income above came from villas the register says belong to
+   * somebody else. Stated, never quietly dropped.
+   *
+   * Under the ticked flag this was "nobody has ticked this villa", a bookkeeping
+   * omission. Derived from status it is a sharper thing: rent or booking money
+   * against an `owner-occupied` villa, which is a villa this corporation only
+   * bills maintenance on. Either the money is on the wrong villa or the villa is
+   * on the wrong status, and both are worth seeing.
    */
-  const flaggedForIncome = new Set(units.filter(u => u.letOnOwnAccount === true && u.currency === currency).map(u => u.id));
+  const flaggedForIncome = new Set(units.filter(u => isOwnAccount(u) && u.currency === currency).map(u => u.id));
   const unflaggedReceipts = payments.filter(
     p =>
       p.currency === currency &&
@@ -4069,6 +4125,17 @@ export interface ShortfallLine {
 export interface ShortfallVillaRow {
   unitId: string;
   villa: string;
+  /**
+   * The status this villa was counted under.
+   *
+   * Own-account is derived: every status except `owner-occupied` is ISPO's. That
+   * means a villa belonging to another proprietor, recorded as `vacant` by
+   * mistake, is billed to VDS here every month. `checkIntegrity` cannot prove
+   * that mistake from the data, so the report states its own basis instead —
+   * a `vacant` villa carrying a shortfall and no earnings is worth a second look
+   * at the register.
+   */
+  status: UnitStatus;
   months: number;
   occupiedDays: number;
   daysCounted: number;
@@ -4174,7 +4241,7 @@ export function outOfPocketShortfall(
    * no place on the Jamaican dollar report, and padding it in with zeroes would
    * read as a villa that cost nothing.
    */
-  const flagged = units.filter(u => u.letOnOwnAccount === true);
+  const flagged = units.filter(isOwnAccount);
   const mine = flagged.filter(u => u.currency === currency || (u.maintCurrency || u.currency) === currency);
 
   const currencyNotes = mine
@@ -4261,6 +4328,7 @@ export function outOfPocketShortfall(
     return {
       unitId: unit.id,
       villa: getUnitDisplayName(unit.number),
+      status: unit.status,
       months: rows.length,
       occupiedDays: rows.reduce((a, l) => a + l.occupiedDays, 0),
       daysCounted: rows.reduce((a, l) => a + l.daysCounted, 0),

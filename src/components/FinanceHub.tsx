@@ -40,12 +40,13 @@ import {
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
 import { currentMonth, formatDayLabel, formatMonthLabel, today } from '../lib/dates';
-import { ALREADY_SETTLED, ApiError, CURRENCY_CHANGE, errorMessage } from '../lib/api';
+import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, CURRENCY_CHANGE, errorMessage } from '../lib/api';
 import { openMailDraft } from '../lib/email';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import BookingDeposits from './BookingDeposits';
 import {
   AlreadySettledNote,
+  DuplicateEntryNote,
   Badge,
   EmptyState,
   ErrorNote,
@@ -1083,6 +1084,8 @@ function RecordPaymentModal({
    */
   const [alreadySettled, setAlreadySettled] = useState('');
   const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
+  const [duplicateNote, setDuplicateNote] = useState('');
+  const [confirmDuplicate, setConfirmDuplicate] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -1176,10 +1179,14 @@ function RecordPaymentModal({
         receivedNow: initial.receivedNow,
         confirmCurrencyMismatch: confirmMismatch,
         confirmNoOpenCharge: confirmNoCharge,
-        confirmAlreadySettled
+        confirmAlreadySettled,
+        confirmDuplicate
       });
     } catch (err) {
-      if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
+      if (err instanceof ApiError && err.code === POSSIBLE_DUPLICATE) {
+        setDuplicateNote(err.message);
+        setError('');
+      } else if (err instanceof ApiError && err.code === ALREADY_SETTLED) {
         // Not an error to dismiss and retry — a fact about the account that the
         // person now has to make a decision about.
         setAlreadySettled(err.message);
@@ -1219,6 +1226,7 @@ function RecordPaymentModal({
         {error && <ErrorNote>{error}</ErrorNote>}
 
         <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
+        <DuplicateEntryNote message={duplicateNote} confirmed={confirmDuplicate} onConfirm={setConfirmDuplicate} />
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Villa unit" htmlFor="pm-unit" required>

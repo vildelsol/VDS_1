@@ -39,6 +39,7 @@ async function loadChecker(projectRoot) {
     bundle: true,
     format: 'esm',
     platform: 'neutral',
+    external: ['crypto'],
     outfile,
     logLevel: 'silent'
   });

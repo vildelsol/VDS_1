@@ -92,7 +92,7 @@ export default async function run({ port, projectRoot }) {
     const to = `${month}-28`;
     const year = Number(month.substring(0, 4));
 
-    await makeLongTermUnit(c, 'unit-1', { ownerName: 'Villaggio Del Sol', letOnOwnAccount: true });
+    await makeLongTermUnit(c, 'unit-1', { ownerName: 'Villaggio Del Sol' });
     await makeLongTermUnit(c, 'unit-2', { ownerName: 'A Proprietor' });
     await c.post('/api/charges/post-month', { monthString: month });
 

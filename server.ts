@@ -17,6 +17,7 @@ import express from 'express';
 import pkg from './package.json';
 import path from 'path';
 import fs from 'fs';
+import { createHash } from 'crypto';
 import { execFileSync, spawn } from 'child_process';
 import {
   Booking,
@@ -67,6 +68,7 @@ import {
   setBackupRelocationHandler,
   getDb,
   nextReceiptNo,
+  IntegrityGuardError,
   noPermissions,
   read,
   runDailyBackup,
@@ -74,7 +76,7 @@ import {
   startBackupSchedule,
   transaction
 } from './server/db';
-import { checkIntegrity, describeIntegrity } from './server/integrity';
+import { checkIntegrity, describeIntegrity, ledgerFingerprint } from './server/integrity';
 import {
   ACTION_DENIED_MESSAGE,
   AuthedRequest,
@@ -93,6 +95,7 @@ import {
   resetAdministratorPassword,
   renewSession,
   resolveAuth,
+  permissionsFor,
   setSessionCookie,
   toSessionUser,
   verifyPassword,
@@ -168,26 +171,77 @@ app.get('/api/health', (_req, res) => {
  * reuses it across retries. The first success is remembered and replayed verbatim
  * for any repeat of the same key, so a retry is a safe no-op.
  *
- * Kept in memory with a TTL: retries happen within seconds, so this covers the
- * real case. It intentionally does not survive a server restart — a restart in the
- * middle of a client's retry window is rare, and persisting every key would bloat
- * the database. Only successful (2xx) responses are cached; a failed attempt can
- * always be retried.
+ * Two properties matter beyond the replay itself:
+ *
+ * - **A key is bound to what it was first used for.** Each entry stores a hash of
+ *   the method, path and body. The same key arriving with different content is
+ *   refused (422) rather than answered with the earlier receipt — otherwise a new
+ *   payment would be reported as saved when it was never recorded.
+ * - **Keys survive a restart.** They are kept in `idempotency.json` beside the
+ *   database (small, pruned by age, written atomically) and reloaded at start.
+ *   Installing a new version on the HP restarts the program, and a client retrying
+ *   across that restart used to be able to post twice. Only successful (2xx)
+ *   responses are kept; a failed attempt can always be retried.
  */
 interface IdempotentEntry {
   status: number;
   body: unknown;
   at: number;
+  /** Hash of method + path + body at first use. */
+  fingerprint?: string;
 }
 const idempotencyCache = new Map<string, IdempotentEntry>();
 const IDEMPOTENCY_TTL_MS = 6 * 60 * 60 * 1000;
+const IDEMPOTENCY_MAX_BODY = 64 * 1024;
 const idempotencyInFlight = new Set<string>();
+const IDEMPOTENCY_FILE = path.join(DATA_DIR, 'idempotency.json');
 
 function pruneIdempotency() {
   const cutoff = Date.now() - IDEMPOTENCY_TTL_MS;
   for (const [key, entry] of idempotencyCache) {
     if (entry.at < cutoff) idempotencyCache.delete(key);
   }
+}
+
+let idempotencyFlushTimer: NodeJS.Timeout | null = null;
+function flushIdempotency() {
+  idempotencyFlushTimer = null;
+  try {
+    pruneIdempotency();
+    const rows = [...idempotencyCache.entries()].filter(([, e]) => JSON.stringify(e.body).length <= IDEMPOTENCY_MAX_BODY);
+    const tmp = `${IDEMPOTENCY_FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(rows));
+    fs.renameSync(tmp, IDEMPOTENCY_FILE);
+  } catch {
+    // Never let bookkeeping stop a payment. Worst case the key is remembered in memory only.
+  }
+}
+function scheduleIdempotencyFlush() {
+  if (!idempotencyFlushTimer) {
+    idempotencyFlushTimer = setTimeout(flushIdempotency, 250);
+    idempotencyFlushTimer.unref?.();
+  }
+}
+/** Write synchronously, for shutdown and for tests that restart the server straight after a request. */
+export function flushIdempotencyNow() {
+  if (idempotencyFlushTimer) clearTimeout(idempotencyFlushTimer);
+  flushIdempotency();
+}
+try {
+  if (fs.existsSync(IDEMPOTENCY_FILE)) {
+    for (const [k, e] of JSON.parse(fs.readFileSync(IDEMPOTENCY_FILE, 'utf-8')) as [string, IdempotentEntry][]) idempotencyCache.set(k, e);
+    pruneIdempotency();
+  }
+} catch {
+  // An unreadable file just means no remembered keys.
+}
+
+process.on('exit', () => flushIdempotencyNow());
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, () => {
+    flushIdempotencyNow();
+    process.exit(0);
+  });
 }
 
 const MUTATING = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
@@ -205,8 +259,15 @@ function idempotency(req: AuthedRequest, res: express.Response, next: express.Ne
   // chance in a ledger.
   const key = `${req.auth?.user.id ?? 'anonymous'}:${header}`;
 
+  const fingerprint = createHash('sha256').update(`${req.method} ${req.originalUrl}\n${JSON.stringify(req.body ?? null)}`).digest('hex');
   const cached = idempotencyCache.get(key);
   if (cached) {
+    if (cached.fingerprint && cached.fingerprint !== fingerprint) {
+      return res.status(422).json({
+        error: 'This request reuses a key that was already used for different content, so it was not carried out. Nothing was saved. Reload the page and try again.',
+        code: 'idempotency-key-reused'
+      });
+    }
     res.setHeader('Idempotent-Replayed', 'true');
     return res.status(cached.status).json(cached.body);
   }
@@ -220,8 +281,9 @@ function idempotency(req: AuthedRequest, res: express.Response, next: express.Ne
   const originalJson = res.json.bind(res);
   res.json = (body: unknown) => {
     if (res.statusCode >= 200 && res.statusCode < 300) {
-      idempotencyCache.set(key, { status: res.statusCode, body, at: Date.now() });
+      idempotencyCache.set(key, { status: res.statusCode, body, at: Date.now(), fingerprint });
       if (idempotencyCache.size > 5000) pruneIdempotency();
+      scheduleIdempotencyFlush();
     }
     idempotencyInFlight.delete(key);
     return originalJson(body);
@@ -288,7 +350,7 @@ function handler(fn: (req: AuthedRequest, res: express.Response) => Promise<unkn
     try {
       await fn(req, res);
     } catch (err) {
-      if (err instanceof ApiError) {
+      if (err instanceof ApiError || err instanceof IntegrityGuardError) {
         return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
       }
       console.error('[vds] unhandled error:', err);
@@ -964,6 +1026,77 @@ app.get(
 );
 
 /* ------------------------------------------------------------------ *
+ * Closing a month
+ * ------------------------------------------------------------------ */
+
+/**
+ * Close the books through a month.
+ *
+ * Owner statements are rebuilt from the live ledger, so a late correction in an
+ * old month silently changed a statement already sent. Closing records a
+ * fingerprint of everything dated in or before the month; from then on the
+ * integrity guard refuses any write that would change it, and the check at start
+ * and on demand names it if the file was altered by hand. Correcting a closed
+ * month is still possible, but deliberately: reopen it first, with a reason,
+ * which is written to the audit trail.
+ */
+const CLOSE_WITH_FAULTS = 'close-with-faults';
+app.post(
+  '/api/periods/close',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'modify_settled');
+    const through = String(req.body?.through || '');
+    if (!isValidMonth(through)) bad('Say which month to close through, as YYYY-MM.');
+    const thisMonth = today().substring(0, 7);
+    if (through >= thisMonth) bad('Only a month that has finished can be closed.');
+    const who = actor(req);
+    const result = await transaction(db => {
+      const previous = db.settings.closedThrough;
+      if (previous && through < previous) bad(`Books are already closed through ${previous}. Reopen the period to change that.`);
+      const report = checkIntegrity(db);
+      if (report.serious > 0 && req.body?.confirmWithFaults !== true) {
+        throw new ApiError(
+          400,
+          `The records have ${report.serious} unresolved contradiction${report.serious === 1 ? '' : 's'}; closing now would seal them in. Resolve them, or confirm to close anyway.`,
+          CLOSE_WITH_FAULTS
+        );
+      }
+      db.settings.closedThrough = through;
+      db.settings.closeFingerprint = ledgerFingerprint(db, through);
+      addAudit(db, who.name, who.role, `Closed the books through ${through}`, 'Period', through, previous || '', through);
+      return { closedThrough: through };
+    });
+    res.json(result);
+  })
+);
+
+app.post(
+  '/api/periods/reopen',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'modify_settled');
+    const reason = requireString(req.body?.reason, 'A reason for reopening', 500);
+    const to = req.body?.through ? String(req.body.through) : '';
+    if (to && !isValidMonth(to)) bad('Say which month to leave closed through, as YYYY-MM, or leave it empty to reopen everything.');
+    const who = actor(req);
+    const result = await transaction(db => {
+      const previous = db.settings.closedThrough;
+      if (!previous) bad('No period is closed.');
+      if (to && to >= previous) bad(`Books are closed through ${previous}; reopening has to go earlier than that.`);
+      if (to) {
+        db.settings.closedThrough = to;
+        db.settings.closeFingerprint = ledgerFingerprint(db, to);
+      } else {
+        delete db.settings.closedThrough;
+        delete db.settings.closeFingerprint;
+      }
+      addAudit(db, who.name, who.role, `Reopened the books (was closed through ${previous}): ${reason}`, 'Period', previous, previous, to || 'open');
+      return { closedThrough: to || null };
+    });
+    res.json(result);
+  })
+);
+
+/* ------------------------------------------------------------------ *
  * Backup and recovery
  * ------------------------------------------------------------------ */
 
@@ -1069,7 +1202,7 @@ app.post(
   '/api/settings',
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'manage_settings');
-    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir, strataPlanNumber, trn, booksBeginOn, hidePropertyHealth } =
+    const { rolePermissions, vendors, fxRateJmdPerUsd, backupDir, strataPlanNumber, trn, booksBeginOn, hidePropertyHealth, requireCosign } =
       req.body || {};
 
     const settings = await transaction(db => {
@@ -1081,6 +1214,12 @@ app.post(
       // Stored as "hide" so an older database, which has no such field, keeps
       // showing the card rather than silently losing it.
       if (hidePropertyHealth !== undefined) db.settings.hidePropertyHealth = hidePropertyHealth === true;
+
+      // Four eyes on corrections to money already taken. Off unless the owner turns it on.
+      if (requireCosign !== undefined) {
+        if (!can(req.auth!, 'manage_users')) throw new ApiError(403, 'Only an administrator can change whether a second person must approve corrections.');
+        db.settings.requireCosign = requireCosign === true;
+      }
 
       /*
        * The migration cutover. Validated as a real date rather than stored as
@@ -1413,6 +1552,80 @@ function applyAdvanceRentOnMoveOut(db: Database, tenancy: Tenancy, endedOn: stri
   }
 }
 
+/**
+ * Rent still unpaid on a villa, charge by charge, as the account balance ages it.
+ *
+ * A charge stays `open` after it is paid: what makes it owing is that the villa's
+ * payments, applied oldest first, do not reach it (see `accountBalance`). Anything
+ * that writes rent off has to use the same reading, or it voids rent that was
+ * paid. Eviction did exactly that — it voided every open rent charge, so a tenant
+ * who had paid a month and owed a month was written off at twice what they owed,
+ * and the surplus sat on the villa as a credit for whoever came next.
+ *
+ * `owed` is the unpaid part of the charge; `partial` marks the one charge, if
+ * any, that payments only part-covered.
+ */
+interface UnpaidRent {
+  charge: Charge;
+  owed: number;
+  partial: boolean;
+}
+function unpaidRent(db: Database, unitId: string, currency: string, eligible: (c: Charge) => boolean = () => true): UnpaidRent[] {
+  const charges = db.charges
+    .filter(c => c.unitId === unitId && c.category === 'Rent' && c.status === 'open' && c.currency === currency)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  let credit = db.payments
+    .filter(p => p.unitId === unitId && p.category === 'Rent' && p.status === 'completed' && p.currency === currency)
+    .reduce((a, p) => round2(a + round2(p.amount - (p.refundedAmount || 0))), 0);
+  const out: UnpaidRent[] = [];
+  for (const charge of charges) {
+    if (credit >= charge.amount) {
+      credit = round2(credit - charge.amount);
+      continue;
+    }
+    const owed = round2(charge.amount - credit);
+    const partial = credit > 0;
+    credit = 0;
+    if (eligible(charge)) out.push({ charge, owed, partial });
+  }
+  return out;
+}
+
+/**
+ * Write unpaid rent off as bad debt: void it, keep it as history, never touch what was paid.
+ *
+ * A charge the payments only part-covered cannot be voided whole without turning
+ * the part that was paid into a credit, so it is replaced by an open charge for
+ * exactly the paid part and the remainder is the write-off. Returns the amount
+ * written off.
+ */
+function writeOffUnpaidRent(db: Database, items: UnpaidRent[], staffName: string, reason: (c: Charge) => string): number {
+  let total = 0;
+  for (const { charge, owed, partial } of items) {
+    const paidPart = round2(charge.amount - owed);
+    charge.status = 'void';
+    charge.voidedBy = staffName;
+    charge.voidedAt = new Date().toISOString();
+    charge.voidReason = reason(charge) + (partial ? ` The part already paid (${charge.currency} ${paidPart}) stays on the account.` : '');
+    total = round2(total + owed);
+    if (partial) {
+      const keptRent = charge.rentPortion !== undefined && charge.maintenancePortion !== undefined ? round2((charge.rentPortion * paidPart) / charge.amount) : undefined;
+      db.charges.push({
+        ...charge,
+        id: uniqueRecordId(db.charges, `${charge.id}-paid`),
+        amount: paidPart,
+        status: 'open',
+        voidedBy: undefined,
+        voidedAt: undefined,
+        voidReason: undefined,
+        ...(keptRent !== undefined ? { rentPortion: keptRent, maintenancePortion: round2(paidPart - keptRent) } : {}),
+        description: `${charge.description ? charge.description + ' — ' : ''}paid part of ${charge.periodMonth} rent; the rest was written off`
+      });
+    }
+  }
+  return total;
+}
+
 function closeTenancy(
   db: Database,
   tenancy: Tenancy,
@@ -1461,6 +1674,9 @@ function closeTenancy(
  * confirmation.
  */
 const TENANT_INTENT = 'tenant-change-intent-required';
+
+/** A new tenant is being recorded while a former tenant's rent is still unpaid on the villa. */
+const FORMER_TENANT_OWES = 'former-tenant-owes';
 
 /**
  * `changeover` and `moved-out` are both "this genuinely happened" and differ
@@ -1648,7 +1864,9 @@ function syncTenancy(
   /** The real move-in date, when whoever is recording the tenant knows it. */
   movedInOn?: string,
   /** Whether a replaced name is a corrected spelling or a genuinely new tenant. */
-  intent?: TenantChangeIntent
+  intent?: TenantChangeIntent,
+  /** What to do with rent a former tenant left unpaid. Only `write-off` is accepted. */
+  formerArrears?: string
 ): string {
   const current = activeTenancy(db, unit.id);
   const wantsTenant = unit.status === 'long-term' && !!unit.tenantName.trim();
@@ -1831,6 +2049,75 @@ function syncTenancy(
       current.id,
       current,
       `Ended ${stamp}, replaced by ${unit.tenantName.trim()}. The tenancy record and all their receipts are retained.`
+    );
+  }
+
+  /**
+   * A new tenant never inherits the last one's debt.
+   *
+   * Rent is raised against the villa and the account balance adds up every open
+   * rent charge on it, whoever it was raised for. So rent a former tenant left
+   * unpaid stayed open after they went, was counted as the new tenant's arrears,
+   * and — because payments settle the oldest charge first — was paid off with the
+   * new tenant's own money while their month showed as unpaid. Eviction already
+   * wrote its rent off; a tenant who simply left owing did not.
+   *
+   * There is no silent answer. Collect it first, or write it off as bad debt
+   * (kept as history on the former tenancy, exactly as an eviction does), which
+   * is a veto-level decision. The villa's levy is not affected: it was never the
+   * tenant's debt.
+   */
+  const incoming = unit.tenantName.trim();
+  // Only rent billed to somebody who really was a tenant here counts. Rent raised
+  // while no tenant was recorded is billed in the owner's name, and it is the new
+  // tenant's rent, not a former tenant's debt.
+  const formerTenants = db.tenancies.filter(t => t.unitId === unit.id && t.status === 'ended').map(t => t.tenantName);
+  const notIncoming = (c: Charge) => !sameName(c.payerName || '', incoming) && formerTenants.some(n => sameName(n, c.payerName || ''));
+  const currencies = [...new Set(db.charges.filter(c => c.unitId === unit.id && c.category === 'Rent' && c.status === 'open').map(c => c.currency))];
+  const inherited = currencies.flatMap(cur => unpaidRent(db, unit.id, cur, notIncoming));
+  if (inherited.length > 0) {
+    const owed = new Map<string, number>();
+    for (const i of inherited) owed.set(i.charge.currency, round2((owed.get(i.charge.currency) || 0) + i.owed));
+    const owedText = [...owed.entries()].map(([cur, amt]) => `${cur} ${amt}`).join(' and ');
+    const who = [...new Set(inherited.map(i => i.charge.payerName || 'a former tenant'))].join(', ');
+    const months = [...new Set(inherited.map(i => i.charge.periodMonth))].sort().join(', ');
+    if (formerArrears !== 'write-off') {
+      throw new ApiError(
+        400,
+        `${who} still owes ${owedText} in rent on villa ${unit.number} (${months}). That debt would be counted against ${incoming}, ` +
+          `and ${incoming}'s payments would be used to settle it. Collect it first, or write it off as bad debt before recording the new tenant.`,
+        FORMER_TENANT_OWES
+      );
+    }
+    if (role !== 'ADMINISTRATOR' && !permissionsFor(db, role).reversePayments) {
+      throw new ApiError(403, "Writing off a former tenant's rent is a decision for a manager or an administrator.");
+    }
+    writeOffUnpaidRent(
+      db,
+      inherited,
+      staffName,
+      c => `Written off as bad debt: ${c.payerName || 'the former tenant'} left owing, and ${incoming} took over the villa.`
+    );
+    // Keep the figure on the tenancy it belongs to, as an eviction does.
+    for (const [cur, amt] of owed) {
+      const formerTenancy = db.tenancies
+        .filter(t => t.unitId === unit.id && t.status === 'ended' && inherited.some(i => sameName(i.charge.payerName || '', t.tenantName)))
+        .sort((x, y) => (y.endedOn || '').localeCompare(x.endedOn || ''))[0];
+      if (formerTenancy) {
+        formerTenancy.writeOffAmount = round2((formerTenancy.writeOffAmount || 0) + amt);
+        formerTenancy.writeOffCurrency = cur as Currency;
+      }
+    }
+    addAudit(
+      db,
+      staffName,
+      role,
+      `Wrote off ${owedText} of rent left by ${who} at ${unit.number} (${months}) when ${incoming} took over`,
+      'Tenancy',
+      unit.id,
+      '',
+      owedText,
+      staffName
     );
   }
 
@@ -2107,19 +2394,11 @@ app.post(
       const before = { ...record };
       const who = actor(req);
 
-      // Void the tenant's open rent charges. They are matched on the unit, in the
-      // tenancy's own currency, so a USD and a JMD account are never mixed.
-      const openRent = db.charges.filter(
-        c => c.unitId === record.unitId && c.category === 'Rent' && c.status === 'open' && c.currency === record.currency
-      );
-      let writtenOff = 0;
-      for (const charge of openRent) {
-        writtenOff = round2(writtenOff + charge.amount);
-        charge.status = 'void';
-        charge.voidedBy = who.name;
-        charge.voidedAt = new Date().toISOString();
-        charge.voidReason = `Written off, tenant evicted (${reason}).`;
-      }
+      // Write off what the tenant has not paid, in the tenancy's own currency so a
+      // USD and a JMD account are never mixed. Months they paid stay as they are.
+      const unpaid = unpaidRent(db, record.unitId, record.currency);
+      const writtenOff = writeOffUnpaidRent(db, unpaid, who.name, () => `Written off, tenant evicted (${reason}).`);
+      const openRent = unpaid;
 
       record.status = 'ended';
       record.evicted = true;
@@ -2306,16 +2585,15 @@ app.put(
         entitlement: readEntitlement(),
         strataLotNumber: optionalString(body.strataLotNumber ?? original.strataLotNumber, 40),
         /*
-         * Whether VDS lets this villa on its own account — the flag the
-         * out-of-pocket shortfall report is scoped by.
+         * Retired 2026-11-13, and deliberately NOT writable any more.
          *
-         * Only a genuine boolean moves it, and an absent field leaves it
-         * exactly as it was, so a client that does not know about this field
-         * cannot clear it by omission. The same rule `hidePropertyHealth`
-         * follows, and for the same reason: live databases exist that were
-         * written before the field.
+         * Own-account is read from `status` now (`isOwnAccount`): every status
+         * except `owner-occupied` is ISPO's. Whatever a live database already
+         * holds here is carried through untouched so an upgrade moves nobody's
+         * books, but no request can set or clear it, because a value nothing
+         * reads is worse than absent — it reads like a setting that still works.
          */
-        letOnOwnAccount: body.letOnOwnAccount === undefined ? original.letOnOwnAccount : body.letOnOwnAccount === true,
+        letOnOwnAccount: original.letOnOwnAccount,
         currency,
         maintCurrency,
         meterNumber,
@@ -2382,7 +2660,7 @@ app.put(
       const acquiredOn = body.ownerAcquiredOn ? requireDay(body.ownerAcquiredOn, 'Date the villa changed hands') : undefined;
       if (acquiredOn && acquiredOn > today()) bad('The date the villa changed hands cannot be in the future.');
 
-      const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role, movedInOn, intent);
+      const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role, movedInOn, intent, typeof body.formerArrears === 'string' ? body.formerArrears : undefined);
       const ownershipNote = syncOwnership(db, updatedUnit, who.name, who.role, acquiredOn, ownerIntent);
 
       const parts: string[] = [];
@@ -2394,12 +2672,6 @@ app.put(
       if (original.monthlyMaintenance !== monthlyMaintenance) parts.push('maintenance fee changed');
       if (original.entitlement !== updatedUnit.entitlement) parts.push('unit entitlement changed');
       if (original.strataLotNumber !== updatedUnit.strataLotNumber) parts.push('strata lot number changed');
-      if ((original.letOnOwnAccount === true) !== (updatedUnit.letOnOwnAccount === true))
-        parts.push(
-          updatedUnit.letOnOwnAccount === true
-            ? 'now let on the corporation\u2019s own account'
-            : 'no longer let on the corporation\u2019s own account'
-        );
 
       addAudit(
         db,
@@ -3178,6 +3450,54 @@ app.post(
 const ALREADY_SETTLED = 'account-already-settled';
 
 /**
+ * The same money entered twice within minutes, in any category.
+ *
+ * `ALREADY_SETTLED` can only recognise a double entry against a debt, so it sees
+ * Rent and Maintenance and nothing else. A second receipt for the same utility
+ * bill, booking payment or deposit, entered by a colleague a minute later under a
+ * different key, went straight through. This looks at the entry itself: same
+ * villa, category, amount, currency and date, made within the window, is far
+ * more likely a double click or a second person than two real payments. It is a
+ * refusal with an override — the cashier can confirm it is separate money.
+ */
+const POSSIBLE_DUPLICATE = 'possible-duplicate-payment';
+const DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
+function assertNotJustEntered(
+  db: Database,
+  unitId: string,
+  category: PaymentCategory,
+  amount: number,
+  currency: string,
+  date: string,
+  confirmed: boolean,
+  ignorePaymentId?: string
+) {
+  if (confirmed) return;
+  const cutoff = Date.now() - DUPLICATE_WINDOW_MS;
+  const twin = db.payments.find(
+    p =>
+      p.id !== ignorePaymentId &&
+      p.status !== 'reversed' &&
+      p.unitId === unitId &&
+      p.category === category &&
+      p.currency === currency &&
+      p.date === date &&
+      round2(p.amount) === round2(amount) &&
+      !!p.createdAt &&
+      Date.parse(p.createdAt) >= cutoff
+  );
+  if (twin) {
+    throw new ApiError(
+      400,
+      `The same ${category.toLowerCase()} payment of ${currency} ${round2(amount)} for this villa on ${date} was entered a moment ago` +
+        `${twin.receiptNo ? ` (receipt ${twin.receiptNo})` : ''}. If somebody else just entered it, or the button was pressed twice, do not record it again. ` +
+        `If it is genuinely a second payment of the same amount, confirm to record it.`,
+      POSSIBLE_DUPLICATE
+    );
+  }
+}
+
+/**
  * Changing the currency of a settled receipt is refused unless it is deliberate.
  *
  * It has to remain possible: an officer who received US$500 and typed it as
@@ -3286,6 +3606,55 @@ function assertAccountStillOwes(
   );
 }
 
+/**
+ * A second person must approve a correction to money already taken.
+ *
+ * Off by default, because a small office may have one person at the desk. When an
+ * administrator turns it on, voiding a receipt, correcting a settled one or
+ * refunding one has to carry `cosign: { username, password }` for a *different*,
+ * active user who is allowed to modify settled records. The approver types their
+ * own password — nobody else's session is borrowed — and both names go in the
+ * audit trail. Failed attempts are counted against the person asking, so this
+ * cannot be used to guess a colleague's password.
+ */
+const COSIGN_REQUIRED = 'cosign-required';
+const COSIGN_MAX_FAILURES = 5;
+const COSIGN_WINDOW_MS = 15 * 60 * 1000;
+const cosignFailures = new Map<string, number[]>();
+function assertCosigned(db: Database, req: AuthedRequest, body: any, what: string): void {
+  if (!db.settings.requireCosign) return;
+  const asker = req.auth!.user;
+  const recent = (cosignFailures.get(asker.id) || []).filter(t => t > Date.now() - COSIGN_WINDOW_MS);
+  if (recent.length >= COSIGN_MAX_FAILURES) {
+    throw new ApiError(429, 'Too many failed approvals. Wait a few minutes before trying again.', COSIGN_REQUIRED);
+  }
+  const refuse = (message: string) => {
+    recent.push(Date.now());
+    cosignFailures.set(asker.id, recent);
+    throw new ApiError(403, message, COSIGN_REQUIRED);
+  };
+  const c = body?.cosign;
+  if (!c || typeof c.username !== 'string' || typeof c.password !== 'string' || !c.username || !c.password) {
+    throw new ApiError(
+      403,
+      `A second person has to approve this before ${what}. Ask them to enter their username and password to confirm.`,
+      COSIGN_REQUIRED
+    );
+  }
+  const approver = db.users.find(u => u.username.toLowerCase() === c.username.trim().toLowerCase());
+  // The same message for every failure, so it cannot be used to find out who exists.
+  const generic = 'That approval was not accepted. It has to be a different, active user who may modify settled records.';
+  if (!approver || !approver.active || !verifyPassword(c.password, approver.passwordHash, approver.passwordSalt)) {
+    if (!approver) burnPasswordCheck(c.password);
+    return refuse(generic);
+  }
+  if (approver.id === asker.id) return refuse(generic);
+  const perms = permissionsFor(db, approver.role);
+  if (approver.role !== 'ADMINISTRATOR' && !perms.modifySettledRecords) return refuse(generic);
+  const who = actor(req);
+  addAudit(db, who.name, who.role, `Approved by ${approver.name}: ${what}`, 'Approval', approver.id, '', '', approver.name);
+}
+
 app.post(
   '/api/payments',
   handler(async (req: AuthedRequest, res) => {
@@ -3340,6 +3709,8 @@ app.post(
         assertAccountStillOwes(db, unit, category, currency, amount, body.confirmAlreadySettled === true);
       }
 
+      assertNotJustEntered(db, unit.id, category, amount, currency, date, body.confirmDuplicate === true);
+
       const who = actor(req);
 
       /**
@@ -3370,6 +3741,7 @@ app.post(
         reference: optionalString(body.reference, 120),
         notes: optionalString(body.notes, 2000),
         staffMember: who.name,
+        createdAt: new Date().toISOString(),
         status: receivedNow ? 'completed' : 'pending',
         printCount: 0,
         ...(receivedNow ? { receivedBy: who.name, receivedAt: new Date().toISOString() } : {})
@@ -3415,6 +3787,8 @@ app.put(
       if (original.status === 'reversed') {
         throw new ApiError(400, 'A voided receipt cannot be edited. Record a new payment instead.');
       }
+      // A pending entry holds no money yet; only a received one needs a second signature.
+      if (original.status === 'completed') assertCosigned(db, req, body, `receipt ${original.receiptNo} is changed`);
       if (original.bookingId) {
         throw new ApiError(
           400,
@@ -3616,6 +3990,7 @@ app.post(
       const target = db.payments.find(p => p.id === id);
       if (!target) throw new ApiError(404, 'Payment not found.');
       if (target.status === 'reversed') throw new ApiError(400, 'That entry has already been voided.');
+      if (target.status === 'completed') assertCosigned(db, req, req.body, `receipt ${target.receiptNo} is voided`);
       // Voiding says the money never arrived. Having already paid some of it back
       // says it did. Both cannot be true, and the pair would net the refund off a
       // receipt that no longer counts — taking the money off the ledger twice.
@@ -3747,6 +4122,7 @@ app.post(
           `${target.currency} ${target.refundedAmount} was already refunded against receipt ${target.receiptNo} on ${target.refundedOn}. Void and re-enter if that was wrong.`
         );
       }
+      assertCosigned(db, req, body, `receipt ${target.receiptNo} is refunded`);
 
       const amount = requirePositiveAmount(body.amount ?? target.amount, 'Refund amount');
       if (amount > target.amount) {
@@ -3877,6 +4253,23 @@ app.post(
       }
       if (reconciledOn > today()) {
         throw new ApiError(400, 'A statement date cannot be in the future.');
+      }
+
+      // One line on the statement is one receipt. The same bank reference matched to a
+      // second receipt means one of them is not on the statement at all.
+      const reference = optionalString(body.reference, 120);
+      if (reference && body.confirmSameLine !== true) {
+        const twin = db.payments.find(
+          p => p.id !== target.id && p.status === 'completed' && !!p.reconciledOn && (p.reconciledReference || '').toLowerCase() === reference.toLowerCase()
+        );
+        if (twin) {
+          throw new ApiError(
+            400,
+            `The bank reference "${reference}" is already matched to receipt ${twin.receiptNo}. One line on the statement settles one receipt. ` +
+              `If this is genuinely a second line with the same reference, confirm to match it.`,
+            'bank-line-already-matched'
+          );
+        }
       }
 
       target.reconciledOn = reconciledOn;

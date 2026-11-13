@@ -253,6 +253,29 @@ export function AlreadySettledNote({
 }
 
 
+/** The same payment entered moments ago. Shown after the server refuses it, with the way through. */
+export function DuplicateEntryNote({
+  message,
+  confirmed,
+  onConfirm
+}: {
+  message: string;
+  confirmed: boolean;
+  onConfirm: (value: boolean) => void;
+}) {
+  if (!message) return null;
+  return (
+    <div role="alert" className="space-y-2 rounded-xl border border-red-200 bg-red-50 p-3 text-[11px] text-red-900">
+      <p className="font-semibold">This has not been recorded.</p>
+      <p className="leading-relaxed">{message}</p>
+      <label className="flex items-start gap-2">
+        <input type="checkbox" checked={confirmed} onChange={e => onConfirm(e.target.checked)} className="mt-0.5" />
+        <span>This is a second, separate payment of the same amount. Record it.</span>
+      </label>
+    </div>
+  );
+}
+
 /**
  * Which of the two books pays for a cost.
  *

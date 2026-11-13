@@ -462,8 +462,7 @@ export default async function run({ port, projectRoot }) {
         currency,
         maintCurrency: currency,
         rentDueDay: 1,
-        maintDueDay: 1,
-        letOnOwnAccount: i <= 4
+        maintDueDay: 1
       });
       if (ok(res)) (short ? shortLet : longTerm).push(id);
     }
@@ -695,22 +694,37 @@ export default async function run({ port, projectRoot }) {
           }
         }
       } else {
-        /* --- change which villas VDS lets on its own account --- */
+        /*
+         * Move a villa off the corporation's own account and back.
+         *
+         * There is no tick box for this any more: own-account is read from the
+         * status, so the only way to change it is to change who owns the villa.
+         * `unavailable` and the villa's letting status are both ISPO's, so the
+         * move that matters is to `owner-occupied` and back again — the sale,
+         * and the sale being corrected.
+         *
+         * Rent is zeroed on the way out, because the corporation bills a
+         * proprietor's villa maintenance only. Charges already raised stay
+         * exactly where they are: a sale is off books, and only who is billed
+         * changes.
+         */
         const unitId = pick(rand, longTerm.concat(shortLet));
         const db = (await c.get('/api/db')).body;
         const unit = db.units.find(u => u.id === unitId);
         if (!unit) {
           skipped++;
         } else {
+          const away = unit.status !== 'owner-occupied';
           const res = await c.put(`/api/units/${unitId}`, {
             number: unit.number,
             ownerName: unit.ownerName,
-            status: unit.status,
-            monthlyRent: unit.monthlyRent,
+            ownerChangeIntent: 'correction',
+            tenantChangeIntent: 'changeover',
+            status: away ? 'owner-occupied' : shortLet.includes(unitId) ? 'short-term' : 'long-term',
+            monthlyRent: away ? 0 : unit.monthlyRent,
             monthlyMaintenance: unit.monthlyMaintenance,
             currency: unit.currency,
-            maintCurrency: unit.maintCurrency,
-            letOnOwnAccount: !unit.letOnOwnAccount
+            maintCurrency: unit.maintCurrency
           });
           if (ok(res)) {
             performed++;

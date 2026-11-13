@@ -158,8 +158,8 @@ let db = (await c.get('/api/db')).body;
       cashOf(db.payments) === cashOf(dbBefore.payments), `${cashOf(db.payments)} vs ${cashOf(dbBefore.payments)}`);
 
     const UNIT = db.units.find(u => u.id === 'unit-1');
-    const snapBefore = { charges: dbBefore.charges, payments: settled(dbBefore.payments) };
-    const after = { charges: db.charges, payments: [...db.payments, ...F.settledFromRent(db.charges, db.payments)] };
+    const snapBefore = { charges: dbBefore.charges, payments: settled(dbBefore.payments), units: dbBefore.units };
+    const after = { charges: db.charges, payments: [...db.payments, ...F.settledFromRent(db.charges, db.payments)], units: db.units };
 
     /*
      * 1. The combined view, per villa. It deliberately drops a let villa's
@@ -173,7 +173,7 @@ let db = (await c.get('/api/db')).body;
      * 80,000 of their money. Moving the receipt is what makes it read 100,000.
      */
     const combinedFor = (snap, unitId) => {
-      const comb = F.consolidateEverything(snap.charges, snap.payments);
+      const comb = F.consolidateEverything(snap.charges, snap.payments, snap.units);
       return comb.payments.filter(p => p.unitId === unitId && p.status === 'completed' && p.currency === 'JMD')
         .reduce((a, p) => a + cents(p.amount) - cents(p.refundedAmount || 0), 0);
     };
