@@ -28,7 +28,10 @@ export default async function run({ port, projectRoot }) {
   const T = reporter(title);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-wiring-'));
   const entry = path.join(dir, 'entry.ts');
-  fs.writeFileSync(entry, `export * from '${projectRoot}/src/lib/finance'; export * from '${projectRoot}/src/lib/projection';`);
+  // JSON.stringify, not a bare interpolation: on Windows the project path has backslashes,
+  // which a script reads as escapes ("D:\a\VDS_1" became "D:aVDS_1" and the build failed on CI).
+  const lib = name => JSON.stringify(path.join(projectRoot, 'src', 'lib', name).split(path.sep).join('/'));
+  fs.writeFileSync(entry, `export * from ${lib('finance')}; export * from ${lib('projection')};`);
   await build({ entryPoints: [entry], bundle: true, format: 'esm', platform: 'neutral', outfile: path.join(dir, 'e.mjs'), logLevel: 'silent' });
   const F = await import(path.join(dir, 'e.mjs'));
   const srv = await startServer({ port, adminPassword: 'Wiring-1234567!', projectRoot });
