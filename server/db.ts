@@ -175,6 +175,12 @@ function driveRoots(): { root: string; label: string; removable: boolean }[] {
     }
   }
 
+  // Test hook: look only at the folders named above, never at the machine's real
+  // drives. A Windows CI runner has a D: drive and a developer's Mac may have a
+  // stick plugged in; either would count as an extra drive and break any test of
+  // "exactly one drive".
+  if (process.env.VDS_DRIVE_ROOTS_ONLY === '1') return found;
+
   if (process.platform === 'win32') {
     // Checking the letters is dependency-free and fast. C: is the machine's own
     // disk and is listed last, since a backup that never leaves the machine is

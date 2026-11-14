@@ -38,6 +38,9 @@ export async function startServer({ port, adminPassword, projectRoot, dataDir: r
       VDS_TRUST_PROXY: '',
       VDS_FORCE_SECURE_COOKIE: '',
       VDS_DRIVE_ROOTS: '',
+      // Never let a test server look at the real machine's drives: a CI runner's D:
+      // or a plugged-in stick would be adopted as the backup folder by the drive watcher.
+      VDS_DRIVE_ROOTS_ONLY: '1',
       ...(extraEnv || {})
     },
     stdio: ['ignore', 'pipe', 'pipe']

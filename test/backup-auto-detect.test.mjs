@@ -31,7 +31,7 @@ export default async function run({ port, projectRoot }) {
   const A = path.join(base, 'StickA');
   const B = path.join(base, 'StickB');
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-auto-'));
-  const env = { VDS_DRIVE_ROOTS: [A, B].join(path.delimiter), VDS_DRIVE_WATCH_MS: '600' };
+  const env = { VDS_DRIVE_ROOTS: [A, B].join(path.delimiter), VDS_DRIVE_ROOTS_ONLY: '1', VDS_DRIVE_WATCH_MS: '600' };
   const backupsIn = dir => {
     try {
       return fs.readdirSync(path.join(dir, 'Villaggio-Backups')).filter(f => !f.startsWith('.'));
