@@ -227,7 +227,7 @@ export default async function run({ port, projectRoot }) {
         const p = pick(rand, settled);
         note(await c.post(`/api/payments/${p.id}/refund`, { amount: Math.round(p.amount * 0.4 * 100) / 100, reason: 'overpaid', method: 'Cash', refundedOn: dayIn(month, 20) }));
         note(await c.post(`/api/payments/${p.id}/refund`, { amount: p.amount * 5, reason: 'more than was taken', method: 'Cash', refundedOn: dayIn(month, 21) }));
-        note(await c.post(`/api/payments/${p.id}/reverse`, { reason: 'entered against the wrong villa' }));
+        note(await c.post(`/api/payments/${p.id}/reverse`, { reversalReason: 'entered against the wrong villa' }));
       },
 
       // Void a charge — including one that has already been paid.

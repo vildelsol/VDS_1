@@ -64,6 +64,7 @@ import {
   backupStatus,
   checkBackupTarget,
   detectDrives,
+  findDriveToAdopt,
   migrate,
   readBackupFile,
   saveSafetyCopy,
@@ -1113,7 +1114,7 @@ app.post(
 app.get(
   '/api/backup/status',
   handler((req: AuthedRequest, res) => {
-    requirePermission(req, 'manage_settings');
+    requirePermission(req, 'take_backups');
     res.json(backupStatus());
   })
 );
@@ -1154,7 +1155,7 @@ app.post(
 app.post(
   '/api/backup/run',
   handler((req: AuthedRequest, res) => {
-    requirePermission(req, 'manage_settings');
+    requirePermission(req, 'take_backups');
     const written = runDailyBackup(true);
     const who = actor(req);
     auditInBackground('a manual backup', db => {
@@ -1173,7 +1174,7 @@ app.post(
 app.get(
   '/api/backup/download',
   handler((req: AuthedRequest, res) => {
-    requirePermission(req, 'manage_settings');
+    requirePermission(req, 'take_backups');
     const db = getDb();
     const snapshot = {
       exportedAt: new Date().toISOString(),
@@ -1344,8 +1345,16 @@ app.post(
         for (const role of ['MANAGER', 'FINANCE_OFFICER', 'JUNIOR_OFFICER'] as const) {
           if (!rolePermissions[role]) continue;
           const clean: RolePermissions = { ...noPermissions() };
+          const existing = db.settings.rolePermissions?.[role];
           for (const key of Object.keys(clean) as (keyof RolePermissions)[]) {
-            (clean[key] as boolean) = !!rolePermissions[role][key];
+            // A key the client did not send keeps its stored value rather than
+            // becoming false: a browser still running a bundle from before a new
+            // permission existed would otherwise withdraw it from every role on
+            // its next save (a stale tab silently removed Managers' backup access).
+            (clean[key] as boolean) =
+              rolePermissions[role][key] === undefined && existing && existing[key] !== undefined
+                ? !!existing[key]
+                : !!rolePermissions[role][key];
           }
           clean.hasVetoPower = !!rolePermissions[role].hasVetoPower;
           next[role] = clean;
@@ -2643,7 +2652,10 @@ app.put(
       }
 
       const rentApplies = status === 'long-term' || status === 'short-term';
-      const monthlyRent = rentApplies ? optionalAmount(body.monthlyRent, 'The monthly rent', original.monthlyRent) : 0;
+      // Checked even where rent does not apply: a vacant villa used to take a
+      // negative figure silently, and it would surface when the villa was let.
+      const submittedRent = optionalAmount(body.monthlyRent, 'The monthly rent', original.monthlyRent);
+      const monthlyRent = rentApplies ? submittedRent : 0;
       const monthlyMaintenance =
         status === 'unavailable' ? 0 : optionalAmount(body.monthlyMaintenance, 'The monthly maintenance', original.monthlyMaintenance);
 
@@ -2664,9 +2676,19 @@ app.put(
         return round2(value);
       };
 
-      const clampDay = (v: unknown, fallback: number) => {
-        const n = Math.round(Number(v ?? fallback));
-        return Number.isFinite(n) ? Math.min(Math.max(n, 1), 31) : fallback;
+      /*
+       * A due day is a whole number from 1 to 31 or it is refused.
+       *
+       * It used to be clamped, so 45 was stored as 31 and 0 as 1 with a success
+       * response: a figure quietly reshaped, which the rest of this endpoint
+       * refuses to do (found by test/redteam-pm-10000, 2026-11-13). Days 29-31
+       * stay valid; the billing code already falls back to the month's last day.
+       */
+      const clampDay = (v: unknown, fallback: number, field: string) => {
+        if (v === undefined || v === null || v === '') return fallback;
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1 || n > 31) bad(`${field} must be a whole day of the month, from 1 to 31.`);
+        return n;
       };
 
       // Meter id is administrator-only, mirroring the disabled field in the UI —
@@ -2703,8 +2725,8 @@ app.put(
         maintCurrency,
         meterNumber,
         notes: optionalString(body.notes ?? original.notes, 4000),
-        rentDueDay: clampDay(body.rentDueDay, original.rentDueDay || 1),
-        maintDueDay: clampDay(body.maintDueDay, original.maintDueDay || 1),
+        rentDueDay: clampDay(body.rentDueDay, original.rentDueDay || 1, 'The rent due day'),
+        maintDueDay: clampDay(body.maintDueDay, original.maintDueDay || 1, 'The maintenance due day'),
         ownerEmergencyName: optionalString(body.ownerEmergencyName ?? original.ownerEmergencyName, 120),
         ownerEmergencyPhone: optionalString(body.ownerEmergencyPhone ?? original.ownerEmergencyPhone, 60),
         ownerEmergencyEmail: optionalString(body.ownerEmergencyEmail ?? original.ownerEmergencyEmail, 200),
@@ -4405,6 +4427,10 @@ app.post(
     const count = await transaction(db => {
       const payment = db.payments.find(p => p.id === id);
       if (!payment) throw new ApiError(404, 'Payment not found.');
+      // Only a receipt that exists can be printed: a pending one has no number yet
+      // and a reversed one is void. Counting them wrote audit lines with a blank
+      // receipt number (found by test/redteam-second-pass, 2026-11-13).
+      if (payment.status !== 'completed') throw new ApiError(409, 'Only a confirmed receipt can be printed.');
       payment.printCount = (payment.printCount || 0) + 1;
       if (payment.printCount > 1) {
         const who = actor(req);
@@ -5875,6 +5901,52 @@ async function startServer() {
   // Backups run on a timer, not only at boot, so an always-on server still gets
   // a daily copy.
   startBackupSchedule();
+
+  /**
+   * Watch for an external drive being connected, and start using it.
+   *
+   * Runs on the server, so it works with no browser open: the person plugging
+   * the stick in is usually not the person at a screen. When exactly one new
+   * removable drive appears and no usable backup folder is set, the folder on it
+   * is saved, marked, and a copy is written at once so the drive is proved
+   * rather than assumed. Ambiguous cases (two drives) are left for a person.
+   */
+  const driveWatchMs = Math.max(500, Number(process.env.VDS_DRIVE_WATCH_MS) || 15_000);
+  let driveWatchBusy = false;
+  let driveWatchPausedUntil = 0;
+  const driveWatcher = setInterval(async () => {
+    if (driveWatchBusy || Date.now() < driveWatchPausedUntil) return;
+    driveWatchBusy = true;
+    try {
+      const adopt = findDriveToAdopt(
+        read(db => db.settings.backupDir || ''),
+        read(db => db.settings.backupMarkerId || '')
+      );
+      if (!adopt) return;
+      const check = checkBackupTarget(adopt);
+      if (!check.ok) return;
+      let markerId = '';
+      await transaction(db => {
+        const before = db.settings.backupDir || '';
+        if (!db.settings.backupMarkerId) db.settings.backupMarkerId = `vds-${crypto.randomUUID()}`;
+        markerId = db.settings.backupMarkerId;
+        db.settings.backupDir = adopt;
+        addAudit(db, 'System', 'ADMINISTRATOR', 'Detected an external drive and set it as the backup location', 'Backup', 'auto-detect', before, adopt);
+      });
+      markBackupFolder(adopt, markerId);
+      setExternalBackupDir(adopt, markerId);
+      runDailyBackup(true);
+      console.log(`[vds] external drive detected; backups now go to ${adopt}`);
+    } catch (err) {
+      // Back off, so a refusal (an integrity guard, say) is not retried and logged
+      // every few seconds for as long as the drive stays plugged in.
+      driveWatchPausedUntil = Date.now() + 5 * 60 * 1000;
+      console.error('[vds] drive detection failed; pausing 5 minutes:', (err as Error).message);
+    } finally {
+      driveWatchBusy = false;
+    }
+  }, driveWatchMs);
+  driveWatcher.unref?.();
 
   if (!IS_PROD && !packagedExe) {
     // Imported dynamically, and only here, so a production run — including one

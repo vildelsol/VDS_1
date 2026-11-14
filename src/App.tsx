@@ -33,6 +33,7 @@ import AnnualReport from './components/AnnualReport';
 import Charts from './components/Charts';
 import Audit from './components/Audit';
 import SystemSettings from './components/SystemSettings';
+import BackupNow from './components/BackupNow';
 import PrintReceipt from './components/PrintReceipt';
 import NotificationsTab from './components/NotificationsTab';
 import Login, { ChangePasswordGate } from './components/Login';
@@ -60,6 +61,7 @@ import {
   Bell,
   Calendar,
   ClipboardList,
+  Database,
   FileText,
   Home,
   Key,
@@ -91,6 +93,7 @@ export type TabKey =
   | 'projections'
   | 'annual-report'
   | 'audit'
+  | 'backups'
   | 'settings';
 
 /**
@@ -114,6 +117,7 @@ const TAB_TITLES: Record<TabKey, string> = {
   projections: 'Financial Projections',
   'annual-report': 'Annual Report',
   audit: 'Audit Trail',
+  backups: 'Backups',
   settings: 'System Settings'
 };
 
@@ -513,6 +517,16 @@ export default function App() {
       items: [
         { key: 'audit', label: 'Audit Trail', icon: <ClipboardList className="h-4 w-4" />, visible: true },
         {
+          // For staff who may take a backup but not change settings. Managers and
+          // administrators have the fuller panel under System Settings.
+          key: 'backups',
+          label: 'Backups',
+          icon: <Database className="h-4 w-4" />,
+          visible:
+            !!permissions?.takeBackups &&
+            !(session.role === 'ADMINISTRATOR' || session.role === 'MANAGER' || !!permissions?.hasVetoPower)
+        },
+        {
           key: 'settings',
           label: 'System Settings',
           icon: <Settings className="h-4 w-4" />,
@@ -867,6 +881,8 @@ export default function App() {
         )}
 
         {activeTab === 'audit' && <Audit auditLogs={data.auditLogs} />}
+
+        {activeTab === 'backups' && permissions?.takeBackups && <BackupNow />}
 
         {activeTab === 'settings' && (
           <SystemSettings

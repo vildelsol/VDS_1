@@ -154,6 +154,23 @@ export interface RolePermissions {
    * restart.
    */
   viewIspoOperations: boolean;
+  /**
+   * Take a backup now and download a records snapshot.
+   *
+   * Ro, 2026-11-13: a junior officer could not save a backup, because every
+   * backup route was gated as "change system settings", which is Administrators
+   * and Managers only. Taking a copy changes nothing and protects everything, so
+   * it is its own permission and can be given to any role in System Settings.
+   *
+   * This covers *taking* and *downloading* a copy only. Choosing where backups
+   * are written, and **restoring** records from one, stay with settings
+   * managers and the administrator respectively.
+   *
+   * **Absent means "as it was"**, which is not the same for every role: before
+   * this existed, Managers (and anyone with veto power) could back up and the
+   * others could not. The upgrade in server/db.ts reads a missing value that way.
+   */
+  takeBackups: boolean;
   hasVetoPower?: boolean;
 }
 
@@ -169,7 +186,8 @@ export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
   'reversePayments',
   'modifySettledRecords',
   'viewShortfall',
-  'viewIspoOperations'
+  'viewIspoOperations',
+  'takeBackups'
 ];
 
 export const PERMISSION_LABELS: Record<string, string> = {
@@ -184,7 +202,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   reversePayments: 'Reverse payments & void receipts',
   modifySettledRecords: 'Modify settled ledger records',
   viewShortfall: 'See the out-of-pocket shortfall report (internal)',
-  viewIspoOperations: `See the ${MANAGING_COMPANY_NAME} Operations statement (internal)`
+  viewIspoOperations: `See the ${MANAGING_COMPANY_NAME} Operations statement (internal)`,
+  takeBackups: 'Take a backup now & download a records snapshot'
 };
 
 export interface StaffProfile {

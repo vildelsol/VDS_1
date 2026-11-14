@@ -312,6 +312,25 @@ export interface FetchResult {
  * and read the answer back off the sync result. Anything not on the public
  * internet is refused.
  */
+/** An IPv6 address as eight numbers, or null if it will not parse. */
+function expandIpv6(v: string): number[] | null {
+  let text = v.split('%')[0];
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+  if (dotted) {
+    const p = dotted[1].split('.').map(Number);
+    if (p.some(n => n > 255)) return null;
+    text = text.slice(0, dotted.index) + ((p[0] << 8) | p[1]).toString(16) + ':' + ((p[2] << 8) | p[3]).toString(16);
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const all = [...left, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...right].map(g => parseInt(g, 16));
+  return all.length === 8 && all.every(n => Number.isInteger(n) && n >= 0 && n <= 0xffff) ? all : null;
+}
+
 function isInternalAddress(ip: string): boolean {
   if (net.isIPv4(ip)) {
     const [a, b] = ip.split('.').map(Number);
@@ -330,6 +349,24 @@ function isInternalAddress(ip: string): boolean {
     if (v.startsWith('fe80')) return true; // link-local
     const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v);
     if (mapped) return isInternalAddress(mapped[1]);
+    /*
+     * The same addresses written in hex. `new URL('http://[::ffff:127.0.0.1]')`
+     * rewrites the host to `[::ffff:7f00:1]`, which the dotted pattern above never
+     * matched: a loopback, LAN or cloud-metadata address got through the feed URL
+     * check (found by test/redteam-second-pass, 2026-11-13). Expand to eight groups
+     * and read the IPv4 address out of every form that embeds one:
+     * IPv4-mapped (::ffff:a:b), IPv4-compatible (::a:b), NAT64 (64:ff9b::a:b) and
+     * 6to4 (2002:a:b::).
+     */
+    const groups = expandIpv6(v);
+    if (groups) {
+      const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+      const head5Zero = groups.slice(0, 5).every(g => g === 0);
+      if (head5Zero && groups[5] === 0xffff) return isInternalAddress(v4(groups[6], groups[7]));
+      if (groups.slice(0, 6).every(g => g === 0)) return isInternalAddress(v4(groups[6], groups[7]));
+      if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every(g => g === 0)) return isInternalAddress(v4(groups[6], groups[7]));
+      if (groups[0] === 0x2002) return isInternalAddress(v4(groups[1], groups[2]));
+    }
     return false;
   }
   return true; // an address in no form we recognise is not one we will call

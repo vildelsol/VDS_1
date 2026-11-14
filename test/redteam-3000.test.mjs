@@ -451,7 +451,7 @@ export default async function run({ port, projectRoot }) {
         const settled = db.payments.filter(p => p.status === 'completed');
         if (!settled.length) return;
         const p = pick(rand, settled);
-        await c.post(`/api/payments/${p.id}/reverse`, { reason: 'entered against the wrong villa' });
+        await c.post(`/api/payments/${p.id}/reverse`, { reversalReason: 'entered against the wrong villa' });
         await c.post(`/api/payments/${p.id}/refund`, { amount: 1, reason: 'after void', method: 'Cash', refundedOn: dayIn(month, 22) });
       },
 

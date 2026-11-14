@@ -273,11 +273,14 @@ export function markBackupFolder(dir: string, id: string): boolean {
  * The suggested folder is named rather than the bare root, so a backup never
  * scatters dated files across the top level of somebody's stick.
  */
-export function detectDrives(currentTarget: string): DetectedDrive[] {
+export function detectDrives(currentTarget: string, removableOnly = false): DetectedDrive[] {
   const current = (currentTarget || '').trim();
   const drives: DetectedDrive[] = [];
 
   for (const { root, label, removable } of driveRoots()) {
+    // The write probe below touches the disk, so the background watcher skips
+    // fixed disks entirely rather than writing a file to them every few seconds.
+    if (removableOnly && !removable) continue;
     const folder = path.join(root, 'Villaggio-Backups');
     let writable = false;
     try {
@@ -302,6 +305,40 @@ export function detectDrives(currentTarget: string): DetectedDrive[] {
   }
 
   return drives;
+}
+
+/**
+ * Which newly connected drive, if any, should become the backup location.
+ *
+ * Ro, 2026-11-13: plugging in an external drive must be enough. Detection used to
+ * run only while the Backup screen was open in somebody's browser, so a stick
+ * pushed in overnight did nothing until a person went and looked.
+ *
+ * Adopt only when it is unambiguous and nothing is lost by it:
+ *   - exactly one removable, writable drive is attached (two sticks: guessing
+ *     could send every record to the wrong one, so wait for a person to choose);
+ *   - no folder is set, or the saved one is not there at the moment *and* the
+ *     marker search could not find the same drive on another letter;
+ *   - the location is not pinned by VDS_BACKUP_DIR, which an administrator set
+ *     on purpose.
+ * A folder that is set and reachable is never replaced.
+ */
+export function findDriveToAdopt(currentDir: string, markerId: string): string | null {
+  if (EXTERNAL_BACKUP_DIR) return null;
+  const current = (currentDir || '').trim();
+  if (current) {
+    let reachable = false;
+    try {
+      reachable = fs.existsSync(current);
+    } catch {
+      reachable = false;
+    }
+    if (reachable) return null;
+    // The same drive on another letter is handled by relocation, not replaced.
+    if (markerId && relocateBackupFolder(markerId)) return null;
+  }
+  const candidates = detectDrives(current, true).filter(d => d.writable && d.removable);
+  return candidates.length === 1 ? candidates[0].path : null;
 }
 
 /**
@@ -380,7 +417,8 @@ export function fullPermissions(): RolePermissions {
     modifySettledRecords: true,
     postCharges: true,
     viewShortfall: true,
-    viewIspoOperations: true
+    viewIspoOperations: true,
+    takeBackups: true
   };
 }
 
@@ -401,7 +439,10 @@ export function noPermissions(): RolePermissions {
     viewShortfall: true,
     // Same rule, on Ro's instruction of 2026-09-03: "Every role unless withdrawn
     // is the best option."
-    viewIspoOperations: true
+    viewIspoOperations: true,
+    // Unlike the two above this is NOT granted by default: a copy of every record
+    // leaves the machine with it. Managers get it through fullPermissions().
+    takeBackups: false
   };
 }
 
@@ -1095,6 +1136,12 @@ export function migrate(db: Database): boolean {
     // taking the till away from the whole team on the next restart. Absence means
     // "as it was", so grant it. Withdrawing it is a deliberate act in Settings.
     if (base.recordPayments === undefined) merged.recordPayments = true;
+    // Backups were gated as "change system settings" before they were a
+    // permission of their own, so an absent value means: Managers and anyone with
+    // veto power could, everybody else could not. `noPermissions()` carries
+    // takeBackups as false, so without this line an upgrade would withdraw it
+    // from every Manager.
+    if (base.takeBackups === undefined) merged.takeBackups = role === 'MANAGER' || !!base.hasVetoPower;
     /*
      * `viewShortfall` and `viewIspoOperations` need no line of their own here,
      * and adding one would be worse than useless.

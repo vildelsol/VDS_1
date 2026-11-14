@@ -270,6 +270,7 @@ export type GatedAction =
   | 'post_charges'
   | 'reverse_payment'
   | 'modify_settled'
+  | 'take_backups'
   | 'manage_settings'
   | 'manage_users';
 
@@ -283,7 +284,8 @@ const ACTION_TO_PERMISSION: Record<Exclude<GatedAction, 'manage_settings' | 'man
   record_expense: 'recordExpenses',
   post_charges: 'postCharges',
   reverse_payment: 'reversePayments',
-  modify_settled: 'modifySettledRecords'
+  modify_settled: 'modifySettledRecords',
+  take_backups: 'takeBackups'
 };
 
 export function can(auth: NonNullable<AuthedRequest['auth']>, action: GatedAction): boolean {
@@ -306,6 +308,7 @@ export const ACTION_DENIED_MESSAGE: Record<GatedAction, string> = {
   post_charges: 'Your role is not permitted to post monthly charges.',
   reverse_payment: 'Your role is not permitted to reverse payments or void receipts.',
   modify_settled: 'Your role is not permitted to modify settled ledger records.',
+  take_backups: 'Your role is not permitted to take or download backups.',
   manage_settings: 'Only Administrators and Managers can change system settings.',
   manage_users: 'Only Administrators can manage staff accounts.'
 };
