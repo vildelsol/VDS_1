@@ -17,6 +17,7 @@ import fs from 'fs';
 import { auditEntryHash } from './auditChain';
 import { checkIntegrity, newBlockingFindings } from './integrity';
 import path from 'path';
+import { isExternalWindowsDrive, queryWindowsDrives } from './windowsDrives';
 import {
   AppSettings,
   AuditLog,
@@ -185,13 +186,25 @@ function driveRoots(): { root: string; label: string; removable: boolean }[] {
     // Checking the letters is dependency-free and fast. C: is the machine's own
     // disk and is listed last, since a backup that never leaves the machine is
     // the thing this feature exists to avoid.
+    const letters: string[] = [];
     for (const letter of 'DEFGHIJKLMNOPQRSTUVWXYZC'.split('')) {
-      const root = `${letter}:\\`;
       try {
-        if (fs.existsSync(root)) found.push({ root, label: `${letter}:`, removable: letter !== 'C' });
+        if (fs.existsSync(`${letter}:\\`)) letters.push(letter);
       } catch {
         /* a card reader with no card throws rather than answering */
       }
+    }
+    // Only ask Windows what the drives are when there is a letter besides C: to
+    // classify, so a machine with one disk never starts PowerShell. A letter being
+    // present is not enough to call it external: see server/windowsDrives.ts.
+    const needsClassifying = letters.some(l => l !== 'C');
+    const report = needsClassifying ? queryWindowsDrives() : null;
+    for (const letter of letters) {
+      found.push({
+        root: `${letter}:\\`,
+        label: `${letter}:`,
+        removable: isExternalWindowsDrive(report?.find(r => r.letter === letter))
+      });
     }
     return found;
   }

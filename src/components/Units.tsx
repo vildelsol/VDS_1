@@ -41,7 +41,7 @@ import {
 } from '../lib/finance';
 import { convertIndicative, formatMoney, formatMoneyLong, round2, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, nightsBetween, today } from '../lib/dates';
-import { errorMessage } from '../lib/api';
+import { ApiError, errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import ReceivePaymentModal from './ReceivePaymentModal';
 import {
@@ -74,7 +74,10 @@ interface UnitsProps {
   session: SessionUser;
   onUpdateUnit: (unit: Record<string, unknown> & { id: string }) => Promise<unknown>;
   onUpdateTenancy: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
-  onEvictTenancy: (id: string, payload: Record<string, unknown>) => Promise<{ writtenOff: number; currency: string; chargesVoided: number }>;
+  onEvictTenancy: (
+    id: string,
+    payload: Record<string, unknown>
+  ) => Promise<{ writtenOff: number; currency: string; chargesVoided: number; depositApplied?: number; depositStillHeld?: { amount: number; currency: string } | null }>;
   onAddUnitActivity: (payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateUnitActivity: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
   onDeleteUnitActivity: (id: string) => Promise<unknown>;
@@ -328,7 +331,12 @@ export default function Units({
               `${evictTenancy.tenantName} evicted from ${getUnitDisplayName(evictTenancy.unitNumber)}. ` +
                 (result.writtenOff > 0
                   ? `${formatMoneyLong(result.writtenOff, result.currency as 'USD' | 'JMD')} of unpaid rent was written off and cleared from the dashboard; the record is kept.`
-                  : 'There was no outstanding rent to write off.')
+                  : 'There was no outstanding rent to write off.') +
+                ((result.depositApplied || 0) > 0
+                  ? ` ${formatMoneyLong(result.depositApplied || 0, result.currency as 'USD' | 'JMD')} of the held deposit was applied against it.`
+                  : result.depositStillHeld
+                    ? ` The ${formatMoneyLong(result.depositStillHeld.amount, result.depositStillHeld.currency as 'USD' | 'JMD')} security deposit is still held: settle it from the tenancy record.`
+                    : '')
             );
             setError('');
             setEvictTenancy(null);
@@ -1168,19 +1176,40 @@ function UnitEditor({
     }
     setBusy(true);
     setError('');
+    const payload = {
+      ...form,
+      number: form.number.trim(),
+      monthlyRent: Number(form.monthlyRent) || 0,
+      monthlyMaintenance: Number(form.monthlyMaintenance) || 0,
+      rentDueDay: Number(form.rentDueDay),
+      maintDueDay: Number(form.maintDueDay),
+      ...((tenantNameChanged || tenantRemoved) && tenantIntent ? { tenantChangeIntent: tenantIntent } : {}),
+      ...(ownerNameChanged && ownerIntent ? { ownerChangeIntent: ownerIntent } : {}),
+      ...(ownerNameChanged && ownerIntent === 'sale' && ownerAcquiredOn ? { ownerAcquiredOn } : {}),
+      ...(strandedCharges.length > 0 && currencyIntent ? { currencyChangeIntent: 'void-open-charges' } : {})
+    };
     try {
-      await onSave({
-        ...form,
-        number: form.number.trim(),
-        monthlyRent: Number(form.monthlyRent) || 0,
-        monthlyMaintenance: Number(form.monthlyMaintenance) || 0,
-        rentDueDay: Number(form.rentDueDay),
-        maintDueDay: Number(form.maintDueDay),
-        ...((tenantNameChanged || tenantRemoved) && tenantIntent ? { tenantChangeIntent: tenantIntent } : {}),
-        ...(ownerNameChanged && ownerIntent ? { ownerChangeIntent: ownerIntent } : {}),
-        ...(ownerNameChanged && ownerIntent === 'sale' && ownerAcquiredOn ? { ownerAcquiredOn } : {}),
-        ...(strandedCharges.length > 0 && currencyIntent ? { currencyChangeIntent: 'void-open-charges' } : {})
-      });
+      try {
+        await onSave(payload);
+      } catch (err) {
+        // A new tenant cannot inherit the last one's unpaid rent: it is collected or
+        // written off first. The server said so and the screen gave no way to choose,
+        // so a normal move-out with rent owing left the villa impossible to re-let.
+        // Writing off is a manager's decision and the server checks that again.
+        if (err instanceof ApiError && err.code === 'former-tenant-owes') {
+          const ok = window.confirm(
+            `${err.message}\n\nPress OK to write the former tenant's unpaid rent off as bad debt (managers and administrators only) and save your change. ` +
+              'Press Cancel to leave things as they are and collect the rent first.'
+          );
+          if (!ok) {
+            setError(err.message);
+            return;
+          }
+          await onSave({ ...payload, formerArrears: 'write-off' });
+        } else {
+          throw err;
+        }
+      }
     } catch (err) {
       setError(errorMessage(err, 'Could not save the unit.'));
     } finally {
@@ -1684,8 +1713,11 @@ function EvictModal({
   const [reason, setReason] = useState('');
   const [effectiveDate, setEffectiveDate] = useState(today());
   const [confirmed, setConfirmed] = useState(false);
+  const [applyDeposit, setApplyDeposit] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const depositHeld = tenancy.depositAmount && !tenancy.depositReturnedOn ? tenancy.depositAmount : 0;
+  const depositCurrency = tenancy.depositCurrency || tenancy.currency;
 
   // Preview the rent that would be written off: open rent charges for the unit in
   // the tenancy's currency, minus rent already received. Mirrors the server.
@@ -1707,7 +1739,7 @@ function EvictModal({
     setBusy(true);
     setError('');
     try {
-      await onSubmit({ reason: reason.trim(), effectiveDate });
+      await onSubmit({ reason: reason.trim(), effectiveDate, ...(applyDeposit && depositHeld ? { applyDeposit: true } : {}) });
     } catch (err) {
       setError(errorMessage(err, 'Could not process the eviction.'));
     } finally {
@@ -1749,6 +1781,17 @@ function EvictModal({
             {writeOff > 0 ? formatMoneyLong(writeOff, tenancy.currency) : `${formatMoneyLong(0, tenancy.currency)}, nothing outstanding`}
           </span>
         </div>
+
+        {depositHeld > 0 && (
+          <label className="flex items-start gap-2 rounded-xl border border-teal-200 bg-teal-50 p-3 text-xs text-slate-700">
+            <input type="checkbox" checked={applyDeposit} onChange={e => setApplyDeposit(e.target.checked)} className="mt-0.5" />
+            <span>
+              <strong>Apply the {formatMoneyLong(depositHeld, depositCurrency)} security deposit against the unpaid rent.</strong>{' '}
+              Up to the rent owed is kept, with the reason recorded; any remainder is recorded as due back to the tenant. Leave this
+              unticked to keep the deposit held and settle it separately. It is never applied automatically.
+            </span>
+          </label>
+        )}
 
         <Field label="Effective date of eviction" htmlFor="ev-date" required>
           <input id="ev-date" type="date" value={effectiveDate} max={today()} onChange={e => setEffectiveDate(e.target.value)} required className={monoInputClass} />
@@ -1868,7 +1911,7 @@ function TenancyEditor({
         {recordEnd && (
           <>
             <Field label="Move-out date" htmlFor="tn-end" required>
-              <input id="tn-end" type="date" value={endedOn} min={startedOn || undefined} onChange={e => setEndedOn(e.target.value)} required className={monoInputClass} />
+              <input id="tn-end" type="date" value={endedOn} min={startedOn || undefined} max={today()} onChange={e => setEndedOn(e.target.value)} required className={monoInputClass} />
             </Field>
             <Field label="Reason" htmlFor="tn-reason" hint="e.g. Lease expired and not renewed; moved to Kingston.">
               <textarea id="tn-reason" rows={2} value={endReason} onChange={e => setEndReason(e.target.value)} className={inputClass} />

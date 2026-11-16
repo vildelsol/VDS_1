@@ -49,8 +49,8 @@ export default async function run({ port, projectRoot }) {
   try {
     const c = makeClient(srv.baseUrl);
     await activateAdmin(c, 'OpStmt-1234!', 'OpStmtNew-9876!');
-    const s = (await c.get('/api/settings')).body;
-    await c.put('/api/settings', { ...s, booksBeginOn: '2026-01-01' });
+    const s = (await c.get('/api/db')).body.settings;
+    await c.post('/api/settings', { ...s, booksBeginOn: '2026-01-01' });
 
     await c.put('/api/units/unit-1', { number: '1', ownerName: 'Owner One', tenantName: 'Tenant One', tenantChangeIntent: 'changeover', status: 'long-term', monthlyRent: 60000, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1 });
     await c.put('/api/units/unit-2', { number: '2', ownerName: 'Owner Two', status: 'owner-occupied', monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1 });

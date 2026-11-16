@@ -362,11 +362,14 @@ export default async function run({ port, projectRoot }) {
 
     /* ---- and the application still considers its own records sound ---- */
 
-    const integrity = await c.post('/api/integrity/check', {});
+    // GET /api/integrity: `POST /api/integrity/check` does not exist, so this check used to be
+    // skipped by its own `!ok(...)` escape, and the severity it looked for ('error') is 'serious'.
+    const integrity = await c.get('/api/integrity');
+    T.check('the integrity report was produced', ok(integrity) && Array.isArray(integrity.body?.findings), `status ${integrity.status}`);
     T.check(
       'the application checks its own records and finds nothing serious with credits in them',
-      !ok(integrity) || !(integrity.body?.findings || []).some(f => f.severity === 'error'),
-      JSON.stringify((integrity.body?.findings || []).filter(f => f.severity === 'error').slice(0, 3))
+      !(integrity.body?.findings || []).some(f => f.severity === 'serious'),
+      JSON.stringify((integrity.body?.findings || []).filter(f => f.severity === 'serious').slice(0, 3))
     );
 
     return T.done();

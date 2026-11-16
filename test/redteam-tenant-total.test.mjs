@@ -18,6 +18,9 @@ import { startServer, makeClient, reporter, activateAdmin, makeLongTermUnit } fr
 
 export const title = 'Red team: restating and levy edits';
 
+/** This suite sends the wrong verb and a made-up sub-route to the restate endpoint on purpose, to prove they are refused. */
+export const allowUnknownRoutes = true;
+
 const cents = n => Math.round(n * 100);
 const open = (db, id, cat = 'Rent') => db.charges.filter(c => c.unitId === id && c.category === cat && c.status === 'open');
 const sum = rows => rows.reduce((a, x) => a + cents(x.amount), 0);

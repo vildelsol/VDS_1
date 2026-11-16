@@ -9,7 +9,7 @@
  * changed nothing, and carries a positive control.
  */
 
-import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, localToday, resetOutcomes, checkMoneyEndpointsSucceeded } from './harness.mjs';
 
 export const title = 'Second-pass red team: feeds, restore, users, restatement, deposits, limits';
 
@@ -21,6 +21,7 @@ export default async function run({ port, projectRoot }) {
   const T = reporter(title);
   const PW = 'Second-1234!';
   const srv = await startServer({ port, adminPassword: PW, projectRoot });
+  resetOutcomes();
   try {
     const admin = makeClient(srv.baseUrl);
     await activateAdmin(admin, PW, PW + 'x');
@@ -32,8 +33,8 @@ export default async function run({ port, projectRoot }) {
     };
     const noErr = (label, r) => T.check(`${label}: no 5xx`, r.status < 500, `status ${r.status} ${String(r.text).slice(0, 80)}`);
 
-    const s0 = (await admin.get('/api/settings')).body;
-    await admin.put('/api/settings', { ...s0, booksBeginOn: '2026-01-01' });
+    const s0 = (await admin.get('/api/db')).body.settings;
+    await admin.post('/api/settings', { ...s0, booksBeginOn: '2026-01-01' });
     // Property: unit-1 let, unit-2 short-term, unit-3 owner-occupied.
     await admin.put('/api/units/unit-1', { number: '1', ownerName: 'O', tenantName: 'T', tenantChangeIntent: 'changeover', status: 'long-term', monthlyRent: 50000, monthlyMaintenance: 10000, currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1 });
     await admin.put('/api/units/unit-2', { number: '2', ownerName: 'O2', status: 'short-term', currency: 'USD', maintCurrency: 'JMD', monthlyMaintenance: 9000, maintDueDay: 1 });
@@ -42,7 +43,11 @@ export default async function run({ port, projectRoot }) {
 
     /* ------------------------------------------------ 1. iCal feeds */
     {
-      const before = (await dbOf()).settings?.icalFeeds?.length ?? (await admin.get('/api/ical/feeds')).body?.feeds?.length ?? 0;
+      // Feeds live in db.settings.icalFeeds (there is no GET /api/ical/feeds: reading it returned a
+      // 404 body whose count was always 0, so this check compared 0 with 0 and proved nothing).
+      const feedCount = async () => (await dbOf()).settings?.icalFeeds?.length;
+      const before = await feedCount();
+      T.check('control: the feed list is readable from /api/db (a number, not undefined)', Number.isInteger(before), String(before));
       const none = await admin.post('/api/ical/sync', {});
       T.check('sync with no feeds is refused cleanly', is4(none), `status ${none.status}`);
       const evil = [
@@ -58,7 +63,7 @@ export default async function run({ port, projectRoot }) {
         if (ok(r)) accepted.push(url);
       }
       T.check('every SSRF / non-http feed target is refused', accepted.length === 0, accepted.join(' | '));
-      const after = (await admin.get('/api/ical/feeds')).body?.feeds?.length ?? 0;
+      const after = await feedCount();
       T.check('and no feed record was created by the refusals', after === before, `${before} -> ${after}`);
       const delGhost = await admin.del('/api/ical/feeds/feed-nope');
       T.check('deleting a nonexistent feed is a 4xx, not a 5xx', is4(delGhost), `status ${delGhost.status}`);
@@ -396,6 +401,8 @@ export default async function run({ port, projectRoot }) {
       T.check('server still healthy after the flood', (await makeClient(srv.baseUrl).get('/api/health')).status === 200);
     }
 
+    // A request that can never succeed (wrong field name, wrong route) must not hide behind a passing suite.
+    checkMoneyEndpointsSucceeded(T, 'the second-pass red team');
     return T.done();
   } finally {
     await srv.stop();

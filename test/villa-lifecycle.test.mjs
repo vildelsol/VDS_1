@@ -152,7 +152,8 @@ export default async function run({ port, projectRoot }) {
 
     await step('the tenant leaves owing a month, and the villa goes back to its owner', async () => {
       await postMonth('2026-03');
-      await put({ status: 'owner-occupied', tenantName: '', tenantChangeIntent: 'moved-out' });
+      // The owed month is written off on purpose: the villa cannot go back to its owner with rent still billed on it.
+      await put({ status: 'owner-occupied', tenantName: '', tenantChangeIntent: 'moved-out', formerArrears: 'write-off' });
     });
 
     await step('the owner pays the levy themselves again', async () => {
@@ -170,8 +171,10 @@ export default async function run({ port, projectRoot }) {
       await postMonth('2026-06');
     });
 
-    await step("the OLD tenant finally pays their arrears, long after the sale", async () => {
-      await pay('Rent', 100000, '2026-06-20', 'First Tenant');
+    // A late payment of the old tenant's arrears after the sale is no longer possible by design: the
+    // debt must be collected or written off before the villa can go back to an owner. What stays
+    // checked is that the written-off month never settles the new proprietor's levy.
+    await step("the old tenant's written-off arrears do not touch the new proprietor's levy", async () => {
       const db = (await c.get('/api/db')).body;
       const nov = db.charges.find(x => x.category === 'Maintenance' && x.periodMonth === '2026-06' && x.status === 'open');
       const cred = F.settledFromRent(db.charges, db.payments);

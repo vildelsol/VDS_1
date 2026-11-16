@@ -22,7 +22,7 @@ import {
 } from './types';
 import Dashboard from './components/Dashboard';
 import Units from './components/Units';
-import FinanceHub from './components/FinanceHub';
+import FinanceHub, { type RestatePreview } from './components/FinanceHub';
 import Bookings from './components/Bookings';
 import UtilitiesAndExpenses from './components/UtilitiesAndExpenses';
 import Reports from './components/Reports';
@@ -735,7 +735,7 @@ export default function App() {
             session={session}
             onUpdateUnit={unit => mutate(() => api.put(`/api/units/${unit.id}`, unit))}
             onUpdateTenancy={(id, fields) => mutate(() => api.put(`/api/tenancies/${id}`, fields))}
-            onEvictTenancy={(id, payload) => mutate(() => api.post<{ writtenOff: number; currency: string; chargesVoided: number }>(`/api/tenancies/${id}/evict`, payload))}
+            onEvictTenancy={(id, payload) => mutate(() => api.post<{ writtenOff: number; currency: string; chargesVoided: number; depositApplied?: number; depositStillHeld?: { amount: number; currency: string } | null }>(`/api/tenancies/${id}/evict`, payload))}
             onAddUnitActivity={payload => mutate(() => api.post('/api/unit-activities', payload))}
             onUpdateUnitActivity={(id, fields) => mutate(() => api.put(`/api/unit-activities/${id}`, fields))}
             onDeleteUnitActivity={id => mutate(() => api.del(`/api/unit-activities/${id}`))}
@@ -760,6 +760,8 @@ export default function App() {
             onUpdatePayment={(id, fields) => mutate(() => api.put(`/api/payments/${id}`, fields))}
             onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}
             onRestateRent={() => mutate(() => api.post<{ restated: number }>('/api/charges/restate-rent', { confirm: true }))}
+            onPreviewRestateRent={() => api.post<RestatePreview>('/api/charges/restate-rent', {})}
+            onPreviewMoveReceipts={() => api.post<RestatePreview>('/api/payments/restate-maintenance-receipts', {})}
             onRestateMaintenanceReceipts={() => mutate(() => api.post<{ moved: number }>('/api/payments/restate-maintenance-receipts', { confirm: true }))}
             onVoidCharge={(id, reason) => mutate(() => api.post(`/api/charges/${id}/void`, { reason }))}
             onAddCharge={payload => mutate(() => api.post('/api/charges', payload))}

@@ -109,12 +109,13 @@ export default async function run({ port, projectRoot }) {
      * 1. Nothing answers without a session.
      * ================================================================ */
 
-    const READ_ROUTES = ['/api/db', '/api/settings', '/api/integrity', '/api/backup/status', '/api/backup/download', '/api/backup/drives', '/api/users'];
+    const READ_ROUTES = ['/api/db', '/api/integrity', '/api/backup/status', '/api/backup/download', '/api/backup/drives'];
     const WRITE_ROUTES = [
       ['/api/payments', { unitId: 'unit-1', category: 'Rent', amount: 1000, currency: 'JMD', payerName: 'x', method: 'Cash' }],
       ['/api/expenses', { category: 'Maintenance', description: 'x', amount: 100, currency: 'JMD', date: '2026-05-05', vendor: 'V' }],
       ['/api/charges/post-month', { monthString: '2026-05' }],
       ['/api/users', { name: 'Intruder', username: 'intruder', role: 'ADMINISTRATOR', password: 'Intruder-1234!' }],
+      ['/api/settings', { strataPlanNumber: '9999' }],
       ['/api/backup/run', {}]
     ];
 
@@ -128,7 +129,7 @@ export default async function run({ port, projectRoot }) {
       const res = await probe(`anonymous POST ${route}`, () => stranger.post(route, payload));
       if (res.status !== 401) unauthenticated.push(`POST ${route} → ${res.status}`);
     }
-    for (const route of ['/api/units/unit-1', '/api/settings']) {
+    for (const route of ['/api/units/unit-1']) {
       const res = await probe(`anonymous PUT ${route}`, () => stranger.put(route, { number: '1', ownerName: 'Intruder' }));
       if (res.status !== 401) unauthenticated.push(`PUT ${route} → ${res.status}`);
     }
@@ -174,10 +175,11 @@ export default async function run({ port, projectRoot }) {
       const create = await probe(`${role} creating a user`, () => s.client.post('/api/users', { name: 'Sneak', username: `sneak_${role}`, role: 'ADMINISTRATOR', password: 'Sneak-1234!' }));
       if (create.status < 300) escalations.push(`${role} created a user (${create.status})`);
 
-      const listUsers = await probe(`${role} listing users`, () => s.client.get('/api/users'));
+      // There is no GET /api/users: the staff list travels inside /api/db. Reading it is
+      // not itself escalation, but it must never carry credentials.
+      const listUsers = await probe(`${role} reading the staff list`, () => s.client.get('/api/db'));
       if (listUsers.status < 300 && Array.isArray(listUsers.body?.users)) {
-        // Reading the staff list is not itself escalation, but it must never carry credentials.
-        scanForSecrets(`${role} user list`, listUsers.body);
+        scanForSecrets(`${role} user list`, listUsers.body.users);
       }
 
       /*
@@ -205,7 +207,7 @@ export default async function run({ port, projectRoot }) {
       }
 
       const changeSettings = await probe(`${role} changing system settings`, () =>
-        s.client.put('/api/settings', { strataPlanNumber: '9999', booksBeginOn: '2020-01-01' })
+        s.client.post('/api/settings', { strataPlanNumber: '9999', booksBeginOn: '2020-01-01' })
       );
       if (role !== 'MANAGER' && changeSettings.status < 300) {
         escalations.push(`${role} changed system settings (${changeSettings.status})`);
@@ -239,10 +241,10 @@ export default async function run({ port, projectRoot }) {
     const juniorAttempts = [];
     if (junior) {
       const gated = [
-        ['reverse a receipt', () => junior.client.post('/api/payments/any-id/reverse', { reason: 'x' })],
+        ['reverse a receipt', () => junior.client.post('/api/payments/any-id/reverse', { reversalReason: 'entered in error' })],
         ['post the month', () => junior.client.post('/api/charges/post-month', { monthString: '2026-05' })],
         ['run a backup', () => junior.client.post('/api/backup/run', {})],
-        ['manage users', () => junior.client.get('/api/users')]
+        ['manage users', () => junior.client.post('/api/users', { name: 'X', username: 'x1', role: 'JUNIOR_OFFICER', password: 'Xx-1234567!' })]
       ];
       for (const [label, fn] of gated) {
         const res = await probe(`junior: ${label}`, fn);
@@ -333,8 +335,10 @@ export default async function run({ port, projectRoot }) {
      * ================================================================ */
 
     scanForSecrets('/api/db', dbNow);
-    scanForSecrets('/api/settings', (await admin.get('/api/settings')).body);
-    scanForSecrets('/api/users', (await admin.get('/api/users')).body);
+    // Settings and the staff list are only readable as part of /api/db (there is no
+    // GET /api/settings or GET /api/users); scan each part on its own as well.
+    scanForSecrets('settings', dbNow.settings);
+    scanForSecrets('users', dbNow.users);
     scanForSecrets('/api/backup/download', (await admin.get('/api/backup/download')).body);
     scanForSecrets('/api/auth/me', (await admin.get('/api/auth/me')).body);
 

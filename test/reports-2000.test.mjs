@@ -814,21 +814,31 @@ export default async function run({ port, projectRoot }) {
 
     /* ---------------- 11. the application's own self-check ---------------- */
 
-    const health = await c.get('/api/self-check');
-    if (health.status === 404) {
-      const integrity = await c.post('/api/integrity/check', {});
-      T.check(
-        'the application checked its own records and found nothing serious',
-        !ok(integrity) || !(integrity.body?.findings || []).some(f => f.severity === 'error'),
-        JSON.stringify((integrity.body?.findings || []).filter(f => f.severity === 'error').slice(0, 3))
-      );
-    } else {
-      T.check(
-        'the application checked its own records and found nothing serious',
-        !(health.body?.findings || []).some(f => f.severity === 'error'),
-        JSON.stringify((health.body?.findings || []).filter(f => f.severity === 'error').slice(0, 3))
-      );
-    }
+    // The self-check is GET /api/integrity. Neither `GET /api/self-check` nor
+    // `POST /api/integrity/check` exists, and this block used to fall through both to a check that
+    // accepted any failure (`!ok(...)`) and looked for severity 'error' where the report says 'serious'.
+    const health = await c.get('/api/integrity');
+    T.check('the integrity report was produced', ok(health) && Array.isArray(health.body?.findings), `status ${health.status}`);
+    /*
+     * This suite deliberately raises charges in the other currency, with the explicit
+     * confirmation the screen asks for (`oneOffStray`). Those are exactly what the
+     * `charge-in-unbilled-currency` finding exists to name, so it is expected here and
+     * must be PRESENT whenever one was accepted; nothing ELSE may be serious.
+     *
+     * (The rent-on-an-owner-occupied-villa finding was fixed 2026-11-16: the server now refuses it, so it is no longer tolerated here.)
+     */
+    const KNOWN = new Set(['charge-in-unbilled-currency']);
+    const seriousFindings = (health.body?.findings || []).filter(f => f.severity === 'serious');
+    T.check(
+      'the application checked its own records and found nothing serious beyond the deliberate stray-currency charges',
+      seriousFindings.every(f => KNOWN.has(f.code)),
+      JSON.stringify(seriousFindings.filter(f => !KNOWN.has(f.code)).slice(0, 3))
+    );
+    T.check(
+      'and those deliberate stray-currency charges ARE reported (the detector is live)',
+      did.oneOffStray === 0 || seriousFindings.some(f => f.code === 'charge-in-unbilled-currency'),
+      `${did.oneOffStray} accepted, finding ${seriousFindings.some(f => f.code === 'charge-in-unbilled-currency') ? 'present' : 'ABSENT'}`
+    );
 
     return T.done();
   } finally {

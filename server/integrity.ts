@@ -558,7 +558,17 @@ export function checkIntegrity(db: Database): IntegrityReport {
       .filter(
         u =>
           tenancies.some(t => t.unitId === u.id && t.status === 'active' && !t.endedOn) ||
-          charges.some(c => c.unitId === u.id && c.category === 'Rent' && c.status === 'open')
+          // An `open` rent charge stays open after it is paid, so only rent the
+          // villa's own receipts do not cover is rent being billed now.
+          [...new Set(charges.filter(c => c.unitId === u.id && c.category === 'Rent' && c.status === 'open').map(c => c.currency))].some(cur => {
+            const billed = charges
+              .filter(c => c.unitId === u.id && c.category === 'Rent' && c.status === 'open' && c.currency === cur)
+              .reduce((a, c) => a + c.amount, 0);
+            const received = payments
+              .filter(p => p.unitId === u.id && p.category === 'Rent' && p.status === 'completed' && p.currency === cur)
+              .reduce((a, p) => a + p.amount - (p.refundedAmount || 0), 0);
+            return billed - received > 0.005;
+          })
       )
       .map(u => `villa ${u.number} (owner ${u.ownerName || 'not recorded'})`);
     add(

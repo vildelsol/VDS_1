@@ -79,6 +79,16 @@ import {
   Undo2
 } from 'lucide-react';
 
+/** The server's dry-run answer for either one-time pass. */
+export interface RestatePreview {
+  count: number;
+  closedThrough: string | null;
+  blockedByClosedMonth: string[];
+  rentChargesAwaiting?: number;
+  skipped: { unit: string; period?: string; receiptNo?: string; amount: number; reason: string }[];
+  plan: { id: string; unit: string; currency: 'JMD' | 'USD'; period?: string; receiptNo?: string; date?: string; from?: number; to?: number; amount?: number; payer?: string }[];
+}
+
 interface FinanceHubProps {
   units: Unit[];
   charges: Charge[];
@@ -96,6 +106,9 @@ interface FinanceHubProps {
   onPostMonth: (month: string) => Promise<{ message: string }>;
   /** Voids and re-raises old whole-rent charges at rent + maintenance. */
   onRestateRent?: () => Promise<{ restated: number }>;
+  /** The dry run of the rent restatement: what it would touch, and what blocks it. Changes nothing. */
+  onPreviewRestateRent?: () => Promise<RestatePreview>;
+  onPreviewMoveReceipts?: () => Promise<RestatePreview>;
   /** Moves a let villa's separately keyed maintenance receipts into its rent. */
   onRestateMaintenanceReceipts?: () => Promise<{ moved: number }>;
   onVoidCharge: (chargeId: string, reason: string) => Promise<unknown>;
@@ -119,6 +132,8 @@ export default function FinanceHub({
   onUpdatePayment,
   onPostMonth,
   onRestateRent,
+  onPreviewRestateRent,
+  onPreviewMoveReceipts,
   onRestateMaintenanceReceipts,
   onVoidCharge,
   onAddCharge,
@@ -156,43 +171,72 @@ export default function FinanceHub({
 
   const restatable = useMemo(() => rentChargesToRestate(units, charges), [units, charges]);
   const movableReceipts = useMemo(() => maintenanceReceiptsToMove(units, charges, payments, tenancies), [units, charges, payments, tenancies]);
-  const handleMoveReceipts = async () => {
-    if (!onRestateMaintenanceReceipts) return;
-    const list = movableReceipts.move;
-    // The payer is shown because a receipt keyed against the owner rather than the
-    // tenant is the one case the rules cannot tell apart, and only Ro can.
-    const lines = list
-      .map(m => `${m.unit.number}  ${m.payment.date}  ${formatMoney(m.payment.amount, m.payment.currency)}  receipt ${m.payment.receiptNo || '-'}  from ${m.payment.payerName || '-'}`)
-      .join('\n');
-    if (!window.confirm(`Move ${list.length} maintenance receipt(s) into the tenants' rent?\n\n${lines}\n\nEach keeps its number, date and amount.`)) return;
+  /*
+   * Both one-time passes work the same way: ask the server what it WOULD do (a dry
+   * run that changes nothing), show every record in the confirmation, and refuse
+   * to go on if the server says something blocks it (a closed month, or the other
+   * pass not done yet). What is listed is what the server lists, not a second
+   * calculation on the screen that could drift from it.
+   */
+  const describe = (p: RestatePreview, line: (x: RestatePreview['plan'][number]) => string) => {
+    const lines = p.plan.slice(0, 40).map(line);
+    if (p.plan.length > lines.length) lines.push(`...and ${p.plan.length - lines.length} more`);
+    const skipped = p.skipped.slice(0, 10).map(s => `  ${s.unit} ${s.period || s.receiptNo || ''}: ${s.reason}`);
+    return `${lines.join('\n')}${skipped.length ? `\n\nLeft as they are (${p.skipped.length}):\n${skipped.join('\n')}` : ''}`;
+  };
+  const runPass = async (
+    preview: (() => Promise<RestatePreview>) | undefined,
+    apply: (() => Promise<unknown>) | undefined,
+    what: string,
+    line: (x: RestatePreview['plan'][number]) => string,
+    done: string,
+    failure: string
+  ) => {
+    if (!preview || !apply) return;
     setBusy(true);
     setError('');
     setSuccess('');
     try {
-      const r = await onRestateMaintenanceReceipts();
-      setSuccess(`Moved ${r.moved} receipt(s) into the tenants' rent.`);
+      const p = await preview();
+      if ((p.rentChargesAwaiting ?? 0) > 0) {
+        setError(`${p.rentChargesAwaiting} rent charge(s) still need restating first. Restate the rent charges, then move the receipts.`);
+        return;
+      }
+      if (p.blockedByClosedMonth.length > 0) {
+        setError(`${p.blockedByClosedMonth.length} of these fall in months already closed (through ${p.closedThrough}). Reopen the period first, run this, then close it again. Nothing was changed.`);
+        return;
+      }
+      if (p.count === 0) {
+        setSuccess('Nothing left to change.');
+        return;
+      }
+      if (!window.confirm(`${what} ${p.count} record(s)?\n\n${describe(p, line)}`)) return;
+      await apply();
+      setSuccess(done);
     } catch (err) {
-      setError(errorMessage(err, 'Could not move the receipts.'));
+      setError(errorMessage(err, failure));
     } finally {
       setBusy(false);
     }
   };
-  const handleRestate = async () => {
-    if (!onRestateRent) return;
-    const n = restatable.restate.length;
-    if (!window.confirm(`Restate ${n} rent charge(s) to rent plus maintenance? Each old charge is voided (kept on record) and replaced.`)) return;
-    setBusy(true);
-    setError('');
-    setSuccess('');
-    try {
-      const r = await onRestateRent();
-      setSuccess(`Restated ${r.restated} rent charge(s) to rent plus maintenance.`);
-    } catch (err) {
-      setError(errorMessage(err, 'Could not restate the rent charges.'));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const handleMoveReceipts = () =>
+    runPass(
+      onPreviewMoveReceipts,
+      onRestateMaintenanceReceipts,
+      "Move into the tenants' rent",
+      m => `${m.unit}  ${m.date}  ${formatMoney(m.amount ?? 0, m.currency)}  receipt ${m.receiptNo || '-'}  from ${m.payer || '-'}`,
+      "Moved the maintenance receipts into the tenants' rent. Each keeps its number, date and amount.",
+      'Could not move the receipts.'
+    );
+  const handleRestate = () =>
+    runPass(
+      onPreviewRestateRent,
+      onRestateRent,
+      'Restate to rent plus maintenance',
+      r => `${r.unit}  ${r.period}  ${formatMoney(r.from ?? 0, r.currency)} -> ${formatMoney(r.to ?? 0, r.currency)}`,
+      'Restated the rent charges to rent plus maintenance. The old charges are kept, voided, on record.',
+      'Could not restate the rent charges.'
+    );
 
   /* ---------------- post month ---------------- */
 
@@ -433,7 +477,7 @@ export default function FinanceHub({
         )}
       </div>
 
-      {tab === 'tenants' && perms.postCharges && onRestateRent && restatable.restate.length > 0 && (
+      {tab === 'tenants' && perms.modifySettledRecords && onRestateRent && restatable.restate.length > 0 && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
           <span>
             {restatable.restate.length} rent charge(s) were raised at the old rent, before the maintenance was counted as part of it. The tenant pays the agreed rent.
@@ -445,7 +489,7 @@ export default function FinanceHub({
         </div>
       )}
 
-      {tab === 'tenants' && perms.postCharges && onRestateMaintenanceReceipts && restatable.restate.length === 0 && movableReceipts.move.length > 0 && (
+      {tab === 'tenants' && perms.modifySettledRecords && onRestateMaintenanceReceipts && restatable.restate.length === 0 && movableReceipts.move.length > 0 && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
           <span>
             {movableReceipts.move.length} maintenance receipt(s) on let villas were keyed separately from the rent. The tenant pays one rent figure, so they belong in the rent account.

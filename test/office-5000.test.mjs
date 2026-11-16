@@ -299,7 +299,8 @@ export default async function run({ port, projectRoot }) {
         const pid = res.body?.payment?.id;
         if (pid) await call('post', `/api/payments/${pid}/confirm`, {});
       } else if (roll < 0.96) {
-        await call('get', `/api/annual-reports/2026`);
+        // There is no GET /api/annual-reports/:year (the report is built on the screen); PUT is the only verb.
+        await call('put', `/api/annual-reports/2026`, {});
       } else {
         sweeps++;
         if (!(await sweep(`after ${ops} operations`))) badSweeps++;

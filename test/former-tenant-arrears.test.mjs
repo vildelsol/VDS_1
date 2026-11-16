@@ -119,7 +119,10 @@ export default async function run({ port, projectRoot }) {
     /* ---------------- 6. leaving owing, then a new tenant later ---------------- */
 
     await villa(6, 'Leaver', [1]);
-    const left = await put(6, { tenantName: '', status: 'owner-occupied', tenantChangeIntent: 'moved-out' });
+    // Going straight to owner-occupied is refused while rent is owed (rent-on-owner-villa.test.mjs); the villa is left vacant.
+    const stranded = await put(6, { tenantName: '', status: 'owner-occupied', tenantChangeIntent: 'moved-out' });
+    T.check('control: making it owner-occupied while rent is owed is refused', stranded.status === 400 && stranded.body?.code === 'former-tenant-owes', `${stranded.status} ${stranded.body?.code}`);
+    const left = await put(6, { tenantName: '', status: 'vacant', tenantChangeIntent: 'moved-out' });
     T.check('setup: the tenant moves out owing', left.status === 200, String(left.body?.error || ''));
     const later = await put(6, { tenantName: 'Late Arrival', status: 'long-term', tenantChangeIntent: 'changeover' });
     T.check('a new tenant arriving later is refused while that rent stands', later.status === 400 && later.body?.code === 'former-tenant-owes', `${later.status} ${later.body?.code}`);

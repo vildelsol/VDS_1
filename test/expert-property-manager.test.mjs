@@ -37,7 +37,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, localToday, resetOutcomes, checkMoneyEndpointsSucceeded } from './harness.mjs';
 
 export const title = 'A property manager judging a thousand operating events';
 
@@ -69,6 +69,7 @@ const dayIn = (month, day) => `${month}-${pad(Math.min(28, Math.max(1, day)))}`;
 
 export default async function run({ port, projectRoot }) {
   const srv = await startServer({ port, adminPassword: 'Manager-1234!', projectRoot });
+  resetOutcomes();
   const T = reporter(title);
   const { mod: fin, cleanup } = await loadFinance(projectRoot);
 
@@ -76,8 +77,8 @@ export default async function run({ port, projectRoot }) {
     const c = makeClient(srv.baseUrl);
     await activateAdmin(c, 'Manager-1234!', 'ManagerNew-9876!');
 
-    const settings = (await c.get('/api/settings')).body;
-    await c.put('/api/settings', { ...settings, booksBeginOn: BOOKS_BEGIN, strataPlanNumber: '2324' });
+    const settings = (await c.get('/api/db')).body.settings;
+    await c.post('/api/settings', { ...settings, booksBeginOn: BOOKS_BEGIN, strataPlanNumber: '2324' });
 
     /* ---------------- the property as it actually is ---------------- */
 
@@ -152,7 +153,7 @@ export default async function run({ port, projectRoot }) {
       // Utilities read and settled.
       async ({ month, rand }) => {
         const unitId = pick(rand, tenanted);
-        const u = await c.post('/api/utilities', { unitId, type: pick(rand, ['Electricity', 'Water']), billingPeriod: month, amountCharged: money(rand, 1500, 28000), currency: 'JMD', consumption: Math.floor(rand() * 400) });
+        const u = await c.post('/api/utilities', { unitId, type: pick(rand, ['Electricity', 'Water']), billingPeriod: month, amountCharged: money(rand, 1500, 28000), currency: 'JMD', previousReading: 100, currentReading: 100 + 1 + Math.floor(rand() * 400) }); // the server reads meter readings, not a consumption figure: with `consumption` every call was refused for a missing current reading
         const id = u.body?.utility?.id;
         if (id && rand() > 0.4) {
           const settled = await c.post(`/api/utilities/${id}/settle`, { method: 'Cash' });
@@ -190,7 +191,7 @@ export default async function run({ port, projectRoot }) {
         if (taken.status >= 300) return;
         if (rand() > 0.6) {
           const withheld = Math.round(held * 0.3 * 100) / 100;
-          await c.post(`/api/tenancies/${t.id}/deposit/settle`, { withheldAmount: withheld, returnedAmount: Math.round((held - withheld) * 100) / 100, reason: 'damage to a door' });
+          await c.post(`/api/tenancies/${t.id}/deposit/settle`, { withheldAmount: withheld, returnedAmount: Math.round((held - withheld) * 100) / 100, withheldReason: 'damage to a door' }); // the field is withheldReason: `reason` was ignored and every settlement with a deduction was refused
         }
       },
 
@@ -200,7 +201,7 @@ export default async function run({ port, projectRoot }) {
         const db = (await c.get('/api/db')).body;
         const unit = db.units.find(u => u.id === unitId);
         if (!unit) return;
-        await c.put(`/api/units/${unitId}`, { number: unit.number, ownerName: unit.ownerName, tenantName: `Tenant ${i}`, tenantChangeIntent: 'changeover', status: 'long-term', monthlyRent: unit.monthlyRent, monthlyMaintenance: unit.monthlyMaintenance, currency: unit.currency, maintCurrency: unit.maintCurrency, tenancyStartedOn: dayIn(month, 1) });
+        await c.put(`/api/units/${unitId}`, { number: unit.number, ownerName: unit.ownerName, tenantName: `Tenant ${i}`, tenantChangeIntent: 'changeover', status: 'long-term', monthlyRent: unit.monthlyRent, monthlyMaintenance: unit.monthlyMaintenance, currency: unit.currency, maintCurrency: unit.maintCurrency, tenantMovedInOn: (d => (d > localToday() ? localToday() : d))(dayIn(month, 1)) }); // the server reads tenantMovedInOn (`tenancyStartedOn` was ignored) and refuses a future date
       },
 
       // A tenant evicted for non-payment.
@@ -484,5 +485,7 @@ export default async function run({ port, projectRoot }) {
     await srv.stop();
   }
 
+  // A request that can never succeed (wrong field name, wrong route) must not hide behind a passing suite.
+  checkMoneyEndpointsSucceeded(T, 'the property-manager expert');
   return T.done();
 }

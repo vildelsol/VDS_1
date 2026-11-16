@@ -35,7 +35,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
+
+const notFuture = d => (d > localToday() ? localToday() : d); // the server refuses a move-in or hand-over date in the future
 
 export const title = 'Four hundred scenarios with reporting integrity';
 
@@ -709,9 +711,11 @@ export default async function run({ port, projectRoot }) {
           maintCurrency: 'JMD',
           rentDueDay: 1,
           maintDueDay: 1,
-          tenancyStartedOn: dayIn(month, 1),
-          leaseEndsOn: '2026-12-31'
+          tenantMovedInOn: notFuture(dayIn(month, 1)) // the server reads tenantMovedInOn (`tenancyStartedOn` was ignored)
         });
+        // A lease end belongs to the tenancy: PUT /api/units ignores `leaseEndsOn`, so it was never set here.
+        const made = (await c.get('/api/db')).body.tenancies.find(t => t.unitId === unitId && t.status === 'active');
+        if (made) await c.put(`/api/tenancies/${made.id}`, { leaseEndsOn: '2026-12-31' });
       },
 
       // And one ended, which must not erase the months it ran.
@@ -796,7 +800,7 @@ export default async function run({ port, projectRoot }) {
         const id = p.body?.payment?.id;
         if (!id) return;
         await c.post(`/api/payments/${id}/confirm`, {});
-        await c.post(`/api/payments/${id}/reconcile`, { matched: true, statementRef: 'STMT-400' });
+        await c.post(`/api/payments/${id}/reconcile`, { reconciled: true, reference: `STMT-400-${id}` });
       },
 
       // Maintenance requested, done, and charged to the register.

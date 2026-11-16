@@ -52,7 +52,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, localToday, resetOutcomes, checkMoneyEndpointsSucceeded } from './harness.mjs';
 
 export const title = 'Five thousand operations, and the paperwork they produce';
 
@@ -110,6 +110,7 @@ const dayIn = (month, day) => `${month}-${pad(Math.min(28, Math.max(1, day)))}`;
 export default async function run({ port, projectRoot }) {
   const T = reporter(title);
   const srv = await startServer({ port, adminPassword: 'RedTeam5k-1234!', projectRoot });
+  resetOutcomes();
   const { mod, cleanup } = await loadModules(projectRoot);
 
   try {
@@ -117,8 +118,8 @@ export default async function run({ port, projectRoot }) {
     const c = makeClient(srv.baseUrl);
     await activateAdmin(c, 'RedTeam5k-1234!', 'RedTeam5kNew-9876!');
 
-    const settings = (await c.get('/api/settings')).body;
-    await c.put('/api/settings', { ...settings, booksBeginOn: '2026-01-01' });
+    const settings = (await c.get('/api/db')).body.settings;
+    await c.post('/api/settings', { ...settings, booksBeginOn: '2026-01-01' });
 
     /* ---------------- a property shaped like the real one ---------------- */
     const setup = rng(20260902);
@@ -244,7 +245,9 @@ export default async function run({ port, projectRoot }) {
         const unitId = pick(rand, longLets.concat(owners));
         note(await c.post('/api/charges', {
           unitId,
-          category: pick(rand, ['Maintenance', 'Rent']),
+          // The server refuses a Rent charge on an owner-occupied villa (test/rent-on-owner-villa.test.mjs);
+          // owners are kept to Maintenance here so these charges are not all refusals.
+          category: owners.includes(unitId) ? 'Maintenance' : pick(rand, ['Maintenance', 'Rent']),
           oneOffType: pick(rand, ['Opening balance', 'Insurance share', 'Late fee']),
           amount: money(rand, 500, 40000),
           currency: 'JMD',
@@ -306,15 +309,15 @@ export default async function run({ port, projectRoot }) {
         const held = money(rand, 5000, 90000);
         const taken = note(await c.post(`/api/tenancies/${t.id}/deposit`, { amount: held, currency: 'JMD', method: 'Cash' }));
         if (!ok(taken)) return;
-        note(await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held * 2, withheldAmount: 0, reason: 'over-return' }));
-        note(await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, reason: 'returned in full' }));
+        note(await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held * 2, withheldAmount: 0, withheldReason: 'over-return' }));
+        note(await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, withheldReason: 'returned in full' }));
       },
 
       // Move the books-begin date underneath data that already exists.
       async ({ rand }) => {
-        const s = (await c.get('/api/settings')).body;
-        note(await c.put('/api/settings', { ...s, booksBeginOn: pick(rand, ['2026-01-01', '2026-06-01', '']) }));
-        note(await c.put('/api/settings', { ...s, booksBeginOn: '2026-01-01' }));
+        const s = (await c.get('/api/db')).body.settings;
+        note(await c.post('/api/settings', { ...s, booksBeginOn: pick(rand, ['2026-01-01', '2026-06-01', '']) }));
+        note(await c.post('/api/settings', { ...s, booksBeginOn: '2026-01-01' }));
       },
 
       // An expense recharged to a villa, and one against the common account.
@@ -528,7 +531,7 @@ export default async function run({ port, projectRoot }) {
     /* ---------------- the books still add up ---------------- */
     {
       const report = (await c.get('/api/integrity')).body;
-      const serious = (report.issues || []).filter(x => x.severity === 'serious');
+      const serious = (report.findings || []).filter(x => x.severity === 'serious'); // the key is `findings`: `issues` does not exist, so this was always empty
       T.check(
         'the application reports no serious fault in its own records',
         serious.length === 0,
@@ -550,6 +553,8 @@ export default async function run({ port, projectRoot }) {
       T.check('and no two receipts share one', new Set(dupes).size === dupes.length, `${dupes.length - new Set(dupes).size} duplicated`);
     }
 
+    // A request that can never succeed (wrong field name, wrong route) must not hide behind a passing suite.
+    checkMoneyEndpointsSucceeded(T, 'the 5000-operation red team');
     return T.done();
   } finally {
     cleanup();

@@ -128,7 +128,7 @@ export default async function run({ port, projectRoot }) {
     {
       await admin.post('/api/settings', { rolePermissions: { MANAGER: { recordPayments: true, takeBackups: true }, JUNIOR_OFFICER: { recordPayments: true, takeBackups: true } } });
       const stale = await admin.post('/api/settings', { rolePermissions: { MANAGER: { recordPayments: true, addBookings: true }, JUNIOR_OFFICER: { recordPayments: true } } });
-      const rp = stale.body?.settings?.rolePermissions || (await admin.get('/api/settings')).body?.rolePermissions || {};
+      const rp = stale.body?.settings?.rolePermissions || (await admin.get('/api/db')).body?.settings?.rolePermissions || {};
       T.check('a save that omits takeBackups keeps it for the Manager', rp.MANAGER?.takeBackups === true, JSON.stringify(rp.MANAGER));
       T.check('...and for the Junior it was granted to', rp.JUNIOR_OFFICER?.takeBackups === true, JSON.stringify(rp.JUNIOR_OFFICER));
       const explicit = await admin.post('/api/settings', { rolePermissions: { JUNIOR_OFFICER: { recordPayments: true, takeBackups: false } } });

@@ -43,7 +43,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, resetOutcomes, checkMoneyEndpointsSucceeded, localToday } from './harness.mjs';
+
+const notFuture = d => (d > localToday() ? localToday() : d); // the server refuses a move-in or hand-over date in the future
 
 export const title = 'Three thousand adversarial scenarios';
 
@@ -257,6 +259,7 @@ function auditReporting(db, fin, asOf) {
 
 export default async function run({ port, projectRoot }) {
   const srv = await startServer({ port, adminPassword: 'RedTeam-1234!', projectRoot });
+  resetOutcomes();
   const T = reporter(title);
   const { mod: fin, cleanup } = await loadFinance(projectRoot);
 
@@ -265,8 +268,8 @@ export default async function run({ port, projectRoot }) {
     await activateAdmin(c, 'RedTeam-1234!', 'RedTeamNew-9876!');
 
     // The books open at the start of the simulated period, as they do live.
-    const settings = (await c.get('/api/settings')).body;
-    await c.put('/api/settings', { ...settings, booksBeginOn: '2026-01-01' });
+    const settings = (await c.get('/api/db')).body.settings;
+    await c.post('/api/settings', { ...settings, booksBeginOn: '2026-01-01' });
 
     /* ---------------- a property that looks like the real one ---------------- */
 
@@ -393,10 +396,10 @@ export default async function run({ port, projectRoot }) {
        * not a display preference — it changes what may be charged.
        * ================================================================ */
       async ({ rand }) => {
-        const s = (await c.get('/api/settings')).body;
-        await c.put('/api/settings', { ...s, booksBeginOn: pick(rand, ['2026-01-01', '2026-06-01', '2027-01-01', '']) });
+        const s = (await c.get('/api/db')).body.settings;
+        await c.post('/api/settings', { ...s, booksBeginOn: pick(rand, ['2026-01-01', '2026-06-01', '2027-01-01', '']) });
         await c.post('/api/charges/post-month', { monthString: pick(rand, MONTHS) });
-        await c.put('/api/settings', { ...s, booksBeginOn: '2026-01-01' });
+        await c.post('/api/settings', { ...s, booksBeginOn: '2026-01-01' });
       },
 
       /* ================================================================
@@ -504,7 +507,7 @@ export default async function run({ port, projectRoot }) {
           monthlyMaintenance: unit.monthlyMaintenance,
           currency: unit.currency,
           maintCurrency: unit.maintCurrency,
-          ownershipChangedOn: dayIn(month, 15)
+          ownerAcquiredOn: notFuture(dayIn(month, 15)) // the server reads ownerAcquiredOn; `ownershipChangedOn` was ignored
         });
       },
 
@@ -523,8 +526,7 @@ export default async function run({ port, projectRoot }) {
           monthlyMaintenance: unit.monthlyMaintenance,
           currency: unit.currency,
           maintCurrency: unit.maintCurrency,
-          tenancyStartedOn: dayIn(month, 1),
-          firstAndLastRent: rand() > 0.5
+          tenantMovedInOn: notFuture(dayIn(month, 1)) // the server reads tenantMovedInOn; `tenancyStartedOn` and `firstAndLastRent` were ignored (first and last is raised by the move-in date)
         });
       },
 
@@ -553,9 +555,9 @@ export default async function run({ port, projectRoot }) {
         const taken = await c.post(`/api/tenancies/${t.id}/deposit`, { amount: held, currency: 'JMD', method: 'Cash' });
         if (!ok(taken)) return;
         // More returned than was ever held — must be refused, never absorbed.
-        await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held * 2, withheldAmount: 0, reason: 'over-return' });
-        await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, reason: 'returned in full' });
-        await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, reason: 'returned twice' });
+        await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held * 2, withheldAmount: 0, withheldReason: 'over-return' });
+        await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, withheldReason: 'returned in full' });
+        await c.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, withheldReason: 'returned twice' });
       },
 
       /* ================================================================
@@ -640,7 +642,7 @@ export default async function run({ port, projectRoot }) {
 
       async ({ month, rand }) => {
         const unitId = anyLong(rand);
-        const u = await c.post('/api/utilities', { unitId, type: pick(rand, ['Electricity', 'Water']), billingPeriod: month, amountCharged: money(rand, 1000, 30000), currency: 'JMD', consumption: Math.floor(rand() * 400) });
+        const u = await c.post('/api/utilities', { unitId, type: pick(rand, ['Electricity', 'Water']), billingPeriod: month, amountCharged: money(rand, 1000, 30000), currency: 'JMD', previousReading: 100, currentReading: 101 + Math.floor(rand() * 400) }); // readings, not `consumption`: the server refused every call for a missing current reading, so utilities were never exercised here
         const id = u.body?.utility?.id;
         if (!id) return;
         const settled = await c.post(`/api/utilities/${id}/settle`, { method: 'Cash' });
@@ -731,5 +733,7 @@ export default async function run({ port, projectRoot }) {
     await srv.stop();
   }
 
+  // A request that can never succeed (wrong field name, wrong route) must not hide behind a passing suite.
+  checkMoneyEndpointsSucceeded(T, 'the 3000-scenario red team');
   return T.done();
 }

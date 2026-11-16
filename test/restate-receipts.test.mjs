@@ -93,7 +93,8 @@ let db = (await c.get('/api/db')).body;
     // Before Restate, receipts are not touched: the rent charges carry no split yet.
     const early = await c.post('/api/payments/restate-maintenance-receipts', { confirm: true });
     db = (await c.get('/api/db')).body;
-    T.check('before Restate nothing is moved', early.status === 200 && early.body.moved === 0 && maintReceipts(db, 'unit-1').length === 3);
+    // 1.16.12: the order is enforced by the server, with a reason, not just hidden on the screen.
+    T.check('before Restate nothing is moved, and the server says why (409)', early.status === 409 && /restating first/i.test(early.body?.error || '') && maintReceipts(db, 'unit-1').length === 3);
 
     await c.post('/api/charges/restate-rent', { confirm: true });
     await pay('unit-4', 'Rent', 60000, '2026-11-06'); // the 100,000 rent is now paid in full

@@ -315,7 +315,7 @@ export default async function run({ port, projectRoot }) {
         const held = await c.post(`/api/bookings/${id}/damage-deposit`, { amount: money(rand, 100, 600), currency: 'USD', receivedOn: dayIn(month, start) });
         if (!held.status || held.status !== 200) return;
         if (rand() > 0.4) {
-          await c.post(`/api/bookings/${id}/damage-deposit/settle`, { withheldAmount: rand() > 0.6 ? money(rand, 10, 80) : 0, reason: 'checked on departure' });
+          await c.post(`/api/bookings/${id}/damage-deposit/settle`, { withheldAmount: rand() > 0.6 ? money(rand, 10, 80) : 0, withheldReason: 'checked on departure' });
         }
       },
 
@@ -357,8 +357,8 @@ export default async function run({ port, projectRoot }) {
       async ({ rand }) => {
         const db = (await c.get('/api/db')).body;
         const bankPayments = db.payments.filter(x => x.status === 'completed' && x.method === 'Bank Transfer' && !x.reconciledOn).slice(0, 3);
-        for (const x of bankPayments) await c.post(`/api/payments/${x.id}/reconcile`, { matched: true, statementRef: `STMT-${Math.floor(rand() * 9999)}` });
-        if (bankPayments[0]) await c.post(`/api/payments/${bankPayments[0].id}/reconcile`, { matched: false });
+        for (const x of bankPayments) await c.post(`/api/payments/${x.id}/reconcile`, { reconciled: true, reference: `STMT-${Math.floor(rand() * 9999)}-${x.id}` });
+        if (bankPayments[0]) await c.post(`/api/payments/${bankPayments[0].id}/reconcile`, { reconciled: false });
       },
 
       // Receipts printed and reprinted.

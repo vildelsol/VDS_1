@@ -27,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, localToday, resetOutcomes, checkMoneyEndpointsSucceeded } from './harness.mjs';
 
 export const title = 'Ten thousand property-manager scenarios: red team, security, accuracy, route map';
 
@@ -73,6 +73,7 @@ export default async function run({ port, projectRoot }) {
   const T = reporter(title);
   const PW = 'RedTeamPM-1234!';
   const srv = await startServer({ port, adminPassword: PW, projectRoot });
+  resetOutcomes();
   const { fin, cleanup } = await loadFin(projectRoot);
 
   try {
@@ -93,8 +94,8 @@ export default async function run({ port, projectRoot }) {
       put: (p, b, o) => api(admin, 'PUT', p, b, o)
     };
 
-    const settings = (await A.get('/api/settings')).body;
-    await A.put('/api/settings', { ...settings, booksBeginOn: '2026-01-01' });
+    const settings = (await A.get('/api/db')).body.settings;
+    await A.post('/api/settings', { ...settings, booksBeginOn: '2026-01-01' });
 
     /* ---------- staff of every role ---------- */
     const staff = {};
@@ -263,7 +264,7 @@ export default async function run({ port, projectRoot }) {
         if (!open.length) return;
         const ch = pick(rand, open);
         watch('void-charge', await A.post(`/api/charges/${ch.id}/void`, { reason: 'error' }), 'void');
-        const again = watch('void-charge', await A.post(`/api/charges/${ch.id}/void`, { reason: 'again' }), 'void twice');
+        const again = watch('void-charge', await A.post(`/api/charges/${ch.id}/void`, { withheldReason: 'again' }), 'void twice');
         void again;
         const c2 = (await dbNow()).charges.find(c => c.id === ch.id);
         if (c2 && c2.status === 'open') fault('void-charge', `charge ${ch.id} still open after void`);
@@ -272,7 +273,7 @@ export default async function run({ port, projectRoot }) {
       async 'one-off'({ month, rand }) {
         const unitId = pick(rand, lets.concat(owners));
         const amount = money(rand, 500, 40000);
-        const r = watch('one-off', await A.post('/api/charges', { unitId, category: pick(rand, ['Maintenance', 'Rent']), oneOffType: pick(rand, ['Opening balance', 'Insurance share', 'Late fee']), amount, currency: 'JMD', dueDate: dayIn(month, 9), description: 'One-off' }), 'one-off');
+        const r = watch('one-off', await A.post('/api/charges', { unitId, category: owners.includes(unitId) ? 'Maintenance' : pick(rand, ['Maintenance', 'Rent']), oneOffType: pick(rand, ['Opening balance', 'Insurance share', 'Late fee']), amount, currency: 'JMD', dueDate: dayIn(month, 9), description: 'One-off' }), 'one-off');
         void r;
         const neg = await A.post('/api/charges', { unitId, category: 'Rent', oneOffType: 'Late fee', amount: -50, currency: 'JMD', dueDate: TODAY, description: 'neg' });
         watch('one-off', neg, 'negative charge');
@@ -286,10 +287,10 @@ export default async function run({ port, projectRoot }) {
         const held = money(rand, 5000, 90000);
         const taken = watch('deposit-lifecycle', await A.post(`/api/tenancies/${t.id}/deposit`, { amount: held, currency: 'JMD', method: 'Cash' }), 'take deposit');
         if (!is2(taken)) return;
-        const over = watch('deposit-lifecycle', await A.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held * 2, withheldAmount: 0, reason: 'over' }), 'over-return');
+        const over = watch('deposit-lifecycle', await A.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held * 2, withheldAmount: 0, withheldReason: 'over' }), 'over-return');
         if (is2(over)) fault('deposit-lifecycle', 'returned more deposit than was held');
-        const ok1 = watch('deposit-lifecycle', await A.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, reason: 'full' }), 'settle');
-        const ok2 = watch('deposit-lifecycle', await A.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, reason: 'again' }), 'settle twice');
+        const ok1 = watch('deposit-lifecycle', await A.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, withheldReason: 'full' }), 'settle');
+        const ok2 = watch('deposit-lifecycle', await A.post(`/api/tenancies/${t.id}/deposit/settle`, { returnedAmount: held, withheldAmount: 0, withheldReason: 'again' }), 'settle twice');
         if (is2(ok1) && is2(ok2)) fault('deposit-lifecycle', 'deposit settled twice');
       },
       /** Rent changes and re-denomination under live charges. */
@@ -326,8 +327,8 @@ export default async function run({ port, projectRoot }) {
         // A negative expense is a supplier credit, on purpose (Ro, 2026-10-05; supplier-credits suite).
         const id = r.body?.expense?.id;
         if (id) {
-          watch('expenses', await A.post(`/api/expenses/${id}/void`, { reason: 'x' }), 'void');
-          watch('expenses', await A.post(`/api/expenses/${id}/void`, { reason: 'x2' }), 'void twice');
+          watch('expenses', await A.post(`/api/expenses/${id}/void`, { reason: 'entered in error', confirmSettled: true }), 'void');
+          watch('expenses', await A.post(`/api/expenses/${id}/void`, { reason: 'voided a second time', confirmSettled: true }), 'void twice');
         }
         watch('expenses', await A.post('/api/expenses/post-month', { monthString: month }), 'post-month');
       },
@@ -412,7 +413,7 @@ export default async function run({ port, projectRoot }) {
       async 'path-abuse'({ rand }) {
         const ids = ['..%2f..%2fdb.json', '%2e%2e/%2e%2e/etc/passwd', 'x'.repeat(5000), '%00', "' OR '1'='1", '__proto__', 'constructor', 'pay-0', '../../server.ts'];
         const id = pick(rand, ids);
-        for (const [m, p] of [['GET', `/api/payments/${id}`], ['POST', `/api/payments/${id}/confirm`], ['POST', `/api/charges/${id}/void`], ['PUT', `/api/units/${id}`], ['DELETE', `/api/expenses/${id}`], ['POST', `/api/payments/${id}/refund`]]) {
+        for (const [m, p] of [['PUT', `/api/payments/${id}`], ['POST', `/api/payments/${id}/confirm`], ['POST', `/api/charges/${id}/void`], ['PUT', `/api/units/${id}`], ['PUT', `/api/expenses/${id}`], ['POST', `/api/payments/${id}/refund`]]) {
           const res = await api(admin, m, p, m === 'GET' ? undefined : {});
           if (res.status >= 500) { serverErrors++; serverErrorSamples.push(`path-abuse: ${m} ${p.slice(0, 50)} -> ${res.status}`); }
           if (is2(res) && m !== 'GET') fault('path-abuse', `${m} ${p.slice(0, 40)} succeeded on a nonexistent id`);
@@ -423,9 +424,9 @@ export default async function run({ port, projectRoot }) {
       /** Anonymous access to every route: all must refuse. */
       async 'anon-matrix'({ rand }) {
         const routes = [
-          ['GET', '/api/db'], ['GET', '/api/settings'], ['GET', '/api/integrity'], ['GET', '/api/users'], ['GET', '/api/backup/download'], ['GET', '/api/backup/status'], ['GET', '/api/annual-reports/2026'], ['GET', '/api/ical/feeds'], ['GET', '/api/backup/drives'],
+          ['GET', '/api/db'], ['GET', '/api/integrity'], ['GET', '/api/backup/download'], ['GET', '/api/backup/status'], ['PUT', '/api/annual-reports/2026'], ['POST', '/api/ical/feeds'], ['GET', '/api/backup/drives'],
           ['POST', '/api/payments'], ['POST', '/api/charges'], ['POST', '/api/charges/post-month'], ['POST', '/api/expenses'], ['POST', '/api/bookings'], ['POST', '/api/utilities'], ['POST', '/api/users'], ['POST', '/api/backup/restore'], ['POST', '/api/backup/run'], ['POST', '/api/periods/close'], ['POST', '/api/periods/reopen'], ['POST', '/api/payments/x/confirm'], ['POST', '/api/payments/x/reverse'], ['POST', '/api/payments/x/refund'], ['POST', '/api/charges/x/void'], ['POST', '/api/ical/sync'],
-          ['PUT', '/api/units/unit-1'], ['PUT', '/api/settings'], ['PUT', '/api/users/x'], ['POST', '/api/users/x/reset-password'], ['DELETE', '/api/expenses/x'], ['DELETE', '/api/utilities/x']
+          ['PUT', '/api/units/unit-1'], ['POST', '/api/settings'], ['PUT', '/api/users/x'], ['POST', '/api/users/x/reset-password'], ['PUT', '/api/expenses/x'], ['PUT', '/api/utilities/x']
         ];
         const [m, p] = pick(rand, routes);
         const res = await api(anon, m, p, m === 'GET' ? undefined : {});
@@ -491,13 +492,13 @@ export default async function run({ port, projectRoot }) {
         const active = (await dbNow()).tenancies.filter(t => t.status === 'active');
         if (active.length < 3) return;
         const t = pick(rand, active);
-        watch('evict-and-bill', await A.post(`/api/tenancies/${t.id}/evict`, { endedOn: TODAY, reason: 'test' }), 'evict');
-        const again = watch('evict-and-bill', await A.post(`/api/tenancies/${t.id}/evict`, { endedOn: TODAY, reason: 'twice' }), 'evict twice');
+        watch('evict-and-bill', await A.post(`/api/tenancies/${t.id}/evict`, { effectiveDate: TODAY, reason: 'test' }), 'evict');
+        const again = watch('evict-and-bill', await A.post(`/api/tenancies/${t.id}/evict`, { effectiveDate: TODAY, reason: 'twice' }), 'evict twice');
         void again;
       },
       /** Read-only and session routes. */
       async 'session-routes'({ rand }) {
-        watch('session-routes', await A.get('/api/annual-reports/2026'), 'annual');
+        watch('session-routes', await A.put('/api/annual-reports/2026', {}), 'annual (PUT only: there is no GET)');
         watch('session-routes', await A.get('/api/auth/me'), 'me');
         watch('session-routes', await A.get('/api/backup/status'), 'backup status');
         watch('session-routes', await A.get('/api/backup/drives'), 'drives');
@@ -512,7 +513,7 @@ export default async function run({ port, projectRoot }) {
       async 'integrity-report'() {
         const rep = await A.get('/api/integrity');
         watch('integrity-report', rep, 'integrity');
-        const serious = (rep.body?.issues || []).filter(x => x.severity === 'serious');
+        const serious = (rep.body?.findings || []).filter(x => x.severity === 'serious'); // `findings`, not `issues` (which never existed: this check was vacuous)
         if (serious.length) fault('integrity-report', serious.slice(0, 2).map(x => `${x.code}: ${x.message}`).join(' | '));
       },
       /** Concurrent confirms of one receipt must confirm once. */
@@ -613,15 +614,17 @@ export default async function run({ port, projectRoot }) {
 
     // Final integrity.
     const rep = (await A.get('/api/integrity')).body;
-    const serious = (rep.issues || []).filter(x => x.severity === 'serious');
+    const serious = (rep.findings || []).filter(x => x.severity === 'serious'); // `findings`, not `issues`
     T.check('application integrity report has no serious fault', serious.length === 0, serious.slice(0, 3).map(x => `${x.code}: ${x.message}`).join(' | '));
 
     // Route map: coverage of every route the server declares.
-    const declared = ['GET /api/annual-reports/:id', 'POST /api/auth/change-password', 'POST /api/auth/login', 'POST /api/auth/logout', 'GET /api/auth/me', 'POST /api/backup/check-folder', 'GET /api/backup/download', 'GET /api/backup/drives', 'POST /api/backup/restore', 'POST /api/backup/run', 'GET /api/backup/status', 'POST /api/bookings', 'POST /api/charges', 'POST /api/charges/:id/void', 'POST /api/charges/post-month', 'GET /api/db', 'POST /api/expenses', 'POST /api/expenses/:id/void', 'POST /api/expenses/post-month', 'GET /api/integrity', 'POST /api/payments', 'POST /api/payments/:id/confirm', 'POST /api/payments/:id/refund', 'POST /api/payments/:id/reverse', 'POST /api/periods/close', 'POST /api/periods/reopen', 'GET /api/settings', 'PUT /api/settings', 'POST /api/tenancies/:id/deposit', 'POST /api/tenancies/:id/deposit/settle', 'POST /api/tenancies/:id/evict', 'PUT /api/units/:id', 'POST /api/users', 'PUT /api/users/:id', 'POST /api/users/:id/reset-password', 'POST /api/utilities', 'POST /api/utilities/:id/settle'];
+    const declared = ['PUT /api/annual-reports/:id', 'POST /api/auth/change-password', 'POST /api/auth/login', 'POST /api/auth/logout', 'GET /api/auth/me', 'POST /api/backup/check-folder', 'GET /api/backup/download', 'GET /api/backup/drives', 'POST /api/backup/restore', 'POST /api/backup/run', 'GET /api/backup/status', 'POST /api/bookings', 'POST /api/charges', 'POST /api/charges/:id/void', 'POST /api/charges/post-month', 'GET /api/db', 'POST /api/expenses', 'POST /api/expenses/:id/void', 'POST /api/expenses/post-month', 'GET /api/integrity', 'POST /api/payments', 'POST /api/payments/:id/confirm', 'POST /api/payments/:id/refund', 'POST /api/payments/:id/reverse', 'POST /api/periods/close', 'POST /api/periods/reopen', 'GET /api/settings', 'PUT /api/settings', 'POST /api/tenancies/:id/deposit', 'POST /api/tenancies/:id/deposit/settle', 'POST /api/tenancies/:id/evict', 'PUT /api/units/:id', 'POST /api/users', 'PUT /api/users/:id', 'POST /api/users/:id/reset-password', 'POST /api/utilities', 'POST /api/utilities/:id/settle'];
     const unexercised = declared.filter(d => ![...hits.keys()].some(k => k === d || k.replace(/\/x(\/|$)/g, '/:id$1') === d));
     console.log(`  route map: ${hits.size} distinct method+route pairs exercised; not reached by any scenario: ${unexercised.join(', ') || 'none'}`);
     T.check('route map: every declared core route was exercised', unexercised.length <= 8, unexercised.join(', '));
 
+    // A request that can never succeed (wrong field name, wrong route) must not hide behind a passing suite.
+    checkMoneyEndpointsSucceeded(T, 'the 10,000-scenario red team');
     return T.done();
   } finally {
     cleanup();

@@ -61,8 +61,8 @@ export default async function run({ port, projectRoot }) {
     const c = makeClient(srv.baseUrl);
     await activateAdmin(c, 'Ops-1234!', 'OpsNew-9876!');
 
-    const s = (await c.get('/api/settings')).body;
-    await c.put('/api/settings', { ...s, booksBeginOn: '2026-01-01' });
+    const s = (await c.get('/api/db')).body.settings;
+    await c.post('/api/settings', { ...s, booksBeginOn: '2026-01-01' });
 
     /* ---------------- two proprietors who pay maintenance ---------------- */
 

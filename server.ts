@@ -1617,6 +1617,61 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
  * removes it from the balance, the arrears list and the hub. If it has not been
  * raised yet, there is nothing to void and the advance is simply marked as spent.
  */
+/**
+ * Void a tenant's open monthly rent that falls outside the time they lived there.
+ *
+ * Move-out and move-in dates are corrected after charges exist: a tenant who left
+ * on 30 September used to leave October and November rent open on a vacant villa,
+ * and a move-in moved later left the earlier months billed. Neither is a debt.
+ *
+ * Deliberately narrow: only monthly rent billed in THIS tenant's name, never a
+ * one-off or the advance-rent charge, and never a month that is already closed
+ * (voiding there would be refused by the integrity guard and block the move-out;
+ * such months are left and named in the audit entry instead).
+ */
+function voidRentOutsideTenancy(
+  db: Database,
+  tenancy: Tenancy,
+  outside: (periodMonth: string) => boolean,
+  why: string,
+  staffName: string,
+  role: UserRole
+): number {
+  const closedThrough = db.settings.closedThrough || '';
+  const voided: Charge[] = [];
+  const skipped: Charge[] = [];
+  for (const c of db.charges) {
+    if (c.unitId !== tenancy.unitId || c.category !== 'Rent' || c.status !== 'open') continue;
+    if (c.kind === 'one-off' || c.kind === 'advance-final-month' || c.id === tenancy.advanceRentChargeId) continue;
+    if (!sameName(c.payerName || '', tenancy.tenantName)) continue;
+    if (!outside((c.periodMonth || '').slice(0, 7))) continue;
+    if (closedThrough && (c.periodMonth || '').slice(0, 7) <= closedThrough) {
+      skipped.push(c);
+      continue;
+    }
+    c.status = 'void';
+    c.voidedBy = staffName;
+    c.voidedAt = new Date().toISOString();
+    c.voidReason = why;
+    voided.push(c);
+    addAudit(db, staffName, role, `Voided ${c.unitNumber} rent for ${c.periodMonth}: ${why}`, 'Charge', c.id, 'open', 'void', staffName);
+  }
+  if (skipped.length > 0) {
+    addAudit(
+      db,
+      staffName,
+      role,
+      `${skipped.length} rent charge(s) at ${tenancy.unitNumber} fall in closed months and were left as they are: ${skipped.map(c => c.periodMonth).join(', ')}`,
+      'Tenancy',
+      tenancy.id,
+      '',
+      why,
+      staffName
+    );
+  }
+  return voided.length;
+}
+
 function applyAdvanceRentOnMoveOut(db: Database, tenancy: Tenancy, endedOn: string, staffName: string, role: UserRole) {
   if (!tenancy.advanceRentChargeId || tenancy.advanceRentAppliedOn) return;
 
@@ -2305,7 +2360,23 @@ app.put(
       const before = { ...record };
 
       if (body.startedOn !== undefined) {
+        const previousStart = record.startedOn || '';
         record.startedOn = body.startedOn === '' ? '' : requireDay(body.startedOn, 'Move-in date');
+        // Moved LATER: the months between the old and the new date were billed to a
+        // tenant who was not there yet. Only months this tenancy had claimed.
+        if (previousStart && record.startedOn > previousStart) {
+          const first = monthOf(previousStart);
+          const firstNow = monthOf(record.startedOn);
+          const w0 = actor(req);
+          voidRentOutsideTenancy(
+            db,
+            record,
+            m => m >= first && m < firstNow,
+            `Rent for a month before ${record.tenantName} moved in (move-in date corrected to ${record.startedOn}).`,
+            w0.name,
+            w0.role
+          );
+        }
       }
       if (body.leaseEndsOn !== undefined) {
         if (body.leaseEndsOn === '') {
@@ -2331,6 +2402,8 @@ app.put(
         if (record.startedOn && endedOn < record.startedOn) {
           bad('The move-out date cannot fall before the move-in date.');
         }
+        // A future date used to free the villa today and stop its billing early.
+        if (endedOn > today()) bad('The move-out date cannot be in the future. Record the move-out on the day the tenant leaves.');
         record.endedOn = endedOn;
         record.status = 'ended';
         record.endReason = optionalString(body.endReason, 500) || record.endReason || 'Tenancy ended.';
@@ -2338,6 +2411,18 @@ app.put(
         // Their final month was bought at move-in — do not charge it again.
         const closer = actor(req);
         applyAdvanceRentOnMoveOut(db, record, endedOn, closer.name, closer.role);
+        // Rent for months after they left is not a debt: it was posted before the
+        // move-out was recorded. Unpaid rent up to and including the move-out month
+        // stays open for collection (or write-off when the next tenant is recorded).
+        const leaveMonth = monthOf(endedOn);
+        voidRentOutsideTenancy(
+          db,
+          record,
+          m => m > leaveMonth,
+          `Rent for a month after ${record.tenantName} moved out (${endedOn}).`,
+          closer.name,
+          closer.role
+        );
 
         // The unit only shows a current tenant while a tenancy is open.
         const unit = db.units.find(u => u.id === record.unitId);
@@ -2402,9 +2487,26 @@ app.post(
       const amount = requirePositiveAmount(body.amount, 'Deposit amount');
       const receivedOn = requireDay(body.receivedOn || today(), 'Date received');
       if (receivedOn > today()) bad('A deposit cannot be dated in the future.');
+      const depositCurrency = requireCurrency(body.currency ?? record.currency ?? 'JMD');
+
+      // A second deposit used to overwrite the first, amount and currency both,
+      // with nothing on screen to say so. Replacing is allowed only when asked for.
+      if (record.depositAmount && body.replace !== true) {
+        throw new ApiError(
+          409,
+          `A ${record.depositCurrency} ${record.depositAmount} deposit is already held for ${record.tenantName}. ` +
+            'Recording another would replace it, not add to it. If the held figure was wrong, send replace: true; to add money, record the total held.'
+        );
+      }
+      if (depositCurrency !== (record.currency || 'JMD') && body.confirmCurrency !== true) {
+        throw new ApiError(
+          409,
+          `The tenancy is in ${record.currency || 'JMD'} and this deposit is in ${depositCurrency}. Confirm that is genuinely what was received (confirmCurrency: true).`
+        );
+      }
 
       record.depositAmount = amount;
-      record.depositCurrency = requireCurrency(body.currency ?? record.currency ?? 'JMD');
+      record.depositCurrency = depositCurrency;
       record.depositReceivedOn = receivedOn;
 
       const who = actor(req);
@@ -2514,6 +2616,21 @@ app.post(
       const writtenOff = writeOffUnpaidRent(db, unpaid, who.name, () => `Written off, tenant evicted (${reason}).`);
       const openRent = unpaid;
 
+      // The deposit is the tenant's money the property holds against exactly this.
+      // It is applied only when asked (applyDeposit: true), and only in the same
+      // currency; otherwise it stays held and the response says so, never silently.
+      let depositApplied = 0;
+      if (body.applyDeposit === true && record.depositAmount && !record.depositReturnedOn && writtenOff > 0) {
+        if ((record.depositCurrency || record.currency) !== record.currency) {
+          bad(`The deposit is held in ${record.depositCurrency} and the rent owed is in ${record.currency}; they cannot be netted. Settle the deposit separately.`);
+        }
+        depositApplied = Math.min(record.depositAmount, writtenOff);
+        record.depositWithheldAmount = depositApplied;
+        record.depositReturnedAmount = round2(record.depositAmount - depositApplied);
+        record.depositWithheldReason = `Applied against ${record.currency} ${writtenOff} of unpaid rent written off when the tenant was evicted.`;
+        record.depositReturnedOn = effectiveDate;
+      }
+
       record.status = 'ended';
       record.evicted = true;
       record.endedOn = effectiveDate;
@@ -2538,7 +2655,8 @@ app.post(
         db,
         who.name,
         who.role,
-        `Evicted ${record.tenantName} from ${record.unitNumber} and wrote off ${record.writeOffCurrency} ${writtenOff}`,
+        `Evicted ${record.tenantName} from ${record.unitNumber} and wrote off ${record.writeOffCurrency} ${writtenOff}` +
+          (depositApplied > 0 ? `; applied ${record.currency} ${depositApplied} of the held deposit against it` : record.depositAmount && !record.depositReturnedOn ? '; the deposit is still held and must be settled' : ''),
         'Tenancy',
         id,
         before,
@@ -2546,7 +2664,8 @@ app.post(
         who.name
       );
 
-      return { tenancy: record, writtenOff, currency: record.currency, chargesVoided: openRent.length };
+      const depositStillHeld = record.depositAmount && !record.depositReturnedOn ? { amount: record.depositAmount, currency: record.depositCurrency || record.currency } : null;
+      return { tenancy: record, writtenOff, currency: record.currency, chargesVoided: openRent.length, depositApplied, depositStillHeld };
     });
 
     res.json({ success: true, ...result });
@@ -2571,6 +2690,38 @@ app.put(
       }
 
       const status = requireEnum(body.status ?? original.status, UNIT_STATUSES, 'Villa status');
+
+      /*
+       * A let villa becoming the owner's own home while rent is still unpaid on it.
+       * The same rule as a new tenant: that debt is collected or written off, never
+       * left to be billed on a villa the register now says is not let. Refused once
+       * with a code the screen can act on; writing it off is a manager's decision.
+       */
+      if (status === 'owner-occupied' && original.status !== 'owner-occupied') {
+        const currenciesOwed = [...new Set(db.charges.filter(c => c.unitId === original.id && c.category === 'Rent' && c.status === 'open').map(c => c.currency))];
+        const unpaid = currenciesOwed.flatMap(cur => unpaidRent(db, original.id, cur));
+        if (unpaid.length > 0) {
+          const owed = new Map<string, number>();
+          for (const i of unpaid) owed.set(i.charge.currency, round2((owed.get(i.charge.currency) || 0) + i.owed));
+          const owedText = [...owed.entries()].map(([cur, amt]) => `${cur} ${amt}`).join(' and ');
+          const months = [...new Set(unpaid.map(i => i.charge.periodMonth))].sort().join(', ');
+          if (body.formerArrears !== 'write-off') {
+            throw new ApiError(
+              400,
+              `Villa ${original.number} still owes ${owedText} in rent (${months}). Making it owner-occupied would leave that rent billed on a villa ` +
+                'the corporation treats as not let. Collect it first, or write it off as bad debt before changing the status.',
+              FORMER_TENANT_OWES
+            );
+          }
+          const roleNow = req.auth!.user.role;
+          if (roleNow !== 'ADMINISTRATOR' && !permissionsFor(db, roleNow).reversePayments) {
+            throw new ApiError(403, "Writing off a former tenant's rent is a decision for a manager or an administrator.");
+          }
+          const whoNow = actor(req);
+          writeOffUnpaidRent(db, unpaid, whoNow.name, () => `Written off as bad debt: villa ${original.number} became owner-occupied while this rent was unpaid.`);
+          addAudit(db, whoNow.name, whoNow.role, `Wrote off ${owedText} of rent on ${original.number} when it became owner-occupied`, 'Unit', original.id, '', owedText, whoNow.name);
+        }
+      }
       const currency = requireCurrency(body.currency ?? original.currency, 'Base currency');
       const maintCurrency = requireCurrency(body.maintCurrency ?? original.maintCurrency ?? currency, 'Maintenance currency');
 
@@ -2926,7 +3077,15 @@ app.post(
     const confirm = req.body?.confirm === true;
     const result = await transaction(db => {
       const { restate, skipped } = rentChargesToRestate(db.units, db.charges);
-      if (!confirm) return { restate, skipped, done: 0 };
+      const closedThrough = db.settings.closedThrough || '';
+      // Restating rewrites charges, and a closed month's fingerprint covers them, so
+      // the integrity guard would refuse the whole write and save nothing, not even
+      // the open months. Say so up front, on the dry run and again on the real one.
+      const blocked = closedThrough ? restate.filter(r => (r.charge.periodMonth || '').slice(0, 7) <= closedThrough) : [];
+      if (!confirm) return { restate, skipped, done: 0, closedThrough, blocked };
+      if (blocked.length > 0) {
+        throw new ApiError(409, `${blocked.length} of these rent charges fall in months already closed (through ${closedThrough}). Reopen the period first, restate, then close it again.`);
+      }
       const who = actor(req);
       for (const item of restate) {
         const old = db.charges.find(c => c.id === item.charge.id)!;
@@ -2964,15 +3123,17 @@ app.post(
           who.name
         );
       }
-      return { restate, skipped, done: restate.length };
+      return { restate, skipped, done: restate.length, closedThrough, blocked };
     });
     res.json({
       success: true,
       confirmed: confirm,
       count: result.restate.length,
       restated: result.done,
+      closedThrough: result.closedThrough || null,
+      blockedByClosedMonth: result.blocked.map(r => r.charge.id),
       skipped: result.skipped.map(s => ({ id: s.charge.id, unit: s.charge.unitNumber, period: s.charge.periodMonth, amount: s.charge.amount, reason: s.reason })),
-      plan: result.restate.map(r => ({ id: r.charge.id, unit: r.charge.unitNumber, period: r.charge.periodMonth, from: r.charge.amount, to: r.breakdown.total }))
+      plan: result.restate.map(r => ({ id: r.charge.id, unit: r.charge.unitNumber, period: r.charge.periodMonth, currency: r.charge.currency, from: r.charge.amount, to: r.breakdown.total }))
     });
   })
 );
@@ -2992,7 +3153,16 @@ app.post(
     const confirm = req.body?.confirm === true;
     const result = await transaction(db => {
       const { move, skipped } = maintenanceReceiptsToMove(db.units, db.charges, db.payments, db.tenancies);
-      if (!confirm) return { move, skipped, done: 0 };
+      const closedThrough = db.settings.closedThrough || '';
+      const blocked = closedThrough ? move.filter(m => (m.payment.date || '').slice(0, 7) <= closedThrough) : [];
+      // The order is a rule, not a screen detail: a receipt cannot be sized against a
+      // rent charge that has not been restated yet, so refuse a direct call too.
+      const rentAwaiting = rentChargesToRestate(db.units, db.charges).restate.length;
+      if (!confirm) return { move, skipped, done: 0, closedThrough, blocked, rentAwaiting };
+      if (rentAwaiting > 0) throw new ApiError(409, `${rentAwaiting} rent charge(s) still need restating first. Restate the rent charges, then move the receipts.`);
+      if (blocked.length > 0) {
+        throw new ApiError(409, `${blocked.length} of these receipts are dated in months already closed (through ${closedThrough}). Reopen the period first, move them, then close it again.`);
+      }
       const who = actor(req);
       for (const item of move) {
         const live = db.payments.find(p => p.id === item.payment.id)!;
@@ -3012,15 +3182,18 @@ app.post(
           who.name
         );
       }
-      return { move, skipped, done: move.length };
+      return { move, skipped, done: move.length, closedThrough, blocked, rentAwaiting };
     });
     res.json({
       success: true,
       confirmed: confirm,
       count: result.move.length,
       moved: result.done,
+      closedThrough: result.closedThrough || null,
+      blockedByClosedMonth: result.blocked.map(m => m.payment.id),
+      rentChargesAwaiting: result.rentAwaiting,
       skipped: result.skipped.map(s => ({ id: s.payment.id, unit: s.payment.unitNumber, receiptNo: s.payment.receiptNo, amount: s.payment.amount, reason: s.reason })),
-      plan: result.move.map(m => ({ id: m.payment.id, unit: m.payment.unitNumber, receiptNo: m.payment.receiptNo, date: m.payment.date, amount: m.payment.amount, payer: m.payment.payerName }))
+      plan: result.move.map(m => ({ id: m.payment.id, unit: m.payment.unitNumber, receiptNo: m.payment.receiptNo, date: m.payment.date, currency: m.payment.currency, amount: m.payment.amount, payer: m.payment.payerName }))
     });
   })
 );
@@ -3050,9 +3223,20 @@ app.post(
     const charge = await transaction(db => {
       const unit = resolveUnit(db, body);
       const category = requireEnum(body.category, ['Rent', 'Maintenance'] as const, 'Account') as ChargeCategory;
+      if (category === 'Rent' && unit.status === 'owner-occupied') {
+        bad(
+          `Villa ${unit.number} is owner-occupied, so the corporation bills it maintenance only. ` +
+            'A rent charge here would be counted as rent on a villa the register says is lived in by its owner. ' +
+            'Change the villa\'s status first if it is now let, or raise a Maintenance charge.'
+        );
+      }
       const oneOffType = requireEnum(body.oneOffType, ONE_OFF_CHARGE_TYPES, 'Charge type') as OneOffChargeType;
       const amount = requirePositiveAmount(body.amount, 'Charge amount');
       const dueDate = requireDay(body.dueDate || today(), 'Due date');
+      // The same rule as the monthly run: nothing is billed ahead of its month.
+      if (monthOf(dueDate) > monthOf(today())) {
+        bad('A charge cannot be dated in a future month. Raise it when its month arrives.');
+      }
       const description = optionalString(body.description, 300);
 
       // The account is billed in one currency; a charge in the other would sit on
@@ -4514,13 +4698,26 @@ app.put(
       if (!Number.isFinite(currentReading)) bad('The current meter reading is required.');
       if (currentReading < previousReading) bad('The current reading cannot be lower than the previous reading.');
 
+      const newAmount = requirePositiveAmount(body.amountCharged ?? original.amountCharged, 'Charge amount');
+      const newCurrency = requireCurrency(body.currency ?? original.currency);
+      // Once a receipt exists (even one still awaiting funds) the bill and the receipt
+      // must keep saying the same thing: changing the figure here used to leave a bill
+      // of 12,000 marked paid against a receipt of 8,000.
+      const receipt = db.payments.find(p => p.utilityId === original.id && p.status !== 'reversed');
+      if (receipt && (round2(newAmount) !== round2(original.amountCharged) || newCurrency !== original.currency)) {
+        throw new ApiError(
+          409,
+          `A receipt (${receipt.receiptNo || 'awaiting confirmation'}) already exists for this bill. Reverse the receipt first, correct the bill, then settle it again.`
+        );
+      }
+
       const updated: UtilityReading = {
         ...original,
         previousReading,
         currentReading,
         consumption: round2(currentReading - previousReading),
-        amountCharged: requirePositiveAmount(body.amountCharged ?? original.amountCharged, 'Charge amount'),
-        currency: requireCurrency(body.currency ?? original.currency)
+        amountCharged: newAmount,
+        currency: newCurrency
       };
       db.utilities[idx] = updated;
       const who = actor(req);
@@ -5406,9 +5603,20 @@ app.put(
       if (body.outcome !== undefined) activity.outcome = optionalString(body.outcome, 2000);
       if (body.notes !== undefined) activity.notes = requireString(body.notes, 'Activity notes', 4000);
 
+      // The expense this job raised, unless it has since been voided: a voided
+      // expense is a cost that was taken back, so the job is free to book it again.
+      const linkedExpense = activity.expenseId ? db.expenses.find(e => e.id === activity.expenseId && e.status !== 'void') : undefined;
       if (body.costAmount !== undefined && body.costAmount !== '' && body.costAmount !== null) {
-        activity.costAmount = requirePositiveAmount(body.costAmount, 'Cost');
-        activity.costCurrency = requireCurrency(body.costCurrency ?? activity.costCurrency ?? 'JMD');
+        const newCost = requirePositiveAmount(body.costAmount, 'Cost');
+        const newCurrency = requireCurrency(body.costCurrency ?? activity.costCurrency ?? 'JMD');
+        if (linkedExpense && (round2(newCost) !== round2(activity.costAmount || 0) || newCurrency !== (activity.costCurrency || 'JMD'))) {
+          throw new ApiError(
+            409,
+            `This job's cost is already booked as an expense (${linkedExpense.currency} ${linkedExpense.amount}). Void that expense first, then correct the cost and raise it again.`
+          );
+        }
+        activity.costAmount = newCost;
+        activity.costCurrency = newCurrency;
       }
 
       // Closing it needs a date; an open one must not carry a completion date.
@@ -5427,7 +5635,7 @@ app.put(
        * not at all. `expenseId` makes it idempotent — asking twice does nothing.
        */
       let expense: Expense | null = null;
-      if (body.raiseExpense && !activity.expenseId) {
+      if (body.raiseExpense && !linkedExpense) {
         if (!can(req.auth!, 'record_expense')) {
           throw new ApiError(403, 'Recording property expenses requires additional permission.');
         }
@@ -5486,6 +5694,10 @@ app.delete(
       const removed = db.unitActivities[idx];
       if (removed.loggedBy !== req.auth!.user.name && !can(req.auth!, 'edit_unit')) {
         throw new ApiError(403, 'You can only remove activity entries that you logged.');
+      }
+      const bookedCost = removed.expenseId ? db.expenses.find(e => e.id === removed.expenseId && e.status !== 'void') : undefined;
+      if (bookedCost) {
+        throw new ApiError(409, `This job's cost is booked as an expense (${bookedCost.currency} ${bookedCost.amount}). Void that expense first, or mark the job Cancelled instead of deleting it.`);
       }
       db.unitActivities.splice(idx, 1);
       const who = actor(req);

@@ -305,7 +305,7 @@ export default async function run({ port, projectRoot }) {
       // A tenant leaves and the villa is re-let.
       async ({ unitId, rand }) => {
         const tenancies = (await c.get('/api/db')).body.tenancies.filter(t => t.unitId === unitId && !t.moveOutDate);
-        if (tenancies.length) await c.post(`/api/tenancies/${tenancies[0].id}/evict`, { reason: 'lease ended', moveOutDate: '2026-06-30' });
+        if (tenancies.length) await c.post(`/api/tenancies/${tenancies[0].id}/evict`, { reason: 'lease ended', effectiveDate: '2026-06-30' });
         await c.put(`/api/units/${unitId}`, { number: unitId.replace('unit-', ''), ownerName: 'Owner', tenantChangeIntent: 'changeover', ownerChangeIntent: 'correction', tenantName: 'New Tenant', status: 'long-term', monthlyRent: money(rand, 20000, 80000), monthlyMaintenance: money(rand, 4000, 12000), currency: 'JMD', maintCurrency: 'JMD' });
       },
 
@@ -352,7 +352,7 @@ export default async function run({ port, projectRoot }) {
         const id = p.body?.payment?.id;
         if (!id) return;
         await c.post(`/api/payments/${id}/confirm`, {});
-        await c.post(`/api/payments/${id}/reconcile`, { matched: true, statementRef: 'STMT-001' });
+        await c.post(`/api/payments/${id}/reconcile`, { reconciled: true, reference: `STMT-001-${id}` });
       }
     ];
 

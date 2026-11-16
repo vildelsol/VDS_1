@@ -40,6 +40,9 @@ import { startServer, makeClient, reporter, activateAdmin } from './harness.mjs'
 
 export const title = 'A software architect judging a thousand requests';
 
+/** This suite asks for a route that does not exist on purpose (the 'bad-route' request), to prove the server answers it cleanly. */
+export const allowUnknownRoutes = true;
+
 const REQUEST_COUNT = 1000;
 
 function rng(seed) {
@@ -86,8 +89,8 @@ export default async function run({ port, projectRoot }) {
       return res;
     };
 
-    const settings = (await c.get('/api/settings')).body;
-    await c.put('/api/settings', { ...settings, booksBeginOn: '2026-01-01' });
+    const settings = (await c.get('/api/db')).body.settings;
+    await c.post('/api/settings', { ...settings, booksBeginOn: '2026-01-01' });
 
     const unitIds = (await c.get('/api/db')).body.units.map(u => u.id);
     const setup = rng(1234);

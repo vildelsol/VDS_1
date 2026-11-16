@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Start a server child and wait until it answers.
@@ -97,6 +98,154 @@ export async function startServer({ port, adminPassword, projectRoot, dataDir: r
   return { baseUrl, dataDir, stop, getLog: () => log };
 }
 
+
+/*
+ * Unknown-route guard.
+ *
+ * Seven suites called `PUT /api/settings` for months. The route is POST-only, the
+ * call came back 404, nothing looked at the status, and the books-begin date a
+ * dozen scenarios relied on was never set. The suites still passed. The same shape
+ * as sending `reason` to an endpoint that reads `reversalReason`: a request that
+ * can never succeed, in a test that cannot notice.
+ *
+ * Every client records each /api request that no server route answers, two ways:
+ *   - the server said so itself (404 "Unknown API route: ..."); and
+ *   - the method and path match no route declared in server.ts, which also catches
+ *     a request made without a session (the server answers 401 before it ever gets
+ *     to say "unknown"). The table is parsed from server.ts, so it cannot drift.
+ * test/run.mjs fails a module that recorded any, unless the module exports
+ * `allowUnknownRoutes = true` (a suite that probes missing routes on purpose).
+ * Paths containing `..` or `%`, or over 200 characters, are deliberate abuse
+ * probes and are only judged by the server's own answer.
+ */
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+function loadRouteTable() {
+  const src = fs.readFileSync(path.join(HERE, '..', 'server.ts'), 'utf8');
+  const routes = [];
+  const re = /\bapp\.(get|post|put|delete|patch)\(\s*['"`]([^'"`]+)['"`]/g;
+  let m;
+  while ((m = re.exec(src))) {
+    if (!m[2].startsWith('/api')) continue;
+    const pattern = new RegExp('^' + m[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/:[A-Za-z]+/g, '[^/]+') + '/?$');
+    routes.push({ method: m[1].toUpperCase(), pattern, path: m[2] });
+  }
+  return routes;
+}
+const ROUTE_TABLE = loadRouteTable();
+
+/** Every unknown-route call recorded by any client since the last take. */
+const unknownRegistry = [];
+export function takeUnknownRoutes() {
+  const found = unknownRegistry.slice();
+  unknownRegistry.length = 0;
+  return found;
+}
+/** Exposed so a test of the guard itself can be written. */
+export function routeIsDeclared(method, apiPath) {
+  const p = apiPath.split('?')[0];
+  const verbs = ROUTE_TABLE.filter(r => r.pattern.test(p)).map(r => r.method);
+  return { declared: verbs.includes(method.toUpperCase()), verbsForPath: verbs };
+}
+/*
+ * Optional audit aid: with VDS_RECORD_FIELDS=<file>, write down every top-level
+ * body key each test sends to each route, so the keys can be compared with what
+ * the handler reads (the `reason` / `reversalReason` mismatch class).
+ */
+const sentFields = new Map();
+function noteFields(method, apiPath, body) {
+  if (!process.env.VDS_RECORD_FIELDS || !body || typeof body !== 'object' || Array.isArray(body)) return;
+  const p = apiPath.split('?')[0].replace(/^(\/api\/(?:payments|charges|expenses|utilities|tenancies|users|units|bookings|recurring-expenses|unit-activities|annual-reports|ical\/feeds))\/(?!post-month|restate|recall-month)[^/]+/, '$1/:id');
+  const key = `${method} ${p}`;
+  const set = sentFields.get(key) || new Set();
+  for (const k of Object.keys(body)) set.add(k);
+  sentFields.set(key, set);
+}
+if (process.env.VDS_RECORD_FIELDS) {
+  process.on('exit', () => {
+    const prior = fs.existsSync(process.env.VDS_RECORD_FIELDS) ? JSON.parse(fs.readFileSync(process.env.VDS_RECORD_FIELDS, 'utf8')) : {};
+    for (const [k, v] of sentFields) prior[k] = [...new Set([...(prior[k] || []), ...v])].sort();
+    fs.writeFileSync(process.env.VDS_RECORD_FIELDS, JSON.stringify(prior, null, 1));
+  });
+}
+
+function noteUnknown(method, apiPath, status, body) {
+  const p = apiPath.split('?')[0];
+  if (!p.startsWith('/api')) return;
+  const serverSaid = status === 404 && typeof body?.error === 'string' && /^Unknown API route/.test(body.error);
+  const abuse = p.includes('..') || p.includes('%') || p.length > 200;
+  let why = '';
+  if (serverSaid) why = 'the server answered "Unknown API route"';
+  else if (!abuse) {
+    const { declared, verbsForPath } = routeIsDeclared(method, p);
+    if (!declared) why = verbsForPath.length ? `${method} is not allowed here, this route takes ${verbsForPath.join('/')}` : 'no route declared in server.ts';
+  }
+  if (why) unknownRegistry.push(`${method} ${p} (${why})`);
+}
+
+
+/*
+ * "Never succeeded" guard.
+ *
+ * Sending `reason` to an endpoint that reads `reversalReason` returned 400 on every
+ * call. A simulation that fires that request thousands of times and ignores the
+ * status still passes, and the reversal path was never once exercised. So every
+ * request is also counted per method and route, and a simulation can assert that
+ * each money-changing endpoint it called succeeded at least once.
+ */
+const outcomeRegistry = new Map();
+const normRoute = p =>
+  p
+    .split('?')[0]
+    .replace(/^(\/api\/(?:payments|charges|expenses|utilities|tenancies|users|units|bookings|recurring-expenses|unit-activities|annual-reports|ical\/feeds))\/(?!post-month|restate|recall-month)[^/]+/, '$1/:id');
+function noteOutcome(method, apiPath, status) {
+  if (!apiPath.startsWith('/api')) return;
+  const key = `${method} ${normRoute(apiPath)}`;
+  const o = outcomeRegistry.get(key) || { ok: 0, refused: 0, error: 0, lastRefusal: '' };
+  if (status >= 200 && status < 300) o.ok++;
+  else if (status >= 500) o.error++;
+  else o.refused++;
+  outcomeRegistry.set(key, o);
+}
+/** Start a suite with a clean count. */
+export function resetOutcomes() {
+  outcomeRegistry.clear();
+}
+/** The money-changing endpoints a simulation should see succeed if it calls them at all. */
+export const MONEY_ENDPOINTS = [
+  'POST /api/payments',
+  'POST /api/payments/:id/confirm',
+  'POST /api/payments/:id/refund',
+  'POST /api/payments/:id/reverse',
+  'POST /api/charges',
+  'POST /api/charges/post-month',
+  'POST /api/charges/:id/void',
+  'POST /api/tenancies/:id/deposit',
+  'POST /api/tenancies/:id/deposit/settle',
+  'POST /api/tenancies/:id/evict',
+  'POST /api/expenses',
+  'POST /api/expenses/:id/void',
+  'POST /api/utilities',
+  'POST /api/utilities/:id/settle'
+];
+/**
+ * One check per money endpoint the suite called: it must have succeeded (2xx) at
+ * least once. An endpoint never called is not judged here (a suite need not cover
+ * everything); one called and never accepted is a request that cannot work.
+ */
+export function checkMoneyEndpointsSucceeded(T, label = 'simulation', endpoints = MONEY_ENDPOINTS) {
+  const called = endpoints.filter(e => outcomeRegistry.has(e));
+  for (const e of called) {
+    const o = outcomeRegistry.get(e);
+    T.check(`${label}: ${e} succeeded at least once`, o.ok > 0, `called ${o.ok + o.refused + o.error} times, never accepted (${o.refused} refused, ${o.error} errors): a payload field the server does not read?`);
+  }
+  T.check(`${label}: at least four money endpoints were exercised`, called.length >= 4, `only ${called.length}: ${called.join(', ')}`);
+  return called;
+}
+export function outcomesSnapshot() {
+  return Object.fromEntries([...outcomeRegistry].map(([k, v]) => [k, { ...v }]));
+}
+
 /** An HTTP client with a cookie jar. Options are always forwarded (a real one bit us before). */
 export function makeClient(baseUrl, { autoConfirmDuplicates = true } = {}) {
   let cookie = '';
@@ -128,6 +277,7 @@ export function makeClient(baseUrl, { autoConfirmDuplicates = true } = {}) {
     if (autoConfirmDuplicates && method === 'POST' && apiPath === '/api/payments' && body && typeof body === 'object' && body.confirmDuplicate === undefined) {
       body = { ...body, confirmDuplicate: true };
     }
+    noteFields(method, apiPath, body);
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (cookie && !opts.noCookie) headers.Cookie = cookie;
     const res = await fetch(baseUrl + apiPath, {
@@ -145,6 +295,8 @@ export function makeClient(baseUrl, { autoConfirmDuplicates = true } = {}) {
       /* non-JSON body */
     }
     if (res.status === 404) notFound.push(`${method} ${apiPath}`);
+    noteUnknown(method, apiPath, res.status, json);
+    noteOutcome(method, apiPath, res.status);
     return { status: res.status, body: json, setCookie, text };
   }
   return {
