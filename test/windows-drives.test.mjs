@@ -54,7 +54,7 @@ export default async function run({ projectRoot }) {
     if (process.platform === 'win32') {
       const rows = m.queryWindowsDrives();
       const c = rows?.find(r => r.letter === 'C');
-      T.check('on Windows: the live query answers and lists C:', !!c, JSON.stringify(rows));
+      T.check('on Windows: the live query answers and lists C:', !!c, JSON.stringify(rows) + ' error: ' + m.lastWindowsDriveError());
       T.check('on Windows: C: is a fixed disk and not external', c?.driveType === 3 && ext(c) === false, JSON.stringify(c));
     } else {
       console.log('  (live Windows query skipped on this platform; CI runs it)');

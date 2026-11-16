@@ -62,33 +62,59 @@ export function parseWindowsDriveReport(text: string): WindowsDriveInfo[] | null
   }
 }
 
-const SCRIPT = [
-  "$ErrorActionPreference='SilentlyContinue'",
-  '$bus=@{}',
-  'Get-Partition | Where-Object { $_.DriveLetter } | ForEach-Object { $bus[[string]$_.DriveLetter] = [string](Get-Disk -Number $_.DiskNumber).BusType }',
-  '@(Get-CimInstance Win32_LogicalDisk | ForEach-Object { $l=$_.DeviceID.Substring(0,1); [pscustomobject]@{ letter=$l; driveType=[int]$_.DriveType; bus=$bus[$l] } }) | ConvertTo-Json -Compress'
-].join('; ');
+const PS_HEAD = "$ErrorActionPreference='SilentlyContinue'";
+const PS_BUS =
+  '$bus=@{}; Get-Partition | Where-Object { $_.DriveLetter } | ForEach-Object { $bus[[string]$_.DriveLetter] = [string](Get-Disk -Number $_.DiskNumber).BusType }';
+const PS_ROWS =
+  '@(Get-CimInstance Win32_LogicalDisk | ForEach-Object { $l=$_.DeviceID.Substring(0,1); [pscustomobject]@{ letter=$l; driveType=[int]$_.DriveType; bus=$bus[$l] } }) | ConvertTo-Json -Compress';
+
+/** Full query: drive types plus each disk's bus. The bus lookup is the slow part. */
+const SCRIPT_FULL = [PS_HEAD, PS_BUS, PS_ROWS].join('; ');
+/** Fallback: drive types only (removable still detected; USB hard disks are then not). */
+const SCRIPT_TYPES_ONLY = [PS_HEAD, '$bus=@{}', PS_ROWS].join('; ');
 
 let cache: { at: number; rows: WindowsDriveInfo[] | null } | null = null;
+let lastError = '';
+
+/** Why the last query returned null (empty when it did not). For diagnostics and tests. */
+export function lastWindowsDriveError(): string {
+  return lastError;
+}
+
+function runPowerShell(script: string, timeoutMs: number): WindowsDriveInfo[] | null {
+  try {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const rows = parseWindowsDriveReport(out);
+    if (!rows) lastError = 'unparseable output: ' + String(out).slice(0, 200);
+    return rows;
+  } catch (e) {
+    const err = e as { message?: string; stderr?: unknown };
+    lastError = (err.message || 'failed') + (err.stderr ? ' | ' + String(err.stderr).slice(0, 200) : '');
+    return null;
+  }
+}
 
 /**
  * Ask Windows about every drive. Null when it could not be asked (PowerShell
- * missing or blocked, a timeout). Cached for a few seconds because the Backup
- * screen and the drive watcher both poll, and starting PowerShell is not free.
+ * missing or blocked, a timeout). A cold PowerShell plus the disk-bus lookup can
+ * take well over 6 seconds (it did on the CI runner), so the full query gets 25s
+ * and, if it fails, a drive-types-only query gets another try. Cached for a few
+ * seconds because the Backup screen and the drive watcher both poll.
  */
 export function queryWindowsDrives(): WindowsDriveInfo[] | null {
   if (cache && Date.now() - cache.at < 10_000) return cache.rows;
-  let rows: WindowsDriveInfo[] | null = null;
-  try {
-    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', SCRIPT], {
-      encoding: 'utf-8',
-      timeout: 6000,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore']
-    });
-    rows = parseWindowsDriveReport(out);
-  } catch {
-    rows = null;
+  lastError = '';
+  let rows = runPowerShell(SCRIPT_FULL, 25_000);
+  if (!rows) {
+    const firstError = lastError;
+    rows = runPowerShell(SCRIPT_TYPES_ONLY, 15_000);
+    if (!rows) lastError = 'full: ' + firstError + ' || types-only: ' + lastError;
+    else lastError = '';
   }
   cache = { at: Date.now(), rows };
   return rows;
