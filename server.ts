@@ -3571,6 +3571,15 @@ function assertNoOverlap(db: Database, unitId: string, checkIn: string, checkOut
 type DepositAction = 'issue' | 'modify' | 'void';
 type DepositGate = (kind: DepositAction, receiptNo?: string) => void;
 
+/**
+ * How a reservation deposit is assumed to have been handed over when nothing says.
+ *
+ * Guests at this property pay cash (Ro, 2026-11-17). The receipt used to be
+ * raised as `Bank Transfer` with no field anywhere to change it, so every
+ * short-stay receipt misstated how the money arrived — on the guest's own copy.
+ */
+const DEFAULT_DEPOSIT_METHOD: PaymentMethod = 'Cash';
+
 function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: string, role: UserRole, gate: DepositGate = () => {}) {
   // Anything not voided counts as the live deposit receipt — including one that
   // is still awaiting confirmation. Matching only completed receipts would raise a
@@ -3636,6 +3645,19 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     }
 
     /*
+     * The method follows the reservation too, because nothing else can reach it:
+     * `PUT /api/payments/:id` refuses a booking-generated receipt and tells the
+     * person to edit the reservation. If the method did not follow from here, a
+     * receipt that says "Bank Transfer" over cash could never be put right.
+     */
+    const depositMethod = booking.depositMethod || DEFAULT_DEPOSIT_METHOD;
+    if (live.method !== depositMethod) {
+      if (live.status === 'completed') gate('modify', live.receiptNo);
+      live.method = depositMethod;
+      changed = true;
+    }
+
+    /*
      * A deposit still sitting as "Awaiting funds" is brought onto the ledger.
      *
      * This is the migration path for every receipt raised before the rule below
@@ -3668,7 +3690,7 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     amount: booking.depositPaid,
     currency: booking.currency,
     date: today(),
-    method: 'Bank Transfer',
+    method: booking.depositMethod || DEFAULT_DEPOSIT_METHOD,
     reference: `BOOK-${booking.id.slice(-6).toUpperCase()}`,
     notes: `Deposit for reservation by ${booking.guestName} (${booking.checkIn} to ${booking.checkOut}).`,
     staffMember: staffName,
@@ -3711,6 +3733,11 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
   const currency = requireCurrency(body.currency ?? existing?.currency ?? unit.currency, 'Currency');
   const amount = optionalAmount(body.amount, 'The booking total', existing?.amount ?? 0);
   const depositPaid = optionalAmount(body.depositPaid, 'The deposit paid', existing?.depositPaid ?? 0);
+  const depositMethod = requireEnum(
+    body.depositMethod ?? existing?.depositMethod ?? DEFAULT_DEPOSIT_METHOD,
+    PAYMENT_METHODS,
+    'The deposit payment method'
+  ) as PaymentMethod;
   if (depositPaid > amount) {
     bad('The deposit cannot exceed the total stay cost. Record the surplus as a separate payment if it is an overpayment.');
   }
@@ -3726,6 +3753,7 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
     currency,
     amount,
     depositPaid,
+    depositMethod,
     balanceDue: round2(amount - depositPaid),
     nightlyRate,
     guestName: requireString(body.guestName ?? existing?.guestName, 'Guest name', 120),
@@ -3741,7 +3769,7 @@ const depositGate = (req: AuthedRequest, db: Database, body: unknown): DepositGa
   if (kind === 'issue') return requirePermission(req, 'record_payment');
   if (kind === 'modify') {
     requirePermission(req, 'modify_settled');
-    return assertCosigned(db, req, body, `receipt ${receiptNo} is re-priced through its reservation`);
+    return assertCosigned(db, req, body, `receipt ${receiptNo} is changed through its reservation`);
   }
   requirePermission(req, 'reverse_payment');
   return assertCosigned(db, req, body, `receipt ${receiptNo} is voided through its reservation`);

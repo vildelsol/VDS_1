@@ -567,6 +567,18 @@ export interface Booking {
   currency: Currency;
   /** Part-payment toward the stay. This IS income — see `damageDepositAmount` for the other kind. */
   depositPaid: number;
+  /**
+   * How that deposit was handed over. The receipt raised from this reservation
+   * carries it, and the receipt cannot be edited on its own — `PUT /api/payments/:id`
+   * refuses a booking-generated receipt and sends the person back here — so the
+   * reservation is the only place the method can be stated or corrected.
+   *
+   * It used to be hardcoded as `Bank Transfer` at the point the receipt was
+   * raised, with no field anywhere to say otherwise, so every short-stay receipt
+   * on the property claimed a transfer that never happened. Guests at this
+   * property pay cash (Ro, 2026-11-17), hence the default.
+   */
+  depositMethod?: PaymentMethod;
   balanceDue: number;
   status: 'confirmed' | 'checked-in' | 'checked-out' | 'cancelled';
 

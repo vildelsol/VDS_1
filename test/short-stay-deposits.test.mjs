@@ -124,6 +124,23 @@ export default async function run({ port, projectRoot }) {
     T.check('and it is recorded as a booking receipt, which is ISPO’s income', deposit?.category === 'Booking', String(deposit?.category));
 
     /* ================================================================
+     * Rule 1b — the receipt says how the money actually arrived
+     *
+     * Ro, 2026-11-17, looking at REC-2026-0034 on the live system: *"why does
+     * the short term rental show bank transfer by default? this is incorrect...
+     * Our guests pay cash."* The method was hardcoded where the receipt is
+     * raised and there was no field anywhere to say otherwise, so every
+     * short-stay receipt on the property claimed a transfer that never
+     * happened — on the guest's own copy of it.
+     *
+     * The receipt cannot be corrected on its own: PUT /api/payments/:id refuses
+     * a booking-generated receipt. So the reservation must carry the method,
+     * and the receipt must follow it when it is put right.
+     * ================================================================ */
+
+    T.check('a deposit with nothing said about it is receipted as cash, not as a bank transfer', deposit?.method === 'Cash', String(deposit?.method));
+
+    /* ================================================================
      * Rule 2 — never twice for the same reservation
      * ================================================================ */
 
@@ -414,6 +431,43 @@ export default async function run({ port, projectRoot }) {
       T.check('arrivals name the guest who has not come yet, and not the one already here', arriving.includes('arriving') && !arriving.includes('in-residence'), JSON.stringify(arriving));
       T.check('and both lists read in date order', JSON.stringify(leaving) === JSON.stringify(['in-residence', 'arriving']), JSON.stringify(leaving));
     }
+
+    /* ================================================================
+     * Rule 1b, continued — stating and correcting the method
+     *
+     * Last, because it raises a further reservation and receipt, and the counts
+     * asserted above are of the whole ledger.
+     * ================================================================ */
+
+    const byCard = await c.post('/api/bookings', {
+      unitId: 'unit-1',
+      guestName: 'Guest Paying By Card',
+      checkIn: addDaysTo(today, 200),
+      checkOut: addDaysTo(today, 205),
+      amount: 800,
+      depositPaid: 300,
+      depositMethod: 'Credit Card',
+      currency: 'USD',
+      source: 'Direct'
+    });
+    T.check('a reservation can state how the deposit was paid', byCard.status === 200, String(byCard.body?.error));
+    const cardBookingId = byCard.body?.booking?.id;
+    db = (await c.get('/api/db')).body;
+    const cardReceipt = db.payments.find(p => p.bookingId === cardBookingId);
+    T.check('and the receipt carries that method, not a default', cardReceipt?.method === 'Credit Card', String(cardReceipt?.method));
+
+    const corrected = await c.put(`/api/bookings/${cardBookingId}`, { amount: 800, depositPaid: 300, depositMethod: 'Cash' });
+    T.check('the method can be corrected on the reservation', corrected.status === 200, String(corrected.body?.error));
+    db = (await c.get('/api/db')).body;
+    const correctedReceipts = db.payments.filter(p => p.bookingId === cardBookingId && p.status !== 'reversed');
+    T.check('the correction reaches the receipt itself', correctedReceipts[0]?.method === 'Cash', String(correctedReceipts[0]?.method));
+    T.check('and it corrects the one receipt rather than raising a second', correctedReceipts.length === 1, `${correctedReceipts.length} live receipts`);
+    T.check(
+      'the correction is on the audit trail, named',
+      db.auditLogs.some(a => a.recordId === correctedReceipts[0]?.id),
+      'no audit entry for the corrected receipt'
+    );
+    T.check('and the money itself is untouched by a method correction', correctedReceipts[0]?.amount === 300, String(correctedReceipts[0]?.amount));
 
     return T.done();
   } finally {

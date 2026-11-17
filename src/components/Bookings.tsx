@@ -5,7 +5,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
-import { AppSettings, Booking, Currency, SessionUser, Unit, getUnitDisplayName } from '../types';
+import { AppSettings, Booking, Currency, PAYMENT_METHODS, PaymentMethod, SessionUser, Unit, getUnitDisplayName } from '../types';
 import { BookingClash, bookingCoversNight, bookingOverlaps, bookingsForUnit, bookingsOverlap } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, today } from '../lib/dates';
@@ -921,6 +921,9 @@ function BookingForm({
   const [nightlyRate, setNightlyRate] = useState(booking?.nightlyRate ? String(booking.nightlyRate) : '');
   const [amount, setAmount] = useState(booking ? String(booking.amount) : '');
   const [deposit, setDeposit] = useState(booking ? String(booking.depositPaid) : '');
+  // Cash unless somebody says otherwise: that is how guests pay here, and the
+  // receipt raised from this reservation is the guest's own copy of it.
+  const [depositMethod, setDepositMethod] = useState<PaymentMethod>(booking?.depositMethod || 'Cash');
   const [notes, setNotes] = useState(booking?.notes || '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1018,6 +1021,7 @@ function BookingForm({
         nightlyRate: nightlyRate === '' ? undefined : Number(nightlyRate),
         amount: Number(amount) || 0,
         depositPaid: Number(deposit) || 0,
+        depositMethod,
         notes
       });
     } catch (err) {
@@ -1159,6 +1163,28 @@ function BookingForm({
             <input id="bf-bal" type="text" value={formatMoneyLong(balance, currency)} readOnly className={`${monoInputClass} bg-slate-100`} />
           </Field>
         </div>
+
+        {/*
+          How the deposit arrived, on the reservation rather than on the receipt.
+          The receipt is raised from here and cannot be edited on its own, so this
+          is the only place the method can be stated or put right.
+        */}
+        {(Number(deposit) > 0 || (booking?.depositPaid || 0) > 0) && (
+          <Field label="How the deposit was paid" htmlFor="bf-dep-method" hint="This is what the guest's receipt will say.">
+            <select
+              id="bf-dep-method"
+              value={depositMethod}
+              onChange={e => setDepositMethod(e.target.value as PaymentMethod)}
+              className={inputClass}
+            >
+              {PAYMENT_METHODS.map(m => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
 
         {mode === 'edit' && (
           <Field label="Status" htmlFor="bf-status" required>
