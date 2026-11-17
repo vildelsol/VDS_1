@@ -22,7 +22,7 @@ import {
   collectedInPeriod,
   chargedInPeriod,
   consolidateEverything,
-  collectionRate,
+  combinedSettledOfBilled,
   delinquentAccounts,
   maintenanceFundedFromRent,
   expensesInPeriod,
@@ -215,11 +215,11 @@ export default function Dashboard({
       // The same three figures for the preceding month, so the screen can say
       // which way each one moved rather than only where it stands.
       const priorCollected = collectedInPeriod(combined.payments, currency, previousStart, previousEnd, ownerBilled);
-      const priorBilled = chargedInPeriod(combined.charges, currency, previousStart, previousEnd);
       const priorSpent = expensesInPeriod(expenses, currency, previousStart, previousEnd);
 
-      const rate = collectionRate(billed.total, sumMoney([collected.rent, collected.maintenance]));
-      const priorRate = collectionRate(priorBilled.total, sumMoney([priorCollected.rent, priorCollected.maintenance]));
+      // Share of what fell due that is PAID (ledger allocation), not cash in the month over charges in the month.
+      const rate = combinedSettledOfBilled(charges, payments, units, currency, periodStart, periodEnd).rate;
+      const priorRate = combinedSettledOfBilled(charges, payments, units, currency, previousStart, previousEnd).rate;
 
       return {
         currency,

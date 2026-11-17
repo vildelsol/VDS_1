@@ -127,7 +127,8 @@ function netLabel(net: number, owner?: string, unitNumber?: string): string {
     return 'Settled in full';
   }
 
-  const direction = net > 0 ? 'Due to' : 'Due from';
+  // A positive figure is credit the corporation HOLDS for the owner, not a demand on anyone.
+  const direction = net > 0 ? 'Credit held for' : 'Due from';
   if (who && villa) return `${direction} ${who}, ${villa}`;
   if (who) return `${direction} ${who}`;
   if (villa) return `${direction} the owner of ${villa}`;
@@ -384,6 +385,11 @@ function OwnerCard({
               {row.net !== 0 ? ` ${formatMoney(Math.abs(row.net), row.currency)}` : ''}
             </Badge>
           ))}
+          {group.creditByCurrency.map(row => (
+            <Badge key={`credit-${row.currency}`} tone="green">
+              Credit held {formatMoney(row.credit, row.currency)}
+            </Badge>
+          ))}
           <SecondaryButton onClick={onPrint} className="flex items-center gap-1.5 bg-white">
             <Printer className="h-3.5 w-3.5" /> Statement
           </SecondaryButton>
@@ -415,6 +421,16 @@ function OwnerCard({
                   {s.maintenancePaid > 0 && (
                     <span className="mt-0.5 block font-mono text-[10px] leading-relaxed text-emerald-700">
                       less {formatMoney(s.maintenancePaid, s.currency)} received in the period
+                    </span>
+                  )}
+                  {s.maintenancePaidInAdvance > 0 && (
+                    <span className="mt-0.5 block font-mono text-[10px] leading-relaxed text-emerald-700">
+                      less {formatMoney(s.maintenancePaidInAdvance, s.currency)} paid before the period
+                    </span>
+                  )}
+                  {s.maintenanceAppliedToEarlier > 0 && (
+                    <span className="mt-0.5 block font-mono text-[10px] leading-relaxed text-amber-700">
+                      {formatMoney(s.maintenanceAppliedToEarlier, s.currency)} received was applied to earlier months
                     </span>
                   )}
                   {s.maintenanceOutstanding > 0 && (
@@ -478,6 +494,8 @@ function OwnerStatementDocument({
         `${getUnitDisplayName(s.unit.number)} (${s.currency})`,
         `  Contributions billed     : ${formatMoneyLong(s.maintenanceBilled, s.currency)}`,
         ...(s.maintenancePaid !== 0 ? [`  Less received            : ${formatMoneyLong(s.maintenancePaid, s.currency)}`] : []),
+        ...(s.maintenanceAppliedToEarlier > 0 ? [`  Applied to earlier months: ${formatMoneyLong(s.maintenanceAppliedToEarlier, s.currency)}`] : []),
+        ...(s.maintenancePaidInAdvance > 0 ? [`  Less paid before period  : ${formatMoneyLong(s.maintenancePaidInAdvance, s.currency)}`] : []),
         ...(s.expenses !== 0 ? [`  Charged to your villa    : ${formatMoneyLong(s.expenses, s.currency)}`] : []),
         `  ${netLabel(s.net, s.unit.ownerName, s.unit.number)} : ${formatMoneyLong(Math.abs(s.net), s.currency)}`,
         ''
@@ -526,7 +544,7 @@ function OwnerStatementDocument({
           // balance rather than a netted position. "Balance owing J$0.00" is a
           // demand for nothing, so a settled owner is told they have settled.
           group.netByCurrency.length > 0 && group.netByCurrency.every(r => r.net === 0)
-            ? ['Balance', 'Settled in full']
+            ? ['Balance', group.creditByCurrency.length > 0 ? `Settled in full, with ${group.creditByCurrency.map(r => formatMoneyLong(r.credit, r.currency)).join(' · ')} credit held` : 'Settled in full']
             : [
                 group.netByCurrency.every(r => r.net <= 0) ? 'Balance owing' : 'Balance',
                 group.netByCurrency.map(r => formatMoneyLong(Math.abs(r.net), r.currency)).join(' · ') || '-'
@@ -634,9 +652,10 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
               tone="debit"
               emptyLabel="No maintenance billed in the period."
               note={
-                s.maintenancePaid > 0
-                  ? `Less ${formatMoney(s.maintenancePaid, c)} received in this period, already deducted from the amount due below.`
-                  : undefined
+                [
+                  s.maintenancePaid - s.maintenanceAppliedToEarlier > 0 ? `Less ${formatMoney(s.maintenancePaid - s.maintenanceAppliedToEarlier, c)} received in this period` : '',
+                  s.maintenancePaidInAdvance > 0 ? `less ${formatMoney(s.maintenancePaidInAdvance, c)} received before this period and already applied to it` : ''
+                ].filter(Boolean).join(', ').replace(/^./, ch => ch.toUpperCase()) + (s.maintenancePaid - s.maintenanceAppliedToEarlier > 0 || s.maintenancePaidInAdvance > 0 ? ', already deducted from the amount due below.' : '') + (s.maintenanceAppliedToEarlier > 0 ? ` ${formatMoney(s.maintenanceAppliedToEarlier, c)} received in this period was applied to earlier months and does not reduce this period.` : '') || undefined
               }
             />
             {/*

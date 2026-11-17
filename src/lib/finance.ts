@@ -1238,8 +1238,8 @@ export function periodStatement(
 
 /**
  * What is receivable from the units in one currency, as at a date: rent plus
- * maintenance, counting a let villa's levy once (it is part of the rent) and netting
- * credits. The board pack's "receivable" rows use this so they agree with its own
+ * maintenance, counting a let villa's levy once (it is part of the rent). Credits
+ * are NOT netted: they are held for their own villa. The board pack's "receivable" rows use this so they agree with its own
  * "accounts in arrears" figure.
  */
 export function receivableAsOf(units: Unit[], charges: Charge[], payments: Payment[], asOf: string, currency: Currency): number {
@@ -1248,7 +1248,10 @@ export function receivableAsOf(units: Unit[], charges: Charge[], payments: Payme
       const rent = accountBalance(unit, 'Rent', charges, payments, asOf, units);
       const maintenance = accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
       const insideRent = maintenanceFundedFromRent(unit) && rent.balance > 0 && maintenance.balance > 0 && maintenance.balance <= rent.balance;
-      return [rent, ...(insideRent ? [] : [maintenance])].filter(a => a.currency === currency).map(a => a.balance);
+      // Debt only. One villa's credit is money held FOR that villa; it does not pay
+      // another villa's arrears, and netting it made the pack's receivable read
+      // lower than its own ageing and arrears count on the same page.
+      return [rent, ...(insideRent ? [] : [maintenance])].filter(a => a.currency === currency).map(a => Math.max(0, a.balance));
     })
   );
 }
@@ -1509,6 +1512,152 @@ export function categoriesWithSpend<T extends { amount: number }>(breakdown: T[]
 
 export function ownerBilledUnitIds(units: Unit[]): Set<string> {
   return new Set(units.filter(u => u.status === 'owner-occupied' || u.status === 'short-term').map(u => u.id));
+}
+
+/**
+ * Apply `credit` to charges oldest-first (due date, then id) and report how much of
+ * each was covered. Returns what is left over. The one allocation rule behind the
+ * collection rate and the owner statement.
+ */
+function allocateOldestFirst(
+  charges: Charge[],
+  credit: number,
+  visit: (charge: Charge, covered: number) => void
+): number {
+  for (const c of [...charges].sort((x, y) => x.dueDate.localeCompare(y.dueDate) || x.id.localeCompare(y.id))) {
+    const covered = Math.min(Math.max(credit, 0), c.amount);
+    credit = round2(credit - covered);
+    visit(c, covered);
+  }
+  return credit;
+}
+
+/**
+ * What share of the charges FALLING DUE in a period is actually paid, on the
+ * ledger's own oldest-first allocation, as at `asOf` (default: the period end).
+ *
+ * This is the collection rate. It replaces cash-received-in-the-period divided by
+ * charges-due-in-the-period, which mixed three different kinds of money: payment
+ * of this period's charges, arrears from earlier periods (inflating the rate) and
+ * money paid ahead for later ones (inflating it again). One prepaying villa could
+ * hide three unpaid ones and the headline still read 100%. Here a receipt counts
+ * toward a charge only where the ledger would apply it, so the rate can never
+ * exceed 100% and cannot disagree with the account balances.
+ *
+ * Charges due after `asOf` are not yet collectable and are left out of both sides;
+ * an `asOf` later than `to` shows how the period stands once later receipts are applied.
+ * Refunds are netted as at `asOf`. Rent and Maintenance only, one currency.
+ */
+export function settledOfBilled(
+  charges: Charge[],
+  payments: Payment[],
+  currency: Currency,
+  from: string,
+  to: string,
+  asOf: string = to,
+  only?: 'Rent' | 'Maintenance',
+  /** Settle a villa's Rent and Maintenance from ONE pool of receipts (the combined view). */
+  pooled = false
+): { billed: number; settled: number; rent: number; maintenance: number; rate: number | null } {
+  const cutoff = asOf;
+  const accounts = new Map<string, { charges: Charge[]; paid: number }>();
+  const slot = (unitId: string, category: string) => {
+    const key = pooled ? unitId : `${unitId}|${category}`;
+    let a = accounts.get(key);
+    if (!a) accounts.set(key, (a = { charges: [], paid: 0 }));
+    return a;
+  };
+  for (const c of charges) {
+    if (c.status !== 'open' || c.currency !== currency || c.dueDate > cutoff) continue;
+    if (c.category !== 'Rent' && c.category !== 'Maintenance') continue;
+    if (only && c.category !== only) continue;
+    slot(c.unitId, c.category).charges.push(c);
+  }
+  for (const p of payments) {
+    if (p.status !== 'completed' || p.currency !== currency || p.date > cutoff) continue;
+    if (p.category !== 'Rent' && p.category !== 'Maintenance') continue;
+    const a = accounts.get(pooled ? p.unitId : `${p.unitId}|${p.category}`);
+    if (a) a.paid = round2(a.paid + netPaidAsOf(p, cutoff));
+  }
+  let rent = 0;
+  let maintenance = 0;
+  let billedRent = 0;
+  let billedMaintenance = 0;
+  for (const a of accounts.values()) {
+    allocateOldestFirst(a.charges, a.paid, (c, covered) => {
+      if (c.dueDate < from || c.dueDate > to) return;
+      if (c.category === 'Rent') {
+        billedRent = round2(billedRent + c.amount);
+        rent = round2(rent + covered);
+      } else {
+        billedMaintenance = round2(billedMaintenance + c.amount);
+        maintenance = round2(maintenance + covered);
+      }
+    });
+  }
+  const billed = round2(billedRent + billedMaintenance);
+  const settled = round2(rent + maintenance);
+  return { billed, settled, rent, maintenance, rate: billed > 0 ? round2((settled / billed) * 100) : null };
+}
+
+/**
+ * Credit on a villa's Rent or Maintenance account that is NOT the named holder's own.
+ *
+ * Settlement is oldest-first against the villa's account, so credit left by one party
+ * would silently pay the next one's charges. A holder's own unspent credit can only be
+ * what they paid SINCE they last held the villa (`sinceEnded`: the end date of their
+ * previous stint, '' if none); anything they paid before they left was applied to their
+ * own charges. Receipts count net of refunds, in the billed currency only.
+ */
+export function creditHeldForOthers(
+  unit: Unit,
+  category: 'Rent' | 'Maintenance',
+  charges: Charge[],
+  payments: Payment[],
+  units: Unit[],
+  holderName: string,
+  sinceEnded: string
+): { currency: Currency; credit: number } {
+  const currency = chargeCurrency(unit, category);
+  const account = accountBalance(unit, category, charges, payments, undefined, units);
+  if (account.balance >= 0) return { currency, credit: 0 };
+  const same = (a: string, b: string) => !!b.trim() && a.trim().toLowerCase() === b.trim().toLowerCase();
+  const fromHolder = payments
+    .filter(p => p.unitId === unit.id && p.category === category && p.status === 'completed' && p.currency === currency && same(p.payerName || '', holderName) && (!sinceEnded || p.date > sinceEnded))
+    .reduce((a, p) => round2(a + netPaidAsOf(p)), 0);
+  return { currency, credit: round2(-account.balance - fromHolder) };
+}
+
+/**
+ * The collection rate on the COMBINED view (the corporation and ISPO as one).
+ *
+ * `consolidateEverything` removes the levy from a let villa's rent charge but keeps
+ * the Maintenance charge, and drops the Maintenance receipts on ISPO's villas as
+ * internal transfers. Settled per category, a let villa paid in full then read 73%
+ * (the levy charge could never be settled), and ISPO's own levy on a short-stay villa
+ * read as 0% collected. So here: a villa's rent and levy are settled from one pool
+ * (the levy inside the rent IS paid by the rent), and a levy ISPO owes the
+ * corporation on a villa with no rent split is money moving between the two books,
+ * not something anyone outside owes, so it is left out of what fell due.
+ */
+export function combinedSettledOfBilled(
+  charges: Charge[],
+  payments: Payment[],
+  units: Unit[],
+  currency: Currency,
+  from: string,
+  to: string,
+  asOf: string = to
+) {
+  const combined = consolidateEverything(charges, payments, units);
+  const own = ownAccountUnitIds(units);
+  const rentSplit = new Set(
+    charges.filter(c => c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0).map(c => `${c.unitId}|${c.periodMonth}|${c.currency}`)
+  );
+  const collectable = combined.charges.filter(
+    c => !(c.category === 'Maintenance' && c.kind === undefined && own.has(c.unitId) && !rentSplit.has(`${c.unitId}|${c.periodMonth}|${c.currency}`))
+  );
+  return settledOfBilled(collectable, combined.payments, currency, from, to, asOf, undefined, true);
 }
 
 /** Collection rate for a period: what share of billed money actually came in. */
@@ -2076,6 +2225,17 @@ export interface OwnerStatement {
    */
   maintenancePaid: number;
   /**
+   * Part of this period's contribution already covered by money received BEFORE
+   * the period began (paid ahead, or an overpayment carried forward). Without it
+   * the statement said a proprietor owed November while the maintenance account
+   * showed November settled by October receipts. Found on real data, 2026-11-16.
+   */
+  maintenancePaidInAdvance: number;
+  /** Received in the period but applied to earlier months' arrears. */
+  maintenanceAppliedToEarlier: number;
+  /** What is still owing on this period's contribution after the ledger's own allocation; negative = credit held for the villa. `net` is built from it. */
+  maintenanceOwed: number;
+  /**
    * Metered utilities billed to this villa in the period, paid or not.
    *
    * These were previously invisible here. A reading raised against a villa is an
@@ -2233,7 +2393,61 @@ export function ownerStatement(
    * terms are in this statement's currency already, so this nets nothing across
    * currencies.
    */
-  const maintenanceOwedForPeriod = subtractMoney(maintenanceBilled, maintenancePaid);
+  /*
+   * What is still unpaid on THIS period's contribution, taken from the account
+   * itself: every receipt up to the period end applied oldest-first, exactly as
+   * the ledger ages debt. Two errors this replaces (both found 2026-11-16):
+   *   - receipts BEFORE the period that already covered it (paid ahead) were
+   *     ignored, so a settled month showed as owing;
+   *   - receipts INSIDE the period that really paid an older month were counted
+   *     against this one, so an unpaid month showed as settled.
+   * Where the account is in another currency, nothing can be applied: fall back to
+   * the plain in-period figure, which never nets across currencies.
+   */
+  let maintenanceOwedForPeriod: number;
+  if (maintAccount.currency === currency) {
+    let owedInPeriod = 0;
+    const accountCharges = chargesForUnit(charges, unit, units)
+      .filter(c => c.category === 'Maintenance' && c.status === 'open' && c.currency === currency && c.dueDate <= to);
+    const credit = allocateOldestFirst(accountCharges, maintAccount.paid, (c, covered) => {
+      if (isWithin(c.dueDate, from, to)) owedInPeriod = round2(owedInPeriod + (c.amount - covered));
+    });
+    // Money left over after every charge up to the period end is a CREDIT held for this
+    // villa. It stays visible as a negative amount owing (the statement then reads "in
+    // credit"), exactly as an overpayment inside the period always did.
+    maintenanceOwedForPeriod = round2(owedInPeriod - Math.max(credit, 0));
+  } else {
+    maintenanceOwedForPeriod = Math.max(0, subtractMoney(maintenanceBilled, maintenancePaid));
+  }
+  /*
+   * Where the money went, from the account itself rather than inferred from the
+   * period's own receipts (which mislabelled a surplus as "applied to earlier
+   * months" and a refund as "paid before the period"):
+   *   - paid ahead: credit already held the day BEFORE the period, up to what the
+   *     period billed;
+   *   - applied to earlier months: how much of the arrears due before the period was
+   *     cleared by money received DURING it.
+   */
+  let maintenancePaidInAdvance = 0;
+  let maintenanceAppliedToEarlier = 0;
+  if (maintAccount.currency === currency) {
+    const dayBefore = addDays(from, -1);
+    const atStart = accountBalance(unit, 'Maintenance', charges, payments, dayBefore, units);
+    maintenancePaidInAdvance = Math.min(Math.max(0, round2(-atStart.balance)), Math.max(0, maintenanceBilled));
+    const earlier = chargesForUnit(charges, unit, units).filter(
+      c => c.category === 'Maintenance' && c.status === 'open' && c.currency === currency && c.dueDate < from
+    );
+    const owedOnEarlier = (paid: number) => {
+      let owed = 0;
+      allocateOldestFirst(earlier, paid, (c, covered) => {
+        owed = round2(owed + (c.amount - covered));
+      });
+      return owed;
+    };
+    const before = owedOnEarlier(atStart.currency === currency ? atStart.paid : 0);
+    const after = owedOnEarlier(maintAccount.paid);
+    maintenanceAppliedToEarlier = Math.max(0, round2(before - after));
+  }
 
   /*
    * What the proprietor owes the corporation for the period, and nothing else.
@@ -2261,6 +2475,9 @@ export function ownerStatement(
     refunded,
     maintenanceBilled,
     maintenancePaid,
+    maintenancePaidInAdvance,
+    maintenanceAppliedToEarlier,
+    maintenanceOwed: maintenanceOwedForPeriod,
     utilityBilled,
     expenses: unitExpenses,
     net,
@@ -2313,8 +2530,14 @@ export function ownerStatements(
 export interface OwnerStatementGroup {
   owner: string;
   statements: OwnerStatement[];
-  /** Net position per currency across every villa in the group. */
+  /**
+   * What the owner OWES per currency: the villas in debt, added up. Credit on one villa
+   * is money held for that villa and does not pay another villa's arrears (the same
+   * rule `receivableAsOf` follows), so it is never netted in here.
+   */
   netByCurrency: { currency: Currency; net: number }[];
+  /** Credit held for the owner per currency, across the villas that hold some. */
+  creditByCurrency: { currency: Currency; credit: number }[];
 }
 
 export function groupStatementsByOwner(statements: OwnerStatement[]): OwnerStatementGroup[] {
@@ -2332,9 +2555,15 @@ export function groupStatementsByOwner(statements: OwnerStatement[]): OwnerState
       netByCurrency: (['JMD', 'USD'] as Currency[])
         .map(currency => ({
           currency,
-          net: sumMoney(rows.filter(r => r.currency === currency).map(r => r.net))
+          net: sumMoney(rows.filter(r => r.currency === currency).map(r => Math.min(0, r.net)))
         }))
-        .filter(row => rows.some(r => r.currency === row.currency))
+        .filter(row => rows.some(r => r.currency === row.currency)),
+      creditByCurrency: (['JMD', 'USD'] as Currency[])
+        .map(currency => ({
+          currency,
+          credit: sumMoney(rows.filter(r => r.currency === currency).map(r => Math.max(0, r.net)))
+        }))
+        .filter(row => row.credit > 0)
     }))
     .sort((a, b) => a.owner.localeCompare(b.owner));
 }
@@ -2948,7 +3177,6 @@ export function annualOwnersReport(
   // Context only. Stated beside the assessed figure so the meeting can see how
   // much of the contribution actually arrived, without it moving the gap.
   const received = collectedInPeriod(payments, currency, yearStart, yearEnd).maintenance;
-  const billedCharges = chargedInPeriod(charges, currency, yearStart, yearEnd).maintenance;
 
   /* --- categories, both years plus the budget --- */
   const actualByCategory = new Map<string, number>();
@@ -3064,7 +3292,7 @@ export function annualOwnersReport(
     monthlyPositionPerUnit,
     annualCommunityPosition,
     received,
-    collectionRatePct: collectionRate(billedCharges, received),
+    collectionRatePct: settledOfBilled(charges, payments, currency, yearStart, yearEnd, yearEnd, 'Maintenance').rate,
     budgetExpenditure,
     budgetPerUnitAnnual,
     budgetPerUnitMonthly,
@@ -3180,7 +3408,9 @@ export function operationalHealth(
 
   // --- collection ---
   if (billedTotal > 0) {
-    const rate = collectedTotal / billedTotal;
+    // Allocation basis: what share of the charges falling due is PAID, not cash in the
+    // period over charges in the period (which counted arrears and advances as collection).
+    const rate = (settledOfBilled(charges, payments, currency, from, to).settled) / billedTotal;
     parts.push({
       key: 'collection',
       label: 'Collection',
@@ -3188,7 +3418,7 @@ export function operationalHealth(
       // Capped at 100: a rate above it is arrears catch-up, not sustainable
       // performance, and letting it run over would mask a weak component.
       score: scoreOf(rate),
-      detail: `${formatPct(rate * 100)} of ${formatPlain(billedTotal)} billed was received`
+      detail: `${formatPct(rate * 100)} of ${formatPlain(billedTotal)} billed is paid`
     });
   }
 

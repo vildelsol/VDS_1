@@ -50,15 +50,20 @@ export default async function run({ port, projectRoot }) {
       unitId: 'unit-1',
       payerName: 'Tenant',
       category: 'Rent',
-      amount: 50000,
+      amount: 100000,
       currency: 'JMD',
       date: '2026-07-05',
-      method: 'Cash'
+      method: 'Cash',
+      // 2026-11-16: only UNSPENT credit can be refunded, so the refund tests start from a
+      // prepayment: 50000 owed, 100000 received, 50000 of credit to hand back.
+      advancePayment: true
     });
     const receiptNo = paid.body.payment.receiptNo;
     T.check('a rent payment can be received', paid.status === 200 && !!receiptNo, String(paid.body?.error || ''));
-    T.check('and it settles the account', (await balanceOf()) === 0);
+    T.check('it settles the account and leaves 50000 of credit', (await balanceOf()) === -50000, String(await balanceOf()));
 
+    const overRefund = await c.post(`/api/payments/${paid.body.payment.id}/refund`, { amount: 100000, refundedOn: '2026-07-20', method: 'Cash', reason: 'Trying to take back rent that has been applied' });
+    T.check('refunding more than the unspent credit is refused', overRefund.status === 400 && overRefund.body?.code === 'refund-exceeds-unspent-credit', `${overRefund.status} ${overRefund.body?.code}`);
     const refunded = await c.post(`/api/payments/${paid.body.payment.id}/refund`, {
       amount: 50000,
       refundedOn: '2026-07-20',
@@ -73,7 +78,7 @@ export default async function run({ port, projectRoot }) {
       refunded.body?.payment?.refundedOn === '2026-07-20' &&
       !!refunded.body?.payment?.refundReason
     );
-    T.check('the money is no longer with the property', (await balanceOf()) === 50000);
+    T.check('the credit is gone: settled, and the rent that was owed is still paid', (await balanceOf()) === 0, String(await balanceOf()));
 
     /* ---------------- you cannot do both ---------------- */
 
@@ -90,7 +95,7 @@ export default async function run({ port, projectRoot }) {
 
     const voided = await recordAndConfirmPayment(c, {
       unitId: 'unit-1', payerName: 'Tenant', category: 'Rent', amount: 1000,
-      currency: 'JMD', date: '2026-07-06', method: 'Cash'
+      currency: 'JMD', date: '2026-07-06', method: 'Cash', advancePayment: true
     });
     await c.post(`/api/payments/${voided.body.payment.id}/reverse`, { reversalReason: 'Entered against the wrong villa' });
     const refundAfterVoid = await c.post(`/api/payments/${voided.body.payment.id}/refund`, {
@@ -103,7 +108,7 @@ export default async function run({ port, projectRoot }) {
 
     const expected = await c.post('/api/payments', {
       unitId: 'unit-1', payerName: 'Tenant', category: 'Rent', amount: 5000,
-      currency: 'JMD', date: '2026-07-07', method: 'Cheque'
+      currency: 'JMD', date: '2026-07-07', method: 'Cheque', advancePayment: true
     });
     const refundPending = await c.post(`/api/payments/${expected.body.payment.id}/refund`, {
       amount: 5000,
@@ -113,7 +118,7 @@ export default async function run({ port, projectRoot }) {
 
     const partialTarget = await recordAndConfirmPayment(c, {
       unitId: 'unit-1', payerName: 'Tenant', category: 'Rent', amount: 20000,
-      currency: 'JMD', date: '2026-07-08', method: 'Cash'
+      currency: 'JMD', date: '2026-07-08', method: 'Cash', advancePayment: true
     });
     const tooMuch = await c.post(`/api/payments/${partialTarget.body.payment.id}/refund`, {
       amount: 30000,
@@ -157,7 +162,7 @@ export default async function run({ port, projectRoot }) {
     const reports = await c.get('/api/db');
     const augustPayment = await recordAndConfirmPayment(c, {
       unitId: 'unit-1', payerName: 'Tenant', category: 'Rent', amount: 8000,
-      currency: 'JMD', date: '2026-07-28', method: 'Cash'
+      currency: 'JMD', date: '2026-07-28', method: 'Cash', advancePayment: true
     });
     const laterRefund = await c.post(`/api/payments/${augustPayment.body.payment.id}/refund`, {
       amount: 8000,
@@ -213,8 +218,8 @@ export default async function run({ port, projectRoot }) {
      * everybody trusts.
      */
     const editTarget = await recordAndConfirmPayment(c, {
-      unitId: 'unit-1', payerName: 'Tenant', category: 'Maintenance', amount: 9000,
-      currency: 'JMD', date: '2026-07-12', method: 'Cash'
+      unitId: 'unit-1', payerName: 'Tenant', category: 'Maintenance', amount: 30000,
+      currency: 'JMD', date: '2026-07-12', method: 'Cash', advancePayment: true
     });
     await c.post(`/api/payments/${editTarget.body.payment.id}/refund`, {
       amount: 6000, refundedOn: '2026-07-20', reason: 'Overpaid maintenance; part returned.'
@@ -288,7 +293,7 @@ export default async function run({ port, projectRoot }) {
 
     const juniorPayment = await recordAndConfirmPayment(c, {
       unitId: 'unit-1', payerName: 'Tenant', category: 'Rent', amount: 700,
-      currency: 'JMD', date: '2026-08-05', method: 'Cash'
+      currency: 'JMD', date: '2026-08-05', method: 'Cash', advancePayment: true
     });
     if (!juniorPayment.body?.payment) {
       T.check('a payment could be recorded for the permission check', false, JSON.stringify(juniorPayment.body));

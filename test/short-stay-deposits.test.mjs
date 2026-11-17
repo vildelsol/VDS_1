@@ -36,7 +36,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
 
 export const title = 'Short-stay deposits and real arrivals and departures';
 
@@ -89,7 +89,9 @@ export default async function run({ port, projectRoot }) {
       maintDueDay: 1
     });
 
-    const today = new Date().toISOString().slice(0, 10);
+    // The application's own day (local time). toISOString() is the UTC day, which is TOMORROW for the last
+    // hours of every evening in Jamaica/Toronto, and the server then rightly refuses it as dated in the future.
+    const today = localToday();
 
     /* ================================================================
      * Rule 1 — a deposit entered is money in hand

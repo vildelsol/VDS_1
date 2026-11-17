@@ -90,7 +90,11 @@ export default async function run({ port, projectRoot }) {
     await must('raise a special assessment', c.post('/api/charges', { unitId: 'unit-3', category: 'Maintenance', oneOffType: 'Special assessment', amount: 30000, dueDate: '2026-11-01', description: 'Roof' }));
     await c.post('/api/expenses', { category: 'Grounds', amount: 40000, currency: 'JMD', date: '2026-09-20', description: 'Gardening', vendor: 'A gardener' });
     await c.post('/api/expenses', { unitId: 'unit-1', category: 'Repairs', amount: 9000, currency: 'JMD', date: '2026-10-20', description: 'Plumbing', vendor: 'A plumber' });
-    const extra = await pay('unit-3', 'Maintenance', 30000, '2026-11-03');
+    // 2026-11-16: only UNSPENT credit can be refunded, so the owner pays 40,000 against 30,000 owed: 10,000 genuinely overpaid.
+    const d3 = (await c.get('/api/db')).body;
+    const owed3 = d3.charges.filter(x => x.unitId === 'unit-3' && x.category === 'Maintenance' && x.status === 'open' && x.currency === 'JMD').reduce((a, x) => a + Math.round(x.amount * 100), 0)
+      - d3.payments.filter(x => x.unitId === 'unit-3' && x.category === 'Maintenance' && x.status === 'completed' && x.currency === 'JMD').reduce((a, x) => a + Math.round(x.amount * 100) - Math.round((x.refundedAmount || 0) * 100), 0);
+    const extra = await must('Maintenance advance on unit-3', recordAndConfirmPayment(c, { unitId: 'unit-3', category: 'Maintenance', amount: Math.max(0, owed3) / 100 + 10000, currency: 'JMD', payerName: 'Payer', method: 'Bank Transfer', date: '2026-11-03', advancePayment: true }));
     const extraId = extra.body?.payment?.id;
     T.check('setup: the extra receipt exists to refund', !!extraId, JSON.stringify(extra.body).slice(0, 150));
     if (extraId) await must('refund part of it', c.post(`/api/payments/${extraId}/refund`, { amount: 10000, refundedOn: '2026-11-10', method: 'Cash', reason: 'Overpaid' }));

@@ -35,7 +35,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
+import { receiveOverpayment, startServer, makeClient, reporter, activateAdmin, localToday } from './harness.mjs';
 
 const notFuture = d => (d > localToday() ? localToday() : d); // the server refuses a move-in or hand-over date in the future
 
@@ -609,10 +609,10 @@ export default async function run({ port, projectRoot }) {
       async ({ rand }) => {
         const unitId = anyLong(rand);
         const amount = money(rand, 5000, 40000);
-        const p = await c.post('/api/payments', { unitId, category: 'Rent', amount, currency: 'JMD', payerName: 'Refunded', method: 'Cash', confirmNoOpenCharge: true });
-        const id = p.body?.payment?.id;
+        // Only UNSPENT credit can be refunded (2026-11-16), so the tenant overpays by `amount` first.
+        const paid = await receiveOverpayment(c, unitId, 'Rent', amount, { payerName: 'Refunded' });
+        const id = paid?.id;
         if (!id) return;
-        await c.post(`/api/payments/${id}/confirm`, {});
         await c.post(`/api/payments/${id}/refund`, { amount: Math.round(amount * pick(rand, [0.25, 0.5, 1]) * 100) / 100, reason: 'overcharged in error' });
       },
 
@@ -1099,10 +1099,14 @@ export default async function run({ port, projectRoot }) {
     // Four hundred scenarios of refunds, voids, part-payments, cancelled stays
     // and re-posted months must still come back clean.
     const selfCheck = (await c.get('/api/integrity')).body;
+    // The refund operation above deliberately leaves UNSPENT credit on villas whose tenant has since changed.
+    // 'credit-held-on-a-villa-that-changed-hands' is the advisory that asks somebody to decide whose credit
+    // it is (2026-11-16); it is not the books contradicting themselves, so it is the one code allowed here.
+    const contradictions = (selfCheck?.findings || []).filter(f => f.code !== 'credit-held-on-a-villa-that-changed-hands');
     T.check(
       'the application checking its own records finds nothing wrong with them',
-      selfCheck?.ok === true,
-      JSON.stringify(selfCheck?.findings?.slice(0, 3))
+      contradictions.length === 0 && selfCheck?.serious === 0,
+      JSON.stringify(contradictions.slice(0, 3))
     );
     T.check(
       'and it genuinely walked the whole property rather than an empty one',

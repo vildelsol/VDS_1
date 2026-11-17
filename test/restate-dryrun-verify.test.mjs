@@ -101,7 +101,9 @@ export default async function run({ port, projectRoot }) {
     await pay('unit-1', 'Rent', 80000, '2026-10-07', 'T-unit-1');
     await pay('unit-1', 'Maintenance', 20000, '2026-10-07', 'T-unit-1');
     await pay('unit-1', 'Rent', 80000, '2026-11-05', 'T-unit-1');
-    const mRef = (await pay('unit-1', 'Maintenance', 20000, '2026-11-05', 'T-unit-1')).body.payment; // refunded below
+    // 2026-11-16: only UNSPENT credit can be refunded, so this receipt overpays by the 5,000 handed back below.
+    const mRefPaid = await recordAndConfirmPayment(c, { unitId: 'unit-1', category: 'Maintenance', amount: 25000, currency: 'JMD', payerName: 'T-unit-1', method: 'Cash', date: '2026-11-05', advancePayment: true });
+    const mRef = mRefPaid.body.payment; // refunded below
     const refund = await c.post(`/api/payments/${mRef.id}/refund`, { amount: 5000, reason: 'part refund', method: 'Cash', refundedOn: '2026-11-06' });
     T.check('setup: a part refund on a maintenance receipt was accepted', refund.status === 200, `status ${refund.status}`);
     // unit-2: one 15,000 receipt (not whole months of 20,000).

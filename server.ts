@@ -55,7 +55,7 @@ import {
 } from './src/types';
 import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
-import { accountBalance, bookingsOverlap, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate } from './src/lib/finance';
+import { accountBalance, bookingsOverlap, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate } from './src/lib/finance';
 import {
   DATA_DIR,
   DB_FILE,
@@ -1877,6 +1877,20 @@ const OWNER_INTENT = 'owner-change-intent-required';
 export type OwnerChangeIntent = 'correction' | 'sale';
 
 /**
+ * Credit on a villa's Rent/Maintenance account that was not paid by `incomingName`.
+ * Oldest-first settlement would let it pay the incoming party's charges, so a change
+ * of tenant or owner must not proceed while it is held. Receipts are counted net of
+ * refunds, in the billed currency only.
+ */
+function creditHeldForOthers(db: Database, unit: Unit, category: 'Rent' | 'Maintenance', incomingName: string) {
+  // Only what the incoming party paid SINCE their last stint here can be their own unspent credit.
+  const earlierStints = category === 'Rent'
+    ? db.tenancies.filter(t => t.unitId === unit.id && t.status === 'ended' && sameName(t.tenantName, incomingName)).map(t => t.endedOn || '')
+    : (db.ownerships || []).filter(o => o.unitId === unit.id && o.status === 'ended' && sameName(o.ownerName, incomingName)).map(o => o.endedOn || '');
+  return financeCreditHeldForOthers(unit, category, db.charges, db.payments, db.units, incomingName, earlierStints.sort().pop() || '');
+}
+
+/**
  * Keep the ownership history in step with an edit to the unit register.
  *
  * Mirrors `syncTenancy`, and returns a note for the unit audit line — but it
@@ -1990,7 +2004,22 @@ function syncOwnership(
    * Nothing is moved between the two: charges raised while the seller held the
    * lot keep their name and go on ageing under it, which is what Form 13B has to
    * report. The new proprietor is billed from the next posting onwards.
+   *
+   * The seller's CREDIT does not pass to the buyer either: it would silently pay the
+   * buyer's contributions. Refuse until it is refunded to the seller.
    */
+  {
+    const { currency: maintCurrency, credit: sellerCredit } = creditHeldForOthers(db, unit, 'Maintenance', name);
+    if (sellerCredit > 0) {
+      throw new ApiError(
+        400,
+        `Villa ${unit.number} holds ${maintCurrency} ${sellerCredit} of maintenance paid in advance by ${current.ownerName}. ` +
+          `It would be used to pay ${name}'s contributions. Refund it to ${current.ownerName} before recording the sale.`,
+        'former-owner-credit'
+      );
+    }
+  }
+
   const before = { ...current };
   current.status = 'ended';
   current.endedOn = acquiredOn || stamp;
@@ -2288,6 +2317,22 @@ function syncTenancy(
       owedText,
       staffName
     );
+  }
+
+  /*
+   * A new tenant never inherits the last one's CREDIT either: it would silently pay
+   * the new tenant's rent. Refuse until it is refunded to the former tenant.
+   */
+  if (db.tenancies.some(t => t.unitId === unit.id && t.status === 'ended')) {
+    const { currency: rentCurrency, credit: formerCredit } = creditHeldForOthers(db, unit, 'Rent', incoming);
+    if (formerCredit > 0) {
+      throw new ApiError(
+        400,
+        `Villa ${unit.number} holds ${rentCurrency} ${formerCredit} of rent paid in advance by a former tenant. It would be used to pay ${incoming}'s rent. ` +
+          'Refund it to the former tenant before recording the new tenant.',
+        'former-tenant-credit'
+      );
+    }
   }
 
   const tenancy: Tenancy = {
@@ -4000,7 +4045,23 @@ app.post(
         const hasOpenCharge = db.charges.some(
           c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === currency
         );
-        if (!hasOpenCharge && !body.confirmNoOpenCharge) {
+        /*
+         * An explicit advance payment: a tenant or proprietor paying ahead, to be
+         * deducted from later charges oldest-first. It is the one intent that
+         * replaces the two "are you sure" overrides, so a prepayment is recorded as
+         * what it is rather than as a ticked warning that looks like a mistake.
+         * Only where the villa is billed for this category and in the billed
+         * currency: money in another currency can offset nothing.
+         */
+        if (body.advancePayment === true) {
+          if (!isBillable(unit, category as ChargeCategory)) {
+            throw new ApiError(400, `${unit.number} is not billed for ${category.toLowerCase()}, so there is nothing to pay in advance. Set the villa up first.`);
+          }
+          if (currency !== expected) {
+            throw new ApiError(400, `An advance must be in the billed currency (${expected}). A ${currency} receipt would sit beside the account and offset nothing.`);
+          }
+        }
+        if (!hasOpenCharge && !body.confirmNoOpenCharge && body.advancePayment !== true) {
           // A villa that is not billed for this category at all needs different
           // advice from one that is simply not posted yet: telling someone to
           // post the month's charges is useless for an owner-occupied villa,
@@ -4017,7 +4078,7 @@ app.post(
 
         // And, last, the one the browser cannot possibly know: has this debt
         // already been settled while this form was open?
-        assertAccountStillOwes(db, unit, category, currency, amount, body.confirmAlreadySettled === true);
+        assertAccountStillOwes(db, unit, category, currency, amount, body.confirmAlreadySettled === true || body.advancePayment === true);
       }
 
       assertNotJustEntered(db, unit.id, category, amount, currency, date, body.confirmDuplicate === true);
@@ -4055,6 +4116,7 @@ app.post(
         createdAt: new Date().toISOString(),
         status: receivedNow ? 'completed' : 'pending',
         printCount: 0,
+        ...(body.advancePayment === true && (category === 'Rent' || category === 'Maintenance') ? { advance: true } : {}),
         ...(receivedNow ? { receivedBy: who.name, receivedAt: new Date().toISOString() } : {})
       };
       db.payments.push(created);
@@ -4063,7 +4125,7 @@ app.post(
         who.name,
         who.role,
         receivedNow
-          ? `Received ${created.currency} ${created.amount} for ${unit.number} and issued receipt ${created.receiptNo}`
+          ? `Received ${created.currency} ${created.amount} for ${unit.number} and issued receipt ${created.receiptNo}${created.advance ? ', held as an advance to be applied to later charges' : ''}`
           : `Logged an expected ${created.category.toLowerCase()} payment of ${created.currency} ${created.amount} for ${unit.number}, awaiting confirmation of receipt`,
         'Payment',
         created.id,
@@ -4243,8 +4305,37 @@ app.post(
       // The entry being confirmed is excluded from the balance it is judged
       // against, or it would be counted as its own reason for refusal.
       const payee = db.units.find(u => u.id === target.unitId);
+      /*
+       * An advance was judged when it was LOGGED. Between logging and confirming the
+       * villa can change hands, stop being billed, or be re-denominated, and an advance
+       * confirmed into any of those lands credit on an account it was never meant for:
+       * the new tenant is paid from the old tenant's cheque, or a credit sits beside an
+       * account that can never use it. So the same rules the create route applies are
+       * applied again here, against the villa as it is now.
+       */
+      if (payee && target.advance === true && (target.category === 'Rent' || target.category === 'Maintenance')) {
+        const cat = target.category as ChargeCategory;
+        if (!isBillable(payee, cat)) {
+          throw new ApiError(400, `${payee.number} is no longer billed for ${target.category.toLowerCase()}, so this advance has nothing to be applied to. Cancel it instead.`);
+        }
+        if (target.currency !== chargeCurrency(payee, cat)) {
+          throw new ApiError(400, `${payee.number} is now billed in ${chargeCurrency(payee, cat)}, but this advance is in ${target.currency}. Cancel it and record it again in the right currency.`);
+        }
+        const holder =
+          cat === 'Rent'
+            ? db.tenancies.find(t => t.unitId === payee.id && t.status === 'active' && !t.endedOn)
+            : (db.ownerships || []).find(o => o.unitId === payee.id && o.status === 'active');
+        const holderName = cat === 'Rent' ? (holder as { tenantName?: string } | undefined)?.tenantName : (holder as { ownerName?: string } | undefined)?.ownerName;
+        if (holder && holder.startedOn && holder.startedOn >= target.date && !sameName(target.payerName || '', holderName || '')) {
+          throw new ApiError(
+            400,
+            `${payee.number} changed hands after this advance was logged: ${target.payerName || 'the payer'} is not the ${cat === 'Rent' ? 'tenant' : 'proprietor'} now (${holderName}). ` +
+              'Confirming it would pay the new holder\'s charges from the former holder\'s money. Cancel it instead.'
+          );
+        }
+      }
       if (payee) {
-        assertAccountStillOwes(db, payee, target.category, target.currency, target.amount, body.confirmAlreadySettled === true, {
+        assertAccountStillOwes(db, payee, target.category, target.currency, target.amount, body.confirmAlreadySettled === true || target.advance === true, {
           excludePaymentId: target.id,
           verb: 'This entry is'
         });
@@ -4441,6 +4532,30 @@ app.post(
           400,
           `You cannot refund ${target.currency} ${amount} against a receipt for ${target.currency} ${target.amount}.`
         );
+      }
+      /*
+       * Only credit that is still unspent can be handed back.
+       *
+       * The cap used to be the receipt alone, so a prepayment already consumed by
+       * later charges could be paid out in full, leaving the villa in arrears for
+       * money the owner effectively used. Rent and Maintenance only, and only for a
+       * receipt in the billed currency (money in another currency sits beside the
+       * account and is not part of it). Void instead if the money never arrived.
+       */
+      if (target.category === 'Rent' || target.category === 'Maintenance') {
+        const refundUnit = db.units.find(u => u.id === target.unitId);
+        if (refundUnit && target.currency === chargeCurrency(refundUnit, target.category as ChargeCategory)) {
+          const account = accountBalance(refundUnit, target.category as ChargeCategory, db.charges, db.payments, undefined, db.units);
+          const unspent = Math.max(0, round2(-account.balance));
+          if (amount > unspent) {
+            throw new ApiError(
+              400,
+              `Only credit that is still unspent can be refunded. ${target.currency} ${unspent} of ${target.category.toLowerCase()} credit is unspent on ${refundUnit.number}; ` +
+                `${target.currency} ${amount} was asked for. The rest has been applied to charges. If the money never arrived, void the receipt instead.`,
+              'refund-exceeds-unspent-credit'
+            );
+          }
+        }
       }
       const refundedOn = requireDay(body.refundedOn || today(), 'Refund date');
       if (refundedOn < target.date) {

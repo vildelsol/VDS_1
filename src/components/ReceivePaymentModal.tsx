@@ -31,7 +31,7 @@ import { formatMoneyLong } from '../lib/money';
 import { formatMonthLabel, today } from '../lib/dates';
 import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, errorMessage } from '../lib/api';
 import {
-  AlreadySettledNote,
+  AlreadySettledNote, AdvancePaymentToggle,
   DuplicateEntryNote,
   ErrorNote,
   Field,
@@ -72,6 +72,7 @@ export default function ReceivePaymentModal({
   // whoever else banked the money saved it, so it cannot know in advance.
   const [alreadySettled, setAlreadySettled] = useState('');
   const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
+  const [advancePayment, setAdvancePayment] = useState(false);
   const [duplicateNote, setDuplicateNote] = useState('');
   const [confirmDuplicate, setConfirmDuplicate] = useState(false);
   const [error, setError] = useState('');
@@ -166,6 +167,7 @@ export default function ReceivePaymentModal({
         confirmCurrencyMismatch: confirmMismatch,
         confirmNoOpenCharge: confirmNoCharge,
         confirmAlreadySettled,
+        advancePayment: advancePayment && (category === 'Rent' || category === 'Maintenance'),
         confirmDuplicate
       });
     } catch (err) {
@@ -200,6 +202,7 @@ export default function ReceivePaymentModal({
       <form id="vds-quick-receive" onSubmit={handleSubmit} className="space-y-4 p-6">
         {error && <ErrorNote>{error}</ErrorNote>}
 
+        {(category === 'Rent' || category === 'Maintenance') && <AdvancePaymentToggle checked={advancePayment} onChange={setAdvancePayment} />}
         <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
         <DuplicateEntryNote message={duplicateNote} confirmed={confirmDuplicate} onConfirm={setConfirmDuplicate} />
 

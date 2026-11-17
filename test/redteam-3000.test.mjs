@@ -43,7 +43,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin, resetOutcomes, checkMoneyEndpointsSucceeded, localToday } from './harness.mjs';
+import { receiveOverpayment, startServer, makeClient, reporter, activateAdmin, resetOutcomes, checkMoneyEndpointsSucceeded, localToday } from './harness.mjs';
 
 const notFuture = d => (d > localToday() ? localToday() : d); // the server refuses a move-in or hand-over date in the future
 
@@ -245,10 +245,19 @@ function auditReporting(db, fin, asOf) {
     })) {
       if (isBadNumber(value)) problems.push(`statement ${s.unit.number} ${s.currency}: ${field} is not finite`);
     }
-    const owedForPeriod = cents(s.maintenanceBilled) - cents(s.maintenancePaid);
-    const expected = cents(s.utilityCollected) - owedForPeriod - cents(s.utilityBilled) - cents(s.expenses);
+    // 2026-11-16: what is owed for a period is taken from the account (receipts applied
+    // oldest-first up to the period end), not from receipts dated inside the period.
+    const expected = cents(s.utilityCollected) - cents(s.maintenanceOwed) - cents(s.utilityBilled) - cents(s.expenses);
     if (cents(s.net) !== expected) {
       problems.push(`statement ${s.unit.number} ${s.currency}: net ${cents(s.net)} does not equal ${expected}`);
+    }
+    // The statement ties to the LEDGER: over a window that holds all of the villa's
+    // history, what it says is owing IS the maintenance account balance.
+  }
+  for (const s of fin.ownerStatements(units, charges, payments, expenses, utilities, '1900-01-01', '2099-12-31')) {
+    const acct = fin.accountBalance(s.unit, 'Maintenance', charges, payments, '2099-12-31', units);
+    if (acct.currency === s.currency && cents(s.maintenanceOwed) !== cents(acct.balance)) {
+      problems.push(`statement ${s.unit.number} ${s.currency}: owing ${cents(s.maintenanceOwed)} does not equal the maintenance account balance ${cents(acct.balance)}`);
     }
   }
 
@@ -439,12 +448,12 @@ export default async function run({ port, projectRoot }) {
        * Money handed back.
        * ================================================================ */
       async ({ month, rand }) => {
-        const db = (await c.get('/api/db')).body;
-        const settled = db.payments.filter(p => p.status === 'completed' && !p.refundedOn);
-        if (!settled.length) return;
-        const p = pick(rand, settled);
-        // A refund of part, then an attempt to refund more than was ever taken.
-        await c.post(`/api/payments/${p.id}/refund`, { amount: Math.round(p.amount * 0.4 * 100) / 100, reason: 'overpaid', method: 'Cash', refundedOn: dayIn(month, 20) });
+        // Only UNSPENT credit can be refunded (2026-11-16): the tenant overpays first.
+        const credit = money(rand, 5000, 40000);
+        const p = await receiveOverpayment(c, anyLong(rand), 'Rent', credit, { date: dayIn(month, 19) });
+        if (!p) return;
+        // A refund of part, then an attempt to refund more than is left.
+        await c.post(`/api/payments/${p.id}/refund`, { amount: Math.round(credit * 0.4 * 100) / 100, reason: 'overpaid', method: 'Cash', refundedOn: dayIn(month, 20) });
         await c.post(`/api/payments/${p.id}/refund`, { amount: p.amount, reason: 'again', method: 'Cash', refundedOn: dayIn(month, 21) });
       },
 

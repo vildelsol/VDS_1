@@ -13,7 +13,7 @@ import {
   chargeCurrency,
   chargedInPeriod,
   collectedInPeriod,
-  collectionRate,
+  settledOfBilled,
   expensesInPeriod,
   strataExpenses,
   isBillable
@@ -103,7 +103,7 @@ export function buildProjection(
 
   const avgReceived = round2(maintReceived / lookback);
   const avgExpense = round2(expensesPaid / lookback);
-  const rate = collectionRate(maintBilled, maintReceived);
+  const rate = settledOfBilled(charges, payments, currency, from, to, to, 'Maintenance').rate;
 
   // Current fee schedule: what every contributing proprietor is assessed per month.
   const contributing = units.filter(u => isBillable(u, 'Maintenance') && chargeCurrency(u, 'Maintenance') === currency);

@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { startServer, makeClient, reporter, activateAdmin, makeLongTermUnit, localToday } from './harness.mjs';
+import { startServer, makeClient, reporter, activateAdmin, makeLongTermUnit, localToday, accountOwedCents } from './harness.mjs';
 
 export const title = 'Workflow records: work orders, utilities, expenses, statements, reconciliation, audit trail';
 
@@ -198,10 +198,16 @@ export default async function run({ port, projectRoot }) {
     /* ================= 4. reconciliation ================= */
     {
       const mkPaid = async (amount, date) => {
-        const r = await admin.post('/api/payments', { unitId: 'unit-1', category: 'Rent', amount, currency: 'JMD', payerName: 'Tenant One', method: 'Bank Transfer', date });
+        const r = await admin.post('/api/payments', { unitId: 'unit-1', category: 'Rent', amount, currency: 'JMD', payerName: 'Tenant One', method: 'Bank Transfer', date, advancePayment: true });
         await admin.post(`/api/payments/${r.body.payment.id}/confirm`, {});
         return r.body.payment.id;
       };
+      // 2026-11-16: only UNSPENT credit can be refunded, so unit-1's rent is first overpaid by 1,000.
+      {
+        const d0 = await db();
+        const owed = accountOwedCents(d0, 'unit-1', 'Rent', 'JMD');
+        await admin.post('/api/payments', { unitId: 'unit-1', category: 'Rent', amount: Math.max(0, owed) / 100 + 1000, currency: 'JMD', payerName: 'Tenant One', method: 'Cash', date: '2026-11-01', receivedNow: true, advancePayment: true });
+      }
       const a = await mkPaid(1111, '2026-11-02');
       const b = await mkPaid(2222, '2026-11-03');
       const ra = await admin.post(`/api/payments/${a}/reconcile`, { reconciledOn: TODAY, reference: 'BANK-LINE-77' });
@@ -232,7 +238,10 @@ export default async function run({ port, projectRoot }) {
         actions.push({ label, status: r.status, added: added.length, named: added.every(a => JSON.stringify(a).includes(who)) });
         return r;
       };
-      const pay = await probe('record payment', () => jr.post('/api/payments', { unitId: 'unit-3', category: 'Rent', amount: 500, currency: 'USD', payerName: 'Tenant Three', method: 'Cash', date: TODAY }));
+      // 2026-11-16: only UNSPENT credit can be refunded, so the payment overpays unit-3's rent by 500.
+      const d3 = await db();
+      const owed3 = accountOwedCents(d3, 'unit-3', 'Rent', 'USD');
+      const pay = await probe('record payment', () => jr.post('/api/payments', { unitId: 'unit-3', category: 'Rent', amount: Math.max(0, owed3) / 100 + 500, currency: 'USD', payerName: 'Tenant Three', method: 'Cash', date: TODAY, advancePayment: true }));
       await probe('confirm payment', () => jr.post(`/api/payments/${pay.body.payment.id}/confirm`, {}));
       await probe('refund payment', () => mgr.post(`/api/payments/${pay.body.payment.id}/refund`, { amount: 5, reason: 'test refund', method: 'Cash', refundedOn: TODAY }));
       await probe('one-off charge', () => mgr.post('/api/charges', { unitId: 'unit-3', category: 'Rent', oneOffType: 'Late fee', amount: 50, currency: 'USD', dueDate: TODAY, description: 'late' }), staff.MANAGER.name);

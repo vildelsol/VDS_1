@@ -698,6 +698,12 @@ export interface Payment {
   refundedAmount?: number;
   refundedOn?: string; // YYYY-MM-DD
   refundMethod?: PaymentMethod;
+  /**
+   * Staff said this money was meant as an advance: paid ahead of any charge, or
+   * beyond what is owed, to be applied to later charges oldest-first. Intent only;
+   * the balance is still derived. Rent and Maintenance, billed currency, billable villa.
+   */
+  advance?: boolean;
   refundReason?: string;
   refundedBy?: string;
 

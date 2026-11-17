@@ -253,6 +253,18 @@ export function AlreadySettledNote({
 }
 
 
+/** Explicit intent: this money is paid ahead and will be applied to later charges, oldest first. */
+export function AdvancePaymentToggle({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <label className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-[11px] text-emerald-900">
+      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} className="mt-0.5" />
+      <span>
+        <strong>Paid in advance.</strong> Hold any amount beyond what is owed as a credit. It is applied to later charges automatically, oldest first.
+      </span>
+    </label>
+  );
+}
+
 /** The same payment entered moments ago. Shown after the server refuses it, with the way through. */
 export function DuplicateEntryNote({
   message,

@@ -308,6 +308,63 @@ export default async function run({ port, projectRoot }) {
       `${earlier.expenses}`
     );
 
+    /* ---------------- money received before the period counts ---------------- */
+
+    // Haresh Shivnani, 2026-11-16: October receipts covered November in advance. The
+    // maintenance ledger said Settled; the owner statement said J$20,000 due.
+    {
+      const u = db.units.find(x => x.id === 'unit-1');
+      const mk = (id, month, due) => ({ ...db.charges.find(ch => ch.unitId === 'unit-1' && ch.category === 'Maintenance'), id, amount: 20000, periodMonth: month, dueDate: due, status: 'open', currency: 'JMD' });
+      const pay = (id, date, amount) => ({ ...db.payments.find(p => p.unitId === 'unit-1' && p.status === 'completed'), id, date, amount, category: 'Maintenance', status: 'completed', currency: 'JMD', refundedOn: undefined, refundedAmount: undefined });
+      const charges = [mk('adv-1', '2026-10', '2026-10-01'), mk('adv-2', '2026-11', '2026-11-01')];
+      const stmt = (payments, from, to) => ownerStatement(u, db.units, charges, payments, [], [], 'JMD', from, to);
+
+      const prepaid = stmt([pay('adv-p1', '2026-10-27', 40000)], '2026-11-01', '2026-11-30');
+      T.check('November paid in October is not stated as owing', prepaid.net === 0, `net ${prepaid.net}`);
+      T.check('and the statement says so, as paid before the period', prepaid.maintenancePaidInAdvance === 20000, `${prepaid.maintenancePaidInAdvance}`);
+      const unpaid = stmt([pay('adv-p2', '2026-10-27', 20000)], '2026-11-01', '2026-11-30');
+      T.check('control: November with nothing covering it is still owing in full', unpaid.net === -20000 && unpaid.maintenancePaidInAdvance === 0, `net ${unpaid.net}`);
+      const half = stmt([pay('adv-p3', '2026-10-27', 30000)], '2026-11-01', '2026-11-30');
+      T.check('control: half covered in advance leaves half owing', half.net === -10000 && half.maintenancePaidInAdvance === 10000, `net ${half.net}, adv ${half.maintenancePaidInAdvance}`);
+      const sameMonth = stmt([pay('adv-p4', '2026-11-05', 40000)], '2026-11-01', '2026-11-30');
+      T.check('control: paid inside the period still settles it as before', sameMonth.net === 0 && sameMonth.maintenancePaidInAdvance === 0, `net ${sameMonth.net}`);
+      const arrears = stmt([pay('adv-p5', '2026-11-05', 20000)], '2026-11-01', '2026-11-30');
+      T.check('a receipt in November that paid OCTOBER does not settle November', arrears.net === -20000 && arrears.maintenanceAppliedToEarlier === 20000, `net ${arrears.net}, earlier ${arrears.maintenanceAppliedToEarlier}`);
+      const octStmt = stmt([pay('adv-p5', '2026-11-05', 20000)], '2026-10-01', '2026-10-31');
+      T.check('and October, as at its own period end, still shows owing (the later receipt does not rewrite it)', octStmt.net === -20000, `net ${octStmt.net}`);
+      const sixMonthSplit = ['2026-10', '2026-11'].map(mo => stmt([pay('adv-p6', '2026-10-27', 40000)], mo + '-01', mo + '-' + (mo === '2026-10' ? '31' : '30')));
+      T.check('prepaid 2 months: October holds the 20,000 still unspent as a credit, November owes nothing', sixMonthSplit[0].net === 20000 && sixMonthSplit[1].net === 0, JSON.stringify(sixMonthSplit.map(x => x.net)));
+    }
+
+    /* ---------------- what the statement SAYS about credit (QA, 2026-11-16) ---------------- */
+    {
+      const u = db.units.find(x => x.id === 'unit-1');
+      const base = db.charges.find(ch => ch.unitId === 'unit-1' && ch.category === 'Maintenance');
+      const basePay = db.payments.find(p => p.unitId === 'unit-1' && p.status === 'completed');
+      const mkc = (id, month, due, amount = 10000) => ({ ...base, id, amount, periodMonth: month, dueDate: due, status: 'open', currency: 'JMD' });
+      const mkp = (id, date, amount, extra = {}) => ({ ...basePay, id, date, amount, category: 'Maintenance', status: 'completed', currency: 'JMD', refundedOn: undefined, refundedAmount: undefined, ...extra });
+      const st = (charges, payments, from, to) => ownerStatement(u, db.units, charges, payments, [], [], 'JMD', from, to);
+
+      // 4a: December billed 10,000 and the owner paid 30,000 on 20 Dec. There ARE no earlier months.
+      const dec = st([mkc('q1', '2026-12', '2026-12-01')], [mkp('qp1', '2026-12-20', 30000)], '2026-12-01', '2026-12-31');
+      T.check('a surplus in the month is credit, not "applied to earlier months"', dec.maintenanceAppliedToEarlier === 0 && dec.maintenanceOwed === -20000, `earlier ${dec.maintenanceAppliedToEarlier}, owed ${dec.maintenanceOwed}`);
+
+      // 4b: a refund in January, nothing billed in January, is not money paid before the period.
+      const jan = st([mkc('q2', '2026-12', '2026-12-01')], [mkp('qp2', '2026-12-20', 30000, { refundedAmount: 20000, refundedOn: '2027-01-10' })], '2027-01-01', '2027-01-31');
+      T.check('a refund paid out in January does not read as an advance paid before January', jan.maintenancePaidInAdvance === 0, `advance ${jan.maintenancePaidInAdvance}`);
+
+      // 4a, the real case: October unpaid, a November receipt really does pay October.
+      const nov = st([mkc('q3', '2026-10', '2026-10-01'), mkc('q4', '2026-11', '2026-11-01')], [mkp('qp3', '2026-11-05', 10000)], '2026-11-01', '2026-11-30');
+      T.check('control: a November receipt that pays October is "applied to earlier months" and November still owes', nov.maintenanceAppliedToEarlier === 10000 && nov.maintenanceOwed === 10000, `earlier ${nov.maintenanceAppliedToEarlier}, owed ${nov.maintenanceOwed}`);
+
+      // 4d: one owner, villa 1 holds 30,000 credit and villa 2 owes 10,000. Credit does not pay another villa's debt.
+      const credStmt = { ...dec, unit: { ...u, ownerName: 'One Owner' }, net: 30000, currency: 'JMD' };
+      const debtStmt = { ...dec, unit: { ...u, id: 'unit-x', ownerName: 'One Owner' }, net: -10000, currency: 'JMD' };
+      const grp = groupStatementsByOwner([credStmt, debtStmt])[0];
+      T.check('an owner\'s balance owing counts debts only: credit on one villa does not reduce another villa\'s arrears', grp.netByCurrency.find(r => r.currency === 'JMD')?.net === -10000, JSON.stringify(grp.netByCurrency));
+      T.check('and the credit held is reported separately', grp.creditByCurrency?.find(r => r.currency === 'JMD')?.credit === 30000, JSON.stringify(grp.creditByCurrency));
+    }
+
     /* ---------------- reversals and voids remove money ---------------- */
 
     const rentPayment = db.payments.find(p => p.unitId === 'unit-1' && p.status === 'completed');

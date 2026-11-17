@@ -35,6 +35,7 @@ import {
   collectedInPeriod,
   consolidateEverything,
   collectionRate,
+  combinedSettledOfBilled,
   categoriesWithSpend,
   expenseBreakdown,
   expensesInPeriod,
@@ -135,7 +136,10 @@ export interface MonthRow {
    * rating it against `billed` would invent a collection rate the operating
    * statement disagrees with.
    */
-  receivedAgainstBilled: number;
+  /** Of `billed`, the amount paid on the ledger's own allocation (arrears and advances excluded). */
+  settledOfBilled: number;
+  /** What fell due that someone outside the two books owes: the denominator of the rate. Falls back to `billed`. */
+  collectable?: number;
   /** Expense total per category for this month, for the stacked chart. */
   byCategory: Record<string, number>;
 }
@@ -187,7 +191,8 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
           month,
           billed: chargedInPeriod(combined.charges, currency, mFrom, mTo).total,
           received: collected.total,
-          receivedAgainstBilled: sumMoney([collected.rent, collected.maintenance]),
+          settledOfBilled: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).settled,
+          collectable: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).billed,
           paidOut: expensesInPeriod(expenses, currency, mFrom, mTo),
           byCategory
         };
@@ -574,7 +579,7 @@ function ChartDataTable({
 export function CollectionRateChart({ rows, currency }: { rows: MonthRow[]; currency: Currency }) {
   const points = rows.map(row => ({
     month: row.month,
-    rate: collectionRate(row.billed, row.receivedAgainstBilled)
+    rate: collectionRate(row.collectable ?? row.billed, row.settledOfBilled)
   }));
   if (!points.some(p => p.rate !== null)) return null;
 

@@ -164,12 +164,16 @@ export default async function run({ port, projectRoot }) {
      * ================================================================ */
 
     const rentReceipt = db.payments.find(p => p.category === 'Rent' && p.status === 'completed' && p.currency === 'JMD');
-    await c.post(`/api/payments/${rentReceipt.id}/refund`, { amount: 10000, reason: 'overpaid', method: 'Cash', refundedOn: '2026-06-25' });
+    // 2026-11-16: only UNSPENT credit can be refunded, so the tenant genuinely overpays by 10,000 first.
+    await recordAndConfirmPayment(c, { unitId: 'unit-1', category: 'Rent', amount: 10000, currency: 'JMD', payerName: 'Tenant One', method: 'Cash', date: '2026-06-24', advancePayment: true });
+    const beforeRefund = operatingStatement((await c.get('/api/db')).body.payments, db.expenses, db.units, 'JMD', FROM, TO);
+    const refundIt = await c.post(`/api/payments/${rentReceipt.id}/refund`, { amount: 10000, reason: 'overpaid', method: 'Cash', refundedOn: '2026-06-25' });
+    T.check('setup: the overpayment can be refunded', refundIt.status === 200, JSON.stringify(refundIt.body).slice(0, 160));
     const afterRefund = operatingStatement((await c.get('/api/db')).body.payments, db.expenses, db.units, 'JMD', FROM, TO);
     const rentGroup = afterRefund.income.find(g => g.label === 'Rent');
     T.check('a refund appears as its own negative line rather than shrinking a receipt', rentGroup?.lines.some(l => l.amount === -10000), JSON.stringify(rentGroup?.lines.map(l => [l.payer, l.amount])));
     T.check('and it says who it went back to and why', rentGroup?.lines.some(l => /refunded/.test(l.payer) && /overpaid/.test(l.payer)), JSON.stringify(rentGroup?.lines.map(l => l.payer)));
-    T.check('so the income total falls by exactly what went back', afterRefund.totalIncome === 90000, `${afterRefund.totalIncome}`);
+    T.check('so the income total falls by exactly what went back', afterRefund.totalIncome === beforeRefund.totalIncome - 10000, `${afterRefund.totalIncome} vs ${beforeRefund.totalIncome}`);
 
     /* ================================================================
      * Choosing what goes on the statement

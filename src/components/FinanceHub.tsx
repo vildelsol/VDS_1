@@ -45,7 +45,7 @@ import { openMailDraft } from '../lib/email';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import BookingDeposits from './BookingDeposits';
 import {
-  AlreadySettledNote,
+  AlreadySettledNote, AdvancePaymentToggle,
   DuplicateEntryNote,
   Badge,
   EmptyState,
@@ -1247,6 +1247,7 @@ function RecordPaymentModal({
    */
   const [alreadySettled, setAlreadySettled] = useState('');
   const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
+  const [advancePayment, setAdvancePayment] = useState(false);
   const [duplicateNote, setDuplicateNote] = useState('');
   const [confirmDuplicate, setConfirmDuplicate] = useState(false);
   const [error, setError] = useState('');
@@ -1343,6 +1344,7 @@ function RecordPaymentModal({
         confirmCurrencyMismatch: confirmMismatch,
         confirmNoOpenCharge: confirmNoCharge,
         confirmAlreadySettled,
+        advancePayment: advancePayment && (category === 'Rent' || category === 'Maintenance'),
         confirmDuplicate
       });
     } catch (err) {
@@ -1388,6 +1390,7 @@ function RecordPaymentModal({
       <form id="vds-payment-form" onSubmit={handleSubmit} className="space-y-4 p-6">
         {error && <ErrorNote>{error}</ErrorNote>}
 
+        {(category === 'Rent' || category === 'Maintenance') && <AdvancePaymentToggle checked={advancePayment} onChange={setAdvancePayment} />}
         <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
         <DuplicateEntryNote message={duplicateNote} confirmed={confirmDuplicate} onConfirm={setConfirmDuplicate} />
 
@@ -2324,7 +2327,13 @@ function AccountStatementDocument({
     const credits = paymentsForUnit(payments, unit, units)
       .filter(p => p.category === category && p.status === 'completed' && p.currency === currency)
       .map(p => ({ date: p.date, kind: 'payment' as const, label: p.derived ? 'Maintenance settled from rent' : `Payment received (${p.method})`, ref: p.receiptNo, debit: 0, credit: p.amount }));
-    const merged = [...debits, ...credits].sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'charge' ? -1 : 1));
+    // Money handed back is a debit on its own line, dated the day it went out. The
+    // ledger counts a receipt net of its refund (netPaidAsOf), so a statement that
+    // shows the gross receipt alone prints a balance the ledger disagrees with.
+    const refunds = paymentsForUnit(payments, unit, units)
+      .filter(p => p.category === category && p.status === 'completed' && p.currency === currency && p.refundedAmount && p.refundedOn)
+      .map(p => ({ date: p.refundedOn as string, kind: 'refund' as const, label: `Refund paid out${p.refundReason ? `: ${p.refundReason}` : ''}`, ref: p.receiptNo, debit: p.refundedAmount as number, credit: 0 }));
+    const merged = [...debits, ...credits, ...refunds].sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'charge' ? -1 : 1));
     let running = 0;
     return merged.map(row => {
       running = round2(running + row.debit - row.credit);

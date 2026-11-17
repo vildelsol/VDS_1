@@ -126,7 +126,9 @@ export default async function run({ port, projectRoot }) {
         const before = db.units.find(u => u.id === id);
         const r = await put(id, over);
         const strandsRent = r.status === 400 && r.body?.code === 'former-tenant-owes' && over.status === 'owner-occupied' && before.status !== 'owner-occupied';
-        ok('a valid register edit is accepted (or refused only because rent is still owed on a villa going owner-occupied)', r.status === 200 || strandsRent, `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
+        // 2026-11-16: a new tenancy is also refused while a former tenant's advance credit sits on the villa.
+        const holdsCredit = r.status === 400 && r.body?.code === 'former-tenant-credit';
+        ok('a valid register edit is accepted (or refused only because rent is still owed on a villa going owner-occupied, or a former tenant holds credit)', r.status === 200 || strandsRent || holdsCredit, `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
         db = await getDb();
         const after = db.units.find(u => u.id === id);
         if (r.status === 200) {

@@ -398,3 +398,29 @@ export function reporter(title) {
 }
 
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/** Open charges less net receipts for one villa, category and currency, in cents, from a /api/db body. Negative = credit. */
+export function accountOwedCents(d, unitId, category, currency) {
+  const cents = x => Math.round(x * 100);
+  const owed = d.charges.filter(x => x.unitId === unitId && x.category === category && x.status === 'open' && x.currency === currency).reduce((a, x) => a + cents(x.amount), 0);
+  const paid = d.payments.filter(x => x.unitId === unitId && x.category === category && x.status === 'completed' && x.currency === currency).reduce((a, x) => a + cents(x.amount) - cents(x.refundedAmount || 0), 0);
+  return owed - paid;
+}
+
+/**
+ * Receive an advance payment sized so that exactly `credit` of it is UNSPENT credit
+ * on the villa's account, whatever is owed on it now. Only unspent credit can be
+ * refunded (2026-11-16), so a test that refunds money has to create some first.
+ * Returns the receipt (completed) or null if it was refused.
+ */
+export async function receiveOverpayment(client, unitId, category, credit, extra = {}) {
+  const d = (await client.get('/api/db')).body;
+  const unit = d.units.find(u => u.id === unitId);
+  if (!unit) return null;
+  const currency = category === 'Maintenance' ? unit.maintCurrency || unit.currency : unit.currency;
+  const amount = (Math.max(0, accountOwedCents(d, unitId, category, currency)) + Math.round(credit * 100)) / 100;
+  const r = await client.post('/api/payments', {
+    unitId, category, amount, currency, payerName: 'Overpayer', method: 'Cash', receivedNow: true, advancePayment: true, ...extra
+  });
+  return r.body?.payment || null;
+}

@@ -32,7 +32,7 @@
 
 import type { Database } from './db';
 import { createHash } from 'crypto';
-import { accountBalance, chargeCurrency, isOwnAccount, netPaidAsOf, ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
+import { accountBalance, chargeCurrency, creditHeldForOthers, isOwnAccount, netPaidAsOf, ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
 import { auditEntryHash } from './auditChain';
 
 export type IntegritySeverity =
@@ -577,6 +577,42 @@ export function checkIntegrity(db: Database): IntegrityReport {
       'This villa is marked owner occupied, so the corporation bills it maintenance only and treats its levy payments as a proprietor\'s money. ' +
         'It has a sitting tenant or an open rent charge all the same. Either the status is wrong, or that rent belongs on another villa.',
       letButOwnerOccupied
+    );
+
+    /*
+     * Credit on a villa that has changed hands.
+     *
+     * A prepayment is a credit on the villa's account, applied oldest-first, so
+     * whoever is billed next is paid from it. Since 1.16.14 a changeover or a sale
+     * is refused while the previous holder's credit sits there; this lists credit
+     * that predates that rule (or arrived by another route) so somebody decides
+     * whose money it is before it quietly pays the new holder's bills. A warning,
+     * not a misstatement: the ledger balance is arithmetically right.
+     */
+    const creditAfterChange: string[] = [];
+    const lowerName = (v: string) => (v || '').trim().toLowerCase();
+    for (const u of units) {
+      for (const category of ['Rent', 'Maintenance'] as const) {
+        const stints =
+          category === 'Rent'
+            ? tenancies.filter(t => t.unitId === u.id)
+            : (db.ownerships || []).filter(o => o.unitId === u.id);
+        if (!stints.some(t => t.status === 'ended')) continue;
+        // The sitting holder's own prepayment is not what this finding is about.
+        const sitting = stints.find(t => t.status === 'active' && !t.endedOn);
+        const holder = sitting ? ('tenantName' in sitting ? sitting.tenantName : sitting.ownerName) : '';
+        const earlierEnds = stints
+          .filter(t => t.status === 'ended' && lowerName('tenantName' in t ? t.tenantName : t.ownerName) === lowerName(holder))
+          .map(t => t.endedOn || '');
+        const held = creditHeldForOthers(u, category, charges, payments, units, holder, earlierEnds.sort().pop() || '');
+        if (held.credit > 0) creditAfterChange.push(`Villa ${u.number} ${category.toLowerCase()}: ${held.currency} ${held.credit.toFixed(2)} credit held`);
+      }
+    }
+    add(
+      'warning',
+      'credit-held-on-a-villa-that-changed-hands',
+      'This villa has had a tenant or owner change and its account is holding a credit. Decide whose money it is: refund it to the former holder, or confirm it belongs to the current one.',
+      creditAfterChange
     );
 
     /*

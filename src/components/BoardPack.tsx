@@ -24,7 +24,7 @@ import {
   chargedInPeriod,
   collectedInPeriod,
   consolidateEverything,
-  collectionRate,
+  combinedSettledOfBilled,
   categoriesWithSpend,
   expenseBreakdown,
   expensesInPeriod,
@@ -104,7 +104,8 @@ export default function BoardPack({
           month,
           billed: chargedInPeriod(combined.charges, currency, mFrom, mTo).total,
           received: collectedInMonth.total,
-          receivedAgainstBilled: sumMoney([collectedInMonth.rent, collectedInMonth.maintenance]),
+          settledOfBilled: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).settled,
+          collectable: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).billed,
           paidOut: expensesInPeriod(strataCosts, currency, mFrom, mTo),
           byCategory
         };
@@ -127,7 +128,7 @@ export default function BoardPack({
         collected,
         spent,
         net: sumMoney([collected.total, -spent]),
-        rate: collectionRate(billed.total, sumMoney([collected.rent, collected.maintenance])),
+        rate: combinedSettledOfBilled(charges, payments, units, currency, from, to).rate,
         openingReceivable: receivableAt(addDays(from, -1)),
         closingReceivable: receivableAt(to),
         active: rows.some(r => r.billed || r.received || r.paidOut) || breakdown.length > 0

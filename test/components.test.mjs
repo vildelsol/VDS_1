@@ -103,7 +103,7 @@ const row = (month, over = {}) => ({
   month,
   billed: 400000,
   received: 350000,
-  receivedAgainstBilled: 350000,
+  settledOfBilled: 350000,
   paidOut: 120000,
   byCategory: { Maintenance: 70000, Security: 50000 },
   ...over
@@ -159,7 +159,7 @@ export default async function run({ projectRoot }) {
     T.check('and explains that above 100% means arrears were cleared', /above 100%/i.test(textOf(rate)));
 
     // A month with nothing billed has no rate — it must say so, not read as zero.
-    const noBilling = render(h(mod.CollectionRateChart, { rows: [row('2026-01', { billed: 0, receivedAgainstBilled: 0 }), row('2026-02')], currency: 'JMD' }));
+    const noBilling = render(h(mod.CollectionRateChart, { rows: [row('2026-01', { billed: 0, settledOfBilled: 0 }), row('2026-02')], currency: 'JMD' }));
     T.check('a month with nothing billed reports n/a rather than 0%', textOf(noBilling).includes('n/a'), textOf(noBilling).slice(0, 80));
 
     /* ---------------- arrears ageing ---------------- */

@@ -567,6 +567,9 @@ export default async function run({ port, projectRoot }) {
      * Refunds land in the month the money went back out
      * ================================================================ */
 
+    // 2026-11-16: only UNSPENT credit can be refunded, so the tenant genuinely overpays by 10,000 in March first.
+    const extraCredit = await c.post('/api/payments', { unitId: 'unit-1', payerName: 'Tenant', category: 'Rent', amount: 10000, currency: 'JMD', date: '2026-03-06', method: 'Cash', receivedNow: true, confirmAlreadySettled: true });
+    T.check('setup: the overpayment was recorded', extraCredit.status === 200, JSON.stringify(extraCredit.body).slice(0, 200));
     const marchRent = db.payments.find(p => p.unitId === 'unit-1' && p.category === 'Rent' && p.date === '2026-03-05');
     const refunded = await c.post(`/api/payments/${marchRent.id}/refund`, {
       amount: 10000,
@@ -586,7 +589,7 @@ export default async function run({ port, projectRoot }) {
     );
     T.check(
       'the refund is subtracted in the month it left, not the month it arrived',
-      after.byMonth.find(m => m.month === '2026-03').rentReceived === 60000 &&
+      after.byMonth.find(m => m.month === '2026-03').rentReceived === 70000 &&
         after.byMonth.find(m => m.month === '2026-04').rentReceived === 50000,
       `March ${after.byMonth.find(m => m.month === '2026-03').rentReceived}, April ${after.byMonth.find(m => m.month === '2026-04').rentReceived}`
     );
