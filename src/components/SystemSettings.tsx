@@ -786,6 +786,7 @@ interface BackupStatus {
   externalBackupDir: string | null;
   externalBackupFromEnv: boolean;
   externalBackupError: string | null;
+  localBackupError?: string | null;
   retentionDays: number;
   todayBackedUp: boolean;
   todayBackedUpExternally: boolean;
@@ -1041,6 +1042,12 @@ function BackupPanel({
           as the database they protect, so a disk failure, a theft or a deleted folder takes both. Set a folder below -
           an external drive is ideal, and a second copy is written there every day, automatically.
         </InfoNote>
+      )}
+
+      {status.localBackupError && (
+        <ErrorNote>
+          <strong>Today&apos;s copy on this machine could not be written.</strong> {status.localBackupError}
+        </ErrorNote>
       )}
 
       {external && status.externalBackupError && (

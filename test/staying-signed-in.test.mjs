@@ -20,6 +20,7 @@
  * expiry test moves it: stop the server, age the session on disk, start again.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -36,13 +37,15 @@ export default async function run({ port, projectRoot }) {
   const dbPath = path.join(dataDir, 'db.json');
   let srv = await startServer({ port, adminPassword: 'StayTest-1234!', projectRoot, dataDir });
 
-  const readSession = token => JSON.parse(fs.readFileSync(dbPath, 'utf8')).sessions.find(s => s.token === token);
+  // Sessions are stored by a hash of the token (2026-11-17), never the token itself.
+  const stored = token => crypto.createHash('sha256').update(token).digest('hex');
+  const readSession = token => JSON.parse(fs.readFileSync(dbPath, 'utf8')).sessions.find(s => s.token === stored(token));
 
   /** Stop the server, set this session's expiry on disk, start it again. */
   async function ageOnDisk(token, expiresAt) {
     await srv.stop();
     const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-    const s = db.sessions.find(x => x.token === token);
+    const s = db.sessions.find(x => x.token === stored(token));
     if (s) s.expiresAt = expiresAt;
     fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
     srv = await startServer({ port, adminPassword: 'unused', projectRoot, dataDir });

@@ -339,6 +339,8 @@ function isInternalAddress(ip: string): boolean {
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
     if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT, this is Tailscale's range
+    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking, never a public feed
+    if (a === 192 && b === 0 && Number(ip.split('.')[2]) === 0) return true; // IETF protocol assignments
     if (a >= 224) return true; // multicast and reserved
     return false;
   }
@@ -347,6 +349,7 @@ function isInternalAddress(ip: string): boolean {
     if (v === '::1' || v === '::') return true;
     if (/^f[cd]/.test(v)) return true; // unique local
     if (v.startsWith('fe80')) return true; // link-local
+    if (/^fe[c-f]/.test(v)) return true; // site-local (deprecated) and reserved
     const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v);
     if (mapped) return isInternalAddress(mapped[1]);
     /*

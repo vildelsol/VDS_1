@@ -48,8 +48,10 @@ export function round2(value: number): number {
 export function parseMoneyInput(value: unknown): number | null {
   if (typeof value === 'number') return Number.isFinite(value) ? round2(value) : null;
   if (value === null || value === undefined) return null;
+  // Only a number or a typed amount is an amount. [5], {} and true used to be read through String() as 5, NaN and 'true'.
+  if (typeof value !== 'string') return null;
 
-  const raw = String(value).trim();
+  const raw = value.trim();
   if (!raw) return null;
 
   // A currency marker on either end is ordinary and harmless.

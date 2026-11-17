@@ -18,6 +18,7 @@
  *    USB stick becomes a set of credentials.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -239,7 +240,8 @@ export default async function run({ port, projectRoot }) {
     const dbPath = path.join(dataDir, 'db.json');
     const onDisk = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
     const token = expiredCookie.split('=')[1];
-    const stored = onDisk.sessions.find(s => s.token === token);
+    // Sessions are stored by a SHA-256 of the token (2026-11-17), never the token itself.
+    const stored = onDisk.sessions.find(s => s.token === crypto.createHash('sha256').update(token).digest('hex'));
     T.check('the session was persisted to disk', !!stored);
     stored.expiresAt = new Date(Date.now() - 60_000).toISOString();
     fs.writeFileSync(dbPath, JSON.stringify(onDisk, null, 2));

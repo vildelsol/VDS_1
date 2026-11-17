@@ -45,6 +45,31 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const SESSION_RENEW_EVERY_MS = 60 * 60 * 1000;
 const SCRYPT_KEYLEN = 64;
 
+const scryptAsync = (password: string, salt: string): Promise<Buffer> =>
+  new Promise((resolve, reject) => crypto.scrypt(password, salt, SCRYPT_KEYLEN, (err, key) => (err ? reject(err) : resolve(key))));
+
+/**
+ * The same check as `verifyPassword`, off the event loop. scryptSync holds the whole server still for every
+ * sign-in; a few hundred unauthenticated attempts at once stalled every other request for seconds. This does the
+ * identical work on the thread pool, so a flood of attempts queues up instead of freezing the application.
+ */
+export async function verifyPasswordAsync(password: string, hash: string, salt: string): Promise<boolean> {
+  if (!hash || !salt) return false;
+  const candidate = await scryptAsync(password, salt);
+  const expected = Buffer.from(hash, 'hex');
+  if (candidate.length !== expected.length) return false;
+  return crypto.timingSafeEqual(candidate, expected);
+}
+
+/** The decoy check for an unknown account, without blocking. See `burnPasswordCheck`. */
+export async function burnPasswordCheckAsync(password: string): Promise<void> {
+  try {
+    await verifyPasswordAsync(password, DECOY_HASH, DECOY_SALT);
+  } catch {
+    /* the decoy comparison can fail on nothing that matters */
+  }
+}
+
 export function hashPassword(password: string): { hash: string; salt: string } {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, SCRYPT_KEYLEN).toString('hex');
@@ -102,15 +127,29 @@ function parseCookies(header: string | undefined): Record<string, string> {
   for (const part of header.split(';')) {
     const idx = part.indexOf('=');
     if (idx === -1) continue;
-    out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+    const raw = part.slice(idx + 1).trim();
+    try {
+      out[part.slice(0, idx).trim()] = decodeURIComponent(raw);
+    } catch {
+      // A malformed escape is somebody else's junk, not a reason to fail the request.
+      out[part.slice(0, idx).trim()] = raw;
+    }
   }
   return out;
 }
 
+/**
+ * Sessions are stored by a HASH of their token, never the token itself. db.json and every backup copy hold
+ * the sessions; with plain tokens in them, anyone able to read one of those files could sign in as whoever was
+ * signed in. The browser keeps the real token (in its cookie); the server keeps only what identifies it.
+ */
+export const hashToken = (token: string): string => crypto.createHash('sha256').update(token).digest('hex');
+
 export function createSession(db: Database, user: StoredUser): Session {
   const now = Date.now();
+  const rawToken = crypto.randomBytes(32).toString('hex');
   const session: Session = {
-    token: crypto.randomBytes(32).toString('hex'),
+    token: hashToken(rawToken),
     userId: user.id,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
@@ -118,11 +157,12 @@ export function createSession(db: Database, user: StoredUser): Session {
   };
   db.sessions = db.sessions.filter(s => new Date(s.expiresAt).getTime() > now);
   db.sessions.push(session);
-  return session;
+  // The caller gets the real token to put in the cookie; the stored copy carries only its hash.
+  return { ...session, token: rawToken };
 }
 
 export function destroySession(db: Database, token: string) {
-  db.sessions = db.sessions.filter(s => s.token !== token);
+  db.sessions = db.sessions.filter(s => s.token !== hashToken(token));
 }
 
 export function destroyAllSessionsFor(db: Database, userId: string) {
@@ -195,7 +235,7 @@ export interface AuthedRequest extends Request {
 export function resolveAuth(db: Database, req: Request): AuthedRequest['auth'] | undefined {
   const token = readSessionToken(req);
   if (!token) return undefined;
-  const session = db.sessions.find(s => s.token === token);
+  const session = db.sessions.find(s => s.token === hashToken(token));
   if (!session) return undefined;
   if (new Date(session.expiresAt).getTime() <= Date.now()) {
     destroySession(db, token);
@@ -333,7 +373,9 @@ export function renewSession(req: Request, res: Response, session: Session): voi
   if (!sessionRenewalDue(session, now)) return;
   const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
   session.expiresAt = expiresAt;
-  setSessionCookie(res, session.token, isRequestSecure(req));
+  // The cookie carries the real token the browser already holds; the stored session only has its hash.
+  const rawToken = readSessionToken(req);
+  if (rawToken) setSessionCookie(res, rawToken, isRequestSecure(req));
   transaction(db => {
     /*
      * In the ordinary case the line below changes nothing: the live session was

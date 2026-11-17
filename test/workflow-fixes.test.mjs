@@ -36,7 +36,8 @@ export default async function run({ port, projectRoot }) {
     T.check('control: a charge dated today is accepted', now.status === 200);
     const past = await c.post('/api/charges', { ...base, dueDate: lastMonth, description: 'opening balance' });
     T.check('control: a charge dated in a past month is accepted (opening balances and late invoices)', past.status === 200);
-    const noDate = await c.post('/api/charges', { ...base });
+    // A second IDENTICAL charge inside ten minutes is refused as a probable double click (2026-11-17), so this one is told apart.
+    const noDate = await c.post('/api/charges', { ...base, description: 'raised with no date' });
     T.check('control: no date means today and is accepted', noDate.status === 200);
     T.check('the three accepted charges are the only ones created', (await count()) === n0 + 3);
     return T.done();

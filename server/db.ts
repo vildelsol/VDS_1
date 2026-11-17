@@ -577,7 +577,8 @@ function emptyDb(): Database {
 function writeAtomic(db: Database) {
   const tmp = `${DB_FILE}.${process.pid}.tmp`;
   const payload = JSON.stringify(db, null, 2);
-  const fd = fs.openSync(tmp, 'w');
+  // 0600: db.json holds every password hash. (No effect on Windows, where the folder's own rights apply.)
+  const fd = fs.openSync(tmp, 'w', 0o600);
   try {
     fs.writeFileSync(fd, payload, 'utf-8');
     fs.fsyncSync(fd);
@@ -688,13 +689,34 @@ export function runDailyBackup(force = false): BackupRecord[] {
 
   for (const { dir, location } of targets) {
     try {
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       const target = path.join(dir, `db-${stamp}.json`);
+      if (force && fs.existsSync(target)) {
+        /*
+         * "Back up now" must not replace today's copy with a database that holds LESS.
+         * With db.json missing or emptied the server starts a blank property, and one
+         * click here used to overwrite the only good copy of the day with it.
+         */
+        const paymentsIn = (text: string): number => {
+          try {
+            const j = JSON.parse(text) as { payments?: unknown[] };
+            return Array.isArray(j.payments) ? j.payments.length : 0;
+          } catch {
+            return -1;
+          }
+        };
+        const before = paymentsIn(fs.readFileSync(target, 'utf-8'));
+        const now = paymentsIn(payload);
+        if (before > now) {
+          backupErrors.set(location, `Today's backup holds ${before} payments and the database now holds ${now}, so it was not overwritten. Check the data before backing up again.`);
+          continue;
+        }
+      }
       if (force || !fs.existsSync(target)) {
         // Written through a temp name so a half-written backup is never mistaken
         // for a good one if the process dies mid-write.
         const tmp = `${target}.partial`;
-        fs.writeFileSync(tmp, payload, 'utf-8');
+        fs.writeFileSync(tmp, payload, { encoding: 'utf-8', mode: 0o600 });
         fs.renameSync(tmp, target);
         written.push({ file: `db-${stamp}.json`, date: stamp, sizeBytes: fs.statSync(target).size, location });
       }
@@ -763,9 +785,9 @@ export function readBackupFile(file: string, location: 'local' | 'external'): un
  * them, so a restore chosen by mistake can itself be undone. Returns the file name.
  */
 export function saveSafetyCopy(): string {
-  if (!fs.existsSync(SAFETY_DIR)) fs.mkdirSync(SAFETY_DIR, { recursive: true });
+  if (!fs.existsSync(SAFETY_DIR)) fs.mkdirSync(SAFETY_DIR, { recursive: true, mode: 0o700 });
   const name = `before-restore-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  fs.writeFileSync(path.join(SAFETY_DIR, name), backupPayload(), 'utf-8');
+  fs.writeFileSync(path.join(SAFETY_DIR, name), backupPayload(), { encoding: 'utf-8', mode: 0o600 });
   const kept = fs.readdirSync(SAFETY_DIR).filter(f => f.startsWith('before-restore-') && f.endsWith('.json')).sort();
   while (kept.length > 10) {
     const oldest = kept.shift();
@@ -796,6 +818,7 @@ export function backupStatus() {
     /** True when the folder is set by environment variable and cannot be edited in the app. */
     externalBackupFromEnv: !externalBackupOverride && !!EXTERNAL_BACKUP_DIR,
     externalBackupError: backupErrors.get('external') || null,
+    localBackupError: backupErrors.get('local') || null,
     retentionDays: BACKUP_RETENTION_DAYS,
     todayBackedUp: backups.some(b => b.date === stamp),
     /** Separated, because "today's copy exists on this disk" is not the same as
@@ -809,12 +832,29 @@ let cache: Database | null = null;
 
 function readFromDisk(): Database {
   if (!fs.existsSync(DB_FILE)) {
+    // db.json is GONE. Starting a blank property is right for a first run, and wrong when there are
+    // backups: say so loudly rather than quietly begin an empty set of books beside them.
+    try {
+      const found = fs.existsSync(BACKUP_DIR) ? fs.readdirSync(BACKUP_DIR).filter(f => /^db-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort() : [];
+      if (found.length > 0) {
+        console.error(
+          `[vds] WARNING: db.json is missing but ${found.length} backup(s) exist in ${BACKUP_DIR} (newest: ${found[found.length - 1]}). ` +
+            'A new empty property has been started. If this is not a first run, sign in as the administrator and restore the newest backup from Settings.'
+        );
+      }
+    } catch {
+      // Only a warning; never block the start.
+    }
     const fresh = emptyDb();
     writeAtomic(fresh);
     return fresh;
   }
   const raw = fs.readFileSync(DB_FILE, 'utf-8');
   const parsed = JSON.parse(raw) as Partial<Database>;
+  // `{}` and `[]` are valid JSON and not a database. Accepting one started a blank property and overwrote the file.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Array.isArray((parsed as { units?: unknown }).units)) {
+    throw new Error('the file is valid JSON but it is not a database (it has no list of villas)');
+  }
 
   /*
    * Refuse a database written by a *newer* build than this one.
@@ -847,6 +887,17 @@ function readFromDisk(): Database {
 /** Load the database, running the migration exactly once per process start. */
 export function getDb(): Database {
   if (cache) return cache;
+  // A write killed part way leaves `db.json.<pid>.tmp` (a whole copy of the database) behind. Nothing
+  // else removes them, so they piled up. This process owns only its own pid's file.
+  try {
+    for (const f of fs.readdirSync(path.dirname(DB_FILE))) {
+      if (f.startsWith(`${path.basename(DB_FILE)}.`) && f.endsWith('.tmp') && f !== `${path.basename(DB_FILE)}.${process.pid}.tmp`) {
+        fs.unlinkSync(path.join(path.dirname(DB_FILE), f));
+      }
+    }
+  } catch {
+    // Housekeeping must never stop the property opening.
+  }
   runDailyBackup();
   let db: Database;
   try {

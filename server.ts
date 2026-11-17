@@ -105,7 +105,10 @@ import {
   setSessionCookie,
   toSessionUser,
   verifyPassword,
-  burnPasswordCheck
+  verifyPasswordAsync,
+  hashToken,
+  burnPasswordCheck,
+  burnPasswordCheckAsync
 } from './server/auth';
 import { assertFetchableFeedUrl, classifyEvent, feedDateChange, fetchICal, parseICal, planWithdrawals } from './server/ical';
 
@@ -119,6 +122,41 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 const smallJson = express.json({ limit: '1mb' });
 app.use((req, res, next) => (req.path === '/api/backup/restore' ? next() : smallJson(req, res, next)));
 app.disable('x-powered-by');
+
+/*
+ * Response hygiene. The API carries money and personal data, so it is never cached; no page may be framed
+ * by another site; and the browser must not guess types. (A full script-src policy is left out on purpose:
+ * it would need every inline script and font the app uses audited first.)
+ */
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'");
+  if (req.path.startsWith('/api')) res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
+/*
+ * A write that arrives from another web site is refused. SameSite=Strict already keeps the cookie off
+ * cross-site requests; this is the second lock. Only requests that CARRY an Origin are checked (browsers
+ * always send one on a cross-origin write), so scripts and tests that send none are unaffected.
+ */
+app.use('/api', (req, res, next) => {
+  const origin = req.header('Origin');
+  if (origin && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    let host = '';
+    try {
+      host = new URL(origin).host;
+    } catch {
+      host = '';
+    }
+    if (host !== req.header('Host')) {
+      return res.status(403).json({ error: 'This request came from another web site and was not carried out.', code: 'cross-origin-refused' });
+    }
+  }
+  next();
+});
 
 /**
  * Proxy trust is OFF unless an operator turns it on.
@@ -213,7 +251,7 @@ function pruneIdempotency() {
   }
 }
 
-let idempotencyFlushTimer: NodeJS.Timeout | null = null;
+let idempotencyFlushTimer: NodeJS.Timeout | null = null; // kept for flushIdempotencyNow's clearTimeout
 function flushIdempotency() {
   idempotencyFlushTimer = null;
   try {
@@ -224,12 +262,6 @@ function flushIdempotency() {
     fs.renameSync(tmp, IDEMPOTENCY_FILE);
   } catch {
     // Never let bookkeeping stop a payment. Worst case the key is remembered in memory only.
-  }
-}
-function scheduleIdempotencyFlush() {
-  if (!idempotencyFlushTimer) {
-    idempotencyFlushTimer = setTimeout(flushIdempotency, 250);
-    idempotencyFlushTimer.unref?.();
   }
 }
 /** Write synchronously, for shutdown and for tests that restart the server straight after a request. */
@@ -293,7 +325,9 @@ function idempotency(req: AuthedRequest, res: express.Response, next: express.Ne
     if (res.statusCode >= 200 && res.statusCode < 300) {
       idempotencyCache.set(key, { status: res.statusCode, body, at: Date.now(), fingerprint });
       if (idempotencyCache.size > 5000) pruneIdempotency();
-      scheduleIdempotencyFlush();
+      // Written BEFORE the reply leaves, not 250 ms later: a client that was told "saved" and then
+      // retries after a crash would otherwise get a second receipt.
+      flushIdempotencyNow();
     }
     idempotencyInFlight.delete(key);
     return originalJson(body);
@@ -364,6 +398,16 @@ function handler(fn: (req: AuthedRequest, res: express.Response) => Promise<unkn
         return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
       }
       console.error('[vds] unhandled error:', err);
+      // A full disk or a read-only folder is the commonest real cause and the one a person can fix.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === 'ENOSPC' || code === 'EROFS' || code === 'EACCES' || code === 'EPERM' || code === 'EDQUOT') {
+        return res.status(500).json({
+          error:
+            code === 'ENOSPC' || code === 'EDQUOT'
+              ? 'The records could not be saved because the disk is full. Nothing was saved. Free some space and try again.'
+              : 'The records could not be saved because the data folder is read-only or not permitted. Nothing was saved. Check the folder and try again.'
+        });
+      }
       return res.status(500).json({ error: 'An unexpected server error occurred. Nothing was saved.' });
     }
   };
@@ -428,6 +472,18 @@ function requirePositiveAmount(value: unknown, field: string): number {
   if (!(amount > 0)) bad(`${field} must be greater than zero.`);
   if (amount > 1_000_000_000) bad(`${field} is implausibly large. Please check the figure.`);
   return amount;
+}
+
+/**
+ * An e-mail address, or nothing. An unchanged value is left alone (old records are never made un-editable); a new one
+ * must look like a single address, because it ends up in mailto: links where '?bcc=' or '&subject=' would add headers.
+ */
+function emailField(next: unknown, existing: unknown, field: string): string {
+  const raw = optionalString(next ?? existing, 200);
+  if (raw === optionalString(existing, 200)) return raw;
+  if (!raw) return '';
+  if (!/^[^\s@?&=;,<>"'#%]+@[^\s@?&=;,<>"'#%]+\.[^\s@?&=;,<>"'#%]+$/.test(raw)) bad(`${field} is not a single e-mail address.`);
+  return raw;
 }
 
 /**
@@ -698,7 +754,7 @@ function noteFailedLogin(ip: string, username: string, kind: 'refused' | 'locked
   const claim = claimFailedLoginAudit();
   if (claim === 'silent') return;
 
-  const who = username || '(no username given)';
+  const who = (username || '(no username given)').slice(0, 120);
   const action =
     claim === 'note-cap'
       ? 'Further failed sign-ins in this period are not being listed individually'
@@ -734,8 +790,10 @@ function claimLockoutNotice(ip: string, username: string): boolean {
 app.post(
   '/api/auth/login',
   handler(async (req, res) => {
-    const username = String(req.body?.username ?? '').trim().toLowerCase();
-    const password = String(req.body?.password ?? '');
+    if (typeof req.body?.username !== 'string' || typeof req.body?.password !== 'string') bad('Username and password are required.');
+    // Capped before it is throttled, counted or written to the audit trail by anyone who has not signed in.
+    const username = req.body.username.trim().toLowerCase().slice(0, 120);
+    const password = String(req.body.password).slice(0, 1000);
     if (!username || !password) bad('Username and password are required.');
     const ip = req.ip || 'unknown';
     try {
@@ -749,19 +807,19 @@ app.post(
     }
     const firstOfRun = isFirstFailure(ip, username);
 
+    // The password work happens OFF the event loop (see verifyPasswordAsync), before the write begins, so a flood of
+    // sign-in attempts queues on the thread pool instead of freezing every other request. Same work either way for a
+    // missing account, so the clock still does not reveal which usernames exist.
+    const candidate = getDb().users.find(u => u.username.toLowerCase() === username);
+    let verified = false;
+    if (!candidate || !candidate.active) await burnPasswordCheckAsync(password);
+    else verified = await verifyPasswordAsync(password, candidate.passwordHash, candidate.passwordSalt);
+
     const result = await transaction(db => {
-      const user = db.users.find(u => u.username.toLowerCase() === username);
-      // Same message and the same work either way, so neither the response nor
-      // the time it took reveals whether the username exists. The decoy check is
-      // not decoration: without it, a missing account answered five times faster
-      // than a real one and the clock gave the game away.
-      if (!user || !user.active) {
-        burnPasswordCheck(password);
-        return null;
-      }
-      if (!verifyPassword(password, user.passwordHash, user.passwordSalt)) {
-        return null;
-      }
+      if (!verified || !candidate) return null;
+      const user = db.users.find(u => u.id === candidate.id);
+      // The account may have been deactivated or its password changed while the check ran.
+      if (!user || !user.active || user.passwordHash !== candidate.passwordHash) return null;
       const session = createSession(db, user);
       user.lastLoginAt = new Date().toISOString();
       addAudit(db, user.name, user.role, 'Signed in', 'Session', user.username, '', '');
@@ -784,7 +842,7 @@ app.post(
     const token = readSessionToken(req);
     if (token) {
       await transaction(db => {
-        const session = db.sessions.find(s => s.token === token);
+        const session = db.sessions.find(s => s.token === hashToken(token));
         const user = session && db.users.find(u => u.id === session.userId);
         if (user) addAudit(db, user.name, user.role, 'Signed out', 'Session', user.username, '', '');
         destroySession(db, token);
@@ -813,6 +871,11 @@ app.get(
  * ------------------------------------------------------------------ */
 
 app.use('/api', requireAuth(getDb));
+// Only an administrator's upload is read at all: the body limit is 60 MB, and a junior's request used to be buffered
+// in full before the permission check ever ran.
+app.use('/api/backup/restore', (req: AuthedRequest, res, next) =>
+  req.auth?.user.role === 'ADMINISTRATOR' ? next() : res.status(403).json({ error: 'Only an administrator can restore records from a backup.' })
+);
 app.use('/api/backup/restore', express.json({ limit: '60mb' }));
 
 /**
@@ -831,7 +894,8 @@ const PASSWORD_CHANGE_ALLOWED = new Set(['/auth/change-password', '/auth/logout'
 
 app.use('/api', (req: AuthedRequest, res, next) => {
   if (!req.auth?.user.mustChangePassword) return next();
-  if (!MUTATING.has(req.method)) return next();
+  // Reads stay open so the app can render, except the one that hands over the whole set of records.
+  if (!MUTATING.has(req.method) && !/^\/backup\/(download|snapshot)/.test(req.path)) return next();
   if (PASSWORD_CHANGE_ALLOWED.has(req.path)) return next();
   return res.status(403).json({
     error: 'Choose a new password before recording anything. Your account is still on the password it was issued with.',
@@ -850,6 +914,8 @@ app.post(
     if (complaint) bad(complaint);
     if (currentPassword === newPassword) bad('The new password must be different from the current one.');
 
+    // The current password is being guessed here too: it gets the same throttle as signing in.
+    throttleLogin(req.ip || 'unknown', `change:${req.auth!.user.id}`);
     await transaction(db => {
       const user = db.users.find(u => u.id === req.auth!.user.id);
       if (!user) throw new ApiError(404, 'Account not found.');
@@ -860,8 +926,13 @@ app.post(
       user.passwordHash = hash;
       user.passwordSalt = salt;
       user.mustChangePassword = false;
+      // Every OTHER sign-in for this account ends: a session somebody else holds must not outlive the password
+      // that was changed to shut them out. This one (the caller's) stays.
+      const keep = req.auth!.session.token;
+      db.sessions = db.sessions.filter(sess => sess.userId !== user.id || sess.token === keep);
       addAudit(db, user.name, user.role, 'Changed own password', 'User', user.username, '', '');
     });
+    clearLoginAttempts(req.ip || 'unknown', `change:${req.auth!.user.id}`);
     res.json({ success: true });
   })
 );
@@ -1136,6 +1207,20 @@ app.get(
 );
 
 /**
+ * A backup folder must never be somewhere the web server hands files out from. A backup holds every account's
+ * password hash; pointed at the served folder it became downloadable by anyone on the network.
+ */
+function assertSafeBackupFolder(dir: string) {
+  const target = (dir || '').trim();
+  if (!target) return;
+  const resolved = path.resolve(target).toLowerCase();
+  const served = [path.resolve(process.cwd(), 'dist'), path.resolve(process.cwd(), 'public')].map(p => p.toLowerCase());
+  if (served.some(root => resolved === root || resolved.startsWith(root + path.sep))) {
+    throw new ApiError(400, 'That folder is inside the part of the program that is shown to web visitors, so a backup there could be downloaded by anyone. Choose another folder, ideally an external drive.');
+  }
+}
+
+/**
  * Test whether a folder can be used for off-machine backups, without saving it.
  *
  * Actually writes and deletes a probe file: an unplugged external drive, a
@@ -1146,7 +1231,9 @@ app.post(
   '/api/backup/check-folder',
   handler((req: AuthedRequest, res) => {
     requirePermission(req, 'manage_settings');
+    if (req.auth!.user.role !== 'ADMINISTRATOR') throw new ApiError(403, 'Only an administrator can test a backup folder.');
     const dir = optionalString(req.body?.dir, 400);
+    assertSafeBackupFolder(dir);
     res.json({ success: true, ...checkBackupTarget(dir) });
   })
 );
@@ -1157,6 +1244,11 @@ app.post(
   handler((req: AuthedRequest, res) => {
     requirePermission(req, 'take_backups');
     const written = runDailyBackup(true);
+    if (written.length === 0) {
+      const problem = backupStatus();
+      const why = problem.localBackupError || problem.externalBackupError;
+      if (why) throw new ApiError(500, `The backup was NOT written: ${why}`);
+    }
     const who = actor(req);
     auditInBackground('a manual backup', db => {
       addAudit(db, who.name, who.role, 'Took a manual backup', 'Backup', 'manual', '', written.map(w => `${w.location}: ${w.file}`).join(', ') || 'no target writable');
@@ -1242,7 +1334,13 @@ app.post(
       }
     } catch (err) {
       if (err instanceof ApiError) throw err;
-      throw new ApiError(400, (err as Error).message);
+      const message = (err as Error).message;
+      throw new ApiError(
+        400,
+        err instanceof SyntaxError || /JSON/.test(message)
+          ? 'That backup file is damaged: it cannot be read as a backup (it is cut off or corrupted). Choose another backup. Nothing was changed.'
+          : message
+      );
     }
 
     let file: Record<string, unknown>;
@@ -1290,6 +1388,10 @@ app.post(
       // ones: its own faults are reported below, never a reason to refuse it.
       { skipGuard: true }
     );
+    // Remembered answers describe the books as they were BEFORE the restore: replaying one would
+    // report success for a payment that no longer exists.
+    idempotencyCache.clear();
+    flushIdempotencyNow();
     const report = checkIntegrity(getDb());
     res.json({
       success: true,
@@ -1379,6 +1481,11 @@ app.post(
       }
 
       if (backupDir !== undefined) {
+        // Where the off-machine copy goes is where every password hash is sent: an administrator decides it.
+        if ((backupDir || '') !== (db.settings.backupDir || '')) {
+          if (req.auth!.user.role !== 'ADMINISTRATOR') throw new ApiError(403, 'Only an administrator can choose where backups are kept.');
+          assertSafeBackupFolder(String(backupDir || ''));
+        }
         // Saved even when the folder is not reachable this second: an external
         // drive is routinely unplugged, and refusing to remember its path would
         // mean re-typing it every time it comes back. The response reports
@@ -2897,10 +3004,10 @@ app.put(
         ...original,
         number,
         ownerName: requireString(body.ownerName ?? original.ownerName, 'Owner name', 120),
-        ownerEmail: optionalString(body.ownerEmail ?? original.ownerEmail, 200),
+        ownerEmail: emailField(body.ownerEmail, original.ownerEmail, 'The owner e-mail'),
         ownerPhone: optionalString(body.ownerPhone ?? original.ownerPhone, 60),
         tenantName: keepsTenant ? optionalString(body.tenantName ?? original.tenantName, 120) : '',
-        tenantEmail: keepsTenant ? optionalString(body.tenantEmail ?? original.tenantEmail, 200) : '',
+        tenantEmail: keepsTenant ? emailField(body.tenantEmail, original.tenantEmail, 'The tenant e-mail') : '',
         tenantPhone: keepsTenant ? optionalString(body.tenantPhone ?? original.tenantPhone, 60) : '',
         status,
         monthlyRent,
@@ -2925,10 +3032,10 @@ app.put(
         maintDueDay: clampDay(body.maintDueDay, original.maintDueDay || 1, 'The maintenance due day'),
         ownerEmergencyName: optionalString(body.ownerEmergencyName ?? original.ownerEmergencyName, 120),
         ownerEmergencyPhone: optionalString(body.ownerEmergencyPhone ?? original.ownerEmergencyPhone, 60),
-        ownerEmergencyEmail: optionalString(body.ownerEmergencyEmail ?? original.ownerEmergencyEmail, 200),
+        ownerEmergencyEmail: emailField(body.ownerEmergencyEmail, original.ownerEmergencyEmail, 'The owner emergency e-mail'),
         tenantEmergencyName: keepsTenant ? optionalString(body.tenantEmergencyName ?? original.tenantEmergencyName, 120) : '',
         tenantEmergencyPhone: keepsTenant ? optionalString(body.tenantEmergencyPhone ?? original.tenantEmergencyPhone, 60) : '',
-        tenantEmergencyEmail: keepsTenant ? optionalString(body.tenantEmergencyEmail ?? original.tenantEmergencyEmail, 200) : ''
+        tenantEmergencyEmail: keepsTenant ? emailField(body.tenantEmergencyEmail, original.tenantEmergencyEmail, 'The tenant emergency e-mail') : ''
       };
 
       db.units[idx] = updatedUnit;
@@ -3299,6 +3406,34 @@ app.post(
         );
       }
 
+      /*
+       * The same charge raised twice within ten minutes is almost always a double click or two people at the
+       * same desk, and each copy adds its full amount to the arrears. Payments have always refused this; a charge
+       * is just as much money. A genuinely second identical charge is told apart by its description, or by waiting.
+       */
+      const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+      const twin = db.charges.find(
+        c =>
+          c.status === 'open' &&
+          c.kind === 'one-off' &&
+          c.unitId === unit.id &&
+          c.category === category &&
+          c.oneOffType === oneOffType &&
+          c.amount === amount &&
+          c.currency === currency &&
+          c.dueDate === dueDate &&
+          (c.description || '') === (description || oneOffType) &&
+          Date.parse(c.createdAt || '') > tenMinutesAgo
+      );
+      if (twin && body.confirmDuplicate !== true) {
+        throw new ApiError(
+          409,
+          `The same ${oneOffType.toLowerCase()} of ${currency} ${amount} was raised on ${unit.number} a moment ago. It was not raised again. ` +
+            'If it really is a second charge, change the description so the two can be told apart.',
+          'possible-duplicate-charge'
+        );
+      }
+
       const who = actor(req);
       const created: Charge = {
         id: uniqueRecordId(db.charges, `chg-oneoff-${unit.id}-${Date.now()}`),
@@ -3350,6 +3485,8 @@ app.post(
       const charge = db.charges.find(c => c.id === id);
       if (!charge) throw new ApiError(404, 'Charge not found.');
       if (charge.status === 'void') throw new ApiError(400, 'That charge has already been voided.');
+      // Taking a billed charge off the books is as serious as voiding a receipt: the same second approver applies.
+      assertCosigned(db, req, req.body, `charge ${id} is voided`);
       const before = { ...charge };
       const who = actor(req);
       charge.status = 'void';
@@ -3426,7 +3563,15 @@ function assertNoOverlap(db: Database, unitId: string, checkIn: string, checkOut
  * Voiding is one-way here as well: a booking that regains a deposit gets a new
  * receipt with its own number, and the voided one stays voided.
  */
-function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: string, role: UserRole) {
+/**
+ * What a reservation edit is about to do to the money. A deposit entered on a reservation issues, re-prices or
+ * voids a RECEIPT, so the same permissions and the same second approver that guard the receipts themselves apply
+ * here: a role that may only edit bookings must not be able to mint, rewrite or cancel a receipt through one.
+ */
+type DepositAction = 'issue' | 'modify' | 'void';
+type DepositGate = (kind: DepositAction, receiptNo?: string) => void;
+
+function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: string, role: UserRole, gate: DepositGate = () => {}) {
   // Anything not voided counts as the live deposit receipt — including one that
   // is still awaiting confirmation. Matching only completed receipts would raise a
   // second one alongside every pending deposit.
@@ -3434,6 +3579,7 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
 
   if (booking.status === 'cancelled' || booking.depositPaid <= 0) {
     if (live) {
+      if (live.status === 'completed') gate('void', live.receiptNo);
       const before = { ...live };
       live.status = 'reversed';
       live.reversedBy = staffName;
@@ -3480,6 +3626,7 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     let changed = false;
 
     if (live.amount !== booking.depositPaid || live.currency !== booking.currency) {
+      if (live.status === 'completed') gate('modify', live.receiptNo);
       live.amount = booking.depositPaid;
       live.currency = booking.currency;
       live.payerName = booking.guestName;
@@ -3497,6 +3644,7 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
      * place rather than a second one being raised beside it.
      */
     if (live.status === 'pending') {
+      gate('issue');
       live.status = 'completed';
       live.receiptNo = live.receiptNo || nextReceiptNo(db);
       live.receivedBy = staffName;
@@ -3510,6 +3658,7 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     return;
   }
 
+  gate('issue');
   const payment: Payment = {
     id: uniqueRecordId(db.payments, `p-booking-${booking.id}`),
     payerName: booking.guestName,
@@ -3580,13 +3729,23 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
     balanceDue: round2(amount - depositPaid),
     nightlyRate,
     guestName: requireString(body.guestName ?? existing?.guestName, 'Guest name', 120),
-    guestEmail: optionalString(body.guestEmail ?? existing?.guestEmail, 200),
+    guestEmail: emailField(body.guestEmail, existing?.guestEmail, 'The guest e-mail'),
     guestPhone: optionalString(body.guestPhone ?? existing?.guestPhone, 60),
     source: requireEnum(body.source ?? existing?.source ?? 'Direct', ['Direct', 'Airbnb', 'Booking.com', 'Blocked', 'Unavailable'] as const, 'Booking source'),
     status: requireEnum(body.status ?? existing?.status ?? 'confirmed', ['confirmed', 'checked-in', 'checked-out', 'cancelled'] as const, 'Booking status'),
     notes: optionalString(body.notes ?? existing?.notes, 2000)
   };
 }
+
+const depositGate = (req: AuthedRequest, db: Database, body: unknown): DepositGate => (kind, receiptNo) => {
+  if (kind === 'issue') return requirePermission(req, 'record_payment');
+  if (kind === 'modify') {
+    requirePermission(req, 'modify_settled');
+    return assertCosigned(db, req, body, `receipt ${receiptNo} is re-priced through its reservation`);
+  }
+  requirePermission(req, 'reverse_payment');
+  return assertCosigned(db, req, body, `receipt ${receiptNo} is voided through its reservation`);
+};
 
 app.post(
   '/api/bookings',
@@ -3607,7 +3766,7 @@ app.post(
         ...fields
       };
       db.bookings.push(created);
-      syncBookingDepositReceipt(db, created, who.name, who.role);
+      syncBookingDepositReceipt(db, created, who.name, who.role, depositGate(req, db, req.body));
       addAudit(db, who.name, who.role, 'Created reservation', 'Booking', created.id, '', created);
       return created;
     });
@@ -3646,7 +3805,7 @@ app.put(
       const who = actor(req);
       const updated: Booking = { ...original, unitId: unit.id, unitNumber: unit.number, ...fields };
       db.bookings[idx] = updated;
-      syncBookingDepositReceipt(db, updated, who.name, who.role);
+      syncBookingDepositReceipt(db, updated, who.name, who.role, depositGate(req, db, body));
       addAudit(db, who.name, who.role, cancelling ? 'Cancelled reservation' : 'Updated reservation', 'Booking', id, original, updated);
       return updated;
     });
@@ -4184,6 +4343,20 @@ app.put(
         notes: optionalString(body.notes ?? original.notes, 2000)
       };
       if (updated.date > today()) bad('A payment cannot be dated in the future.');
+      /*
+       * A received rent or maintenance receipt cannot be moved OUT of those categories by an edit. The refund cap only
+       * looks at Rent and Maintenance accounts, so re-labelling an applied receipt "Other" and then refunding it paid
+       * out money the account had already used. Void it and enter the right one instead; that is audited.
+       */
+      if (
+        original.status === 'completed' &&
+        (original.category === 'Rent' || original.category === 'Maintenance') &&
+        updated.category !== original.category &&
+        updated.category !== 'Rent' &&
+        updated.category !== 'Maintenance'
+      ) {
+        throw new ApiError(400, `A received ${original.category.toLowerCase()} receipt cannot be re-labelled ${updated.category}. Void it and record the correct one.`);
+      }
 
       /**
        * A correction must not contradict a refund already paid out against it.
@@ -4722,6 +4895,8 @@ app.post(
 app.post(
   '/api/payments/:id/mark-printed',
   handler(async (req: AuthedRequest, res) => {
+    // Printing a receipt is part of handling money: whoever may record payments, or correct them, may reprint.
+    if (!can(req.auth!, 'record_payment') && !can(req.auth!, 'modify_settled')) requirePermission(req, 'record_payment');
     const { id } = req.params;
     const count = await transaction(db => {
       const payment = db.payments.find(p => p.id === id);
@@ -4761,9 +4936,10 @@ app.post(
         throw new ApiError(400, `A reading for ${unit.number} covering ${billingPeriod} already exists. Edit that reading instead of adding a second one.`);
       }
 
-      const previousReading = Math.max(0, Number(body.previousReading) || 0);
-      const currentReading = Number(body.currentReading);
+      const previousReading = round2(Math.max(0, Number(body.previousReading) || 0));
+      const currentReading = round2(Number(body.currentReading));
       if (!Number.isFinite(currentReading)) bad('The current meter reading is required.');
+      if (currentReading > 1_000_000_000 || previousReading > 1_000_000_000) bad('A meter reading that large is not a real reading. Please check the figure.');
       if (currentReading < previousReading) {
         bad('The current reading is lower than the previous reading. Check the figures, or record a meter replacement in the notes.');
       }
@@ -4808,9 +4984,10 @@ app.put(
         throw new ApiError(403, 'This utility bill is settled. Modifying settled records requires additional permission.');
       }
 
-      const previousReading = Math.max(0, Number(body.previousReading ?? original.previousReading) || 0);
-      const currentReading = Number(body.currentReading ?? original.currentReading);
+      const previousReading = round2(Math.max(0, Number(body.previousReading ?? original.previousReading) || 0));
+      const currentReading = round2(Number(body.currentReading ?? original.currentReading));
       if (!Number.isFinite(currentReading)) bad('The current meter reading is required.');
+      if (currentReading > 1_000_000_000 || previousReading > 1_000_000_000) bad('A meter reading that large is not a real reading. Please check the figure.');
       if (currentReading < previousReading) bad('The current reading cannot be lower than the previous reading.');
 
       const newAmount = requirePositiveAmount(body.amountCharged ?? original.amountCharged, 'Charge amount');
@@ -5098,6 +5275,8 @@ app.post(
       const found = db.expenses.find(e => e.id === id);
       if (!found) throw new ApiError(404, 'Expense not found.');
       if (found.status === 'void') throw new ApiError(400, 'That cost has already been taken back.');
+      // A cost already paid is a record of money out; taking it back needs the same second approver as voiding a receipt.
+      if (found.status === 'paid') assertCosigned(db, req, body, `expense ${id} is taken back`);
 
       if (found.status === 'paid' && body.confirmSettled !== true) {
         throw new ApiError(
@@ -5649,6 +5828,10 @@ app.post(
 app.post(
   '/api/unit-activities',
   handler(async (req: AuthedRequest, res) => {
+    // A role with every working permission withdrawn is read-only: it cannot add to the resident log either.
+    if (!(['record_payment', 'add_booking', 'edit_booking', 'edit_unit', 'enter_utility'] as const).some(a => can(req.auth!, a))) {
+      throw new ApiError(403, 'Your role is not permitted to add to the resident activity log.');
+    }
     const body = req.body || {};
     const activity = await transaction(db => {
       const unit = resolveUnit(db, body);
@@ -6300,6 +6483,9 @@ async function startServer() {
     app.use(serveEmbeddedAssets(seaModule));
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    // Nothing but the client shell is served. The compiled server, its source map and any database or backup
+    // file that ends up under here are never handed out.
+    app.use((req, res, next) => (/^\/(server\.cjs(\.map)?|idempotency\.json|db[-.][^/]*\.json)$/i.test(req.path) ? res.status(404).end() : next()));
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

@@ -858,7 +858,7 @@ function ContactBlock({ name, email, phone }: { name: string; email?: string; ph
       <p className="flex items-center gap-2 text-slate-600">
         <Mail className="h-4 w-4 text-slate-400" />
         {email ? (
-          <a href={`mailto:${email}`} className="underline-offset-2 hover:underline">
+          <a href={`mailto:${encodeURIComponent(email).replace(/%40/g, '@')}`} className="underline-offset-2 hover:underline">
             {email}
           </a>
         ) : (
@@ -868,7 +868,7 @@ function ContactBlock({ name, email, phone }: { name: string; email?: string; ph
       <p className="flex items-center gap-2 text-slate-600">
         <Phone className="h-4 w-4 text-slate-400" />
         {phone ? (
-          <a href={`tel:${phone}`} className="underline-offset-2 hover:underline">
+          <a href={`tel:${phone.replace(/[^\d+*#]/g, '')}`} className="underline-offset-2 hover:underline">
             {phone}
           </a>
         ) : (
