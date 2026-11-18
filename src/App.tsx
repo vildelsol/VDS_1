@@ -787,6 +787,7 @@ export default function App() {
             units={data.units}
             utilities={data.utilities}
             expenses={data.expenses}
+            payments={data.payments}
             recurringExpenses={data.recurringExpenses}
             settings={settings}
             session={session}

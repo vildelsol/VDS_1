@@ -36,7 +36,8 @@ import {
   REPORT_BOOK_LABELS,
   REPORT_BOOK_SCOPE,
   ReportBook,
-  operatingStatement
+  operatingStatement,
+  UTILITY_RECOVERY_NOTE
 } from '../lib/finance';
 import { formatMoney } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
@@ -97,7 +98,6 @@ const INCOME_CLASSES: { category: PaymentCategory; label: string }[] = [
   { category: 'Maintenance', label: 'Maintenance contributions' },
   { category: 'Rent', label: 'Rent' },
   { category: 'Booking', label: 'Short-stay bookings' },
-  { category: 'Utility', label: 'Utilities recovered' },
   { category: 'Other', label: 'Other income' }
 ];
 
@@ -264,6 +264,7 @@ export default function OperatingStatement({ units, payments, expenses, book, se
       }
 
       rows.push([cell.blank()]);
+      if (s.utilityRecovered !== 0) rows.push([cell.note(recoveryText(s), 5)]);
       rows.push([cell.note(`Scope: ${REPORT_BOOK_SCOPE[book]}`, 5)]);
       rows.push([
         cell.note(
@@ -507,6 +508,8 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
 
       <BooksNote statement={s} />
 
+      <RecoveryNote statement={s} />
+
       <ExcludedNote statement={s} />
     </div>
   );
@@ -592,6 +595,20 @@ function BooksNote({ statement: s }: { statement: Statement }) {
       </p>
     </div>
   );
+}
+
+/**
+ * Utility recoveries, named. Ro, 2026-11-18: they are a pass-through, not
+ * income, so they sit inside the Utilities expenditure as credit lines and the
+ * amount is said here in words, for the copy where that group is a total only.
+ */
+function recoveryText(s: Statement): string {
+  return `${formatMoney(s.utilityRecovered, s.currency)} of utility payments recovered from villas is netted from the Utilities expenditure above. ${UTILITY_RECOVERY_NOTE}`;
+}
+
+function RecoveryNote({ statement: s }: { statement: Statement }) {
+  if (s.utilityRecovered === 0) return null;
+  return <p className="rounded-lg border border-slate-200 bg-slate-50 p-2 font-mono text-[10px] leading-relaxed text-slate-500">{recoveryText(s)}</p>;
 }
 
 function ExcludedNote({ statement: s }: { statement: Statement }) {
@@ -885,6 +902,10 @@ function StatementDocument({
               The proprietors&rsquo; statements, the annual report and the returns to the Commission carry the
               corporation&rsquo;s costs only.
             </p>
+          )}
+
+          {s.utilityRecovered !== 0 && (
+            <p className="mt-2 rounded border border-slate-300 p-2 text-[9px] leading-relaxed">{recoveryText(s)}</p>
           )}
 
           {/* Said on the printed page too: the scope of the document travels with it. */}

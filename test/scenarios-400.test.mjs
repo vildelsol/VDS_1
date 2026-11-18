@@ -321,8 +321,8 @@ function auditReporting(db, fin, asOf) {
 
   for (const currency of ['JMD', 'USD']) {
     const billed = fin.chargedInPeriod(charges, currency, '2026-01-01', '2026-12-31');
-    const owner = fin.ownerBilledUnitIds(units);
-    const collected = fin.collectedInPeriod(payments, currency, '2026-01-01', '2026-12-31', owner);
+    // ownerBilledUnitIds retired 2026-11-18: no villa set, every utility recovery is out of income.
+    const collected = fin.collectedInPeriod(payments, currency, '2026-01-01', '2026-12-31');
     const rate = fin.collectionRate(billed.total, collected.rent + collected.maintenance);
     if (rate !== null && isBadNumber(rate)) problems.push(`${currency} collection rate is ${rate}`);
     if (isBadNumber(billed.total) || isBadNumber(collected.total)) problems.push(`${currency} period totals are not finite`);

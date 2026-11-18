@@ -105,7 +105,9 @@ const BOOKS = ['everything', 'strata', 'ispo'];
 
 /** What a book's income is allowed to contain, stated here as well as in the code. */
 const INCOME_OF = {
-  strata: ['Maintenance contributions', 'Utilities recovered', 'Other income'],
+  // 'Utilities recovered' removed 2026-11-18: Ro ruled utility recoveries a
+  // pass-through, netted from the utility cost and never income on any book.
+  strata: ['Maintenance contributions', 'Other income'],
   ispo: ['Rent', 'Short-stay bookings']
 };
 
@@ -137,7 +139,8 @@ function auditReports(db, fin, stays, periods) {
     bookOfPaymentCategory,
     accountBalance,
     bookingDepositFindings,
-    liveExpenses
+    liveExpenses,
+    withUtilityRecoveries
   } = fin;
   const { arrivalsWithin, departuresWithin, stayPhase } = stays;
 
@@ -145,7 +148,10 @@ function auditReports(db, fin, stays, periods) {
 
   const voidCostIds = new Set(expenses.filter(e => e.status === 'void').map(e => e.id));
   const reversedIds = new Set(payments.filter(p => p.status === 'reversed').map(p => p.id));
-  const ispoCostIds = new Set(expenses.filter(e => e.fund === 'ispo').map(e => e.id));
+  // Includes the derived utility-recovery rows on ISPO's book: a recovery attaches
+  // to the book that bore the utility cost (Ro, 2026-11-18), so one on a villa whose
+  // utilities ISPO paid is ISPO's, and belongs on ISPO's statement.
+  const ispoCostIds = new Set(withUtilityRecoveries(expenses, payments).filter(e => e.fund === 'ispo').map(e => e.id));
 
   for (const currency of ['JMD', 'USD']) {
     for (const [from, to] of periods) {
@@ -247,7 +253,9 @@ function auditReports(db, fin, stays, periods) {
       /* ---- 5. the tab summary agrees with the statement under it ---- */
 
       for (const book of BOOKS) {
-        const costs = expensesForBook(expenses, units, book, currency);
+        // Netted as Reports.tsx nets them: utility recoveries reduce the utility
+        // cost (pass-through, Ro 2026-11-18). The raw register was the old definition.
+        const costs = expensesForBook(withUtilityRecoveries(expenses, payments), units, book, currency);
         const summarySpent = expensesInPeriod(costs, currency, from, to) + (book === 'ispo' ? read[book].internalTransfer : 0);
         if (!near(summarySpent, read[book].totalExpenditure)) {
           problems.push(
