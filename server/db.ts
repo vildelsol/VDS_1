@@ -586,6 +586,121 @@ function writeAtomic(db: Database) {
     fs.closeSync(fd);
   }
   fs.renameSync(tmp, DB_FILE);
+  fsyncDir(path.dirname(DB_FILE));
+}
+
+/**
+ * Flush the directory entry so the rename itself survives a power cut. Windows
+ * cannot open a directory for fsync (EPERM/EISDIR/EINVAL); there NTFS journals the
+ * rename and we carry on. Any other failure is real and is thrown.
+ */
+function fsyncDir(dir: string) {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EPERM' && code !== 'EISDIR' && code !== 'EINVAL') throw err;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Single-instance lock on the data folder
+ * ------------------------------------------------------------------ */
+
+const LOCK_FILE = path.join(DATA_DIR, 'vds.lock');
+let lockHeld = false;
+
+/** True when a process with this pid exists. EPERM means it exists but is not ours (always so for services on Windows). */
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+export class DataDirLockedError extends Error {}
+
+/**
+ * Take the data folder for this process alone. Two servers on one db.json would
+ * each keep their own copy in memory and overwrite the other's receipts. The lock
+ * file is created with O_EXCL; one left by a process that is no longer running is
+ * taken over. Released on exit (SIGINT/SIGTERM exit through process.exit).
+ */
+export function acquireDataDirLock(): void {
+  if (lockHeld) return;
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const mine = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+      try {
+        fs.writeFileSync(fd, mine, 'utf-8');
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      lockHeld = true;
+      process.on('exit', releaseDataDirLock);
+      // A signal exits through process.exit, which runs the release above. Checked after
+      // start-up so the server's own handlers (which flush first) are not pre-empted.
+      setImmediate(() => {
+        for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+          if (process.listenerCount(sig) === 0) process.on(sig, () => process.exit(0));
+        }
+      });
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    let holder: { pid?: number; startedAt?: string } = {};
+    try {
+      holder = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
+    } catch {
+      // Empty or half-written: the holder died while writing it, or is writing it right now.
+      // Give a live writer a moment before treating it as stale.
+      const age = (() => {
+        try {
+          return Date.now() - fs.statSync(LOCK_FILE).mtimeMs;
+        } catch {
+          return Infinity;
+        }
+      })();
+      if (age < 2000) {
+        throw new DataDirLockedError(`Another copy of the app is starting on this data folder (${DATA_DIR}). Close it first.`);
+      }
+    }
+    if (holder.pid && pidAlive(holder.pid)) {
+      throw new DataDirLockedError(
+        `Another copy of the app is already running on this data folder (${DATA_DIR}): process ${holder.pid}, started ${holder.startedAt || 'at an unknown time'}. ` +
+          'Close it first. Two copies would overwrite each other\'s records.'
+      );
+    }
+    // Stale: the holder is gone. Remove it and try again.
+    try {
+      fs.unlinkSync(LOCK_FILE);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+  throw new DataDirLockedError(`Could not take the lock on the data folder (${DATA_DIR}). Another copy of the app may be starting.`);
+}
+
+export function releaseDataDirLock(): void {
+  if (!lockHeld) return;
+  try {
+    const holder = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
+    if (holder.pid === process.pid) fs.unlinkSync(LOCK_FILE);
+  } catch {
+    /* already gone */
+  }
+  lockHeld = false;
 }
 
 export interface BackupRecord {
@@ -944,6 +1059,14 @@ let lastReport: { db: Database; report: ReturnType<typeof checkIntegrity> } | nu
 function baselineReport(committed: Database) {
   if (!lastReport || lastReport.db !== committed) lastReport = { db: committed, report: checkIntegrity(committed) };
   return lastReport.report;
+}
+
+/**
+ * A restore: the safety copy is taken INSIDE the transaction, so no other write can
+ * land between the copy and the replacement and be lost from both.
+ */
+export function restoreTransaction<T>(fn: (db: Database, safetyCopy: string) => T, opts: { skipGuard?: boolean } = {}): Promise<T> {
+  return transaction(db => fn(db, saveSafetyCopy()), opts);
 }
 
 export function transaction<T>(fn: (db: Database) => T, opts: { skipGuard?: boolean } = {}): Promise<T> {
@@ -1390,4 +1513,4 @@ export function migrate(db: Database): boolean {
 }
 
 /** Testing / seeding helper. */
-export { DB_FILE, DATA_DIR };
+export { DB_FILE, DATA_DIR, LOCK_FILE };
