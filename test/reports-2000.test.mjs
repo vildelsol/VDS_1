@@ -158,9 +158,15 @@ function auditReports(db, fin, stays, periods) {
 
       /* ---- 1. the books add up, both sides ---- */
 
-      if (!near(strata.totalIncome + ispo.totalIncome, all.totalIncome)) {
+      // The levy ISPO paid on its own villas is on the corporation's book and is
+      // left off the combined one, named (audit, 2026-11-18): counted once.
+      const namedTransfer = all.excludedIncome.filter(e => /ISPO paid the corporation/.test(e.label)).reduce((t, e) => t + e.total, 0);
+      if (!near(namedTransfer, ispo.internalTransfer)) {
+        problems.push(`${currency} ${from}..${to}: the combined statement left off ${namedTransfer} as ISPO's levy, the ISPO book says ${ispo.internalTransfer}`);
+      }
+      if (!near(strata.totalIncome + ispo.totalIncome - namedTransfer, all.totalIncome)) {
         problems.push(
-          `${currency} ${from}..${to}: income ${strata.totalIncome} + ${ispo.totalIncome} does not make ${all.totalIncome}`
+          `${currency} ${from}..${to}: income ${strata.totalIncome} + ${ispo.totalIncome} less the transfer ${namedTransfer} does not make ${all.totalIncome}`
         );
       }
       /*

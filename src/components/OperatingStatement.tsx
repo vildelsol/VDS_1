@@ -530,10 +530,10 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
  *
  * The internal transfer is called out for the same reason. The contribution ISPO
  * pays on the villas it lets is income to the corporation and a cost to ISPO —
- * genuinely both, and genuinely the same money — so on a combined page it sits on
- * both sides and nets to nothing. Anyone reading the gross totals should know
- * that much of them is one transfer between the two books rather than money that
- * entered or left the group.
+ * genuinely both, and genuinely the same money — so on a combined page it is
+ * counted once, inside the rent it came out of, and left off the income (audit,
+ * 2026-11-18: it used to be counted again as a contribution). The note says so,
+ * so nobody reconciling the page against the bank looks for it twice.
  */
 function BooksNote({ statement: s }: { statement: Statement }) {
   /*
@@ -580,10 +580,10 @@ function BooksNote({ statement: s }: { statement: Statement }) {
       </dl>
       {s.internalTransfer > 0 && (
         <p className="mt-2 border-t border-slate-200 pt-2">
-          Of which <span className="font-mono font-semibold">{formatMoney(s.internalTransfer, s.currency)}</span> is the
-          maintenance {MANAGING_COMPANY_NAME} paid on the villas it lets. It is a contribution the corporation received and a
-          cost {MANAGING_COMPANY_NAME} bore, the same money on both sides of this page, counted once on each and netting to
-          nothing between them, not money that entered or left the group.
+          <span className="font-mono font-semibold">{formatMoney(s.internalTransfer, s.currency)}</span> is the maintenance{' '}
+          {MANAGING_COMPANY_NAME} paid the corporation on the villas it lets. It is money moving between the two books, already
+          inside the rent and bookings above, so it is not counted as income a second time and is named under what this
+          statement leaves out. It is not money that entered or left the group.
         </p>
       )}
       <p className="mt-2 text-[10px] text-slate-500">
@@ -880,7 +880,7 @@ function StatementDocument({
               {formatMoney(s.strataExpenditure, s.currency)} is the body corporate&rsquo;s and{' '}
               {formatMoney(s.ispoExpenditure, s.currency)} is {MANAGING_COMPANY_NAME}&rsquo;s, paid from rental income.
               {s.internalTransfer > 0
-                ? ` Of that, ${formatMoney(s.internalTransfer, s.currency)} is the maintenance ${MANAGING_COMPANY_NAME} paid on the villas it lets, a contribution the corporation received and a cost ${MANAGING_COMPANY_NAME} bore, being the same money on both sides of this page and counted once on each.`
+                ? ` ${formatMoney(s.internalTransfer, s.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on the villas it lets is money moving between the two books, already inside the rent and bookings above, and is not counted as income a second time.`
                 : ''}{' '}
               The proprietors&rsquo; statements, the annual report and the returns to the Commission carry the
               corporation&rsquo;s costs only.
