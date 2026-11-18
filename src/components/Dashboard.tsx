@@ -149,7 +149,7 @@ export default function Dashboard({
    * shows, from the same function, so the two screens cannot disagree about it.
    */
   const unbilledMonths = useMemo(
-    () => unbilledOccupancy(units, tenancies, charges, today(), settings.booksBeginOn),
+    () => unbilledOccupancy(units, tenancies, charges, today(), settings.booksBeginOn, settings.closedThrough),
     [units, tenancies, charges, settings.booksBeginOn]
   );
 

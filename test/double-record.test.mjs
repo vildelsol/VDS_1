@@ -38,6 +38,18 @@ export default async function run({ port, projectRoot }) {
     const month = lastMonth();
 
     await makeLongTermUnit(c); // rent 50000 JMD, maintenance 10000 JMD
+    /*
+     * An owner-occupied villa with the same levy, for the part-payment checks
+     * below. On the let villa the contribution comes out of the tenant's rent as
+     * it arrives, so once rent has been paid there is no levy left to pay in cash
+     * and the server refuses one as the same obligation twice. An owner-occupied
+     * villa is where an owner really does pay it directly, which is what those
+     * checks are about.
+     */
+    await c.put('/api/units/unit-6', {
+      number: '6', ownerName: 'Owner Six', status: 'owner-occupied',
+      monthlyMaintenance: 10000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1
+    });
     await c.post('/api/charges/post-month', { monthString: month });
 
     const rent = (over = {}) => ({
@@ -77,10 +89,10 @@ export default async function run({ port, projectRoot }) {
 
     /* ---------------- partial payments still work ---------------- */
 
-    // Maintenance: 10,000 billed, nothing paid. Two part-payments that together
-    // settle it must both be accepted; only a third is too much.
+    // The owner-occupied villa's levy: 10,000 billed, nothing paid. Two part
+    // payments that together settle it must both be accepted; only a third is too much.
     const maint = (over = {}) => ({
-      unitId: 'unit-1',
+      unitId: 'unit-6',
       category: 'Maintenance',
       amount: 4000,
       currency: 'JMD',

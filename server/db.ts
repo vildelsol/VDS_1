@@ -14,7 +14,7 @@
  */
 
 import fs from 'fs';
-import { auditEntryHash } from './auditChain';
+import { AUDIT_CAP, auditEntryHash } from './auditChain';
 import { checkIntegrity, newBlockingFindings } from './integrity';
 import path from 'path';
 import { isExternalWindowsDrive, queryWindowsDrives } from './windowsDrives';
@@ -603,7 +603,7 @@ function localDayStamp(): string {
 function pruneBackups(dir: string) {
   const files = fs
     .readdirSync(dir)
-    .filter(f => f.startsWith('db-') && f.endsWith('.json'))
+    .filter(f => /^db-\d{4}-\d{2}-\d{2}\.json$/.test(f))
     .sort();
   while (files.length > BACKUP_RETENTION_DAYS) {
     const oldest = files.shift();
@@ -1015,7 +1015,7 @@ export function addAudit(
   db.auditLogs.unshift(entry);
   // The audit trail is append-only and unbounded by design; trim only the
   // in-memory tail beyond a very high water mark to keep the file manageable.
-  if (db.auditLogs.length > 20000) db.auditLogs.length = 20000;
+  if (db.auditLogs.length > AUDIT_CAP) db.auditLogs.length = AUDIT_CAP;
 }
 
 /**

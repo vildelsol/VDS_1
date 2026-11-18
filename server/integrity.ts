@@ -33,7 +33,7 @@
 import type { Database } from './db';
 import { createHash } from 'crypto';
 import { accountBalance, chargeCurrency, creditHeldForOthers, isOwnAccount, netPaidAsOf, ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
-import { auditEntryHash } from './auditChain';
+import { AUDIT_CAP, auditEntryHash } from './auditChain';
 
 export type IntegritySeverity =
   /** The books contradict themselves. Money is misstated somewhere. */
@@ -218,7 +218,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
      * an emergency. Nothing here deletes or rotates anything — that is a decision
      * about where the history should live, and a person makes it.
      */
-    const auditCap = 20000;
+    const auditCap = AUDIT_CAP;
     const auditCount = (db.auditLogs || []).length;
     if (auditCount >= auditCap * 0.9) {
       add(
@@ -518,6 +518,32 @@ export function checkIntegrity(db: Database): IntegrityReport {
       .filter(c => c.category === 'Rent' && ((c.rentPortion || 0) < 0 || (c.maintenancePortion || 0) < 0))
       .map(c => `charge ${c.id} (${c.unitNumber} ${c.periodMonth})`);
     add('serious', 'negative-rent-split', 'A rent charge carries a negative rent or maintenance part.', negativeSplit);
+
+    /*
+     * A levy inside the rent, in a currency the levy is not billed in.
+     *
+     * The parts adding up is not enough on its own. The maintenance part of a
+     * rent charge is a strata contribution, and it can only ever settle a levy
+     * billed in the same currency. Re-denominate a villa's levy and every open
+     * rent charge keeps its old-currency portion: it settles nothing ever again,
+     * the proprietor is billed the new levy on top, and the combined view counts
+     * one levy twice. Nothing else could see it — the rent charge sits in the
+     * villa's own rent currency, so no mismatch check fires and the arithmetic
+     * is sound.
+     */
+    const splitInWrongCurrency = charges
+      .filter(c => c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0)
+      .filter(c => {
+        const unit = unitById.get(c.unitId);
+        return !!unit && c.currency !== billingCurrency(unit, 'Maintenance');
+      })
+      .map(c => `charge ${c.id} (${c.unitNumber} ${c.periodMonth}, ${c.currency} levy inside the rent)`);
+    add(
+      'serious',
+      'rent-split-in-unbilled-currency',
+      'A rent charge carries a maintenance contribution in a currency this villa is not billed its levy in, so it can never settle one.',
+      splitInWrongCurrency
+    );
 
     /*
      * Money on a villa the register says belongs to somebody else.
@@ -855,6 +881,7 @@ export const WRITE_BLOCKING_CODES = new Set([
   'duplicate-unit-id',
   'rent-split-does-not-add-up',
   'negative-rent-split',
+  'rent-split-in-unbilled-currency',
   'levy-settled-beyond-what-was-charged',
   'audit-trail-broken',
   'closed-period-changed'

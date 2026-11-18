@@ -121,7 +121,38 @@ export default async function run({ port, projectRoot }) {
     db = (await admin.get('/api/db')).body;
     const r3 = open(db, 'unit-3');
     const months = db.charges.filter(c => c.unitId === 'unit-3' && c.category === 'Rent' && c.status === 'open').map(c => c.periodMonth).sort();
-    T.check('moving out spends the advance: Oct is voided, not charged again', !months.includes('2026-10'), months.join());
+    /*
+     * October is covered by the advance, and billed once.
+     *
+     * This used to read "October is absent entirely", because the advance stayed
+     * against the MOVE-IN month. It now stands against the month it actually pays
+     * for, so that the strata contribution inside it settles October's levy
+     * instead of being discarded — the proprietor was otherwise billed a levy the
+     * tenant had already paid. The money is unchanged (the four-months check below
+     * still holds); what is pinned here is stronger than before: exactly one open
+     * rent charge for October, and it is the advance, with the ordinary charge
+     * voided.
+     */
+    const octoberOpen = db.charges.filter(
+      c => c.unitId === 'unit-3' && c.category === 'Rent' && c.status === 'open' && c.periodMonth === '2026-10'
+    );
+    T.check(
+      'moving out spends the advance: October is covered by it and billed once',
+      octoberOpen.length === 1 && octoberOpen[0].kind === 'advance-final-month',
+      `${octoberOpen.length} open October rent charge(s): ${octoberOpen.map(c => c.kind || 'ordinary').join()} — all months ${months.join()}`
+    );
+    T.check(
+      'and the ordinary October rent charge was voided rather than left standing beside it',
+      db.charges.some(
+        c =>
+          c.unitId === 'unit-3' &&
+          c.category === 'Rent' &&
+          c.status === 'void' &&
+          c.periodMonth === '2026-10' &&
+          c.kind !== 'advance-final-month'
+      ),
+      'no voided October rent charge'
+    );
     T.check('a tenant who stayed Jul–Oct is charged exactly 4 months at 90,000', sum(r3) === 4 * 9000000, String(sum(r3) / 100));
 
     /* ---------- the levy rise after restating; stale tab; hostile edits ---------- */

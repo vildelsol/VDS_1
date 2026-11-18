@@ -32,6 +32,17 @@ export default async function run({ port, projectRoot }) {
     const c = makeClient(srv.baseUrl);
     await activateAdmin(c, 'Recon-1234!', 'ReconNew-9876!');
     await makeLongTermUnit(c, 'unit-1');
+    /*
+     * The levy receipts below belong to an owner-occupied villa, where the owner
+     * pays the corporation directly. On the let villa the contribution comes out
+     * of the tenant's rent as it arrives, so a cash levy beside it is the same
+     * obligation paid twice and is refused. Reconciliation against a bank
+     * statement is the same exercise either way.
+     */
+    await c.put('/api/units/unit-6', {
+      number: '6', ownerName: 'Owner Six', status: 'owner-occupied',
+      monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1
+    });
     await c.post('/api/charges/post-month', { monthString: '2026-07' });
 
     const balanceOf = async () => {
@@ -89,8 +100,8 @@ export default async function run({ port, projectRoot }) {
     /* ---------------- what cannot be matched ---------------- */
 
     const expected = await c.post('/api/payments', {
-      unitId: 'unit-1',
-      payerName: 'Owner',
+      unitId: 'unit-6',
+      payerName: 'Owner Six',
       category: 'Maintenance',
       amount: 4000,
       currency: 'JMD',
@@ -101,7 +112,7 @@ export default async function run({ port, projectRoot }) {
     T.check('an expected payment cannot be matched to a statement', matchPending.status === 400);
 
     const toVoid = await recordAndConfirmPayment(c, {
-      unitId: 'unit-1', payerName: 'Owner', category: 'Maintenance', amount: 900,
+      unitId: 'unit-6', payerName: 'Owner Six', category: 'Maintenance', amount: 900,
       currency: 'JMD', date: '2026-07-11', method: 'Cash'
     });
     await c.post(`/api/payments/${toVoid.body.payment.id}/reverse`, { reversalReason: 'Entered in error' });
@@ -153,7 +164,7 @@ export default async function run({ port, projectRoot }) {
      * the money never arrived and that the bank had shown it arriving.
      */
     const editable = await recordAndConfirmPayment(c, {
-      unitId: 'unit-1', payerName: 'Owner', category: 'Maintenance', amount: 3000,
+      unitId: 'unit-6', payerName: 'Owner Six', category: 'Maintenance', amount: 3000,
       currency: 'JMD', date: '2026-07-14', method: 'Bank Transfer'
     });
     await c.post(`/api/payments/${editable.body.payment.id}/reconcile`, { reconciledOn: '2026-07-15', reference: 'NCB 991' });
@@ -174,7 +185,7 @@ export default async function run({ port, projectRoot }) {
       dateChanged.body?.payment?.reconciledOn === undefined);
 
     const toVoidReconciled = await recordAndConfirmPayment(c, {
-      unitId: 'unit-1', payerName: 'Owner', category: 'Maintenance', amount: 1500,
+      unitId: 'unit-6', payerName: 'Owner Six', category: 'Maintenance', amount: 1500,
       currency: 'JMD', date: '2026-07-17', method: 'Bank Transfer'
     });
     await c.post(`/api/payments/${toVoidReconciled.body.payment.id}/reconcile`, { reconciledOn: '2026-07-18' });

@@ -59,6 +59,30 @@ function alreadyBilled(charges: Charge[], unitId: string, category: ChargeCatego
 }
 
 /**
+ * Has a person already decided this month is not to be charged?
+ *
+ * Voiding an ordinary monthly charge takes a co-signature and a written reason.
+ * It is a decision, not an accident. But a voided charge is no longer `open`, so
+ * to the test above the month looks unbilled again — and a run that bills what
+ * looks unbilled would raise the levy the committee had just decided to waive,
+ * hourly, for ever, each time with a fresh id so the void could not even catch
+ * it. Automatic billing therefore leaves a deliberately voided month alone, and
+ * so does the Hub. A person who really does want it back can post the month by
+ * hand, which still raises a new charge.
+ */
+function deliberatelyVoided(charges: Charge[], unitId: string, category: ChargeCategory, month: string): boolean {
+  return charges.some(
+    c =>
+      c.unitId === unitId &&
+      c.category === category &&
+      c.periodMonth === month &&
+      c.status === 'void' &&
+      c.kind === undefined &&
+      !c.oneOffType
+  );
+}
+
+/**
  * The first month this villa's levy was ever billed.
  *
  * A villa that has never been billed for maintenance is NOT back-filled to the
@@ -104,9 +128,10 @@ export function billingBacklog(
   const floor = booksBeginOn ? monthOf(booksBeginOn) : null;
   const open = (month: string) => (!closedThrough || month > closedThrough) && (!floor || month >= floor);
 
-  for (const row of unbilledOccupancy(units, tenancies, charges, asOf, booksBeginOn)) {
+  for (const row of unbilledOccupancy(units, tenancies, charges, asOf, booksBeginOn, closedThrough)) {
     for (const month of row.months) {
       if (!open(month)) continue;
+      if (deliberatelyVoided(charges, row.unit.id, 'Rent', month)) continue;
       out.push({
         unit: row.unit,
         category: 'Rent',
@@ -124,6 +149,7 @@ export function billingBacklog(
     for (const month of monthsBetween(`${start}-01`, `${thisMonth}-01`)) {
       if (!open(month)) continue;
       if (alreadyBilled(charges, unit.id, 'Maintenance', month)) continue;
+      if (deliberatelyVoided(charges, unit.id, 'Maintenance', month)) continue;
       out.push({
         unit,
         category: 'Maintenance',

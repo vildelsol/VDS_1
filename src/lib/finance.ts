@@ -863,6 +863,20 @@ export function consolidateEverything(
  * Each credit is returned as a derived Payment dated the day the rent arrived, so
  * every screen that already sums maintenance receipts, statements included, picks
  * it up without having to know about it.
+ *
+ * **What this money is, stated once so nothing has to infer it.** Ro, 2026-11-18:
+ * *"the levy is not credited to ISPO, that levy is ISPO's maintenance payment to
+ * the strata corporation the same as every owner. That is how ISPO pays the
+ * strata contribution."*
+ *
+ * So: the tenant pays **rent only**, one figure, and is never receipted for
+ * maintenance. ISPO owns the let villas, and as a proprietor it owes Villaggio
+ * Del Sol the same monthly levy as any other owner. It settles that levy out of
+ * the rent it collects and keeps the remainder. The rows below are therefore
+ * ISPO's strata contributions reaching the corporation — money leaving ISPO, not
+ * money arriving at it — and they are the only way those contributions are paid
+ * on a let villa. A separate maintenance receipt on such a villa and month is the
+ * same obligation paid twice.
  */
 export function settledFromRent(charges: Charge[], payments: Payment[]): Payment[] {
   const out: Payment[] = [];
@@ -944,7 +958,11 @@ export function settledFromRent(charges: Charge[], payments: Payment[]): Payment
           date: receipt.date,
           method: 'Other',
           reference: 'Settled from rent',
-          notes: 'Maintenance taken out of the rent received. Worked out, not a separate receipt.',
+          notes:
+            "The owner's monthly strata contribution for this villa, settled out of the rent collected. " +
+            'ISPO owns the let villas and owes Villaggio Del Sol the same levy as every other proprietor; ' +
+            'it pays that levy out of the rent rather than by a separate receipt. The tenant pays rent only ' +
+            'and is never receipted for maintenance. Worked out from the rent, not a receipt of its own.',
           staffMember: 'System',
           status: 'completed',
           derived: true
@@ -1655,7 +1673,27 @@ export function combinedSettledOfBilled(
     charges.filter(c => c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0).map(c => `${c.unitId}|${c.periodMonth}|${c.currency}`)
   );
   const collectable = combined.charges.filter(
-    c => !(c.category === 'Maintenance' && c.kind === undefined && own.has(c.unitId) && !rentSplit.has(`${c.unitId}|${c.periodMonth}|${c.currency}`))
+    /*
+     * `kind` is deliberately not tested here.
+     *
+     * `consolidateEverything` drops EVERY maintenance receipt on a villa ISPO
+     * owns, as an internal transfer — ordinary levy, special assessment and
+     * insurance share alike. Restricting the matching exclusion on the billed
+     * side to ordinary levies left a special assessment in the denominator with
+     * its receipt removed from the numerator, so it could never be settled in any
+     * period, ever. One paid-in-full month printed 20% collected on the ledger
+     * panel beside 100% on the health card, inches apart, with no figure saying
+     * which basis either used.
+     */
+    c => {
+      if (c.category !== 'Maintenance' || !own.has(c.unitId)) return true;
+      // The ORDINARY levy stays collectable where the rent carries it, because
+      // consolidation takes it out of the rent charge instead. Nothing else does:
+      // a special assessment is never inside anybody's rent, so the exemption
+      // must not stretch to every maintenance charge that shares its month.
+      const ordinary = c.kind === undefined && !c.oneOffType;
+      return ordinary && rentSplit.has(`${c.unitId}|${c.periodMonth}|${c.currency}`);
+    }
   );
   return settledOfBilled(collectable, combined.payments, currency, from, to, asOf, undefined, true);
 }
@@ -2087,7 +2125,14 @@ export function unbilledOccupancy(
    * tenancy carrying its real start date reports every month back to that date
    * as missing — hundreds of false alerts on the first day of use.
    */
-  booksBeginOn?: string
+  booksBeginOn?: string,
+  /**
+   * Months closed through this one are left out. A closed month's money is
+   * fingerprinted and the integrity guard refuses any write that moves it, so
+   * posting one is impossible — and an alert offering a button that can only
+   * fail teaches people to stop reading alerts.
+   */
+  closedThrough?: string
 ): UnbilledOccupancy[] {
   const out: UnbilledOccupancy[] = [];
   const thisMonth = monthOf(asOf);
@@ -2114,8 +2159,27 @@ export function unbilledOccupancy(
       // Before the cutover this application was not keeping the books, so it has
       // no standing to call a month unbilled.
       if (firstBilledMonth && month < firstBilledMonth) return false;
+      if (closedThrough && month <= closedThrough) return false;
+      /*
+       * Only an ORDINARY monthly charge means the month was billed.
+       *
+       * Without the `kind` test a late fee raised on the rent account made this
+       * month look billed, so the rent for it was never raised — and since
+       * automatic billing asks this very function which rent months are owed,
+       * nothing would ever raise it again. The account still read "settled",
+       * because something had been charged and paid. A month of rent gone, with
+       * no alert anywhere. The same test is applied to the levy in
+       * src/lib/billingCalendar.ts and by the posting routine itself; this was
+       * the one of the three that was loose.
+       */
       return !charges.some(
-        c => c.unitId === unit.id && c.category === 'Rent' && c.periodMonth === month && c.status === 'open'
+        c =>
+          c.unitId === unit.id &&
+          c.category === 'Rent' &&
+          c.periodMonth === month &&
+          c.status === 'open' &&
+          c.kind === undefined &&
+          !c.oneOffType
       );
     });
 
@@ -3154,8 +3218,38 @@ export function annualOwnersReport(
     const firstMonth = reportYear === beginYear ? beginMonth : 1;
     return Math.max(0, lastMonth - firstMonth + 1);
   })();
+  /*
+   * What the proprietors were actually assessed in the report year.
+   *
+   * The contribution line is an ASSESSMENT, not cash: owners owe it by law, so
+   * arrears never shrink it, and a year whose charges were never posted still
+   * states a full year's contribution from the register. That is settled and the
+   * suite pins it.
+   *
+   * What was wrong is subtler and only shows on a reprint. Computing it solely as
+   * today's fee times today's contributing villas means a closed year changes
+   * whenever the register does: vote the levy up in January, reprint last year's
+   * pack in February, and a J$300,000 deficit becomes a J$960,000 surplus with
+   * not one transaction altered. A villa sold and taken out of service moves the
+   * historic year too, and a special assessment cannot be represented by a
+   * multiplication at all.
+   *
+   * So where the year has levy charges on file, they ARE the assessment — that is
+   * precisely what each proprietor was billed, at the fee in force then, special
+   * assessments included. The register is used only where the year has no charges
+   * to speak for it, which is the case the rule above was written for.
+   */
+  const leviedInYear = charges.filter(
+    c =>
+      c.category === 'Maintenance' &&
+      c.status === 'open' &&
+      c.currency === currency &&
+      (c.periodMonth || '').slice(0, 4) === String(reportYear)
+  );
+  const assessedFromCharges = round2(sumMoney(leviedInYear.map(c => c.amount)));
   const contributionsFullYear = round2(feeBilled * contributingUnits * 12);
-  const contributionsAnnual = round2(feeBilled * contributingUnits * monthsRecorded);
+  const contributionsAnnual =
+    leviedInYear.length > 0 ? assessedFromCharges : round2(feeBilled * contributingUnits * monthsRecorded);
 
   const perUnitAnnual = round2(expenditure / divisor);
   const perUnitMonthly = round2(perUnitAnnual / 12);

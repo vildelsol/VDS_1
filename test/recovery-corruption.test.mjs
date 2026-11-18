@@ -28,10 +28,22 @@ export default async function run({ port, projectRoot }) {
     let admin = makeClient(srv.baseUrl);
     await activateAdmin(admin, 'Recov-1234!', 'RecovNew-9876!');
     await makeLongTermUnit(admin, 'unit-1');
+    /*
+     * The second receipt is the OWNER-OCCUPIED villa's levy, paid by its owner.
+     * It used to be a levy receipt on unit-1, the let villa — but that villa's
+     * contribution comes out of the tenant's rent, which has just been paid in
+     * full, so a cash levy beside it is the same obligation twice and the server
+     * refuses it. Owner-occupied is where an owner really does pay the levy
+     * directly, and this test only needs a second receipt to exist.
+     */
+    await admin.put('/api/units/unit-3', {
+      number: '3', ownerName: 'Owner Three', status: 'owner-occupied',
+      monthlyMaintenance: 10000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1
+    });
     await admin.post('/api/charges/post-month', { monthString: '2026-09' });
     await recordAndConfirmPayment(admin, { unitId: 'unit-1', category: 'Rent', amount: 50000, currency: 'JMD', date: '2026-09-02', payerName: 'P', method: 'Cash' });
     await admin.post('/api/backup/run', {});
-    await recordAndConfirmPayment(admin, { unitId: 'unit-1', category: 'Maintenance', amount: 10000, currency: 'JMD', date: '2026-09-03', payerName: 'P', method: 'Cash' });
+    await recordAndConfirmPayment(admin, { unitId: 'unit-3', category: 'Maintenance', amount: 10000, currency: 'JMD', date: '2026-09-03', payerName: 'Owner Three', method: 'Cash' });
     await srv.stop();
     // harness removed nothing: dataDir was supplied by us.
     const goodBackupText = fs.readFileSync(goodBackup, 'utf8');

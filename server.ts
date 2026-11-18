@@ -55,7 +55,7 @@ import {
 } from './src/types';
 import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
-import { accountBalance, bookingsOverlap, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate } from './src/lib/finance';
+import { accountBalance, bookingsOverlap, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
 import { billingBacklog, monthsToPost } from './src/lib/billingCalendar';
 import {
   DATA_DIR,
@@ -1800,6 +1800,38 @@ function applyAdvanceRentOnMoveOut(db: Database, tenancy: Tenancy, endedOn: stri
 
   tenancy.advanceRentAppliedOn = endedOn;
 
+  /*
+   * The advance now belongs to the month it actually pays for.
+   *
+   * It was raised against the MOVE-IN month, because that is when the money was
+   * taken. That month already owed its own levy, so the levy inside the advance
+   * had nowhere to go and was discarded by arithmetic — every time, on every
+   * tenancy. Then at move-out the final month's rent charge was voided as
+   * prepaid while the final month's LEVY charge stayed open, so ISPO was billed
+   * a contribution the tenant had already paid inside their rent, and appeared in
+   * arrears for it, while the tenant's money sat as loose credit on the rent
+   * side. The same money owed by one party and held spare for another.
+   *
+   * Moving the charge to the final month is what was true all along: this is the
+   * final month's rent, paid early. The contribution inside it then settles the
+   * final month's levy like any other rent, with no special case anywhere else.
+   */
+  const paidForMonth = advance.periodMonth;
+  if (paidForMonth !== finalMonth) {
+    advance.periodMonth = finalMonth;
+    advance.dueDate = dueDateForMonth(finalMonth, Number((advance.dueDate || '').slice(8, 10)) || 1);
+    addAudit(
+      db,
+      staffName,
+      role,
+      `${tenancy.tenantName}'s advance at ${tenancy.unitNumber} now stands against the month it pays for (${finalMonth})`,
+      'Charge',
+      advance.id,
+      `period ${paidForMonth}`,
+      `period ${finalMonth}; the maintenance inside it settles that month's levy`
+    );
+  }
+
   if (finalCharge) {
     finalCharge.status = 'void';
     finalCharge.voidedBy = staffName;
@@ -2515,6 +2547,20 @@ app.put(
       if (body.startedOn !== undefined) {
         const previousStart = record.startedOn || '';
         record.startedOn = body.startedOn === '' ? '' : requireDay(body.startedOn, 'Move-in date');
+        /*
+         * The villa route has refused a future move-in date since the beginning;
+         * this one never did, and it is the route that then raises first and last
+         * month's rent on the spot. A lease starting next month is ordinary data
+         * entry, so this was reached without anybody doing anything unusual: two
+         * open rent charges dated in a month that has not happened, counted as
+         * debt by every balance taken without an as-of date — which is the one
+         * the refund cap and the changeover guard use. A departing tenant's real
+         * credit then looks spent, and the changeover goes through with their
+         * money still on the books.
+         */
+        if (record.startedOn && record.startedOn > today()) {
+          bad('The move-in date cannot be in the future. Record the tenancy on the day it starts.');
+        }
         // Moved LATER: the months between the old and the new date were billed to a
         // tenant who was not there yet. Only months this tenancy had claimed.
         if (previousStart && record.startedOn > previousStart) {
@@ -2917,21 +2963,76 @@ app.put(
         )
       );
 
-      if (stranded.length > 0 && currencyChangeIntent !== 'void-open-charges') {
+      /*
+       * Rent charges carrying a levy in the currency the levy is leaving.
+       *
+       * The sweep above only looked at whole charges, matched category by
+       * category. Re-denominate just the maintenance and the open MAINTENANCE
+       * charges were dealt with, while every open RENT charge kept a
+       * `maintenancePortion` in the old currency. Nothing reported it: the rent
+       * charge is in the villa's rent currency, so no mismatch check fires, and
+       * the parts still add up. But the levy inside it could never settle
+       * anything again — there were no charges left in that currency to settle —
+       * so the proprietor was billed the new levy on top while the tenant went on
+       * paying the old one inside their rent, and the combined view counted the
+       * same levy twice.
+       *
+       * The rent itself is untouched: the tenant owes the same total. What goes
+       * is the claim that part of it is a strata contribution in a currency the
+       * corporation no longer bills this villa in.
+       */
+      const splitStranded = redenominated.some(ch => ch.category === 'Maintenance')
+        ? db.charges.filter(
+            ch =>
+              ch.unitId === original.id &&
+              ch.category === 'Rent' &&
+              ch.status === 'open' &&
+              (ch.maintenancePortion || 0) > 0 &&
+              ch.currency === chargeCurrency(original, 'Maintenance')
+          )
+        : [];
+
+      if ((stranded.length > 0 || splitStranded.length > 0) && currencyChangeIntent !== 'void-open-charges') {
+        /*
+         * Name an example from whichever list actually has one. Reading
+         * `stranded[0]` unconditionally threw a 500 on an ordinary villa update
+         * the moment the refusal was raised by the rent-split list alone — the
+         * refusal itself became the fault.
+         */
+        const sample = stranded[0] || splitStranded[0];
         const villa = getUnitDisplayName(original.number);
         const detail = redenominated
           .map(ch => `${ch.category.toLowerCase()} from ${ch.from} to ${ch.to}`)
           .join(' and ');
         throw new ApiError(
           400,
-          `${villa} has ${stranded.length} charge(s) still open in the currency it is billed in now. ` +
+          `${villa} has ${stranded.length + splitStranded.length} charge(s) still open in the currency it is billed in now. ` +
             `Changing the ${detail} would leave them on an account that is no longer billed in that currency, ` +
             `so they would count towards nothing: the villa would show as owing less than it does, and the next ` +
-            `payment would look like a credit. Nothing here can convert them, ${stranded[0].currency} ` +
-            `${stranded[0].amount} is not the same money in the other currency. Confirm to void the open charges ` +
+            `payment would look like a credit. Nothing here can convert them, ${sample.currency} ` +
+            `${sample.amount} is not the same money in the other currency. Confirm to void the open charges ` +
             `(the records are kept and the reason stored), then re-post the month or raise the balance again in the new currency.`,
           UNIT_CURRENCY_CHANGE
         );
+      }
+
+      if (splitStranded.length > 0) {
+        const who = actor(req);
+        for (const ch of splitStranded) {
+          const before = `${ch.rentPortion} + ${ch.maintenancePortion}`;
+          ch.rentPortion = round2(ch.amount);
+          ch.maintenancePortion = 0;
+          addAudit(
+            db,
+            who.name,
+            who.role,
+            `${getUnitDisplayName(original.number)}'s levy moved currency, so the maintenance inside ${ch.periodMonth}'s rent no longer stands`,
+            'Charge',
+            ch.id,
+            before,
+            `${ch.rentPortion} + 0; the contribution is billed separately in ${maintCurrency}`
+          );
+        }
       }
 
       if (stranded.length > 0) {
@@ -3139,7 +3240,20 @@ function postRecurringForMonth(
   db: Database,
   monthString: string,
   who: { name: string; role: UserRole | string },
-  automatic = false
+  automatic = false,
+  /**
+   * `unitId|category` keys this run may raise. Omitted means the whole property,
+   * which is what a person posting a month deliberately gets.
+   *
+   * Automatic billing passes one, and it matters more than it looks. Posting is
+   * month-granular while the calendar is villa-granular, so a sweep triggered by
+   * one villa's unbilled rent used to bill EVERY villa for every month in the
+   * window: a villa let last month collected rent for months its tenant did not
+   * live there, and a villa added to the register last month collected a year of
+   * levy the calendar had deliberately refused to invent. Fabricated debt in
+   * somebody's name is the worst thing this application can do.
+   */
+  only?: Set<string>
 ): { created: number; skipped: number } {
   const created: Charge[] = [];
   const skipped: string[] = [];
@@ -3147,6 +3261,7 @@ function postRecurringForMonth(
   for (const unit of db.units) {
     for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
       if (!isBillable(unit, category)) continue;
+      if (only && !only.has(`${unit.id}|${category}`)) continue;
       // Only an ordinary monthly charge counts as "this month is posted".
       // A one-off (a late fee, a recharged repair) and the move-in advance
       // both carry the same period month, and counting them here would make
@@ -3161,6 +3276,26 @@ function postRecurringForMonth(
           c.kind === undefined
       );
       if (exists) {
+        skipped.push(`${unit.number}/${category}`);
+        continue;
+      }
+      /*
+       * A month somebody deliberately voided, with a co-signature and a reason,
+       * is not an unbilled month. A person posting by hand may still raise it
+       * again — that is a decision too — but nothing unattended may undo one.
+       */
+      if (
+        automatic &&
+        db.charges.some(
+          c =>
+            c.unitId === unit.id &&
+            c.category === category &&
+            c.periodMonth === monthString &&
+            c.status === 'void' &&
+            c.kind === undefined &&
+            !c.oneOffType
+        )
+      ) {
         skipped.push(`${unit.number}/${category}`);
         continue;
       }
@@ -3187,6 +3322,17 @@ function postRecurringForMonth(
       created.push(charge);
     }
   }
+
+  /*
+   * An automatic run that raised nothing says nothing. A month can sit in the
+   * backlog that the poster structurally cannot fill — a tenancy with unbilled
+   * months on a villa that has since gone back to its owner, say — and an
+   * unconditional entry would then write one row an hour, for ever. The audit
+   * trail is capped at 20,000 entries and the cap drops the OLDEST, so a flood
+   * does not just add noise: it destroys real history, and the chain check
+   * cannot see that it happened.
+   */
+  if (automatic && created.length === 0) return { created: 0, skipped: skipped.length };
 
   addAudit(
     db,
@@ -3288,45 +3434,121 @@ export interface AutoPostResult {
 export async function runAutomaticPosting(asOf: string = today()): Promise<AutoPostResult> {
   if (!AUTO_POST_ENABLED) return { posted: [], created: 0, held: 'Automatic billing is switched off.' };
 
-  const months = read(db =>
-    monthsToPost(
-      billingBacklog(db.units, db.tenancies, db.charges, asOf, db.settings.booksBeginOn, db.settings.closedThrough)
-    )
-  );
-  if (months.length === 0) return { posted: [], created: 0 };
+  const state = read(db => ({
+    backlog: billingBacklog(db.units, db.tenancies, db.charges, asOf, db.settings.booksBeginOn, db.settings.closedThrough),
+    newestRecord: newestLedgerStamp(db)
+  }));
 
-  if (months.length > AUTO_POST_MAX_MONTHS) {
+  /*
+   * A clock behind the records is not a machine that has been switched off; it
+   * is a machine whose date is wrong, or a db.json copied from somewhere else.
+   * Billing from it would raise months out of thin air, and the endpoint's own
+   * "no future months" guard is no help because it reads the same wrong clock.
+   * A clock AHEAD of the records is ordinary — that is every Monday morning.
+   */
+  if (state.newestRecord && asOf < state.newestRecord.slice(0, 10)) {
     const held =
-      `${months.length} months are unbilled (${months[0]} to ${months[months.length - 1]}), which is more than ` +
-      `automatic billing will raise on its own. Nothing was billed. Check the villa register and post them deliberately.`;
-    const signature = months.join(',');
-    if (autoPostHeldSignature !== signature) {
-      autoPostHeldSignature = signature;
-      try {
-        await transaction(db => {
-          addAudit(db, SYSTEM_ACTOR.name, SYSTEM_ACTOR.role, 'Automatic billing held back', 'Charge', months[0], '', held);
-        });
-      } catch {
-        /* The log is a courtesy here; failing to write it must not retry forever. */
-      }
-    }
+      `This machine's date is ${asOf}, which is before the newest record on file (${state.newestRecord.slice(0, 10)}). ` +
+      'Nothing was billed. Correct the date, or check that these are the right records for this machine.';
+    await reportAutoPostHold(`clock:${asOf}`, held, asOf);
     return { posted: [], created: 0, held };
   }
 
-  autoPostHeldSignature = '';
+  const months = monthsToPost(state.backlog);
+  if (months.length === 0) {
+    autoPostHeldSignature = '';
+    return { posted: [], created: 0 };
+  }
+
+  /*
+   * A window longer than the bound is a misconfigured register, a restored old
+   * backup, or one charge carrying a typed-in period month from two years ago.
+   * The older months are held for a person — but the recent ones are still
+   * billed, because one bad row must never stop this month's rent and levy being
+   * raised. That was a property-wide kill switch tripped by a single typo.
+   */
+  let held: string | undefined;
+  let due = months;
+  if (months.length > AUTO_POST_MAX_MONTHS) {
+    due = months.slice(-AUTO_POST_MAX_MONTHS);
+    const parked = months.slice(0, months.length - AUTO_POST_MAX_MONTHS);
+    held =
+      `${parked.length} month(s) older than ${due[0]} are unbilled (${parked[0]} to ${parked[parked.length - 1]}), ` +
+      'which is further back than automatic billing will reach on its own. Those were left for a person; ' +
+      'the months from ' + due[0] + ' onwards were billed as usual.';
+    await reportAutoPostHold(parked.join(','), held, asOf);
+  } else {
+    autoPostHeldSignature = '';
+  }
+
   const posted: string[] = [];
+  const failed: string[] = [];
   let created = 0;
-  for (const month of months) {
+  for (const month of due) {
+    const only = new Set(state.backlog.filter(b => b.month === month).map(b => `${b.unit.id}|${b.category}`));
     try {
-      const result = await transaction(db => postRecurringForMonth(db, month, SYSTEM_ACTOR, true));
+      const result = await transaction(db => postRecurringForMonth(db, month, SYSTEM_ACTOR, true, only));
       if (result.created > 0) posted.push(month);
       created += result.created;
     } catch (err) {
-      console.error(`[billing] could not post ${month} automatically:`, err instanceof Error ? err.message : err);
-      break;
+      /*
+       * Carry on to the next month. The months are independent, and stopping at
+       * the first failure meant one unfixable old month could silently prevent
+       * the CURRENT month ever being billed, on this tick and every later one.
+       */
+      failed.push(`${month}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return { posted, created };
+
+  /*
+   * A failure that only reaches stderr reaches nobody: this runs as a .exe
+   * started from a shortcut on a desk machine. It goes in the Compliance Log,
+   * where somebody looking for the month's charges will find out why they are
+   * not there.
+   */
+  if (failed.length > 0) {
+    const message = `Automatic billing could not post ${failed.length} month(s): ${failed.join('; ')}`;
+    console.error(`[billing] ${message}`);
+    try {
+      await transaction(db => {
+        addAudit(db, SYSTEM_ACTOR.name, SYSTEM_ACTOR.role, 'Automatic billing failed', 'Charge', failed[0].split(':')[0], '', message);
+      });
+    } catch {
+      /* Nothing more can be done from here. */
+    }
+  }
+
+  return { posted, created, ...(held ? { held } : {}) };
+}
+
+/** The most recent thing the books know about, so a wrong clock can be recognised. */
+function newestLedgerStamp(db: Database): string {
+  let newest = '';
+  for (const c of db.charges) if (c.createdAt > newest) newest = c.createdAt;
+  for (const p of db.payments) if (p.createdAt && p.createdAt > newest) newest = p.createdAt;
+  const audit = db.auditLogs?.[0]?.dateTime || '';
+  if (audit > newest) newest = audit;
+  return newest;
+}
+
+/**
+ * Say once, in the Compliance Log, that a run held something back.
+ *
+ * The signature is recorded only after the entry is really written. Setting it
+ * first meant that a refused or failed write silenced the message for good: the
+ * signature matched from then on, so every later tick skipped the log and the
+ * run held in silence.
+ */
+async function reportAutoPostHold(signature: string, message: string, asOf: string): Promise<void> {
+  if (autoPostHeldSignature === signature) return;
+  try {
+    await transaction(db => {
+      addAudit(db, SYSTEM_ACTOR.name, SYSTEM_ACTOR.role, 'Automatic billing held back', 'Charge', asOf, '', message);
+    });
+    autoPostHeldSignature = signature;
+  } catch {
+    /* Leave the signature unset so the next tick tries to say it again. */
+  }
 }
 
 let autoPostTimer: NodeJS.Timeout | null = null;
@@ -4222,6 +4444,29 @@ const CHARGE_CURRENCY_MISMATCH = 'charge-currency-not-confirmed';
  */
 const DEPOSIT_ALREADY_REFUNDED = 'deposit-receipt-already-refunded';
 
+
+/**
+ * The receipts plus the contributions settled out of rent — the money the SCREENS
+ * see.
+ *
+ * On a let villa the owner's strata contribution is never a separate receipt: the
+ * tenant pays rent only, and ISPO's levy comes out of that rent (see
+ * `settledFromRent`). Those contributions are worked out, not stored, so any
+ * server check that reads `db.payments` alone sees an unpaid levy where every
+ * screen shows the month settled.
+ *
+ * That gap cost real money in both directions: the "this is already paid"
+ * refusal never fired on exactly the villas the arrangement exists for, so a
+ * second cash levy could be taken for a month ISPO had already contributed; and
+ * the refund cap then read the credit as spent, so that second payment could not
+ * be given back either. One list, used by both, so the server and the screen can
+ * never disagree.
+ */
+function ledgerPayments(db: Database, excludePaymentId?: string): Payment[] {
+  const stored = excludePaymentId ? db.payments.filter(p => p.id !== excludePaymentId) : db.payments;
+  return [...stored, ...settledFromRent(db.charges, stored)];
+}
+
 function assertAccountStillOwes(
   db: Database,
   unit: Unit,
@@ -4240,7 +4485,7 @@ function assertAccountStillOwes(
   // The same helper every screen derives from, so the refusal and the balance the
   // user is looking at can never disagree. The entry being confirmed is excluded
   // so it is not weighed against itself.
-  const payments = excludePaymentId ? db.payments.filter(p => p.id !== excludePaymentId) : db.payments;
+  const payments = ledgerPayments(db, excludePaymentId);
   const account = accountBalance(unit, category, db.charges, payments, undefined, db.units);
 
   // Nothing has ever been billed here, so this is not a debt paid twice — it is
@@ -4879,8 +5124,34 @@ app.post(
       if (target.category === 'Rent' || target.category === 'Maintenance') {
         const refundUnit = db.units.find(u => u.id === target.unitId);
         if (refundUnit && target.currency === chargeCurrency(refundUnit, target.category as ChargeCategory)) {
-          const account = accountBalance(refundUnit, target.category as ChargeCategory, db.charges, db.payments, undefined, db.units);
-          const unspent = Math.max(0, round2(-account.balance));
+          const account = accountBalance(refundUnit, target.category as ChargeCategory, db.charges, ledgerPayments(db), undefined, db.units);
+          let unspent = Math.max(0, round2(-account.balance));
+          /*
+           * A levy receipt the rent had already covered is surplus in full.
+           *
+           * On a let villa ISPO's contribution comes out of the rent, so a
+           * separate cash levy for a month the rent already settled is the same
+           * obligation paid twice. The ordinary cap could not give it back: the
+           * cash displaces the contribution worked out from the rent, the account
+           * reads nil, and nil is what is "unspent" — so the money sat on the
+           * books unreachable, named by no screen, with voiding (which asserts it
+           * never arrived) the only way out. That is a lie about real money.
+           *
+           * So ask the honest question instead: with this receipt set aside, does
+           * the account still owe anything? If it does not, the rent covered the
+           * month without it and every penny of it can be handed back.
+           */
+          const withoutThis = accountBalance(
+            refundUnit,
+            target.category as ChargeCategory,
+            db.charges,
+            ledgerPayments(db, target.id),
+            undefined,
+            db.units
+          );
+          if (withoutThis.charged > 0 && withoutThis.balance <= 0) {
+            unspent = Math.max(unspent, round2(target.amount - (target.refundedAmount || 0)));
+          }
           if (amount > unspent) {
             throw new ApiError(
               400,

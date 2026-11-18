@@ -206,7 +206,7 @@ export default function NotificationsTab({
     // Occupied months that were never billed — most often a tenant recorded
     // weeks after they moved in. Nothing else surfaces these, because an unbilled
     // month looks identical to a month with nothing owed.
-    const unbilledItems = unbilledOccupancy(units, tenancies, charges, today(), settings?.booksBeginOn).map<Item>(row => ({
+    const unbilledItems = unbilledOccupancy(units, tenancies, charges, today(), settings?.booksBeginOn, settings?.closedThrough).map<Item>(row => ({
       id: `unbilled-${row.tenancy.id}`,
       type: 'unbilled',
       title: `Rent not yet billed, ${getUnitDisplayName(row.unit.number)}`,
@@ -254,7 +254,7 @@ export default function NotificationsTab({
       type: 'unbilled',
       title: `Maintenance not yet billed, ${getUnitDisplayName(row.unitNumber)}`,
       description:
-        `The monthly maintenance levy has never been raised for ${row.months.length} month` +
+        `The monthly maintenance levy has not been raised for ${row.months.length} month` +
         `${row.months.length === 1 ? '' : 's'} (${row.months.map(formatMonthLabel).join(', ')}), ` +
         'so nothing on any screen counts it as owed. The application posts these on its own every hour; ' +
         'seeing them here means it has not, so post them.',
@@ -355,7 +355,10 @@ export default function NotificationsTab({
     return [...overlapItems, ...leaseItems, ...unbilledItems, ...unbilledLevyItems, ...missingMoveIn, ...accounts, ...utilityItems, ...expenseItems, ...scheduledItems].sort(
       (a, b) => b.ageDays - a.ageDays
     );
-  }, [units, charges, payments, utilities, expenses, bookings, tenancies]);
+    // `settings` carries the books-begin date and the closed period, and both
+    // decide which months count as unbilled. Leaving it out left the cards stale
+    // until something else on the page happened to change.
+  }, [units, charges, payments, utilities, expenses, bookings, tenancies, settings]);
 
   const visible = items.filter(i => filter === 'all' || i.type === filter);
   const highCount = items.filter(i => i.severity === 'high').length;

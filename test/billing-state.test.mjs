@@ -42,6 +42,18 @@ export default async function run({ port, projectRoot }) {
 
     // --- configure a villa, bill nothing ---
     await makeLongTermUnit(c);
+    /*
+     * The maintenance narrative below runs on an OWNER-OCCUPIED villa, because
+     * that is where an owner genuinely pays the levy themselves. On the let villa
+     * the contribution comes out of the tenant's rent as it arrives, so once the
+     * rent is paid there is no levy left to pay in cash and the server refuses
+     * one as the same obligation twice. The account-status transitions this
+     * module is about are identical either way.
+     */
+    await c.put('/api/units/unit-3', {
+      number: '3', ownerName: 'Owner Three', status: 'owner-occupied',
+      monthlyMaintenance: 10000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1
+    });
     let db = (await c.get('/api/db')).body;
     T.check('configuring rent raises no charge on its own', db.charges.length === 0, `${db.charges.length} charges`);
 
@@ -95,10 +107,10 @@ export default async function run({ port, projectRoot }) {
     T.check('after posting, the credit is absorbed and the account settles', rent.status === 'settled', `charged=${rent.charged} paid=${rent.paid} status=${rent.status}`);
 
     // --- an account billed and unpaid is in arrears, and payable ---
-    maint = statusOf(db, 'unit-1', 'Maintenance');
+    maint = statusOf(db, 'unit-3', 'Maintenance');
     T.check('the unpaid maintenance charge is now in arrears', maint.status === 'in-arrears', `status=${maint.status}, balance=${maint.balance}`);
     const settle = await c.post('/api/payments', {
-      unitId: 'unit-1',
+      unitId: 'unit-3',
       category: 'Maintenance',
       amount: 10000,
       currency: 'JMD',
@@ -108,12 +120,12 @@ export default async function run({ port, projectRoot }) {
     T.check('paying a billed account needs no override', settle.status === 200, `status ${settle.status}`);
 
     db = (await c.get('/api/db')).body;
-    maint = statusOf(db, 'unit-1', 'Maintenance');
+    maint = statusOf(db, 'unit-3', 'Maintenance');
     T.check('the account stays in arrears until the money is confirmed', maint.status === 'in-arrears', `paid=${maint.paid} status=${maint.status}`);
 
     await c.post(`/api/payments/${settle.body.payment.id}/confirm`, {});
     db = (await c.get('/api/db')).body;
-    maint = statusOf(db, 'unit-1', 'Maintenance');
+    maint = statusOf(db, 'unit-3', 'Maintenance');
     T.check('and once confirmed it reads as genuinely settled', maint.status === 'settled', `charged=${maint.charged} paid=${maint.paid} status=${maint.status}`);
 
     // --- "Receive payment" takes money now; "Record payment" only expects it ---
@@ -121,9 +133,9 @@ export default async function run({ port, projectRoot }) {
     // balance, so a payment actioned from one of those has to clear the balance in
     // the same step or the alert would still be sitting there afterwards.
     await c.post('/api/charges/post-month', { monthString: '2026-06' });
-    let june = statusOf(db, 'unit-1', 'Maintenance');
+    let june = statusOf(db, 'unit-3', 'Maintenance');
     const received = await c.post('/api/payments', {
-      unitId: 'unit-1',
+      unitId: 'unit-3',
       category: 'Maintenance',
       amount: 10000,
       currency: 'JMD',
@@ -135,7 +147,7 @@ export default async function run({ port, projectRoot }) {
     T.check('and is issued a receipt number in the same step', !!received.body?.payment?.receiptNo, `receiptNo="${received.body?.payment?.receiptNo}"`);
     T.check('and records who received it', !!received.body?.payment?.receivedBy);
     db = (await c.get('/api/db')).body;
-    const afterReceive = statusOf(db, 'unit-1', 'Maintenance');
+    const afterReceive = statusOf(db, 'unit-3', 'Maintenance');
     T.check(
       'and it reduces the balance immediately, so the arrears alert clears',
       afterReceive.paid > june.paid,

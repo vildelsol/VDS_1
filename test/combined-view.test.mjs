@@ -44,7 +44,16 @@ export default async function run({ port, projectRoot }) {
     for (const [i, m] of months.entries()) {
       for (let u = 0; u < 3; u++) {
         await pay(`unit-${u + 1}`, 'Rent', rents[u], `${m}-05`, `T${u + 1}`);   // tenant pays the full agreed rent
-        await pay(`unit-${u + 1}`, 'Maintenance', 20000, `${m}-06`, 'ISPO');           // ISPO passes the corporation's 20k on
+        /*
+         * ISPO does NOT hand the corporation a second 20,000 in cash.
+         *
+         * Ro, 2026-11-18: *"once rent is paid, the maintenance payment should
+         * come out of it ... that levy is ISPO's maintenance payment to the
+         * strata corporation the same as every owner."* The contribution is
+         * inside the rent that has just arrived, so a cash levy beside it is the
+         * same obligation paid twice — and the server now refuses it. This
+         * fixture used to record both and lean on consolidation to drop one.
+         */
       }
       await pay('unit-4', 'Maintenance', 20000, `${m}-07`, 'Owner Four');              // the owner pays their own
     }
@@ -73,7 +82,10 @@ export default async function run({ port, projectRoot }) {
     T.check('and the combined receivable is nil, not minus 180,000', receivable === 0, String(receivable));
 
     // ---- the single-book receipts still balance ----
-    const strataIn = F.collectedInPeriod(F.paymentsInBook(db.payments, 'strata'), 'JMD', from, to).total;
+    // The corporation's receipts include the contributions settled out of rent —
+    // the same list every screen reads (App.tsx builds it this way).
+    const everything = db.payments.concat(F.settledFromRent(db.charges, db.payments));
+    const strataIn = F.collectedInPeriod(F.paymentsInBook(everything, 'strata'), 'JMD', from, to).total;
     const ispoIn = F.collectedInPeriod(F.paymentsInBook(db.payments, 'ispo'), 'JMD', from, to).total;
     T.check('the corporation still sees ISPO\'s contributions as received: 240,000', strataIn === 240000, String(strataIn));
     T.check('ISPO still sees the tenants\' full payments: 720,000', ispoIn === 720000, String(ispoIn));

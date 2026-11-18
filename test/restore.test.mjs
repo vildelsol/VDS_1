@@ -169,13 +169,22 @@ export default async function run({ port, projectRoot }) {
      * And the restored database is a working one, not a museum piece
      * ---------------------------------------------------------------- */
 
+    /*
+     * A tenant paying next month's rent early — a real thing, and money the
+     * restored database must still accept. It used to be a cash levy on this let
+     * villa, which the server now refuses: that villa's contribution comes out of
+     * the rent, so a levy receipt beside it is the same obligation paid twice.
+     * An advance keeps the villa register untouched, which matters because the
+     * checks below count what posting the month raises.
+     */
     const next = await recordAndConfirmPayment(restored, {
       unitId: 'unit-1',
-      category: 'Maintenance',
+      category: 'Rent',
       amount: 10000,
       currency: 'JMD',
       payerName: 'Tenant',
-      method: 'Cash'
+      method: 'Cash',
+      advancePayment: true
     });
     T.check('a payment can be taken on the restored database', next.status === 200);
     T.check(

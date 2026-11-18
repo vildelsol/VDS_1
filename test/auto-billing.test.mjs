@@ -103,11 +103,11 @@ export default async function run({ port, projectRoot }) {
 
     /*
      * A villa whose levy has never been billed at all, added after that month was
-     * posted. It is here to prove rule 5 against the locked decision that a month
-     * is a month for the WHOLE property: the calendar never reaches back on this
-     * villa's own account, but once a month is being billed, every villa that owes
-     * a levy is billed for it. So it must pick up the months the run posts and
-     * nothing older.
+     * posted. An automatic run bills only what the calendar says each villa owes,
+     * NOT every villa for every month in the window. A sweep triggered by another
+     * villa's unbilled rent must not hand this one a back-dated levy it never
+     * owed: fabricated debt in somebody's name is the worst thing this can do.
+     * A person posting a month deliberately still bills the whole property.
      */
     await c.put('/api/units/unit-5', {
       number: '5',
@@ -163,8 +163,8 @@ export default async function run({ port, projectRoot }) {
 
     const newVilla = levyCharges(db, 'unit-5').map(x => x.periodMonth).sort();
     T.check(
-      'Rule 5 — a villa never billed before picks up the months the run posts, and nothing older',
-      newVilla.join(',') === [monthBack(1), monthBack(0)].join(','),
+      'Rule 5 — a villa never billed before is billed for this month only, never for months it was not on the register',
+      newVilla.join(',') === monthBack(0),
       newVilla.join(',')
     );
 
@@ -223,13 +223,22 @@ export default async function run({ port, projectRoot }) {
     const cc2 = makeClient(capped.baseUrl);
     await cc2.post('/api/auth/login', { username: 'admin', password: PASS }, { captureCookie: true });
     const capDb = (await cc2.get('/api/db')).body;
+    const capMonths = capDb.charges
+      .filter(x => x.unitId === 'unit-3' && x.category === 'Maintenance' && x.status === 'open' && !x.kind && !x.oneOffType)
+      .map(x => x.periodMonth)
+      .sort();
     T.check(
-      'Rule 4a — four unbilled months against a cap of two raises nothing',
-      capDb.charges.length === capBefore,
-      `${capBefore} then ${capDb.charges.length}`
+      'Rule 4a — beyond the cap the recent months are still billed, so one bad old row cannot stop this month',
+      capMonths.includes(monthBack(0)) && capMonths.includes(monthBack(1)),
+      capMonths.join(',')
     );
     T.check(
-      'Rule 4b — and the Compliance Log says it held back, so the silence is visible',
+      'Rule 4b — and the months further back than the cap are left alone, not raised',
+      !capMonths.includes(monthBack(2)) && !capMonths.includes(monthBack(3)),
+      capMonths.join(',')
+    );
+    T.check(
+      'Rule 4c — the Compliance Log says what was held back, so the silence is visible',
       (capDb.auditLogs || []).some(a => a.action === 'Automatic billing held back'),
       'no entry'
     );
@@ -297,8 +306,115 @@ export default async function run({ port, projectRoot }) {
       oneOff.map(g => g.month).join(',')
     );
 
+    /*
+     * A late fee on the RENT account must not make the month look billed. This
+     * was loose for rent while being tight for the levy, and automatic billing
+     * asks this very question, so a month suppressed this way would never have
+     * been raised by anything again.
+     */
+    const letVilla = { ...unit, status: 'long-term', monthlyRent: 75000 };
+    const tenancy = {
+      id: 't1',
+      unitId: 'u1',
+      tenantName: 'T',
+      monthlyRent: 75000,
+      currency: 'JMD',
+      status: 'active',
+      startedOn: `${monthBack(1)}-01`
+    };
+    const lateFeeOnRent = {
+      ...charge(monthBack(0)),
+      id: 'late-fee-rent',
+      category: 'Rent',
+      kind: 'one-off',
+      oneOffType: 'Late fee',
+      amount: 5000
+    };
+    const rentGap = cal.billingBacklog([letVilla], [tenancy], [lateFeeOnRent], `${TODAY}`);
+    T.check(
+      'a late fee on the rent account does not hide that month\'s rent',
+      rentGap.some(g => g.category === 'Rent' && g.month === monthBack(0)),
+      rentGap.map(g => `${g.category}:${g.month}`).join(',')
+    );
+
     const unavailable = cal.billingBacklog([{ ...unit, status: 'unavailable' }], [], [charge(monthBack(3))], `${TODAY}`);
     T.check('a villa out of service owes no levy', unavailable.length === 0, unavailable.map(g => g.month).join(','));
+
+    /* ---------------------------------------------------------------- *
+     * Rule 7: a decision a person made is never undone by the machine.
+     * ---------------------------------------------------------------- */
+    const voidDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vds-autovoid-'));
+    const vSetup = await startServer({ port, adminPassword: 'admin123', projectRoot, dataDir: voidDir });
+    const vc = makeClient(vSetup.baseUrl);
+    await activateAdmin(vc, 'admin123', PASS);
+    await vc.put('/api/units/unit-3', {
+      number: '3',
+      ownerName: 'Owner Three',
+      status: 'owner-occupied',
+      monthlyMaintenance: 15000,
+      currency: 'JMD',
+      maintCurrency: 'JMD',
+      maintDueDay: 1
+    });
+    // A sitting tenant, so there is a real tenancy for Rule 8 to try to move.
+    await vc.put('/api/units/unit-1', {
+      number: '1',
+      ownerName: 'Owner One',
+      tenantName: 'Tenant One',
+      status: 'long-term',
+      monthlyRent: 75000,
+      monthlyMaintenance: 20000,
+      currency: 'JMD',
+      maintCurrency: 'JMD',
+      rentDueDay: 1,
+      maintDueDay: 1,
+      movedInOn: `${monthBack(1)}-01`
+    });
+    await vc.post('/api/charges/post-month', { monthString: monthBack(1) });
+    await vc.post('/api/charges/post-month', { monthString: monthBack(0) });
+    const toVoid = levyCharges((await vc.get('/api/db')).body, 'unit-3').find(x => x.periodMonth === monthBack(0));
+    const voided = await vc.post(`/api/charges/${toVoid.id}/void`, { reason: 'the committee waived this month' });
+    T.check('setup: the levy for this month was voided by a person', voided.status === 200, JSON.stringify(voided.body).slice(0, 120));
+    await vSetup.stop();
+
+    const vLive = await startServer({ port, adminPassword: 'admin123', projectRoot, dataDir: voidDir, env: { VDS_AUTO_POST: 'on' } });
+    const vc2 = makeClient(vLive.baseUrl);
+    await vc2.post('/api/auth/login', { username: 'admin', password: PASS }, { captureCookie: true });
+    const vDb = (await vc2.get('/api/db')).body;
+    T.check(
+      'Rule 7 — automatic billing does not raise a month a person deliberately voided',
+      levyCharges(vDb, 'unit-3').every(x => x.periodMonth !== monthBack(0)),
+      'the waived levy came back on its own'
+    );
+    T.check(
+      'Rule 7b — and the Hub stops asking for it, so it is not a standing alarm either',
+      cal.billingBacklog(vDb.units, vDb.tenancies, vDb.charges, TODAY).every(b => !(b.unit.id === 'unit-3' && b.month === monthBack(0))),
+      'the waived month is still reported as owed'
+    );
+    const byHand = await vc2.post('/api/charges/post-month', { monthString: monthBack(0) });
+    T.check(
+      'Rule 7c — but a person posting the month by hand can still raise it again',
+      byHand.status === 200 &&
+        levyCharges((await vc2.get('/api/db')).body, 'unit-3').some(x => x.periodMonth === monthBack(0)),
+      JSON.stringify(byHand.body).slice(0, 120)
+    );
+
+    /* ---------------------------------------------------------------- *
+     * Rule 8: a lease cannot start in a month that has not happened.
+     * ---------------------------------------------------------------- */
+    const tDb = (await vc2.get('/api/db')).body;
+    const anyTenancy = (tDb.tenancies || [])[0];
+    T.check('setup: there is a tenancy to try to move', !!anyTenancy, `${(tDb.tenancies || []).length} tenancies`);
+    if (anyTenancy) {
+      const future = await vc2.put(`/api/tenancies/${anyTenancy.id}`, { startedOn: `${monthBack(-2)}-05` });
+      T.check(
+        'Rule 8 — a move-in date in the future is refused, so no rent is raised for a month that has not happened',
+        future.status === 400,
+        `${future.status} ${JSON.stringify(future.body).slice(0, 120)}`
+      );
+    }
+    await vLive.stop();
+    fs.rmSync(voidDir, { recursive: true, force: true });
 
     /* ---------------------------------------------------------------- *
      * The Hub keeps a visible backstop for whatever this fails to raise.

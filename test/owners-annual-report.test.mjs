@@ -553,6 +553,67 @@ export default async function run({ port, projectRoot }) {
     }
 
     {
+      /*
+       * A closed year must read the same next February as it did in December.
+       *
+       * The contribution line used to be worked out solely as today's fee times
+       * today's contributing villas, so voting the levy up turned a deficit on a
+       * finished year into a surplus with no transaction altered, and selling a
+       * villa moved the historic year too. Where the year has levy charges on
+       * file they are what each proprietor was actually assessed, so they decide
+       * it; the register speaks only for a year with nothing on file, which the
+       * checks above pin.
+       */
+      const yearCharges = [];
+      for (let u = 1; u <= 16; u++) {
+        for (let m = 1; m <= 12; m++) {
+          yearCharges.push(
+            charge({
+              unitId: `unit-${u}`,
+              unitNumber: String(u),
+              periodMonth: `${YEAR}-${String(m).padStart(2, '0')}`,
+              dueDate: `${YEAR}-${String(m).padStart(2, '0')}-01`,
+              amount: 20000,
+              payerName: `Owner ${u}`
+            })
+          );
+        }
+      }
+      const asBilled = annualOwnersReport(villas(20000), yearCharges, [], spendEvenly(5100000), 'JMD', YEAR);
+      const afterFeeRise = annualOwnersReport(villas(27000), yearCharges, [], spendEvenly(5100000), 'JMD', YEAR);
+      const afterASale = annualOwnersReport(villas(20000, 15), yearCharges, [], spendEvenly(5100000), 'JMD', YEAR);
+
+      T.check(
+        'the year states what the proprietors were actually assessed',
+        asBilled.contributionsAnnual === 20000 * 16 * 12,
+        String(asBilled.contributionsAnnual)
+      );
+      T.check(
+        'raising the levy today does not change a year that is already closed',
+        afterFeeRise.contributionsAnnual === asBilled.contributionsAnnual &&
+          afterFeeRise.annualCommunityPosition === asBilled.annualCommunityPosition,
+        `${asBilled.contributionsAnnual} became ${afterFeeRise.contributionsAnnual}`
+      );
+      T.check(
+        'and neither does selling a villa afterwards',
+        afterASale.contributionsAnnual === asBilled.contributionsAnnual,
+        `${asBilled.contributionsAnnual} became ${afterASale.contributionsAnnual}`
+      );
+      T.check(
+        'a special assessment reaches the contribution line, which a multiplication could never show',
+        annualOwnersReport(
+          villas(20000),
+          yearCharges.concat([charge({ unitId: 'unit-3', unitNumber: '3', amount: 300000, oneOffType: 'Special assessment', kind: 'one-off' })]),
+          [],
+          spendEvenly(5100000),
+          'JMD',
+          YEAR
+        ).contributionsAnnual === asBilled.contributionsAnnual + 300000,
+        'the special assessment was left out of what the year raised'
+      );
+    }
+
+    {
       // Contributions received are context, and never move the gap. This is the
       // one that pins Ro's decision: owners must pay by law, so the income line
       // is the assessment at full value however little of it actually arrived.

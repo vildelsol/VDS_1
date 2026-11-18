@@ -33,6 +33,16 @@ export default async function run({ port, projectRoot }) {
     const c = makeClient(srv.baseUrl);
     await activateAdmin(c, 'Refund-1234!', 'RefundNew-9876!');
     await makeLongTermUnit(c, 'unit-1');
+    /*
+     * An owner-occupied villa for the levy receipts below. On the let villa the
+     * contribution comes out of the tenant's rent as it arrives, so a cash levy
+     * beside it is the same obligation paid twice and the server refuses it —
+     * which left these checks with no receipt to refund or re-denominate.
+     */
+    await c.put('/api/units/unit-6', {
+      number: '6', ownerName: 'Owner Six', status: 'owner-occupied',
+      monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1
+    });
     await c.post('/api/charges/post-month', { monthString: '2026-07' });
 
     const balanceOf = async (category = 'Rent') => {
@@ -218,7 +228,7 @@ export default async function run({ port, projectRoot }) {
      * everybody trusts.
      */
     const editTarget = await recordAndConfirmPayment(c, {
-      unitId: 'unit-1', payerName: 'Tenant', category: 'Maintenance', amount: 30000,
+      unitId: 'unit-6', payerName: 'Owner Six', category: 'Maintenance', amount: 30000,
       currency: 'JMD', date: '2026-07-12', method: 'Cash', advancePayment: true
     });
     await c.post(`/api/payments/${editTarget.body.payment.id}/refund`, {
@@ -256,7 +266,7 @@ export default async function run({ port, projectRoot }) {
      * with the consequence spelled out, and allowed on a second, explicit ask.
      */
     const curTarget = await recordAndConfirmPayment(c, {
-      unitId: 'unit-1', payerName: 'Tenant', category: 'Maintenance', amount: 400,
+      unitId: 'unit-6', payerName: 'Owner Six', category: 'Maintenance', amount: 400,
       currency: 'JMD', date: '2026-07-13', method: 'Cash'
     });
 
