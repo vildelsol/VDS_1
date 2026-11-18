@@ -3945,6 +3945,29 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
   const live = db.payments.find(p => p.bookingId === booking.id && p.status !== 'reversed');
 
   if (booking.status === 'cancelled' || booking.depositPaid <= 0) {
+    /*
+     * A refunded receipt is never voided from here (audit/daily, 2026-11-18).
+     *
+     * Voiding says the money never arrived; the refund beside it says it did and
+     * went back. The void route has always refused that pair, but this path did
+     * not, so the integrity guard refused it instead — and with it EVERY later
+     * save of a fully refunded reservation (a corrected phone number included),
+     * and every cancellation of a part-refunded one. The stay then stayed booked:
+     * counted in occupancy and nights sold, its balance still "due". A receipt
+     * refunded in full already nets to nothing, so it is left standing as the
+     * record of what happened. One with money still held must be refunded first.
+     */
+    const refunded = live ? round2(live.refundedAmount || 0) : 0;
+    if (live && refunded > 0) {
+      const held = round2(live.amount - refunded);
+      if (held <= 0) return;
+      throw new ApiError(
+        400,
+        `${live.currency} ${refunded} has already been refunded against receipt ${live.receiptNo} on this reservation, which still holds ${live.currency} ${held}. ` +
+          'A refunded receipt cannot be voided. Refund the rest of it first, then cancel the reservation or clear its deposit.',
+        DEPOSIT_ALREADY_REFUNDED
+      );
+    }
     if (live) {
       if (live.status === 'completed') gate('void', live.receiptNo);
       const before = { ...live };

@@ -616,6 +616,22 @@ export function maintenanceFundedFromRent(unit: Unit): boolean {
 }
 
 /**
+ * Whether unpaid rent on this villa can carry its levy inside it.
+ *
+ * True while the villa is let with a rent split, and ALSO after the tenant has
+ * gone while their rent charges are still open with a levy share in them
+ * (audit/daily, 2026-11-18). Asking only about the villa's status today meant a
+ * mid-month move-out turned the levy inside the former tenant's unpaid rent into
+ * a second debt: the dashboard arrears, the hub and the ageing jumped by the levy
+ * the moment the villa went vacant, with no money having moved. `settledFromRent`
+ * still settles that levy when the former tenant pays, so it is the same money.
+ */
+export function levyCarriedInRent(unit: Unit, charges: Charge[], allUnits?: Unit[]): boolean {
+  if (maintenanceFundedFromRent(unit)) return true;
+  return chargesForUnit(charges, unit, allUnits).some(c => c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0);
+}
+
+/**
  * Maintenance receipts that belong to the tenant's rent.
  *
  * Before the tenant's rent was one figure, a let villa's money was keyed twice:
@@ -1265,7 +1281,7 @@ export function receivableAsOf(units: Unit[], charges: Charge[], payments: Payme
     units.flatMap(unit => {
       const rent = accountBalance(unit, 'Rent', charges, payments, asOf, units);
       const maintenance = accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
-      const insideRent = maintenanceFundedFromRent(unit) && rent.balance > 0 && maintenance.balance > 0 && maintenance.balance <= rent.balance;
+      const insideRent = levyCarriedInRent(unit, charges, units) && rent.balance > 0 && maintenance.balance > 0 && maintenance.balance <= rent.balance;
       // Debt only. One villa's credit is money held FOR that villa; it does not pay
       // another villa's arrears, and netting it made the pack's receivable read
       // lower than its own ageing and arrears count on the same page.
@@ -1295,7 +1311,7 @@ export function delinquentAccounts(
      * The levy still stands on the HOA ledger and in the corporation's returns;
      * it just is not a second debt here.
      */
-    const insideRent = maintenanceFundedFromRent(unit) && rent.balance > 0 && maintenance.balance <= rent.balance;
+    const insideRent = levyCarriedInRent(unit, charges, units) && rent.balance > 0 && maintenance.balance <= rent.balance;
     if (maintenance.balance > 0 && !insideRent) accounts.push(maintenance);
   }
   return accounts.sort((a, b) => b.oldestUnpaidDays - a.oldestUnpaidDays || b.balance - a.balance);
@@ -2847,7 +2863,7 @@ export function arrearsAgeing(
           if (aged.currency !== currency || aged.buckets.total <= 0) continue;
           if (
             category === 'Maintenance' &&
-            maintenanceFundedFromRent(unit) &&
+            levyCarriedInRent(unit, charges, units) &&
             rentAged.currency === currency &&
             rentAged.buckets.total > 0 &&
             aged.buckets.total <= rentAged.buckets.total
@@ -3494,17 +3510,27 @@ export function operationalHealth(
 ): OperationalHealth | null {
   const parts: { key: HealthComponent['key']; label: string; weight: number; score: number; detail: string }[] = [];
 
-  const billed = chargedInPeriod(charges, currency, from, to);
-  const collected = collectedInPeriod(payments, currency, from, to);
-  const billedTotal = round2(billed.rent + billed.maintenance);
-  const collectedTotal = round2(collected.rent + collected.maintenance);
+  /*
+   * The same basis as the dashboard's operational ledger beside it (audit/daily,
+   * 2026-11-18). Graded on the raw charges, a let villa's levy was billed twice
+   * (inside the rent and again as its own charge) and, once rent arrived,
+   * received twice (the rent and the levy settled from it), so the card printed
+   * "14.1% of 355,000.00 billed" and "50,000.00 received" inches from a panel
+   * reading 17.86% of a different total and J$110,000.00 received, for the same
+   * month. Collection is now `combinedSettledOfBilled`, the panel's own rate, and
+   * cash is everything the panel counts as received, each dollar once.
+   */
+  const settled = combinedSettledOfBilled(charges, payments, units, currency, from, to);
+  const combined = consolidateEverything(charges, payments, units);
+  const billedTotal = settled.billed;
+  const collectedTotal = collectedInPeriod(combined.payments, currency, from, to, ownerBilledUnitIds(units)).total;
   const spent = expensesInPeriod(expenses, currency, from, to);
 
   // --- collection ---
   if (billedTotal > 0) {
     // Allocation basis: what share of the charges falling due is PAID, not cash in the
     // period over charges in the period (which counted arrears and advances as collection).
-    const rate = (settledOfBilled(charges, payments, currency, from, to).settled) / billedTotal;
+    const rate = settled.settled / billedTotal;
     parts.push({
       key: 'collection',
       label: 'Collection',

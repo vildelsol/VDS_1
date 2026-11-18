@@ -429,7 +429,7 @@ export default function Units({
 
 /* ------------------------------------------------------------------ */
 
-function UnitDetail({
+export function UnitDetail({
   unit,
   charges,
   payments,
@@ -476,8 +476,24 @@ function UnitDetail({
   onReceivePayment?: (account: AccountBalance) => void;
 }) {
   const maintCurrency = unit.maintCurrency || unit.currency;
-  const rentAccount = accountBalance(unit, 'Rent', charges, payments, undefined, units);
-  const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, undefined, units);
+  /*
+   * As of today, as the dashboard, the hub and the HOA & Tenants Ledger read the
+   * same accounts (audit/daily, 2026-11-18). Taken with no date, a month posted
+   * but not yet due read here as "outstanding" while every other screen said
+   * nothing was owed, and a levy paid ahead read "settled" beside the ledger's
+   * credit.
+   */
+  const asOf = today();
+  const rentAccount = accountBalance(unit, 'Rent', charges, payments, asOf, units);
+  const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
+  /*
+   * A former tenant's unpaid rent is still owed after the villa stops being let.
+   * The card used to show the rent balance only while the villa was long-term, so
+   * a mid-month move-out made the debt vanish from the villa's own record while
+   * the dashboard and the hub went on listing it. Same rule as the printed unit
+   * ledger below: shown while let, or while anything has ever been billed.
+   */
+  const showRentBalance = unit.status === 'long-term' || rentAccount.charged > 0 || rentAccount.balance !== 0;
   const activities = unitActivities.filter(a => a.unitId === unit.id);
   const unitExpenses = expensesForUnit(expenses, unit, units).sort((a, b) => (b.datePaid || b.date).localeCompare(a.datePaid || a.date));
   const unitTenancies = tenancies
@@ -642,7 +658,7 @@ function UnitDetail({
             currency={unit.currency}
             fxRate={settings.fxRateJmdPerUsd}
             dueNote={unit.status === 'long-term' ? `Due on the ${unit.rentDueDay || 1}${ordinal(unit.rentDueDay || 1)} of each month` : undefined}
-            balance={unit.status === 'long-term' ? rentAccount.balance : undefined}
+            balance={showRentBalance ? rentAccount.balance : undefined}
             balanceCurrency={rentAccount.currency}
             status={rentAccount.status}
             onReceive={onReceivePayment ? () => onReceivePayment(rentAccount) : undefined}
