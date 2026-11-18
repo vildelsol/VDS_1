@@ -378,6 +378,16 @@ export type UnitStatus = 'long-term' | 'short-term' | 'owner-occupied' | 'vacant
 
 export const UNIT_STATUSES: UnitStatus[] = ['long-term', 'short-term', 'owner-occupied', 'vacant', 'unavailable'];
 
+/** One dated change to a villa's maintenance levy. */
+export interface FeeChange {
+  /** First month (YYYY-MM) billed at `amount`. */
+  effectiveFrom: string;
+  amount: number;
+  currency: Currency;
+  recordedBy?: string;
+  recordedAt?: string;
+}
+
 export interface Unit {
   id: string;
   number: string; // display label, e.g. "1" or "A1", may be edited, so never use as a join key
@@ -398,6 +408,12 @@ export interface Unit {
    * silently overwritten.
    */
   monthlyMaintenance: number;
+  /**
+   * Dated changes to the levy (see src/lib/feeSchedule.ts). `monthlyMaintenance`
+   * is the standing figure for every month before the first change; absent means
+   * the standing figure applies to every month, as it always did.
+   */
+  maintenanceSchedule?: FeeChange[];
   /**
    * This lot's unit entitlement from the registered strata plan.
    *

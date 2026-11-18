@@ -33,6 +33,7 @@
 import type { Database } from './db';
 import { createHash } from 'crypto';
 import { accountBalance, chargeCurrency, creditHeldForOthers, isOwnAccount, netPaidAsOf, ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
+import { hasLevySchedule, isWellFormedFeeChange, levyForMonth, levySchedule } from '../src/lib/feeSchedule';
 import { AUDIT_CAP, AUDIT_KEY_FILE, verifyAuditChain } from './auditChain';
 
 export type IntegritySeverity =
@@ -475,6 +476,56 @@ export function checkIntegrity(db: Database): IntegrityReport {
       units
         .filter(u => isBadNumber(u.monthlyRent) || isBadNumber(u.monthlyMaintenance) || u.monthlyRent < 0 || u.monthlyMaintenance < 0)
         .map(u => `villa ${u.number}`)
+    );
+
+    /*
+     * The fee schedule against the ledger.
+     *
+     * Only villas with a dated levy change are judged, and only from their first
+     * change onwards: before it, the standing figure is all the register knows,
+     * and historical charges raised at older levies are not its business. A
+     * charge is excused when anything is recorded against it in the audit trail
+     * (a void-and-repost, a restatement): that is a recorded correction. A
+     * warning, never a write blocker, because historical data must keep loading.
+     */
+    const malformedSchedules: string[] = [];
+    const offSchedule: string[] = [];
+    const correctedCharges = new Set((db.auditLogs || []).filter(a => a.recordType === 'Charge').map(a => String(a.recordId)));
+    for (const u of units) {
+      if (!hasLevySchedule(u)) continue;
+      const raw = Array.isArray(u.maintenanceSchedule) ? u.maintenanceSchedule : [];
+      const usable = levySchedule(u);
+      if (!Array.isArray(u.maintenanceSchedule) || raw.length !== usable.length || raw.some(e => !isWellFormedFeeChange(e))) {
+        malformedSchedules.push(`villa ${u.number}`);
+      }
+      if (usable.length === 0) continue;
+      const first = usable[0].effectiveFrom;
+      const levyCur = chargeCurrency(u, 'Maintenance');
+      for (const c of charges) {
+        if (c.unitId !== u.id || c.status !== 'open' || c.kind !== undefined || c.oneOffType) continue;
+        if (!c.periodMonth || c.periodMonth < first || correctedCharges.has(c.id)) continue;
+        const levy = levyForMonth(u, c.periodMonth);
+        if (c.category === 'Maintenance' && c.currency === levyCur && cents(c.amount) !== cents(levy)) {
+          offSchedule.push(`charge ${c.id} (${c.periodMonth}: ${c.currency} ${c.amount}, schedule ${levy})`);
+        } else if (c.category === 'Rent' && c.maintenancePortion !== undefined && c.currency === levyCur && c.maintenancePortion > 0) {
+          const expected = Math.min(levy, c.amount);
+          if (cents(c.maintenancePortion) !== cents(expected)) {
+            offSchedule.push(`charge ${c.id} (${c.periodMonth}: levy share ${c.maintenancePortion}, schedule ${expected})`);
+          }
+        }
+      }
+    }
+    add(
+      'warning',
+      'fee-schedule-malformed',
+      "A villa's dated levy changes include an entry that cannot be billed (bad month, amount or currency); it is being ignored.",
+      malformedSchedules
+    );
+    add(
+      'warning',
+      'levy-differs-from-schedule',
+      "A charge's levy differs from the fee schedule for its month, and no correction is recorded against it.",
+      offSchedule
     );
 
     // A record pointing at a villa that is no longer on the register is money

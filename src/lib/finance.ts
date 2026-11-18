@@ -36,6 +36,7 @@ import {
   getUnitDisplayName
 } from '../types';
 import { round2, sumMoney, addMoney, subtractMoney, formatMoney } from './money';
+import { hasLevySchedule, levyForMonth } from './feeSchedule';
 
 /* ------------------------------------------------------------------ *
  * Engines with no screen — deliberately kept
@@ -59,7 +60,7 @@ import { round2, sumMoney, addMoney, subtractMoney, formatMoney } from './money'
  * genuinely unwanted, that is Ro's call and not a tidy-up.
  * ------------------------------------------------------------------ */
 
-import { daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, nightsBetween, addDays, today } from './dates';
+import { currentMonth, daysSinceOn, isWithin, monthEnd, monthStart, monthOf, monthsBetween, nightsBetween, addDays, today } from './dates';
 
 /** A record that points at a unit. */
 interface UnitLinked {
@@ -540,10 +541,16 @@ export interface RentBreakdown {
   total: number;
 }
 
-export function rentBreakdown(unit: Unit, rent: number = unit.monthlyRent, currency: Currency = unit.currency): RentBreakdown {
+export function rentBreakdown(
+  unit: Unit,
+  rent: number = unit.monthlyRent,
+  currency: Currency = unit.currency,
+  /** The month billed (YYYY-MM): the levy taken out is the one in force then. Defaults to this month. */
+  month?: string
+): RentBreakdown {
   const total = round2(rent);
   if (!(total > 0)) return { rent: total, maintenance: 0, total };
-  const levy = round2(unit.monthlyMaintenance || 0);
+  const levy = currentOrMonthLevy(unit, month);
   const maintenance = levy > 0 && chargeCurrency(unit, 'Maintenance') === currency ? Math.min(levy, total) : 0;
   return { rent: round2(total - maintenance), maintenance, total };
 }
@@ -588,7 +595,7 @@ export function rentChargesToRestate(
     if (charge.rentPortion !== undefined || charge.maintenancePortion !== undefined) continue;
     const unit = units.find(u => u.id === charge.unitId);
     if (!unit || unit.status !== 'long-term') continue;
-    const breakdown = rentBreakdown(unit);
+    const breakdown = rentBreakdown(unit, unit.monthlyRent, unit.currency, charge.periodMonth);
     if (!(breakdown.maintenance > 0) || charge.currency !== unit.currency) continue;
     // A charge raised before the maintenance was part of the rent is the old rent
     // (agreed rent less the maintenance) and is restated to the agreed rent. One
@@ -698,7 +705,7 @@ export function maintenanceReceiptsToMove(
   const cents = (n: number) => Math.round((Number(n) || 0) * 100);
   for (const unit of units) {
     if (unit.status !== 'long-term') continue;
-    const levy = cents(unit.monthlyMaintenance);
+    const levy = cents(currentOrMonthLevy(unit));
     if (!(levy > 0)) continue;
     const currency = unit.currency;
     const rentCharges = charges.filter(
@@ -989,9 +996,25 @@ export function settledFromRent(charges: Charge[], payments: Payment[]): Payment
   return out;
 }
 
-/** The recurring amount a unit is billed for a given category. */
-export function chargeAmount(unit: Unit, category: ChargeCategory): number {
-  return category === 'Maintenance' ? round2(unit.monthlyMaintenance) : rentBreakdown(unit).total;
+/**
+ * The levy for a month, or for the current month when none is given.
+ *
+ * With no dated schedule on the villa this is `monthlyMaintenance`, exactly as
+ * before; see src/lib/feeSchedule.ts.
+ */
+function currentOrMonthLevy(unit: Unit, month?: string): number {
+  return levyForMonth(unit, month || currentMonth());
+}
+
+/**
+ * The recurring amount a unit is billed for a given category.
+ *
+ * `month` (YYYY-MM) is the month being billed: the maintenance levy is the one
+ * the fee schedule has in force for it. Omitted, it is the current month, which
+ * is what every "as it stands" figure on a screen means.
+ */
+export function chargeAmount(unit: Unit, category: ChargeCategory, month?: string): number {
+  return category === 'Maintenance' ? currentOrMonthLevy(unit, month) : rentBreakdown(unit, unit.monthlyRent, unit.currency, month).total;
 }
 
 /** Who is billed: the tenant pays rent, the owner pays HOA maintenance. */
@@ -1001,11 +1024,11 @@ export function chargePayer(unit: Unit, category: ChargeCategory): string {
 }
 
 /** Is this unit billable for this category at all? */
-export function isBillable(unit: Unit, category: ChargeCategory): boolean {
+export function isBillable(unit: Unit, category: ChargeCategory, month?: string): boolean {
   if (category === 'Rent') {
-    return unit.status === 'long-term' && chargeAmount(unit, 'Rent') > 0;
+    return unit.status === 'long-term' && chargeAmount(unit, 'Rent', month) > 0;
   }
-  return unit.status !== 'unavailable' && chargeAmount(unit, 'Maintenance') > 0;
+  return unit.status !== 'unavailable' && chargeAmount(unit, 'Maintenance', month) > 0;
 }
 
 /**
@@ -2711,7 +2734,7 @@ export interface LevyProportion {
  * big enough?", which is a budget question and needs a budget to answer.
  */
 export function levyProportionality(units: Unit[]): LevyProportion[] {
-  const withEntitlement = entitledUnits(units).filter(u => u.monthlyMaintenance > 0 || u.entitlement);
+  const withEntitlement = entitledUnits(units).filter(u => currentOrMonthLevy(u) > 0 || u.entitlement);
   const byCurrency = new Map<Currency, Unit[]>();
   for (const unit of withEntitlement) {
     const currency = chargeCurrency(unit, 'Maintenance');
@@ -2721,13 +2744,13 @@ export function levyProportionality(units: Unit[]): LevyProportion[] {
   const out: LevyProportion[] = [];
   for (const [currency, group] of byCurrency) {
     const poolEntitlement = sumMoney(group.map(u => u.entitlement as number));
-    const poolLevied = sumMoney(group.map(u => u.monthlyMaintenance || 0));
+    const poolLevied = sumMoney(group.map(u => currentOrMonthLevy(u)));
     if (poolEntitlement <= 0) continue;
     for (const unit of group) {
       const entitlement = unit.entitlement as number;
       const share = entitlement / poolEntitlement;
       const proportionate = round2(poolLevied * share);
-      const levied = round2(unit.monthlyMaintenance || 0);
+      const levied = currentOrMonthLevy(unit);
       const variance = round2(levied - proportionate);
       out.push({
         unit,
@@ -3223,17 +3246,29 @@ export function annualOwnersReport(
    * month to December, or to this month while the year is still running.
    * With no start date on file the full year is assumed, as before.
    */
-  const monthsRecorded = (() => {
+  const recordedRange = (() => {
     const begin = options?.booksBeginOn;
-    if (!begin) return 12;
+    if (!begin) return { first: 1, last: 12 };
     const beginYear = Number(begin.slice(0, 4));
     const beginMonth = Number(begin.slice(5, 7));
-    if (reportYear < beginYear) return 0;
+    if (reportYear < beginYear) return { first: 1, last: 0 };
     const nowDay = today();
     const lastMonth = reportYear < Number(nowDay.slice(0, 4)) ? 12 : reportYear > Number(nowDay.slice(0, 4)) ? 0 : Number(nowDay.slice(5, 7));
     const firstMonth = reportYear === beginYear ? beginMonth : 1;
-    return Math.max(0, lastMonth - firstMonth + 1);
+    return { first: firstMonth, last: lastMonth };
   })();
+  const monthsRecorded = Math.max(0, recordedRange.last - recordedRange.first + 1);
+  /*
+   * With a dated levy on file the register's figure differs month to month, so
+   * the year is the sum of each month's levy rather than one figure times a
+   * count. Without one, the original multiplication is kept to the cent.
+   */
+  const scheduled = contributing.some(hasLevySchedule);
+  const registerAssessment = (first: number, last: number): number => {
+    const months: string[] = [];
+    for (let m = first; m <= last; m++) months.push(`${reportYear}-${String(m).padStart(2, '0')}`);
+    return round2(sumMoney(months.flatMap(month => contributing.map(u => levyForMonth(u, month)))));
+  };
   /*
    * What the proprietors were actually assessed in the report year.
    *
@@ -3263,9 +3298,13 @@ export function annualOwnersReport(
       (c.periodMonth || '').slice(0, 4) === String(reportYear)
   );
   const assessedFromCharges = round2(sumMoney(leviedInYear.map(c => c.amount)));
-  const contributionsFullYear = round2(feeBilled * contributingUnits * 12);
+  const contributionsFullYear = scheduled ? registerAssessment(1, 12) : round2(feeBilled * contributingUnits * 12);
   const contributionsAnnual =
-    leviedInYear.length > 0 ? assessedFromCharges : round2(feeBilled * contributingUnits * monthsRecorded);
+    leviedInYear.length > 0
+      ? assessedFromCharges
+      : scheduled
+        ? registerAssessment(recordedRange.first, recordedRange.last)
+        : round2(feeBilled * contributingUnits * monthsRecorded);
 
   const perUnitAnnual = round2(expenditure / divisor);
   const perUnitMonthly = round2(perUnitAnnual / 12);

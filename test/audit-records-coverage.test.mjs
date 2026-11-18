@@ -97,6 +97,20 @@ export default async function run({ port, projectRoot }) {
     await audited('PUT /api/units/:id', 'editing a villa', M, () =>
       manager.put('/api/units/unit-1', { number: '1', ownerName: 'Owner One', tenantName: 'Tenant One', status: 'long-term', monthlyRent: 50000, monthlyMaintenance: 10000, currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1 })
     );
+    {
+      // Dated levy changes (feat-fee-schedule): a month after this one, so nothing posted is touched.
+      const [fy, fm] = month.split('-').map(Number);
+      const nextMonth = fm === 12 ? `${fy + 1}-01` : `${fy}-${String(fm + 1).padStart(2, '0')}`;
+      await audited('POST /api/units/:id/fee-schedule', 'adding a dated levy change', M, () =>
+        manager.post('/api/units/unit-1/fee-schedule', { effectiveFrom: nextMonth, amount: 12000, currency: 'JMD' })
+      );
+      await audited('DELETE /api/units/:id/fee-schedule/:month', 'removing a dated levy change', M, () =>
+        manager.del(`/api/units/unit-1/fee-schedule/${nextMonth}`)
+      );
+      await audited('POST /api/fee-schedule', 'adding a property-wide levy change', M, () =>
+        manager.post('/api/fee-schedule', { effectiveFrom: nextMonth, amount: 12000, currency: 'JMD' })
+      );
+    }
     let db = (await admin.get('/api/db')).body;
     const tenancy = db.tenancies.find(t => t.unitId === 'unit-1' && t.status === 'active');
     T.check('(setup) unit-1 has an active tenancy', !!tenancy);
