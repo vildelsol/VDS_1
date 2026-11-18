@@ -41,6 +41,7 @@ import {
   RecurringExpense,
   Tenancy,
   Unit,
+  FeeChange,
   ONE_OFF_CHARGE_TYPES,
   OneOffChargeType,
   UNIT_STATUSES,
@@ -59,6 +60,7 @@ import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
 import { accountBalance, bookingsOverlap, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
 import { billingBacklog, monthsToPost } from './src/lib/billingCalendar';
+import { FEE_CODES, FEE_MAX, levyChangeInForce, levyForMonth, monthsAffectedBy } from './src/lib/feeSchedule';
 import {
   DATA_DIR,
   DB_FILE,
@@ -1564,10 +1566,10 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
   if (!unit) return false;
   // The tenant's monthly total is the rent plus the HOA maintenance, so first and
   // last month are each billed at that total, split on the charge.
-  const parts = rentBreakdown(unit, tenancy.monthlyRent, tenancy.currency || unit.currency);
-  const amount = parts.total;
-
   const month = monthOf(tenancy.startedOn);
+  // The levy inside it is the one the fee schedule has in force for that month.
+  const parts = rentBreakdown(unit, tenancy.monthlyRent, tenancy.currency || unit.currency, month);
+  const amount = parts.total;
 
   /**
    * Months before the books begin belong to whatever kept the records first.
@@ -2967,6 +2969,20 @@ app.put(
         redenominated.push({ category: 'Maintenance', from: chargeCurrency(original, 'Maintenance'), to: maintCurrency });
       }
 
+      /*
+       * Dated levy changes are in the levy's currency. Moving the levy to another
+       * currency would leave them unbillable (a J$ figure is never billed as US$),
+       * and the villa would silently fall back to its standing figure.
+       */
+      if (redenominated.some(ch => ch.category === 'Maintenance') && (original.maintenanceSchedule || []).length > 0) {
+        throw new ApiError(
+          400,
+          `${getUnitDisplayName(original.number)} has dated levy changes in ${chargeCurrency(original, 'Maintenance')}. ` +
+            'Remove them before changing the currency the levy is billed in.',
+          FEE_CODES.currencyMismatch
+        );
+      }
+
       const stranded = redenominated.flatMap(change =>
         db.charges.filter(
           ch => ch.unitId === original.id && ch.category === change.category && ch.status === 'open' && ch.currency === change.from
@@ -3073,6 +3089,22 @@ app.put(
       const monthlyRent = rentApplies ? submittedRent : 0;
       const monthlyMaintenance =
         status === 'unavailable' ? 0 : optionalAmount(body.monthlyMaintenance, 'The monthly maintenance', original.monthlyMaintenance);
+      /*
+       * Once a dated levy change is in force, the standing figure no longer
+       * decides anything that is billed, so editing it would look like a change
+       * and do nothing. The levy is changed by adding a dated change instead.
+       */
+      if (status !== 'unavailable' && round2(monthlyMaintenance) !== round2(original.monthlyMaintenance || 0)) {
+        const governing = levyChangeInForce(original, today().slice(0, 7));
+        if (governing) {
+          throw new ApiError(
+            400,
+            `${getUnitDisplayName(original.number)}'s levy is set by its fee schedule (${governing.currency} ${governing.amount} from ${governing.effectiveFrom}). ` +
+              'Add a dated change to alter it; the standing figure no longer applies.',
+            FEE_CODES.scheduleGoverns
+          );
+        }
+      }
 
       /**
        * Unit entitlement off the strata plan. Optional, and clearing it is a
@@ -3232,6 +3264,202 @@ app.put(
 );
 
 /* ------------------------------------------------------------------ *
+ * The fee schedule: dated changes to a villa's maintenance levy
+ * ------------------------------------------------------------------ */
+
+/**
+ * Ordinary charges of this villa whose levy a schedule edit at `from` would move.
+ *
+ * The maintenance charge itself, and a let villa's rent charge carrying a levy
+ * share. Only OPEN charges count: voiding a charge (co-signed, with a reason) is
+ * the existing correction path, and a voided month may be re-posted at the new
+ * figure once the dated change is in.
+ */
+function chargesPostedInRange(db: Database, unit: Unit, range: { from: string; until: string | null }): Charge[] {
+  return db.charges.filter(
+    c =>
+      c.unitId === unit.id &&
+      c.status === 'open' &&
+      c.kind === undefined &&
+      !c.oneOffType &&
+      !!c.periodMonth &&
+      c.periodMonth >= range.from &&
+      (range.until === null || c.periodMonth < range.until) &&
+      (c.category === 'Maintenance' || (c.category === 'Rent' && c.maintenancePortion !== undefined))
+  );
+}
+
+/**
+ * Refuse a schedule edit that would change the levy of a month already posted or
+ * closed. A posted charge keeps the amount it was raised at, so a schedule that
+ * disagrees with it would make the register and the ledger tell two stories.
+ */
+function refuseIfMonthsSettled(db: Database, unit: Unit, from: string, before: number, after: number) {
+  if (round2(before) === round2(after)) return; // nothing billed would differ
+  const closedThrough = db.settings.closedThrough;
+  if (closedThrough && from <= closedThrough) {
+    throw new ApiError(
+      400,
+      `${getUnitDisplayName(unit.number)}: ${from} is in a closed period (closed through ${closedThrough}). ` +
+        'A levy change cannot reach back into closed books. Reopen the period first if it really must.',
+      FEE_CODES.monthClosed
+    );
+  }
+  const posted = chargesPostedInRange(db, unit, monthsAffectedBy(unit, from));
+  if (posted.length > 0) {
+    const months = [...new Set(posted.map(c => c.periodMonth))].sort();
+    throw new ApiError(
+      400,
+      `${getUnitDisplayName(unit.number)} already has ${months.join(', ')} posted at the levy in force when it was billed. ` +
+        'A dated change cannot rewrite a posted month. Date the change from the first month not yet posted, ' +
+        'or void the posted charge with a reason (the correction path) and re-post it after adding the change.',
+      FEE_CODES.monthPosted
+    );
+  }
+}
+
+/** Read and validate one dated change from a request body against a villa. */
+function readFeeChange(unit: Unit, body: Record<string, unknown>): FeeChange {
+  const effectiveFrom = String(body.effectiveFrom ?? '').trim();
+  if (!isValidMonth(effectiveFrom)) {
+    throw new ApiError(400, 'The month a levy change takes effect must be given as YYYY-MM, for example 2027-01.', FEE_CODES.monthFormat);
+  }
+  const amount = parseMoneyInput(body.amount);
+  if (amount === null || !(amount > 0) || amount > FEE_MAX) {
+    throw new ApiError(400, 'A levy change must be an amount greater than zero.', FEE_CODES.amountInvalid);
+  }
+  const currency = String(body.currency ?? '').trim();
+  const levyCur = chargeCurrency(unit, 'Maintenance');
+  if (currency !== levyCur) {
+    throw new ApiError(
+      400,
+      `${getUnitDisplayName(unit.number)} is levied in ${levyCur}; a change in ${currency || 'no currency'} cannot be billed to it. ` +
+        'A levy is never converted between currencies.',
+      FEE_CODES.currencyMismatch
+    );
+  }
+  if ((unit.maintenanceSchedule || []).some(e => e && e.effectiveFrom === effectiveFrom)) {
+    throw new ApiError(
+      400,
+      `${getUnitDisplayName(unit.number)} already has a levy change from ${effectiveFrom}. Remove it first to enter a different figure.`,
+      FEE_CODES.duplicateMonth
+    );
+  }
+  return { effectiveFrom, amount: round2(amount), currency: levyCur };
+}
+
+/** Add a validated change to a villa, refusing a posted or closed month. Returns the audit wording. */
+function addFeeChange(db: Database, unit: Unit, entry: FeeChange, who: { name: string; role: UserRole }) {
+  const before = levyForMonth(unit, entry.effectiveFrom);
+  refuseIfMonthsSettled(db, unit, entry.effectiveFrom, before, entry.amount);
+  const stamped: FeeChange = { ...entry, recordedBy: who.name, recordedAt: new Date().toISOString() };
+  unit.maintenanceSchedule = [...(unit.maintenanceSchedule || []), stamped].sort((a, b) =>
+    String(a.effectiveFrom).localeCompare(String(b.effectiveFrom))
+  );
+  addAudit(
+    db,
+    who.name,
+    who.role,
+    `Added a dated levy change to ${getUnitDisplayName(unit.number)}: from ${entry.effectiveFrom}, ${entry.currency} ${entry.amount}`,
+    'Unit',
+    unit.id,
+    `levy from ${entry.effectiveFrom}: ${entry.currency} ${before}`,
+    `levy from ${entry.effectiveFrom}: ${entry.currency} ${entry.amount}`
+  );
+}
+
+app.post(
+  '/api/units/:id/fee-schedule',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'edit_unit');
+    const result = await transaction(db => {
+      const unit = db.units.find(u => u.id === req.params.id);
+      if (!unit) throw new ApiError(404, 'Unit not found.');
+      const entry = readFeeChange(unit, req.body || {});
+      addFeeChange(db, unit, entry, actor(req));
+      return unit;
+    });
+    res.json({ success: true, unit: result });
+  })
+);
+
+app.delete(
+  '/api/units/:id/fee-schedule/:month',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'edit_unit');
+    const month = String(req.params.month || '');
+    const result = await transaction(db => {
+      const unit = db.units.find(u => u.id === req.params.id);
+      if (!unit) throw new ApiError(404, 'Unit not found.');
+      const entry = (unit.maintenanceSchedule || []).find(e => e && e.effectiveFrom === month);
+      if (!entry) {
+        throw new ApiError(404, `${getUnitDisplayName(unit.number)} has no levy change from ${month}.`, FEE_CODES.notFound);
+      }
+      const before = levyForMonth(unit, month);
+      const without: Unit = { ...unit, maintenanceSchedule: (unit.maintenanceSchedule || []).filter(e => e !== entry) };
+      const after = levyForMonth(without, month);
+      refuseIfMonthsSettled(db, unit, month, before, after);
+      unit.maintenanceSchedule = without.maintenanceSchedule;
+      if (unit.maintenanceSchedule && unit.maintenanceSchedule.length === 0) delete unit.maintenanceSchedule;
+      const who = actor(req);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Removed the dated levy change from ${month} on ${getUnitDisplayName(unit.number)}`,
+        'Unit',
+        unit.id,
+        `levy from ${month}: ${entry.currency} ${entry.amount}`,
+        `levy from ${month}: ${chargeCurrency(unit, 'Maintenance')} ${after}`
+      );
+      return unit;
+    });
+    res.json({ success: true, unit: result });
+  })
+);
+
+/**
+ * One dated change for the whole property: every villa levied in the currency.
+ *
+ * The levy is held per villa (two villas are billed in US dollars, and a levy may
+ * be weighted by entitlement), but a rise is voted once. This writes the same
+ * change to every villa currently levied in `currency` — or to `unitIds` when
+ * given — all or nothing: one villa refusing refuses the lot, naming it.
+ */
+app.post(
+  '/api/fee-schedule',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'edit_unit');
+    const body = req.body || {};
+    const currency = requireCurrency(body.currency, 'Levy currency');
+    const wanted = Array.isArray(body.unitIds) ? new Set(body.unitIds.map(String)) : null;
+    const effectiveFrom = String(body.effectiveFrom ?? '').trim();
+    if (!isValidMonth(effectiveFrom)) {
+      throw new ApiError(400, 'The month a levy change takes effect must be given as YYYY-MM, for example 2027-01.', FEE_CODES.monthFormat);
+    }
+    const result = await transaction(db => {
+      const targets = db.units.filter(
+        u =>
+          u.status !== 'unavailable' &&
+          chargeCurrency(u, 'Maintenance') === currency &&
+          (wanted ? wanted.has(u.id) : levyForMonth(u, effectiveFrom) > 0)
+      );
+      if (wanted && targets.length !== wanted.size) {
+        bad(`Some of the villas named are not levied in ${currency}, are unavailable, or do not exist.`);
+      }
+      if (targets.length === 0) {
+        bad(`No villa is levied in ${currency}, so there is nothing to change.`);
+      }
+      const who = actor(req);
+      const entries = targets.map(u => ({ unit: u, entry: readFeeChange(u, body) }));
+      for (const { unit, entry } of entries) addFeeChange(db, unit, entry, who);
+      return entries.map(e => e.unit.number);
+    });
+    res.json({ success: true, villas: result });
+  })
+);
+
+/* ------------------------------------------------------------------ *
  * Charges (the recurring billing ledger)
  * ------------------------------------------------------------------ */
 
@@ -3270,7 +3498,8 @@ function postRecurringForMonth(
 
   for (const unit of db.units) {
     for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
-      if (!isBillable(unit, category)) continue;
+      // Judged for the month being billed: the fee schedule decides the levy then.
+      if (!isBillable(unit, category, monthString)) continue;
       if (only && !only.has(`${unit.id}|${category}`)) continue;
       // Only an ordinary monthly charge counts as "this month is posted".
       // A one-off (a late fee, a recharged repair) and the move-in advance
@@ -3310,7 +3539,7 @@ function postRecurringForMonth(
         continue;
       }
       const dueDay = category === 'Rent' ? unit.rentDueDay || 1 : unit.maintDueDay || 1;
-      const split = category === 'Rent' ? rentBreakdown(unit) : null;
+      const split = category === 'Rent' ? rentBreakdown(unit, unit.monthlyRent, unit.currency, monthString) : null;
       const charge: Charge = {
         // Re-posting a month after a charge was voided must raise a *new*
         // charge, not a second row wearing the voided one's id.
@@ -3320,7 +3549,7 @@ function postRecurringForMonth(
         category,
         periodMonth: monthString,
         dueDate: dueDateForMonth(monthString, dueDay),
-        amount: chargeAmount(unit, category),
+        amount: chargeAmount(unit, category, monthString),
         ...(split ? { rentPortion: split.rent, maintenancePortion: split.maintenance } : {}),
         currency: chargeCurrency(unit, category),
         status: 'open',

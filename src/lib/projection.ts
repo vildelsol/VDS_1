@@ -55,6 +55,12 @@ export interface CurrencyProjection {
   projectedExpense: number;
   projectedNet: number;
   forecast: ForecastMonth[];
+  /**
+   * Forecast months in which the total monthly assessment changes because of a
+   * dated levy change (src/lib/feeSchedule.ts), with the assessment from then.
+   * Empty when no villa has one inside the horizon.
+   */
+  assessmentChanges: { month: string; contractedMonthly: number }[];
   horizonIncome: number;
   horizonExpense: number;
   horizonNet: number;
@@ -118,15 +124,33 @@ export function buildProjection(
   const projectedExpense = avgExpense;
   const projectedNet = round2(projectedIncome - projectedExpense);
 
+  /*
+   * Each forecast month reads the levy the fee schedule has in force for THAT
+   * month. It used to repeat today's figure across the whole horizon, so a rise
+   * voted for January forecast January to May at the old levy. A villa with no
+   * dated change gives the same figure every month, exactly as before.
+   */
   const forecast: ForecastMonth[] = [];
+  const assessmentChanges: { month: string; contractedMonthly: number }[] = [];
+  let previousContracted = contractedMonthly;
   let cumulative = 0;
   for (let i = 1; i <= horizon; i++) {
-    cumulative = round2(cumulative + projectedNet);
+    const month = addMonths(currentMonth(), i);
+    const contractedThen = sumMoney(
+      units
+        .filter(u => isBillable(u, 'Maintenance', month) && chargeCurrency(u, 'Maintenance') === currency)
+        .map(u => chargeAmount(u, 'Maintenance', month))
+    );
+    if (contractedThen !== previousContracted) assessmentChanges.push({ month, contractedMonthly: contractedThen });
+    previousContracted = contractedThen;
+    const income = contractedThen > 0 ? round2(contractedThen * effRate) : avgReceived;
+    const net = round2(income - projectedExpense);
+    cumulative = round2(cumulative + net);
     forecast.push({
-      month: addMonths(currentMonth(), i),
-      income: projectedIncome,
+      month,
+      income,
       expenditure: projectedExpense,
-      net: projectedNet,
+      net,
       cumulative
     });
   }
@@ -157,9 +181,10 @@ export function buildProjection(
     projectedExpense,
     projectedNet,
     forecast,
-    horizonIncome: round2(projectedIncome * horizon),
+    assessmentChanges,
+    horizonIncome: sumMoney(forecast.map(f => f.income)),
     horizonExpense: round2(projectedExpense * horizon),
-    horizonNet: round2(projectedNet * horizon),
+    horizonNet: sumMoney(forecast.map(f => f.net)),
     arrears,
     arrearsAccounts: arrearsBalances.length,
     arrearsOver60: arrearsBalances.filter(a => a.oldestUnpaidDays > 60).length,

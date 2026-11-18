@@ -44,6 +44,8 @@ import { dayOfTimestamp, formatDayLabel, formatMonthLabel, nightsBetween, today 
 import { ApiError, errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import ReceivePaymentModal from './ReceivePaymentModal';
+import FeeSchedulePanel, { FeeChangeRequest } from './FeeSchedulePanel';
+import { levyChangeInForce } from '../lib/feeSchedule';
 import {
   Badge,
   EmptyState,
@@ -84,6 +86,10 @@ interface UnitsProps {
   onRecordPayment: (payload: Record<string, unknown>) => Promise<Payment>;
   onTakeDeposit: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
   onSettleDeposit: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
+  /** Dated levy changes (src/lib/feeSchedule.ts). Optional so a read-only host can omit them. */
+  onAddFeeChange?: (unitId: string, change: FeeChangeRequest) => Promise<unknown>;
+  onAddPropertyFeeChange?: (change: FeeChangeRequest) => Promise<unknown>;
+  onRemoveFeeChange?: (unitId: string, month: string) => Promise<unknown>;
 }
 
 const ordinal = (day: number) => {
@@ -127,7 +133,10 @@ export default function Units({
   onDeleteUnitActivity,
   onRecordPayment,
   onTakeDeposit,
-  onSettleDeposit
+  onSettleDeposit,
+  onAddFeeChange,
+  onAddPropertyFeeChange,
+  onRemoveFeeChange
 }: UnitsProps) {
   const [selected, setSelected] = useState<Unit | null>(null);
   const [editing, setEditing] = useState(false);
@@ -230,7 +239,7 @@ export default function Units({
                     <div className="flex items-center justify-between">
                       <dt className="font-mono text-[10px] text-slate-400">Maintenance</dt>
                       <dd className="font-mono font-semibold text-teal-600">
-                        {formatMoney(unit.monthlyMaintenance, maintCurrency)}
+                        {formatMoney(chargeAmount(unit, 'Maintenance'), maintCurrency)}
                         <span className="text-[10px] font-normal text-slate-400">/mo</span>
                       </dd>
                     </div>
@@ -255,6 +264,9 @@ export default function Units({
           settings={settings}
           canEdit={canEdit}
           canEvict={canEvict}
+          onAddFeeChange={onAddFeeChange}
+          onAddPropertyFeeChange={onAddPropertyFeeChange}
+          onRemoveFeeChange={onRemoveFeeChange}
           onClose={() => setSelected(null)}
           onEdit={() => setEditing(true)}
           onPrint={() => setPrintUnit(live)}
@@ -450,8 +462,14 @@ export function UnitDetail({
   onDeleteActivity,
   onManageWork,
   onManageDeposit,
-  onReceivePayment
+  onReceivePayment,
+  onAddFeeChange,
+  onAddPropertyFeeChange,
+  onRemoveFeeChange
 }: {
+  onAddFeeChange?: (unitId: string, change: FeeChangeRequest) => Promise<unknown>;
+  onAddPropertyFeeChange?: (change: FeeChangeRequest) => Promise<unknown>;
+  onRemoveFeeChange?: (unitId: string, month: string) => Promise<unknown>;
   unit: Unit;
   charges: Charge[];
   payments: Payment[];
@@ -665,7 +683,7 @@ export function UnitDetail({
           />
           <BillingCard
             title="Monthly HOA maintenance"
-            amount={unit.monthlyMaintenance}
+            amount={chargeAmount(unit, 'Maintenance')}
             currency={maintCurrency}
             fxRate={settings.fxRateJmdPerUsd}
             dueNote={`Due on the ${unit.maintDueDay || 1}${ordinal(unit.maintDueDay || 1)} of each month`}
@@ -681,6 +699,14 @@ export function UnitDetail({
             question a proprietor brings to an annual general meeting, and the
             register previously had no answer beyond "somebody typed it". */}
         <EntitlementNote unit={unit} units={units} />
+
+        <FeeSchedulePanel
+          unit={unit}
+          canEdit={canEdit}
+          onAdd={onAddFeeChange}
+          onAddPropertyWide={onAddPropertyFeeChange}
+          onRemove={onRemoveFeeChange}
+        />
 
         {unit.notes && (
           <div className="text-xs">
@@ -1653,7 +1679,17 @@ function UnitEditor({
               <>
                 <div className="grid grid-cols-2 gap-2">
                   <Field label="Amount" htmlFor="ue-maint">
-                    <input id="ue-maint" type="number" min="0" step="0.01" value={form.monthlyMaintenance} onChange={e => set('monthlyMaintenance', e.target.value)} className={monoInputClass} />
+                    <input
+                      id="ue-maint"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.monthlyMaintenance}
+                      onChange={e => set('monthlyMaintenance', e.target.value)}
+                      disabled={!!levyChangeInForce(unit, today().slice(0, 7))}
+                      title={levyChangeInForce(unit, today().slice(0, 7)) ? 'Set by the levy schedule: add a dated change on the villa instead.' : undefined}
+                      className={monoInputClass}
+                    />
                   </Field>
                   <Field label="Currency" htmlFor="ue-maintcur">
                     <select id="ue-maintcur" value={form.maintCurrency} onChange={e => set('maintCurrency', e.target.value as Currency)} className={inputClass}>
@@ -1678,9 +1714,9 @@ function UnitEditor({
                 {form.status === 'long-term' && (
                   <p className="rounded-lg bg-slate-50 p-2 font-mono text-[10px] leading-relaxed text-slate-500">
                     On a rented villa this is taken out of the agreed rent, so changing it does not change what the tenant
-                    pays; ISPO receives the difference. It applies to months posted <strong>after</strong> the change; months
-                    already posted keep the amount they were billed at. To start a new rate on 1 January, save it after
-                    December is posted and before January is.
+                    pays; ISPO receives the difference. Months already posted keep the amount they were billed at. To
+                    change the levy from a future month (say January), add a dated change in the villa's levy schedule
+                    instead of editing this figure.
                   </p>
                 )}
                 <Field label="Maintenance due day" htmlFor="ue-maintday">

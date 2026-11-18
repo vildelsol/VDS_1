@@ -741,6 +741,9 @@ export default function App() {
             onRecordPayment={recordPayment}
             onTakeDeposit={(id, payload) => mutate(() => api.post(`/api/tenancies/${id}/deposit`, payload))}
             onSettleDeposit={(id, payload) => mutate(() => api.post(`/api/tenancies/${id}/deposit/settle`, payload))}
+            onAddFeeChange={(unitId, change) => mutate(() => api.post(`/api/units/${unitId}/fee-schedule`, change))}
+            onAddPropertyFeeChange={change => mutate(() => api.post('/api/fee-schedule', change))}
+            onRemoveFeeChange={(unitId, month) => mutate(() => api.del(`/api/units/${unitId}/fee-schedule/${month}`))}
           />
         )}
 

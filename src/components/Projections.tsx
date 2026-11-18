@@ -76,6 +76,13 @@ function analysisFor(p: CurrencyProjection, horizon: number): string[] {
     );
   }
 
+  for (const change of p.assessmentChanges) {
+    out.push(
+      `A dated change to the maintenance levy takes effect in ${formatMonthLabel(change.month)}: from then the monthly ` +
+        `assessment is ${formatMoney(change.contractedMonthly, c)}, and the forecast below uses it for every month from ${formatMonthLabel(change.month)}.`
+    );
+  }
+
   out.push(
     `Projected over the next ${horizon} months on a straight-line basis, contributions of ${formatMoney(p.horizonIncome, c)} ` +
       `against expenditure of ${formatMoney(p.horizonExpense, c)} leave a cumulative ` +

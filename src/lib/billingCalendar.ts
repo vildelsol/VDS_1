@@ -137,17 +137,19 @@ export function billingBacklog(
         category: 'Rent',
         month,
         currency: row.currency,
-        amount: rentBreakdown(row.unit, row.tenancy.monthlyRent, row.currency).total
+        amount: rentBreakdown(row.unit, row.tenancy.monthlyRent, row.currency, month).total
       });
     }
   }
 
   for (const unit of units) {
-    if (!isBillable(unit, 'Maintenance')) continue;
+    // Judged month by month: a dated levy change can start (or end) the levy.
+    if (unit.status === 'unavailable') continue;
     const start = levyBillingBegan(charges, unit.id, asOf);
     if (start > thisMonth) continue;
     for (const month of monthsBetween(`${start}-01`, `${thisMonth}-01`)) {
       if (!open(month)) continue;
+      if (!isBillable(unit, 'Maintenance', month)) continue;
       if (alreadyBilled(charges, unit.id, 'Maintenance', month)) continue;
       if (deliberatelyVoided(charges, unit.id, 'Maintenance', month)) continue;
       out.push({
@@ -155,7 +157,7 @@ export function billingBacklog(
         category: 'Maintenance',
         month,
         currency: chargeCurrency(unit, 'Maintenance'),
-        amount: chargeAmount(unit, 'Maintenance')
+        amount: chargeAmount(unit, 'Maintenance', month)
       });
     }
   }
