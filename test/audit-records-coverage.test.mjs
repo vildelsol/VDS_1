@@ -137,6 +137,9 @@ export default async function run({ port, projectRoot }) {
     await audited('POST /api/payments/:id/refund', 'refunding unspent credit', M, () =>
       manager.post(`/api/payments/${over.body?.payment?.id}/refund`, { amount: 1000, reason: 'overpaid', method: 'Cash' })
     );
+    await audited('POST /api/payments/:id/refund/reconcile', 'matching a refund to the statement', F, () =>
+      finance.post(`/api/payments/${over.body?.payment?.id}/refund/reconcile`, { reconciledOn: today, reference: 'BNK-OUT-1' })
+    );
     const pay2 = await finance.post('/api/payments', { unitId: 'unit-1', category: 'Other', amount: 700, currency: 'JMD', method: 'Cash', payerName: 'Tenant One', receivedNow: true });
     await audited('POST /api/payments/:id/reverse', 'reversing a payment', M, () =>
       manager.post(`/api/payments/${pay2.body?.payment?.id}/reverse`, { reversalReason: 'entered twice' })
@@ -156,6 +159,9 @@ export default async function run({ port, projectRoot }) {
     await audited('POST /api/bookings/:id/damage-deposit/settle', 'settling a damage deposit', M, () =>
       manager.post(`/api/bookings/${bkId}/damage-deposit/settle`, { withheldAmount: 0, returnedAmount: 200 })
     );
+    await audited('POST /api/bookings/:id/damage-deposit/reconcile', 'matching a returned damage deposit to the statement', F, () =>
+      finance.post(`/api/bookings/${bkId}/damage-deposit/reconcile`, { reconciledOn: today })
+    );
 
     /* ---------------- utilities and expenses ---------------- */
     const ut = await audited('POST /api/utilities', 'entering a utility bill', M, () =>
@@ -171,6 +177,9 @@ export default async function run({ port, projectRoot }) {
     );
     const exId = ex.body?.expense?.id;
     await audited('PUT /api/expenses/:id', 'correcting an expense', M, () => manager.put(`/api/expenses/${exId}`, { description: 'Gardening, front beds' }));
+    await audited('POST /api/expenses/:id/reconcile', 'matching a paid cost to the statement', F, () =>
+      finance.post(`/api/expenses/${exId}/reconcile`, { reconciledOn: today })
+    );
     await audited('POST /api/expenses/:id/void', 'voiding an expense', M, () => manager.post(`/api/expenses/${exId}/void`, { reason: 'entered against the wrong month', confirmSettled: true }));
     const rec = await audited('POST /api/recurring-expenses', 'adding a monthly cost', F, () =>
       finance.post('/api/recurring-expenses', { category: 'Security', amount: 20000, currency: 'JMD', description: 'Guards', vendor: 'Atlas Security Jamaica', dayOfMonth: 1, active: true })
@@ -201,6 +210,9 @@ export default async function run({ port, projectRoot }) {
     /* ---------------- tenancy end ---------------- */
     await audited('POST /api/tenancies/:id/deposit/settle', 'settling a security deposit', M, () =>
       manager.post(`/api/tenancies/${tenancy.id}/deposit/settle`, { returnedAmount: 50000, withheldAmount: 0 })
+    );
+    await audited('POST /api/tenancies/:id/deposit/reconcile', 'matching a returned deposit to the statement', F, () =>
+      finance.post(`/api/tenancies/${tenancy.id}/deposit/reconcile`, { reconciledOn: today })
     );
     await audited('POST /api/tenancies/:id/evict', 'ending a tenancy by eviction', M, () =>
       manager.post(`/api/tenancies/${tenancy.id}/evict`, { reason: 'Non payment of rent', effectiveDate: today })

@@ -52,8 +52,10 @@ import {
   UserRole,
   RolePermissions,
   ICalFeed,
+  BankMatch,
   getUnitDisplayName
 } from './src/types';
+import { bankItems, itemOnBankLine } from './src/lib/bankRec';
 import { ADMIN_GRANTED_PERMISSIONS, PERMISSION_LABELS } from './src/types';
 import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
@@ -4900,6 +4902,13 @@ app.put(
         delete updated.reconciledReference;
         unmatched = true;
       }
+      if (
+        original.refundBankMatch &&
+        (updated.currency !== original.currency || updated.refundedAmount !== original.refundedAmount || updated.refundedOn !== original.refundedOn)
+      ) {
+        delete updated.refundBankMatch;
+        unmatched = true;
+      }
 
       db.payments[idx] = updated;
       const who = actor(req);
@@ -5085,6 +5094,7 @@ app.post(
         delete target.reconciledAt;
         delete target.reconciledReference;
       }
+      delete target.refundBankMatch;
 
       // Keep linked records honest.
       if (target.bookingId) {
@@ -5352,38 +5362,27 @@ app.post(
           400,
           target.status === 'pending'
             ? 'That payment is still awaiting funds. Confirm it as received first, then it can be matched to the statement.'
-            : 'That receipt has been voided, so there is nothing to find on a statement.'
+            : 'That receipt has been voided, so there is nothing to find on a statement.',
+          target.status === 'pending' ? 'bank-item-not-paid' : 'bank-item-voided'
         );
       }
 
       const reconciledOn = requireDay(body.reconciledOn || today(), 'Statement date');
       if (reconciledOn < target.date) {
-        throw new ApiError(400, 'The statement date cannot be before the payment was received.');
+        throw new ApiError(400, 'The statement date cannot be before the payment was received.', 'bank-date-before-item');
       }
       if (reconciledOn > today()) {
-        throw new ApiError(400, 'A statement date cannot be in the future.');
+        throw new ApiError(400, 'A statement date cannot be in the future.', 'bank-date-in-future');
       }
+      assertStatementCurrency(body, target.currency);
 
-      // One line on the statement is one receipt. The same bank reference matched to a
-      // second receipt means one of them is not on the statement at all.
+      // One line on the statement is one item, whichever way the money went. The same
+      // bank reference matched to a second receipt, or to a cost or refund paid out,
+      // means one of them is not on the statement at all. Confirming a second item
+      // against one line is an override of a money check like any other: permission,
+      // a reason, an audit line (audit, 2026-11-18; money out added Ro, 2026-11-18).
       const reference = optionalString(body.reference, 120);
-      if (reference) {
-        const twin = db.payments.find(
-          p => p.id !== target.id && p.status === 'completed' && !!p.reconciledOn && (p.reconciledReference || '').toLowerCase() === reference.toLowerCase()
-        );
-        // Confirming a second receipt against one statement line is an override of a
-        // money check like any other: permission, a reason, an audit line (audit, 2026-11-18).
-        if (twin && body.confirmSameLine === true) {
-          useMoneyOverride(db, req, body, 'confirmSameLine', `bank reference "${reference}" matched to receipt ${target.receiptNo} as well as ${twin.receiptNo}`);
-        } else if (twin) {
-          throw new ApiError(
-            400,
-            `The bank reference "${reference}" is already matched to receipt ${twin.receiptNo}. One line on the statement settles one receipt. ` +
-              `If this is genuinely a second line with the same reference, confirm to match it.`,
-            'bank-line-already-matched'
-          );
-        }
-      }
+      assertBankLineFree(db, req, body, reference, `receipt:${target.id}`, `receipt ${target.receiptNo}`);
 
       target.reconciledOn = reconciledOn;
       target.reconciledBy = who.name;
@@ -5404,6 +5403,230 @@ app.post(
     res.json({ success: true, payment });
   })
 );
+
+/* ------------------------------------------------------------------ *
+ * Bank reconciliation: money out (Ro, 2026-11-18)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The refusal codes of a bank match. Shared with the receipt route so a screen
+ * can tell the refusals apart without reading the wording.
+ */
+const BANK_DATE_IN_FUTURE = 'bank-date-in-future';
+const BANK_DATE_BEFORE_ITEM = 'bank-date-before-item';
+const BANK_ITEM_NOT_PAID = 'bank-item-not-paid';
+const BANK_ITEM_VOIDED = 'bank-item-voided';
+const BANK_ITEM_ALREADY_MATCHED = 'bank-item-already-matched';
+const BANK_ITEM_NOT_MATCHED = 'bank-item-not-matched';
+const BANK_NOTHING_TO_MATCH = 'bank-nothing-to-match';
+const BANK_CURRENCY_MISMATCH = 'bank-currency-mismatch';
+const BANK_LINE_ALREADY_MATCHED = 'bank-line-already-matched';
+
+function allBankItems(db: Database) {
+  return bankItems({ payments: db.payments, expenses: db.expenses, tenancies: db.tenancies, bookings: db.bookings });
+}
+
+/**
+ * A statement is one account in one currency. When the screen says which
+ * statement it is ticking, an item in the other currency is refused: a USD
+ * cost is never found on the JMD account.
+ */
+function assertStatementCurrency(body: any, currency: string) {
+  if (body?.currency === undefined || body?.currency === null || body?.currency === '') return;
+  const stated = requireCurrency(body.currency);
+  if (stated !== currency) {
+    throw new ApiError(
+      400,
+      `This is a ${currency} item and the statement being ticked is ${stated}. USD and JMD are separate accounts and are never matched across.`,
+      BANK_CURRENCY_MISMATCH
+    );
+  }
+}
+
+/** Refuse a second item on a statement line unless the money-check override is used. */
+function assertBankLineFree(db: Database, req: AuthedRequest, body: any, reference: string, key: string, label: string) {
+  if (!reference) return;
+  const twin = itemOnBankLine(allBankItems(db), reference, key);
+  if (!twin) return;
+  if (body.confirmSameLine === true) {
+    useMoneyOverride(db, req, body, 'confirmSameLine', `bank reference "${reference}" matched to ${label} as well as ${twin.label}`);
+    return;
+  }
+  throw new ApiError(
+    400,
+    `The bank reference "${reference}" is already matched to ${twin.label}. One line on the statement settles one item. ` +
+      `If this is genuinely a second line with the same reference, confirm to match it.`,
+    BANK_LINE_ALREADY_MATCHED
+  );
+}
+
+type MoneyOutKind = 'expense' | 'refund' | 'deposit-return' | 'damage-deposit-return';
+
+interface MoneyOutTarget {
+  entity: string;
+  entityId: string;
+  label: string;
+  currency: string;
+  date: string;
+  record: any;
+  get(): BankMatch | undefined;
+  set(m: BankMatch | undefined): void;
+}
+
+function moneyOutTarget(db: Database, kind: MoneyOutKind, id: string): MoneyOutTarget {
+  if (kind === 'expense') {
+    const e = db.expenses.find(x => x.id === id);
+    if (!e) throw new ApiError(404, 'Expense not found.');
+    // Only a cost the books say was paid left the account. A pending bill has not
+    // been paid; a voided one says the money never left.
+    if (e.status === 'void') throw new ApiError(400, 'That cost has been taken back, so there is no payment to find on a statement.', BANK_ITEM_VOIDED);
+    if (e.status !== 'paid') {
+      throw new ApiError(400, 'That cost is still pending. Record it as paid first, then it can be matched to the statement.', BANK_ITEM_NOT_PAID);
+    }
+    return {
+      entity: 'Expense', entityId: e.id, record: e, currency: e.currency, date: e.datePaid || e.date,
+      label: e.amount < 0 ? `the credit from ${e.vendor}` : `the payment to ${e.vendor}`,
+      get: () => e.bankMatch, set: m => { if (m) e.bankMatch = m; else delete e.bankMatch; }
+    };
+  }
+  if (kind === 'refund') {
+    const p = db.payments.find(x => x.id === id);
+    if (!p) throw new ApiError(404, 'Payment not found.');
+    if (p.status === 'reversed') throw new ApiError(400, 'That receipt has been voided, so no refund left the account.', BANK_ITEM_VOIDED);
+    if (p.status !== 'completed' || !p.refundedAmount || !p.refundedOn) {
+      throw new ApiError(400, 'No refund has been paid out against that receipt, so there is nothing to find on a statement.', BANK_NOTHING_TO_MATCH);
+    }
+    return {
+      entity: 'Payment', entityId: p.id, record: p, currency: p.currency, date: p.refundedOn,
+      label: `the refund on receipt ${p.receiptNo || p.id}`,
+      get: () => p.refundBankMatch, set: m => { if (m) p.refundBankMatch = m; else delete p.refundBankMatch; }
+    };
+  }
+  if (kind === 'deposit-return') {
+    const t = db.tenancies.find(x => x.id === id);
+    if (!t) throw new ApiError(404, 'Tenancy record not found.');
+    if (!t.depositReturnedOn || !(t.depositReturnedAmount && t.depositReturnedAmount > 0)) {
+      throw new ApiError(400, 'No part of this deposit has been returned, so there is nothing to find on a statement.', BANK_NOTHING_TO_MATCH);
+    }
+    return {
+      entity: 'Tenancy', entityId: t.id, record: t, currency: t.depositCurrency || t.currency, date: t.depositReturnedOn,
+      label: `the deposit returned to ${t.tenantName}`,
+      get: () => t.depositReturnBankMatch, set: m => { if (m) t.depositReturnBankMatch = m; else delete t.depositReturnBankMatch; }
+    };
+  }
+  const b = db.bookings.find(x => x.id === id);
+  if (!b) throw new ApiError(404, 'Booking not found.');
+  if (!b.damageDepositReturnedOn || !(b.damageDepositReturnedAmount && b.damageDepositReturnedAmount > 0)) {
+    throw new ApiError(400, 'No part of this damage deposit has been returned, so there is nothing to find on a statement.', BANK_NOTHING_TO_MATCH);
+  }
+  return {
+    entity: 'Booking', entityId: b.id, record: b, currency: b.damageDepositCurrency || b.currency, date: b.damageDepositReturnedOn,
+    label: `the damage deposit returned to ${b.guestName}`,
+    get: () => b.damageDepositReturnBankMatch, set: m => { if (m) b.damageDepositReturnBankMatch = m; else delete b.damageDepositReturnBankMatch; }
+  };
+}
+
+/**
+ * Tick a movement out of the account against the bank statement, or untick it.
+ *
+ * The same rules as a receipt (POST /api/payments/:id/reconcile), plus one: an
+ * item already matched is refused rather than silently re-dated, so moving a
+ * match is an un-match and a match, both in the audit trail. Gated on
+ * `record_payment` like the receipt tick: the person with the statement does both.
+ */
+function moneyOutReconcileRoute(kind: MoneyOutKind) {
+  return handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'record_payment');
+    const { id } = req.params;
+    const body = req.body || {};
+    const clearing = body.reconciled === false;
+
+    const record = await transaction(db => {
+      // Only the 404 is decided before the clear: a voided cost still carrying a
+      // tick (which integrity reports) can be un-ticked.
+      let target: MoneyOutTarget;
+      try {
+        target = moneyOutTarget(db, kind, id);
+      } catch (err) {
+        if (!clearing || !(err instanceof ApiError) || err.status === 404) throw err;
+        target = clearableTarget(db, kind, id);
+      }
+      const who = actor(req);
+      const before = JSON.parse(JSON.stringify(target.record));
+
+      if (clearing) {
+        const had = target.get();
+        if (!had) throw new ApiError(400, `${capitalise(target.label)} is not marked as seen on a statement.`, BANK_ITEM_NOT_MATCHED);
+        target.set(undefined);
+        addAudit(db, who.name, who.role, `Un-matched ${target.label} from the bank statement of ${had.on}`, target.entity, target.entityId, before, target.record);
+        return target.record;
+      }
+
+      if (target.get()) {
+        const m = target.get()!;
+        throw new ApiError(400, `${capitalise(target.label)} is already matched to the statement of ${m.on}. Un-match it first to move it.`, BANK_ITEM_ALREADY_MATCHED);
+      }
+      assertStatementCurrency(body, target.currency);
+
+      const reconciledOn = requireDay(body.reconciledOn || today(), 'Statement date');
+      if (reconciledOn > today()) throw new ApiError(400, 'A statement date cannot be in the future.', BANK_DATE_IN_FUTURE);
+      if (reconciledOn < target.date) {
+        throw new ApiError(400, `The statement date cannot be before the money moved (${target.date}).`, BANK_DATE_BEFORE_ITEM);
+      }
+
+      const reference = optionalString(body.reference, 120);
+      assertBankLineFree(db, req, body, reference, `${kind}:${target.entityId}`, target.label);
+
+      const match: BankMatch = { on: reconciledOn, by: who.name, at: new Date().toISOString() };
+      if (reference) match.reference = reference;
+      target.set(match);
+      addAudit(
+        db,
+        who.name,
+        who.role,
+        `Matched ${target.label} (${target.currency} ${moneyOutAmount(kind, target.record)}) to the bank statement of ${reconciledOn}` +
+          (reference ? `, line "${reference}"` : ''),
+        target.entity,
+        target.entityId,
+        before,
+        target.record
+      );
+      return target.record;
+    });
+    res.json({ success: true, record });
+  });
+}
+
+function moneyOutAmount(kind: MoneyOutKind, r: any): number {
+  if (kind === 'expense') return round2(Math.abs(r.amount));
+  if (kind === 'refund') return round2(r.refundedAmount);
+  if (kind === 'deposit-return') return round2(r.depositReturnedAmount);
+  return round2(r.damageDepositReturnedAmount);
+}
+
+/** A record whose tick no longer stands (voided, never paid) — found only to clear it. */
+function clearableTarget(db: Database, kind: MoneyOutKind, id: string): MoneyOutTarget {
+  const r: any =
+    kind === 'expense' ? db.expenses.find(x => x.id === id)
+    : kind === 'refund' ? db.payments.find(x => x.id === id)
+    : kind === 'deposit-return' ? db.tenancies.find(x => x.id === id)
+    : db.bookings.find(x => x.id === id);
+  const field = kind === 'expense' ? 'bankMatch' : kind === 'refund' ? 'refundBankMatch' : kind === 'deposit-return' ? 'depositReturnBankMatch' : 'damageDepositReturnBankMatch';
+  const entity = kind === 'expense' ? 'Expense' : kind === 'refund' ? 'Payment' : kind === 'deposit-return' ? 'Tenancy' : 'Booking';
+  return {
+    entity, entityId: r.id, record: r, currency: r.currency, date: '', label: `the ${kind.replace(/-/g, ' ')} ${r.id}`,
+    get: () => r[field], set: m => { if (m) r[field] = m; else delete r[field]; }
+  };
+}
+
+function capitalise(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+app.post('/api/expenses/:id/reconcile', moneyOutReconcileRoute('expense'));
+app.post('/api/payments/:id/refund/reconcile', moneyOutReconcileRoute('refund'));
+app.post('/api/tenancies/:id/deposit/reconcile', moneyOutReconcileRoute('deposit-return'));
+app.post('/api/bookings/:id/damage-deposit/reconcile', moneyOutReconcileRoute('damage-deposit-return'));
 
 /** Record that a receipt was rendered, so reprints are marked as such. */
 app.post(
@@ -5724,6 +5947,18 @@ app.put(
         throw new ApiError(403, 'This expense is already settled. Modifying settled records requires additional permission.');
       }
       const updated: Expense = { ...original, ...readExpenseFields(db, req.body || {}, original) };
+      // A bank match vouches for this money on this day. Change either, or make the
+      // cost unpaid, and the match is dropped to be re-ticked (as a receipt's is).
+      if (
+        original.bankMatch &&
+        (updated.status !== 'paid' ||
+          updated.amount !== original.amount ||
+          updated.currency !== original.currency ||
+          (updated.datePaid || updated.date) !== (original.datePaid || original.date) ||
+          updated.paymentMethod !== original.paymentMethod)
+      ) {
+        delete updated.bankMatch;
+      }
       db.expenses[idx] = updated;
       const who = actor(req);
       addAudit(db, who.name, who.role, 'Updated property expense', 'Expense', id, original, updated);
@@ -5767,6 +6002,9 @@ function requireVoidReason(body: Record<string, unknown>): string {
  * than sixteen.
  */
 function voidExpense(expense: Expense, who: { name: string }, reason: string) {
+  // A cost taken back cannot also be "found leaving the bank" — the same rule as
+  // a voided receipt. The tick is cleared; the before/after audit line keeps it.
+  delete expense.bankMatch;
   expense.voidedFromPaid = expense.status === 'paid';
   expense.status = 'void';
   expense.voidedBy = who.name;

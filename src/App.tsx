@@ -828,6 +828,23 @@ export default function App() {
             units={data.units}
             session={session}
             onReconcile={(id, fields) => mutate(() => api.post(`/api/payments/${id}/reconcile`, fields))}
+            expenses={data.expenses}
+            tenancies={data.tenancies}
+            bookings={data.bookings}
+            onReconcileOut={(kind, id, fields) =>
+              mutate(() =>
+                api.post(
+                  kind === 'expense'
+                    ? `/api/expenses/${id}/reconcile`
+                    : kind === 'refund'
+                      ? `/api/payments/${id}/refund/reconcile`
+                      : kind === 'deposit-return'
+                        ? `/api/tenancies/${id}/deposit/reconcile`
+                        : `/api/bookings/${id}/damage-deposit/reconcile`,
+                  fields
+                )
+              )
+            }
           />
         )}
 
