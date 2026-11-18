@@ -54,6 +54,7 @@ import {
   ICalFeed,
   getUnitDisplayName
 } from './src/types';
+import { ADMIN_GRANTED_PERMISSIONS, PERMISSION_LABELS } from './src/types';
 import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
 import { accountBalance, bookingsOverlap, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
@@ -1459,6 +1460,12 @@ app.post(
                 : !!rolePermissions[role][key];
           }
           clean.hasVetoPower = !!rolePermissions[role].hasVetoPower;
+          // An override on a money check is granted by an Administrator only, both ways.
+          for (const key of ADMIN_GRANTED_PERMISSIONS) {
+            if (!!clean[key] !== !!existing?.[key] && !can(req.auth!, 'manage_users')) {
+              throw new ApiError(403, `Only an administrator can grant or withdraw "${PERMISSION_LABELS[key]}". Nothing was saved.`);
+            }
+          }
           next[role] = clean;
         }
         db.settings.rolePermissions = next;

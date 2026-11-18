@@ -61,7 +61,7 @@ export interface IntegrityReport {
   warnings: number;
   findings: IntegrityFinding[];
   /** How many records were walked, so "ok" on an empty database is not mistaken for a pass. */
-  counts: { units: number; charges: number; payments: number; bookings: number; expenses: number };
+  counts: { units: number; charges: number; payments: number; bookings: number; expenses: number; auditLogs?: number };
 }
 
 const isBadNumber = (v: unknown): boolean => typeof v === 'number' && !Number.isFinite(v);
@@ -682,7 +682,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
     /* ---------------- the audit trail's hash chain ---------------- */
 
     {
-      const { broken, keyProblem } = verifyAuditChain(db.auditLogs || []);
+      const { broken, keyProblem, sealedWithoutKey } = verifyAuditChain(db.auditLogs || []);
       add('serious', 'audit-trail-broken', 'The audit trail has been altered: an entry was edited, inserted or removed after it was written.', broken);
       if (keyProblem) {
         add(
@@ -694,6 +694,14 @@ export function checkIntegrity(db: Database): IntegrityReport {
           [AUDIT_KEY_FILE]
         );
       }
+      // Not write-blocking: the desk kept working while the key was missing, which is right.
+      add(
+        'serious',
+        'audit-sealed-without-key',
+        `These audit entries were written while ${AUDIT_KEY_FILE} was missing, so they are sealed without the key. They are still chained, ` +
+          'but anyone who could edit db.json in that time could have rewritten them. Check them against your own records.',
+        sealedWithoutKey
+      );
     }
 
     /* ---------------- a closed period must not move ---------------- */
@@ -771,7 +779,9 @@ export function checkIntegrity(db: Database): IntegrityReport {
         charges: charges.length,
         payments: payments.length,
         bookings: bookings.length,
-        expenses: expenses.length
+        expenses: expenses.length,
+        // The whole trail, so a screen showing only the newest entries can say so.
+        auditLogs: (db.auditLogs || []).length
       }
     };
   } catch (err) {
@@ -790,7 +800,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
           records: []
         }
       ],
-      counts: { units: 0, charges: 0, payments: 0, bookings: 0, expenses: 0 }
+      counts: { units: 0, charges: 0, payments: 0, bookings: 0, expenses: 0, auditLogs: 0 }
     };
   }
 }

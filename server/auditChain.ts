@@ -56,6 +56,16 @@ export function auditEntryHash(e: AuditLog): string {
 
 export const AUDIT_KEY_FILE = 'audit-key.json';
 export const KEYED_SEAL = 'hmac-sha256';
+/**
+ * An entry written while keyed sealing had begun but the key was absent or
+ * unreadable. It is sealed the old, unkeyed way and SAYS so. Without the label it
+ * was indistinguishable from an entry somebody re-sealed by hand: putting the key
+ * back, the remedy the integrity check itself prescribes, turned every sign-in
+ * made in the meantime into "the audit trail has been altered", for good.
+ * Labelled entries are reported on their own (audit-sealed-without-key): they are
+ * genuinely weaker, since anyone who can edit db.json could have rewritten them.
+ */
+export const KEY_MISSING_SEAL = 'sha256-key-missing';
 
 interface KeyRecord {
   version: 1;
@@ -139,7 +149,8 @@ export function sealAuditEntry(entry: AuditLog, logs: AuditLog[]): void {
     entry.sealKind = KEYED_SEAL;
     entry.seal = keyedAuditHash(entry, key);
   } else {
-    delete entry.sealKind;
+    if (hasKeyedEntries(logs)) entry.sealKind = KEY_MISSING_SEAL;
+    else delete entry.sealKind;
     entry.seal = auditEntryHash(entry);
   }
 }
@@ -155,12 +166,15 @@ export interface ChainCheck {
   broken: string[];
   /** Set when keyed entries exist but the key is absent or unreadable. */
   keyProblem?: 'absent' | 'unreadable';
+  /** Entries that verify, but were sealed without the key because it was missing when they were written. */
+  sealedWithoutKey: string[];
 }
 
 /** Walk the chain oldest-first. */
 export function verifyAuditChain(logs: AuditLog[]): ChainCheck {
   const key = loadAuditKey();
   const broken: string[] = [];
+  const sealedWithoutKey: string[] = [];
   let seenSealed = false;
   let seenKeyed = false;
   for (let i = logs.length - 1; i >= 0; i--) {
@@ -177,6 +191,13 @@ export function verifyAuditChain(logs: AuditLog[]): ChainCheck {
         broken.push(`${e.id} (its content no longer matches its seal)`);
         continue;
       }
+    } else if (e.sealKind === KEY_MISSING_SEAL) {
+      if (!seenKeyed || !sameHex(auditEntryHash(e), e.seal)) {
+        // Only meaningful after keyed sealing began; before it, the label is a forgery.
+        broken.push(`${e.id} (${seenKeyed ? 'its content no longer matches its seal' : 'labelled as written without the key before any key existed'})`);
+        continue;
+      }
+      sealedWithoutKey.push(e.id);
     } else if (e.sealKind !== undefined) {
       broken.push(`${e.id} (sealed in an unknown way)`);
       continue;
@@ -193,7 +214,7 @@ export function verifyAuditChain(logs: AuditLog[]): ChainCheck {
     }
     if (older?.seal && e.prevSeal !== older.seal) broken.push(`${e.id} (an earlier entry was altered or removed)`);
   }
-  const result: ChainCheck = { broken };
+  const result: ChainCheck = { broken, sealedWithoutKey };
   if (!key.ok && seenKeyed) result.keyProblem = key.problem;
   return result;
 }

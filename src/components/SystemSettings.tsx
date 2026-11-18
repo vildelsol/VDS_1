@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import {
+  ADMIN_GRANTED_PERMISSIONS,
   AppSettings,
   PERMISSION_KEYS,
   PERMISSION_LABELS,
@@ -136,6 +137,7 @@ export default function SystemSettings({
         <PermissionsPanel
           settings={settings}
           busy={busy}
+          isAdmin={isAdmin}
           onSave={async rolePermissions => {
             setBusy(true);
             try {
@@ -232,10 +234,12 @@ export default function SystemSettings({
 function PermissionsPanel({
   settings,
   busy,
+  isAdmin,
   onSave
 }: {
   settings: AppSettings;
   busy: boolean;
+  isAdmin: boolean;
   onSave: (rolePermissions: AppSettings['rolePermissions']) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(settings.rolePermissions);
@@ -275,6 +279,12 @@ function PermissionsPanel({
                         Financial control, grant sparingly and review it in the audit trail.
                       </span>
                     )}
+                    {ADMIN_GRANTED_PERMISSIONS.includes(key) && (
+                      <span className="mt-0.5 block text-[10px] text-amber-700">
+                        Lets money onto the books that a check refused. Only an Administrator can grant or withdraw it; every
+                        use needs a reason and is written to the audit trail.
+                      </span>
+                    )}
                     {/*
                       Said here so nobody withdraws this expecting it to be a
                       lock. It hides a screen; it does not hide the receipts the
@@ -293,8 +303,9 @@ function PermissionsPanel({
                         type="checkbox"
                         checked={!!draft[role][key]}
                         onChange={() => toggle(role, key)}
+                        disabled={!isAdmin && ADMIN_GRANTED_PERMISSIONS.includes(key)}
                         aria-label={`${PERMISSION_LABELS[key]} for ${ROLE_LABELS[role]}`}
-                        className="h-4 w-4 cursor-pointer rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                        className="h-4 w-4 cursor-pointer rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:cursor-not-allowed disabled:opacity-50"
                       />
                     </td>
                   ))}

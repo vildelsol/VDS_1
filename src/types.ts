@@ -195,8 +195,18 @@ export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
   'modifySettledRecords',
   'viewShortfall',
   'viewIspoOperations',
-  'takeBackups'
+  'takeBackups',
+  // A labelled permission with no row here cannot be seen or granted on the
+  // System Settings screen (test/audit-records-settings pins the two lists together).
+  'overrideMoneyGuards'
 ];
+
+/**
+ * Permissions only an Administrator may grant or withdraw. Each one lifts a
+ * check that guards money, so a Manager (who may change settings) giving it to
+ * their own role or to the desk would be granting themselves the override.
+ */
+export const ADMIN_GRANTED_PERMISSIONS: (keyof RolePermissions)[] = ['overrideMoneyGuards'];
 
 export const PERMISSION_LABELS: Record<string, string> = {
   recordPayments: 'Record payments & issue receipts',
@@ -1006,7 +1016,7 @@ export interface AuditLog {
   seal?: string;
   prevSeal?: string;
   /** 'hmac-sha256' when `seal` is keyed (server/auditChain.ts). Absent on the older, unkeyed SHA-256 entries. */
-  sealKind?: 'hmac-sha256';
+  sealKind?: 'hmac-sha256' | 'sha256-key-missing';
 }
 
 /**
@@ -1178,5 +1188,5 @@ export interface IntegrityReport {
   warnings: number;
   findings: IntegrityFinding[];
   /** Stated so "nothing found" on an empty database is not mistaken for a pass. */
-  counts: { units: number; charges: number; payments: number; bookings: number; expenses: number };
+  counts: { units: number; charges: number; payments: number; bookings: number; expenses: number; auditLogs?: number };
 }
