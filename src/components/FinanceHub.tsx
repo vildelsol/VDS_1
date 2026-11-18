@@ -167,6 +167,14 @@ export default function FinanceHub({
 
   const mismatches = useMemo(() => currencyMismatchWarnings(units, charges, payments), [units, charges, payments]);
 
+  /** Whoever the latest open rent charge on a villa with no sitting tenant was raised to, named as a former tenant. */
+  const formerRentDebtor = (u: Unit): string => {
+    const open = charges
+      .filter(c => c.unitId === u.id && c.category === 'Rent' && c.status === 'open' && c.payerName)
+      .sort((a, b) => b.dueDate.localeCompare(a.dueDate));
+    return open.length ? `${open[0].payerName} (former tenant)` : '';
+  };
+
   /* ---------------- restate old rent charges ---------------- */
 
   const restatable = useMemo(() => rentChargesToRestate(units, charges), [units, charges]);
@@ -506,7 +514,10 @@ export default function FinanceHub({
           accounts={rentAccounts}
           category="Rent"
           asOf={asOf}
-          nameOf={u => u.tenantName || '- no tenant on record -'}
+          // A former tenant who left owing is still the debtor. With no sitting
+          // tenant the row named nobody, while the dashboard and the hub named them
+          // as the payer of the same balance (audit/daily, 2026-11-18).
+          nameOf={u => u.tenantName || formerRentDebtor(u) || '- no tenant on record -'}
           contactOf={u => u.tenantEmail}
           payments={payments}
           onReceive={openPaymentFor}

@@ -372,11 +372,26 @@ export default function NotificationsTab({
   const owedItems = items.filter(i => i.severity !== 'scheduled');
   const scheduledCount = items.length - owedItems.length;
 
+  /*
+   * Owed TO the property on the books, and owed BY it, never added together
+   * (audit/daily, 2026-11-18). "Total value" used to sum every card: arrears owed
+   * to the property, bills the property itself owes its suppliers, and months that
+   * were never billed at all (which the card for them says no screen counts as
+   * owed). A pending expense therefore RAISED the figure a manager reads as money
+   * to collect, and it could never tie to the dashboard's arrears.
+   */
   const totals = useMemo(() => {
     const out: Record<Currency, number> = { USD: 0, JMD: 0 };
     for (const item of items) {
-      if (item.severity === 'scheduled') continue;
+      if (item.severity === 'scheduled' || item.type === 'expense' || item.type === 'unbilled') continue;
       out[item.currency] = sumMoney([out[item.currency], item.amount]);
+    }
+    return out;
+  }, [items]);
+  const owedByProperty = useMemo(() => {
+    const out: Record<Currency, number> = { USD: 0, JMD: 0 };
+    for (const item of items) {
+      if (item.type === 'expense') out[item.currency] = sumMoney([out[item.currency], item.amount]);
     }
     return out;
   }, [items]);
@@ -434,7 +449,20 @@ export default function NotificationsTab({
               <p className="font-mono text-sm font-bold text-slate-800">{formatMoney(totals.JMD, 'JMD')} JMD</p>
               <p className="font-mono text-sm font-bold text-slate-800">{formatMoney(totals.USD, 'USD')} USD</p>
             </div>
-            <p className="mt-1 text-xs text-slate-400">Currencies reported separately · owed now, excluding what is not yet due</p>
+            <p className="mt-1 text-xs text-slate-400">
+              Owed to the property now, currencies reported separately · excludes what is not yet due or not yet billed
+            </p>
+            {(owedByProperty.JMD > 0 || owedByProperty.USD > 0) && (
+              <p className="mt-1 text-xs text-slate-500">
+                Owed by the property (expenses due):{' '}
+                {[
+                  owedByProperty.JMD > 0 ? `${formatMoney(owedByProperty.JMD, 'JMD')} JMD` : null,
+                  owedByProperty.USD > 0 ? `${formatMoney(owedByProperty.USD, 'USD')} USD` : null
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </p>
+            )}
           </div>
           <div className="rounded-xl bg-slate-50 p-3 text-slate-600">
             <DollarSign className="h-6 w-6" />

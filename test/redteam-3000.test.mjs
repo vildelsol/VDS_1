@@ -197,7 +197,7 @@ function auditReporting(db, fin, asOf) {
     const owed = units.reduce((total, unit) => {
       const rent = fin.accountBalance(unit, 'Rent', charges, payments, asOf, units);
       const maint = fin.accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
-      const inside = fin.maintenanceFundedFromRent(unit) && rent.balance > 0 && maint.balance > 0 && maint.balance <= rent.balance;
+      const inside = fin.levyCarriedInRent(unit, charges, units) && rent.balance > 0 && maint.balance > 0 && maint.balance <= rent.balance;
       for (const account of inside ? [rent] : [rent, maint]) {
         if (account.currency === entry.currency && account.balance > 0) total += cents(account.balance);
       }

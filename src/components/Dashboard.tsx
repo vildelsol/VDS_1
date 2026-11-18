@@ -672,7 +672,10 @@ export default function Dashboard({
         <div className="flex flex-col items-start justify-between gap-4 border-b border-slate-100 pb-4 sm:flex-row sm:items-center">
           <div>
             <h2 className="font-display text-lg font-medium text-slate-900">Short-term guest reservations</h2>
-            <p className="mt-0.5 text-xs text-slate-500">Deposits held and balances still due across active stays.</p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Paid toward active stays, net of refunds, and what is still due on them. A part-payment is income, not
+              money held: refundable damage deposits are on the Short-Term Bookings tab.
+            </p>
           </div>
           <SecondaryButton onClick={() => onNavigateToTab('bookings')}>Open bookings</SecondaryButton>
         </div>
@@ -692,14 +695,17 @@ export default function Dashboard({
             <span className="mt-1 block text-xs text-slate-500">Confirmed, checked-in or checked-out</span>
           </div>
           <div className="rounded-xl bg-emerald-50/50 p-4">
-            <span className="block font-mono text-[10px] uppercase text-emerald-700">Deposits held</span>
+            {/* "Deposits held" read as money owed back to guests. It is the opposite:
+                part-payments toward stays, already income (audit/daily, 2026-11-18). The
+                name now matches the reservations report's "Deposits received". */}
+            <span className="block font-mono text-[10px] uppercase text-emerald-700">Deposits received</span>
             <div className="mt-1 space-y-0.5">
               <p className="font-mono text-sm font-bold text-emerald-800">{formatMoney(stayBalances.USD.collected, 'USD')} USD</p>
               <p className="font-mono text-sm font-bold text-emerald-800">{formatMoney(stayBalances.JMD.collected, 'JMD')} JMD</p>
             </div>
           </div>
           <div className="rounded-xl bg-amber-50/50 p-4">
-            <span className="block font-mono text-[10px] uppercase text-amber-700">Balances due on arrival</span>
+            <span className="block font-mono text-[10px] uppercase text-amber-700">Balance outstanding</span>
             <div className="mt-1 space-y-0.5">
               <p className="font-mono text-sm font-bold text-amber-800">{formatMoney(stayBalances.USD.outstanding, 'USD')} USD</p>
               <p className="font-mono text-sm font-bold text-amber-800">{formatMoney(stayBalances.JMD.outstanding, 'JMD')} JMD</p>

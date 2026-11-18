@@ -50,7 +50,8 @@ import {
   subscribeConnection,
   subscribeSync
 } from './lib/api';
-import { countBookingOverlaps, delinquentAccounts, settledFromRent } from './lib/finance';
+import { settledFromRent } from './lib/finance';
+import { hubOpenItemCount } from './lib/notifications';
 import { today } from './lib/dates';
 import { clearSnapshot, loadSnapshot, saveSnapshot } from './lib/snapshot';
 import { forgetScreenState } from './lib/screenState';
@@ -419,11 +420,9 @@ export default function App() {
     // As of today, so a charge posted for a month but not yet due does not
     // count against the badge. Posting the month is not the same as the money
     // falling due, and the badge is a count of things needing doing now.
-    const accounts = delinquentAccounts(data.units, data.charges, settledPayments, today());
-    const unpaidUtilities = data.utilities.filter(u => u.status === 'unpaid').length;
-    const pendingExpenses = data.expenses.filter(e => e.status === 'pending').length;
-    return accounts.length + unpaidUtilities + pendingExpenses + countBookingOverlaps(data.bookings);
-  }, [session, data.units, data.charges, settledPayments, data.utilities, data.expenses, data.bookings]);
+    // The hub's own "Open items", from the same sources (see hubOpenItemCount).
+    return hubOpenItemCount({ ...data, payments: settledPayments, settings }, today());
+  }, [session, data, settledPayments, settings]);
 
   /* ---------------- gates ---------------- */
 
