@@ -43,8 +43,10 @@ import {
   liveExpenses,
   occupancyOn,
   operatingStatement,
-  ownerBilledUnitIds,
-  paymentsInBook
+  paymentsInBook,
+  utilityRecoveries,
+  UTILITY_RECOVERY_NOTE,
+  withUtilityRecoveries
 } from '../lib/finance';
 import { formatMoney, round2, sumMoney } from '../lib/money';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
@@ -181,7 +183,15 @@ export default function Reports({
    * The per-currency form is used for every figure; this array is for the printed
    * list of outgoings, which shows both currencies together.
    */
-  const expenses = useMemo(() => expensesForBook(allExpenses, units, book), [allExpenses, units, book]);
+  /*
+   * Utility recoveries are a pass-through (Ro, 2026-11-18): netted into the
+   * utility cost of the book that bore it, never income. `netted` is the cost
+   * register plus those derived credit rows, and every cost figure on this tab
+   * is read from it, so the summary, the series and the workbook agree with the
+   * operating statement below by construction.
+   */
+  const netted = useMemo(() => withUtilityRecoveries(allExpenses, allPayments), [allExpenses, allPayments]);
+  const expenses = useMemo(() => expensesForBook(netted, units, book), [netted, units, book]);
   const bookCharges = useMemo(() => chargesInBook(combined.charges, book), [combined, book]);
   /*
    * A balance is computed per unit **per category**, so the book is applied by
@@ -197,7 +207,6 @@ export default function Reports({
     if (!invalidRange) setReportRange({ from, to, preset });
   }, [from, to, preset, invalidRange]);
 
-  const ownerBilled = useMemo(() => ownerBilledUnitIds(units), [units]);
   const months = useMemo(() => (invalidRange ? [] : monthsBetween(from, to)), [from, to, invalidRange]);
 
   /* ---------------- per-currency period summary ---------------- */
@@ -205,7 +214,7 @@ export default function Reports({
   const summary = useMemo(() => {
     if (invalidRange) return [];
     return (['JMD', 'USD'] as Currency[]).map(currency => {
-      const collected = collectedInPeriod(payments, currency, from, to, ownerBilled);
+      const collected = collectedInPeriod(payments, currency, from, to);
       const billed = chargedInPeriod(bookCharges, currency, from, to);
 
       /*
@@ -227,7 +236,7 @@ export default function Reports({
         book === 'ispo'
           ? operatingStatement(allPayments, allExpenses, units, currency, from, to, { book }).internalTransfer
           : 0;
-      const costs = expensesForBook(allExpenses, units, book, currency);
+      const costs = expensesForBook(netted, units, book, currency);
       const spent = sumMoney([expensesInPeriod(costs, currency, from, to), paidOver]);
 
       // Opening / closing receivable position across every account in this
@@ -259,10 +268,11 @@ export default function Reports({
         openingReceivable,
         closingReceivable,
         paidOver,
-        breakdown: expenseBreakdown(costs, currency, from, to)
+        breakdown: expenseBreakdown(costs, currency, from, to),
+        utilities: utilityRecoveries(allPayments, allExpenses, currency, from, to, book)
       };
     });
-  }, [payments, bookCharges, bookCategories, expenses, allPayments, allExpenses, book, units, from, to, ownerBilled, invalidRange]);
+  }, [payments, bookCharges, bookCategories, expenses, netted, allPayments, allExpenses, book, units, from, to, invalidRange]);
 
   /* ---------------- monthly series for charts ---------------- */
 
@@ -273,7 +283,7 @@ export default function Reports({
       const mTo = monthEnd(month) > to ? to : monthEnd(month);
       const row: Record<string, number | string> = { month };
       for (const currency of ['JMD', 'USD'] as Currency[]) {
-        const collected = collectedInPeriod(payments, currency, mFrom, mTo, ownerBilled);
+        const collected = collectedInPeriod(payments, currency, mFrom, mTo);
         const billed = chargedInPeriod(bookCharges, currency, mFrom, mTo);
         row[`${currency}_in`] = collected.total;
         /*
@@ -289,7 +299,7 @@ export default function Reports({
          */
         row[`${currency}_booking`] = collected.booking;
         row[`${currency}_out`] = sumMoney([
-          expensesInPeriod(expensesForBook(allExpenses, units, book, currency), currency, mFrom, mTo),
+          expensesInPeriod(expensesForBook(netted, units, book, currency), currency, mFrom, mTo),
           // Same reason as the summary card above: on ISPO's book the
           // contribution it pays over is money out with no cost row behind it.
           book === 'ispo'
@@ -300,7 +310,7 @@ export default function Reports({
       }
       return row;
     });
-  }, [months, payments, bookCharges, expenses, allPayments, allExpenses, book, units, from, to, ownerBilled, invalidRange]);
+  }, [months, payments, bookCharges, expenses, netted, allPayments, allExpenses, book, units, from, to, invalidRange]);
 
   /* ---------------- factual observations ---------------- */
 
@@ -370,11 +380,10 @@ export default function Reports({
        * somebody to work out. Only raised when there is actually a gap to
        * explain, so it does not become a sentence people stop reading.
        */
-      const unbilled = sumMoney([entry.collected.booking, entry.collected.utility, entry.collected.other]);
+      const unbilled = sumMoney([entry.collected.booking, entry.collected.other]);
       if (unbilled > 0) {
         const parts: string[] = [];
         if (entry.collected.booking > 0) parts.push(`${formatMoney(entry.collected.booking, c)} short-stay rental`);
-        if (entry.collected.utility > 0) parts.push(`${formatMoney(entry.collected.utility, c)} utilities recovered`);
         if (entry.collected.other > 0) parts.push(`${formatMoney(entry.collected.other, c)} other income`);
         say(
           NOTABLE,
@@ -519,6 +528,16 @@ export default function Reports({
     summaryRows.push([cell.blank()]);
     summaryRows.push([cell.note('USD and JMD are reported separately and are never combined. Each figure is in the currency of its own row.', 10)]);
     summaryRows.push([cell.note(`Scope: ${REPORT_BOOK_SCOPE[book]}`, 10)]);
+    for (const entry of summary) {
+      if (entry.utilities.recovered === 0) continue;
+      summaryRows.push([
+        cell.note(
+          `${entry.currency}: utilities paid ${formatMoney(entry.utilities.utilityCost, entry.currency)}, recovered from villas ${formatMoney(entry.utilities.recovered, entry.currency)}, ` +
+            `net utility cost ${formatMoney(entry.utilities.netUtilityCost, entry.currency)}. Recoveries are a pass-through: not income, netted from the utility cost.`,
+          10
+        )
+      ]);
+    }
 
     /* --- 2. what was received, by category --- */
     const incomeRows: XlsxCell[][] = [
@@ -528,7 +547,6 @@ export default function Reports({
         cell.header('Rent', 'right'),
         cell.header('Maintenance', 'right'),
         cell.header('Bookings', 'right'),
-        cell.header('Utilities', 'right'),
         cell.header('Other', 'right'),
         cell.header('Total received', 'right')
       ]
@@ -539,7 +557,6 @@ export default function Reports({
         cell.money(entry.collected.rent, entry.currency),
         cell.money(entry.collected.maintenance, entry.currency),
         cell.money(entry.collected.booking, entry.currency),
-        cell.money(entry.collected.utility, entry.currency),
         cell.money(entry.collected.other, entry.currency),
         cell.totalMoney(entry.collected.total, entry.currency)
       ]);
@@ -653,7 +670,7 @@ export default function Reports({
     expenseRows.push([cell.blank()]);
     expenseRows.push([
       cell.note(
-        'Costs taken back are not listed and are in none of these totals. A negative amount is a credit from the supplier, and reduces what the period cost. ' +
+        'Costs taken back are not listed and are in none of these totals. A negative amount is a credit from the supplier, or a utility payment recovered from a villa (a pass-through, not income), and reduces what the period cost. ' +
           'Where no invoice date was recorded the date this was logged here is shown and marked; it is not the supplier\u2019s date.',
         10
       )
@@ -888,15 +905,22 @@ export default function Reports({
                 <dl className="space-y-2 text-xs">
                   <StatementRow label="Receivable at start of period" value={formatMoney(entry.openingReceivable, entry.currency)} />
                   <StatementRow label="Billed during period" value={formatMoney(entry.billed.total, entry.currency)} detail={`Rent ${formatMoney(entry.billed.rent, entry.currency)} · Maintenance ${formatMoney(entry.billed.maintenance, entry.currency)}`} />
-                  <StatementRow label="Received during period" value={formatMoney(entry.collected.total, entry.currency)} detail={`Rent ${formatMoney(entry.collected.rent, entry.currency)} · Maintenance ${formatMoney(entry.collected.maintenance, entry.currency)} · Bookings ${formatMoney(entry.collected.booking, entry.currency)} · Utilities ${formatMoney(entry.collected.utility, entry.currency)} · Other ${formatMoney(entry.collected.other, entry.currency)}`} />
+                  <StatementRow label="Received during period" value={formatMoney(entry.collected.total, entry.currency)} detail={`Rent ${formatMoney(entry.collected.rent, entry.currency)} · Maintenance ${formatMoney(entry.collected.maintenance, entry.currency)} · Bookings ${formatMoney(entry.collected.booking, entry.currency)} · Other ${formatMoney(entry.collected.other, entry.currency)}`} />
                   <StatementRow label="Receivable at end of period" value={formatMoney(entry.closingReceivable, entry.currency)} strong />
                   <StatementRow
                     label="Expenses paid"
                     value={formatMoney(entry.spent, entry.currency)}
                     detail={
-                      entry.paidOver > 0
-                        ? `Includes ${formatMoney(entry.paidOver, entry.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on the villas it lets. It is read from the contribution receipts, there is no bill for it in the cost register.`
-                        : undefined
+                      [
+                        entry.paidOver > 0
+                          ? `Includes ${formatMoney(entry.paidOver, entry.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on the villas it lets. It is read from the contribution receipts, there is no bill for it in the cost register.`
+                          : '',
+                        entry.utilities.recovered !== 0
+                          ? `Utilities ${formatMoney(entry.utilities.netUtilityCost, entry.currency)} net: ${formatMoney(entry.utilities.utilityCost, entry.currency)} paid less ${formatMoney(entry.utilities.recovered, entry.currency)} recovered from villas (a pass-through, not income).`
+                          : ''
+                      ]
+                        .filter(Boolean)
+                        .join(' ') || undefined
                     }
                   />
                   <StatementRow label="Net cash movement" value={formatMoney(entry.net, entry.currency)} strong tone={entry.net < 0 ? 'negative' : 'positive'} />
@@ -1260,6 +1284,8 @@ function buildSummaryType() {
     openingReceivable: number;
     closingReceivable: number;
     breakdown: ReturnType<typeof expenseBreakdown>;
+    /** Utility cost, recoveries from villas and the net, on this book. */
+    utilities: ReturnType<typeof utilityRecoveries>;
   }[];
 }
 
@@ -1330,8 +1356,7 @@ function StatementDocument({
       */}
       <p className="mb-4 rounded border border-slate-400 p-2 text-[10px] leading-relaxed">
         <strong>Scope.</strong> {REPORT_BOOK_SCOPE[book]} JMD and USD are reported separately and never combined.
-        Utility recoveries billed directly to owners of owner-occupied and short-let villas are excluded from operating
-        revenue.
+        {UTILITY_RECOVERY_NOTE}
       </p>
 
       <section className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">

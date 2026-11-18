@@ -112,7 +112,11 @@ export default async function run({ port, projectRoot }) {
       expenses.some(e => e.status === 'void') && raw.some(p => p.status === 'reversed'));
     T.check('the levy inside both let villas\' rent was settled from rent', settled.some(p => p.unitId === 'unit-1' && p.category === 'Maintenance') && settled.some(p => p.unitId === 'unit-2' && p.category === 'Maintenance'));
 
-    const ownerBilled = F.ownerBilledUnitIds(units);
+    // Utility recoveries are a pass-through (Ro, 2026-11-18): out of income on every
+    // screen and netted from the utility cost. This used an `ownerBilledUnitIds` set
+    // that dropped only owner-occupied and short-term villas' recoveries from the
+    // summary while the operating statement counted all of them; that was the defect.
+    const netted = F.withUtilityRecoveries(expenses, settled);
 
     for (const cur of CURS) {
       /* ---------- independent ledger counts ---------- */
@@ -120,24 +124,30 @@ export default async function run({ port, projectRoot }) {
         raw.filter(p => p.status === 'completed' && p.currency === cur && within(p.date, FROM, TO)).reduce((a, p) => a + C(p.amount), 0),
         raw.filter(p => p.status === 'completed' && p.currency === cur && within(p.refundedOn, FROM, TO)).reduce((a, p) => a + C(p.refundedAmount), 0)
       );
-      // On the combined view the owner-occupied villas' utility recovery is not operating revenue.
-      const utilRecoveredOwner = raw.filter(p => p.status === 'completed' && p.currency === cur && p.category === 'Utility' && ownerBilled.has(p.unitId) && within(p.date, FROM, TO)).reduce((a, p) => a + C(p.amount), 0);
-      const spentLedger = expenses.filter(e => e.status === 'paid' && e.currency === cur && within(e.datePaid || e.date, FROM, TO)).reduce((a, e) => a + C(e.amount), 0);
+      // Every utility recovery is out of income (pass-through), net of refunds, whoever paid it.
+      const utilRecovered = subtract(
+        raw.filter(p => p.status === 'completed' && p.currency === cur && p.category === 'Utility' && within(p.date, FROM, TO)).reduce((a, p) => a + C(p.amount), 0),
+        raw.filter(p => p.status === 'completed' && p.currency === cur && p.category === 'Utility' && within(p.refundedOn, FROM, TO)).reduce((a, p) => a + C(p.refundedAmount), 0)
+      );
+      // ...and netted from what was spent.
+      const spentLedger = expenses.filter(e => e.status === 'paid' && e.currency === cur && within(e.datePaid || e.date, FROM, TO)).reduce((a, e) => a + C(e.amount), 0) - utilRecovered;
 
       /* ---------- Operational Reports summary, combined book (Reports.tsx summary) ---------- */
       const combined = F.consolidateEverything(charges, settled, units);
       const repPayments = F.paymentsInBook(combined.payments, 'everything');
-      const repCollected = F.collectedInPeriod(repPayments, cur, FROM, TO, ownerBilled);
-      const repSpent = F.expensesInPeriod(F.expensesForBook(expenses, units, 'everything', cur), cur, FROM, TO);
-      T.check(`${cur}: Reports summary "received" is the cash that came in, less owner utility recoveries`,
-        C(repCollected.total) === cashIn - utilRecoveredOwner, `${C(repCollected.total)} vs ${cashIn - utilRecoveredOwner}`);
-      T.check(`${cur}: Reports summary "spent" is the paid costs, net of the supplier credit, without the void or the pending bill`,
+      const repCollected = F.collectedInPeriod(repPayments, cur, FROM, TO);
+      const repSpent = F.expensesInPeriod(F.expensesForBook(netted, units, 'everything', cur), cur, FROM, TO);
+      T.check(`${cur}: Reports summary "received" is the cash that came in, less every utility recovery`,
+        C(repCollected.total) === cashIn - utilRecovered, `${C(repCollected.total)} vs ${cashIn - utilRecovered}`);
+      T.check(`${cur}: Reports summary "spent" is the paid costs, net of the supplier credit and the utility recoveries, without the void or the pending bill`,
         C(repSpent) === spentLedger, `${C(repSpent)} vs ${spentLedger}`);
 
       /* ---------- Operating Statement, combined book (OperatingStatement.tsx) ---------- */
       const op = F.operatingStatement(settled, expenses, units, cur, FROM, TO, { book: 'everything' });
-      T.check(`${cur}: the combined Operating Statement's income is the cash that came in, the levy inside rent counted once`,
-        C(op.totalIncome) === cashIn, `statement ${C(op.totalIncome)} vs cash ${cashIn}`);
+      // Was `=== cashIn`: the statement counted utility recoveries as income, which
+      // is the defect Ro's pass-through rule (2026-11-18) removes.
+      T.check(`${cur}: the combined Operating Statement's income is the cash that came in less utility recoveries, the levy inside rent counted once`,
+        C(op.totalIncome) === cashIn - utilRecovered, `statement ${C(op.totalIncome)} vs cash ${cashIn - utilRecovered}`);
       T.check(`${cur}: the combined Operating Statement's expenditure equals the Reports summary "spent"`,
         C(op.totalExpenditure) === C(repSpent), `${C(op.totalExpenditure)} vs ${C(repSpent)}`);
 
@@ -146,14 +156,14 @@ export default async function run({ port, projectRoot }) {
       const chartRows = months.map(m => {
         const mFrom = `${m}-01`, mTo = F.monthEndOf ? F.monthEndOf(m) : endOf(m);
         return {
-          received: F.collectedInPeriod(combined.payments, cur, mFrom, mTo, ownerBilled).total,
-          paidOut: F.expensesInPeriod(expenses, cur, mFrom, mTo),
+          received: F.collectedInPeriod(combined.payments, cur, mFrom, mTo).total,
+          paidOut: F.expensesInPeriod(netted, cur, mFrom, mTo),
           billed: F.chargedInPeriod(combined.charges, cur, mFrom, mTo).total
         };
       });
       const chartReceived = chartRows.reduce((a, r) => a + C(r.received), 0);
       const chartPaidOut = chartRows.reduce((a, r) => a + C(r.paidOut), 0);
-      const chartBreakdown = F.categoriesWithSpend(F.expenseBreakdown(expenses, cur, FROM, TO)).reduce((a, b) => a + C(b.amount), 0);
+      const chartBreakdown = F.categoriesWithSpend(F.expenseBreakdown(netted, cur, FROM, TO)).reduce((a, b) => a + C(b.amount), 0);
       T.check(`${cur}: Charts "received" over the range equals the Reports summary`, chartReceived === C(repCollected.total), `${chartReceived} vs ${C(repCollected.total)}`);
       T.check(`${cur}: Charts "paid out" over the range equals the Reports summary`, chartPaidOut === C(repSpent), `${chartPaidOut} vs ${C(repSpent)}`);
       T.check(`${cur}: Charts' expenses-by-category total equals its "paid out"`, chartBreakdown === chartPaidOut, `${chartBreakdown} vs ${chartPaidOut}`);
@@ -194,7 +204,8 @@ export default async function run({ port, projectRoot }) {
     for (const cur of CURS) {
       const ar = F.annualOwnersReport(units, charges, settled, expenses, cur, 2026, { booksBeginOn: db.settings.booksBeginOn });
       const levy2026 = charges.filter(x => x.category === 'Maintenance' && x.status === 'open' && x.currency === cur && (x.periodMonth || x.dueDate || '').startsWith('2026')).reduce((a, x) => a + C(x.amount), 0);
-      const strataSpent = expenses.filter(e => (e.fund || 'strata') === 'strata' && e.status === 'paid' && e.currency === cur && within(e.datePaid || e.date, '2026-01-01', '2026-12-31')).reduce((a, e) => a + C(e.amount), 0);
+      // Net of the corporation's utility recoveries (pass-through, Ro 2026-11-18); the gross register sum was the old definition.
+      const strataSpent = F.strataExpenses(F.withUtilityRecoveries(expenses, settled)).filter(e => e.status === 'paid' && e.currency === cur && within(e.datePaid || e.date, '2026-01-01', '2026-12-31')).reduce((a, e) => a + C(e.amount), 0);
       T.check(`${cur}: Annual Report contributions are the year's own levy charges`, C(ar.contributionsAnnual) === levy2026, `${C(ar.contributionsAnnual)} vs ${levy2026}`);
       T.check(`${cur}: Annual Report expenditure is the corporation's paid costs only`, C(ar.expenditure) === strataSpent, `${C(ar.expenditure)} vs ${strataSpent}`);
       const opStrata = F.operatingStatement(settled, expenses, units, cur, '2026-01-01', '2026-12-31', { book: 'strata' });
@@ -210,7 +221,8 @@ export default async function run({ port, projectRoot }) {
       const p = F.buildProjection(cur, units, charges, settled, expenses, window, 6);
       const register = units.filter(u => F.isBillable(u, 'Maintenance') && F.chargeCurrency(u, 'Maintenance') === cur).reduce((a, u) => a + C(u.monthlyMaintenance), 0);
       T.check(`${cur}: Projections' assessment is the current register`, C(p.contractedMonthly) === register, `${C(p.contractedMonthly)} vs ${register}`);
-      const strataPaid = C(F.expensesInPeriod(F.strataExpenses(expenses), cur, FROM, TO));
+      // Net of utility recoveries, as above.
+      const strataPaid = C(F.expensesInPeriod(F.strataExpenses(F.withUtilityRecoveries(expenses, settled)), cur, FROM, TO));
       T.check(`${cur}: Projections' expenditure is the corporation's own paid costs`, C(p.expensesPaid) === strataPaid, `${C(p.expensesPaid)} vs ${strataPaid}`);
       const opsLevy = F.collectedInPeriod(settled, cur, FROM, TO).maintenance;
       T.check(`${cur}: Projections' contributions received are the levy in cash plus the levy settled from rent`, C(p.maintReceived) === C(opsLevy));

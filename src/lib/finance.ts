@@ -1436,8 +1436,16 @@ export interface CurrencyTotals {
   rent: number;
   maintenance: number;
   booking: number;
+  /**
+   * Utility payments recovered from villas, net of refunds. **Not in `total`.**
+   *
+   * Ro, 2026-11-18: a utility recovery is a pass-through, not income. It is
+   * carried here only so a screen can name it; its place in the figures is as a
+   * reduction of the utility cost (see `withUtilityRecoveries`).
+   */
   utility: number;
   other: number;
+  /** Income: rent, maintenance, bookings and other. Never the utility recoveries. */
   total: number;
 }
 
@@ -1445,14 +1453,18 @@ const EMPTY_TOTALS: CurrencyTotals = { rent: 0, maintenance: 0, booking: 0, util
 
 /**
  * Cash actually received in one currency over a date range, split by category.
- * `excludeUnitIds` drops owner-billed utility recoveries from operating revenue.
+ *
+ * `total` is income and leaves utility recoveries out, for every villa and every
+ * payer. It used to drop them only for an `ownerBilledUnitIds` set (owner-occupied
+ * plus short-term villas), so a tenant's utility payment on a rented villa was
+ * income on the summary while the operating statement counted every recovery as
+ * income: two definitions on one tab. There is one now, and no villa set at all.
  */
 export function collectedInPeriod(
   payments: Payment[],
   currency: Currency,
   start: string,
-  end: string,
-  excludeUtilityUnitIds: Set<string> = new Set()
+  end: string
 ): CurrencyTotals {
   const completed = payments.filter(p => p.status === 'completed' && p.currency === currency);
   const rows = completed.filter(p => isWithin(p.date, start, end));
@@ -1477,14 +1489,137 @@ export function collectedInPeriod(
     rent: pick('Rent'),
     maintenance: pick('Maintenance'),
     booking: pick('Booking'),
-    utility: subtractMoney(
-      sumMoney(rows.filter(p => p.category === 'Utility' && !excludeUtilityUnitIds.has(p.unitId)).map(p => p.amount)),
-      sumMoney(refunds.filter(p => p.category === 'Utility' && !excludeUtilityUnitIds.has(p.unitId)).map(p => refundedAsOf(p)))
-    ),
+    utility: pick('Utility'),
     other: pick('Other')
   };
-  totals.total = sumMoney([totals.rent, totals.maintenance, totals.booking, totals.utility, totals.other]);
+  totals.total = sumMoney([totals.rent, totals.maintenance, totals.booking, totals.other]);
   return totals;
+}
+
+/* ------------------------------------------------------------------ *
+ * Utility recoveries: a pass-through, never income
+ *
+ * Ro, 2026-11-18: utility payments recovered from villas (owner-occupied villas
+ * and anyone else billed for utilities) are a pass-through. On every screen they
+ * are left out of income and shown as a reduction of the utility cost, with the
+ * recovered amount named: net utility cost = utility expense - recoveries.
+ *
+ * One derivation, used by every screen: each completed Utility receipt becomes a
+ * derived credit row in the Utilities category (and a refund of it a derived
+ * debit row, dated the day the money went back), in the book that bore the cost.
+ * Every figure that already adds up costs, by book and by category, then nets
+ * the recovery without knowing it exists, the same way a supplier credit nets.
+ * Pending and voided receipts produce nothing. Rows are worked out, never stored.
+ * ------------------------------------------------------------------ */
+
+export const UTILITY_RECOVERY_ID_PREFIX = 'utility-recovery:';
+
+/** What every page says about utility recoveries, in one wording. */
+export const UTILITY_RECOVERY_NOTE =
+  'Utility payments recovered from villas are a pass-through, not income: they are netted from the utility cost, which is shown net of them.';
+
+/** Is this cost row a derived utility recovery rather than a bill in the register? */
+export function isUtilityRecoveryRow(expense: Pick<Expense, 'id'>): boolean {
+  return expense.id.startsWith(UTILITY_RECOVERY_ID_PREFIX);
+}
+
+/**
+ * The book that bore the cost a utility receipt recovers.
+ *
+ * Read from the Utilities bills on the same villa and currency: the latest one
+ * paid on or before the receipt, else the earliest after it. A villa with no
+ * utility bill of its own is supplied through the corporation's account, so it is
+ * the corporation's, which is also what "absent fund means strata" says for every
+ * cost.
+ */
+export function utilityRecoveryBook(payment: Payment, expenses: Expense[]): ExpenseFund {
+  const bills = expenses
+    .filter(e => !isUtilityRecoveryRow(e) && e.category === 'Utilities' && e.status === 'paid' && e.unitId === payment.unitId && !!payment.unitId && e.currency === payment.currency)
+    .map(e => ({ e, date: e.datePaid || e.date }))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.e.id.localeCompare(b.e.id));
+  const before = bills.filter(b => b.date <= payment.date);
+  const chosen = before.length > 0 ? before[before.length - 1] : bills[0];
+  return chosen ? fundOf(chosen.e) : 'strata';
+}
+
+/** The derived recovery rows, every currency and all time. */
+export function utilityRecoveryRows(payments: Payment[], expenses: Expense[]): Expense[] {
+  const out: Expense[] = [];
+  for (const p of payments) {
+    if (p.category !== 'Utility' || p.status !== 'completed' || p.derived) continue;
+    const fund = utilityRecoveryBook(p, expenses);
+    const villa = p.unitNumber || 'a villa';
+    const base = {
+      category: 'Utilities' as ExpenseCategory,
+      unitId: p.unitId,
+      unitNumber: p.unitNumber,
+      currency: p.currency,
+      status: 'paid' as const,
+      reference: p.receiptNo || '',
+      notes: '',
+      fund
+    };
+    out.push({
+      ...base,
+      id: `${UTILITY_RECOVERY_ID_PREFIX}${p.id}`,
+      vendor: `Recovered from ${villa}`,
+      description: `Utility recovery${p.payerName ? ` from ${p.payerName}` : ''} (pass-through, not income)`,
+      amount: -round2(p.amount),
+      date: p.date,
+      datePaid: p.date
+    });
+    const refunded = refundedAsOf(p);
+    if (refunded > 0 && p.refundedOn) {
+      out.push({
+        ...base,
+        id: `${UTILITY_RECOVERY_ID_PREFIX}${p.id}:refund`,
+        vendor: `Recovery refunded to ${villa}`,
+        description: 'Utility recovery handed back',
+        amount: refunded,
+        date: p.refundedOn,
+        datePaid: p.refundedOn
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The costs with utility recoveries netted in. Idempotent: rows derived earlier
+ * are replaced, never added twice, so a screen that nets once and then hands the
+ * result to a statement that nets again still counts each dollar once.
+ */
+export function withUtilityRecoveries(expenses: Expense[], payments: Payment[]): Expense[] {
+  const register = expenses.filter(e => !isUtilityRecoveryRow(e));
+  return [...register, ...utilityRecoveryRows(payments, register)];
+}
+
+export interface UtilityRecoveries {
+  currency: Currency;
+  book: ReportBook;
+  /** Utilities bills paid in the period, on this book (supplier credits netted). */
+  utilityCost: number;
+  /** Utility payments recovered from villas in the period, net of refunds. */
+  recovered: number;
+  /** `utilityCost - recovered`: the figure every screen shows as the utility cost. */
+  netUtilityCost: number;
+}
+
+/** The utility cost, the recovery and the net, for one currency, period and book. */
+export function utilityRecoveries(
+  payments: Payment[],
+  expenses: Expense[],
+  currency: Currency,
+  start: string,
+  end: string,
+  book: ReportBook = 'everything'
+): UtilityRecoveries {
+  const netted = expensesInBook(withUtilityRecoveries(expenses, payments), book).filter(
+    e => e.category === 'Utilities' && e.status === 'paid' && e.currency === currency && isWithin(e.datePaid || e.date, start, end)
+  );
+  const utilityCost = sumMoney(netted.filter(e => !isUtilityRecoveryRow(e)).map(e => e.amount));
+  const recovered = -sumMoney(netted.filter(isUtilityRecoveryRow).map(e => e.amount)) || 0;
+  return { currency, book, utilityCost, recovered, netUtilityCost: subtractMoney(utilityCost, recovered) };
 }
 
 /** Charges raised in one currency over a date range, split by category. */
@@ -1543,9 +1678,13 @@ export function expenseBreakdown(
     .sort((a, b) => b.amount + b.outstanding - (a.amount + a.outstanding));
 }
 
-/**
- * Owner-billed units. Utilities for these are recovered directly from the owner
- * and are excluded from property operating revenue.
+/*
+ * `ownerBilledUnitIds` (owner-occupied plus short-term villas) was retired on
+ * 2026-11-18. Its job was to keep utility recoveries out of income, and its set
+ * was wrong for that job twice over: short-term villas are ISPO's (ISPO owns every
+ * villa not `owner-occupied`), so nobody "owner-bills" their utilities, while a
+ * tenant billed for utilities on a rented villa was left in income. Under Ro's
+ * pass-through rule no villa set is needed: every recovery is out of income.
  */
 /**
  * The categories a spend chart should draw.
@@ -1567,9 +1706,6 @@ export function categoriesWithSpend<T extends { amount: number }>(breakdown: T[]
   return breakdown.filter(row => row.amount !== 0);
 }
 
-export function ownerBilledUnitIds(units: Unit[]): Set<string> {
-  return new Set(units.filter(u => u.status === 'owner-occupied' || u.status === 'short-term').map(u => u.id));
-}
 
 /**
  * Apply `credit` to charges oldest-first (due date, then id) and report how much of
@@ -2461,7 +2597,7 @@ export function ownerStatement(
    * The reading is what the owner is actually liable for, so that is the one
    * that bills them. The supplier invoice stays where it belongs: a cost of the
    * corporation, recovered by the reading rather than restated on top of it.
-   * `ownerBilledUnitIds` already keeps that recovery out of corporation income
+   * Under Ro's pass-through rule (2026-11-18) that recovery is never income anywhere
    * for exactly this reason.
    *
    * Anything else charged to the villa — a plumber, a locksmith — has no second
@@ -3216,8 +3352,11 @@ export function annualOwnersReport(
    * to the annual general meeting. Counting ISPO's vehicle insurance in it
    * charged sixteen proprietors, through their contribution, for the running of
    * a company vehicle they have nothing to do with.
+   *
+   * Utility recoveries the corporation took from villas are netted from its
+   * utility cost (Ro, 2026-11-18): the proprietors fund the net, not the gross.
    */
-  const expenses = strataExpenses(allExpenses);
+  const expenses = strataExpenses(withUtilityRecoveries(allExpenses, payments));
   const budgetByCategory = options?.budgetByCategory || {};
   const yearStart = `${reportYear}-01-01`;
   const yearEnd = `${reportYear}-12-31`;
@@ -3562,8 +3701,9 @@ export function operationalHealth(
   const settled = combinedSettledOfBilled(charges, payments, units, currency, from, to);
   const combined = consolidateEverything(charges, payments, units);
   const billedTotal = settled.billed;
-  const collectedTotal = collectedInPeriod(combined.payments, currency, from, to, ownerBilledUnitIds(units)).total;
-  const spent = expensesInPeriod(expenses, currency, from, to);
+  const collectedTotal = collectedInPeriod(combined.payments, currency, from, to).total;
+  // Utility recoveries are a pass-through: out of income above, netted from the cost here.
+  const spent = expensesInPeriod(withUtilityRecoveries(expenses, payments), currency, from, to);
 
   // --- collection ---
   if (billedTotal > 0) {
@@ -3765,8 +3905,9 @@ export function operationsStatement(
    * The corporation's costs only. This document tells sixteen proprietors what
    * their contributions paid for, so ISPO's cell phone has no business on it —
    * and before the two books existed it was on it, under "Utilities".
+   * Utility recoveries are netted in (pass-through, Ro 2026-11-18).
    */
-  const expenses = strataExpenses(allExpenses);
+  const expenses = strataExpenses(withUtilityRecoveries(allExpenses, payments));
 
   const inCurrency = expenses.filter(e => e.currency === currency);
   const paidInPeriod = inCurrency.filter(e => e.status === 'paid' && isWithin(e.datePaid || e.date, start, end));
@@ -3938,6 +4079,12 @@ export interface OperatingStatement {
    * anywhere. Counting an expense here as well would be the double count.
    */
   internalTransfer: number;
+  /**
+   * Utility payments recovered from villas on this book, net of refunds. Not
+   * income: already netted into the Utilities expenditure, named here so the
+   * page can say how much of the utility cost was passed through.
+   */
+  utilityRecovered: number;
   /** Income less expenditure. Negative is a deficit for the period. */
   surplus: number;
   /** True when neither side has a single line in this currency. */
@@ -4013,8 +4160,13 @@ export function operatingStatement(
   const ownVillas = ownAccountUnitIds(units);
   const isTransferBetweenBooks = (p: Payment): boolean =>
     book === 'everything' && p.category === 'Maintenance' && ownVillas.has(p.unitId);
-  const payments = paymentsInBook(allPayments, book).filter(p => !isTransferBetweenBooks(p));
-  const expenses = expensesInBook(allExpenses, book);
+  /*
+   * Utility recoveries are not income on any book (Ro, 2026-11-18). They are a
+   * pass-through, netted from the utility cost of the book that bore it, where
+   * each one is an itemised line and their total is `utilityRecovered`.
+   */
+  const payments = paymentsInBook(allPayments, book).filter(p => !isTransferBetweenBooks(p) && p.category !== 'Utility');
+  const expenses = expensesInBook(withUtilityRecoveries(allExpenses, allPayments), book);
 
   /*
    * The villas VDS lets on the corporation's own account, needed here rather
@@ -4055,7 +4207,6 @@ export function operatingStatement(
     { category: 'Maintenance', label: 'Maintenance contributions' },
     { category: 'Rent', label: 'Rent' },
     { category: 'Booking', label: 'Short-stay bookings' },
-    { category: 'Utility', label: 'Utilities recovered' },
     { category: 'Other', label: 'Other income' }
   ];
 
@@ -4252,6 +4403,7 @@ export function operatingStatement(
     strataExpenditure,
     ispoExpenditure,
     internalTransfer,
+    utilityRecovered: -sumMoney(paid.filter(e => isUtilityRecoveryRow(e) && !excludedCategories.has(e.category)).map(e => e.amount)) || 0,
     surplus: subtractMoney(totalIncome, totalExpenditure),
     empty:
       income.length === 0 &&
@@ -4413,7 +4565,8 @@ export function ispoOperations(
   const bookingReceived = collected.booking;
   const totalIncome = sumMoney([rentReceived, bookingReceived]);
 
-  const inCurrency = ispoExpenses(allExpenses).filter(e => e.currency === currency);
+  // Utility recoveries on a villa whose utilities ISPO paid net ISPO's cost (Ro, 2026-11-18).
+  const inCurrency = ispoExpenses(withUtilityRecoveries(allExpenses, payments)).filter(e => e.currency === currency);
   const paid = inCurrency.filter(e => e.status === 'paid' && isWithin(e.datePaid || e.date, start, end));
   const pending = inCurrency.filter(e => e.status === 'pending' && isWithin(e.dueDate || e.date, start, end));
 

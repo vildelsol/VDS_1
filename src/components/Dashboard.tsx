@@ -28,7 +28,9 @@ import {
   expensesInPeriod,
   residentialOccupancy,
   shortLetOccupancy,
-  ownerBilledUnitIds,
+  UTILITY_RECOVERY_NOTE,
+  utilityRecoveries,
+  withUtilityRecoveries,
   leasesNeedingAttention,
   unbilledAccounts,
   unbilledOccupancy,
@@ -87,7 +89,6 @@ export default function Dashboard({
 
   const periodStart = monthStart(month);
   const periodEnd = monthEnd(month);
-  const ownerBilled = useMemo(() => ownerBilledUnitIds(units), [units]);
 
   /**
    * The health grade, for the month on screen.
@@ -207,15 +208,19 @@ export default function Dashboard({
   const ledger = useMemo(() => {
     // Money on both books counted once: see consolidateEverything.
     const combined = consolidateEverything(charges, payments, units);
+    // Utility recoveries are a pass-through (Ro, 2026-11-18): out of "received",
+    // netted from the utility cost in "paid out", and named there.
+    const costs = withUtilityRecoveries(expenses, payments);
     return (['JMD', 'USD'] as Currency[]).map(currency => {
-      const collected = collectedInPeriod(combined.payments, currency, periodStart, periodEnd, ownerBilled);
+      const collected = collectedInPeriod(combined.payments, currency, periodStart, periodEnd);
       const billed = chargedInPeriod(combined.charges, currency, periodStart, periodEnd);
-      const spent = expensesInPeriod(expenses, currency, periodStart, periodEnd);
+      const spent = expensesInPeriod(costs, currency, periodStart, periodEnd);
+      const utilities = utilityRecoveries(payments, expenses, currency, periodStart, periodEnd);
 
       // The same three figures for the preceding month, so the screen can say
       // which way each one moved rather than only where it stands.
-      const priorCollected = collectedInPeriod(combined.payments, currency, previousStart, previousEnd, ownerBilled);
-      const priorSpent = expensesInPeriod(expenses, currency, previousStart, previousEnd);
+      const priorCollected = collectedInPeriod(combined.payments, currency, previousStart, previousEnd);
+      const priorSpent = expensesInPeriod(costs, currency, previousStart, previousEnd);
 
       // Share of what fell due that is PAID (ledger allocation), not cash in the month over charges in the month.
       const rate = combinedSettledOfBilled(charges, payments, units, currency, periodStart, periodEnd).rate;
@@ -226,6 +231,7 @@ export default function Dashboard({
         collected,
         billed,
         spent,
+        utilities,
         net: sumMoney([collected.total, -spent]),
         rate,
         priorRate,
@@ -233,7 +239,7 @@ export default function Dashboard({
         priorReceived: priorCollected.total
       };
     });
-  }, [payments, charges, expenses, units, periodStart, periodEnd, previousStart, previousEnd, ownerBilled]);
+  }, [payments, charges, expenses, units, periodStart, periodEnd, previousStart, previousEnd]);
 
   /* ---------------- short-term ---------------- */
 
@@ -577,7 +583,6 @@ export default function Dashboard({
                       ['Rent', entry.collected.rent],
                       ['Maintenance', entry.collected.maintenance],
                       ['Bookings', entry.collected.booking],
-                      ['Utilities', entry.collected.utility],
                       ['Other', entry.collected.other]
                     ].map(([label, value]) => (
                       <div key={String(label)} className="flex justify-between gap-2 text-[11px] text-slate-600">
@@ -639,6 +644,12 @@ export default function Dashboard({
                       <dt>Expenses paid</dt>
                       <dd className="font-mono font-medium">{formatMoney(entry.spent, entry.currency)}</dd>
                     </div>
+                    {entry.utilities.recovered !== 0 && (
+                      <div className="flex justify-between gap-2 text-[10px] text-slate-500">
+                        <dt>of which utilities, net of {formatMoney(entry.utilities.recovered, entry.currency)} recovered from villas</dt>
+                        <dd className="font-mono">{formatMoney(entry.utilities.netUtilityCost, entry.currency)}</dd>
+                      </div>
+                    )}
                     <div className="flex justify-between gap-2 border-t border-slate-200 pt-2 text-xs font-semibold text-slate-800">
                       <dt>Net cash movement</dt>
                       <dd className={`font-mono ${entry.net < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
@@ -661,8 +672,7 @@ export default function Dashboard({
         </div>
 
         <p className="border-t border-slate-100 pt-3 font-mono text-[10px] leading-relaxed text-slate-400">
-          Utility recoveries from owner-occupied and short-let villas are billed directly to the owner and are excluded
-          from the figures above. Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD (display only, no
+          {UTILITY_RECOVERY_NOTE} Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD (display only, no
           stored amount is converted).
         </p>
       </section>

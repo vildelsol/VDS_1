@@ -40,7 +40,8 @@ import {
   expenseBreakdown,
   expensesInPeriod,
   occupancySeries,
-  ownerBilledUnitIds
+  UTILITY_RECOVERY_NOTE,
+  withUtilityRecoveries
 } from '../lib/finance';
 import { formatMoney, round2, sumMoney } from '../lib/money';
 import { getReportRange, setReportRange } from '../lib/reportRange';
@@ -166,19 +167,20 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
     if (!invalidRange) setReportRange({ from, to, preset });
   }, [from, to, preset, invalidRange]);
 
-  const ownerBilled = useMemo(() => ownerBilledUnitIds(units), [units]);
   const months = useMemo(() => (invalidRange ? [] : monthsBetween(from, to)), [from, to, invalidRange]);
 
   /** Monthly series and category breakdown, per currency. */
   const byCurrency = useMemo(() => {
     if (invalidRange) return [];
     const combined = consolidateEverything(charges, payments, units);
+    // Utility recoveries are a pass-through (Ro, 2026-11-18): netted from the utility cost.
+    const costs = withUtilityRecoveries(expenses, payments);
     return (['JMD', 'USD'] as Currency[]).map(currency => {
       const rows: MonthRow[] = months.map(month => {
         const mFrom = monthStart(month) < from ? from : monthStart(month);
         const mTo = monthEnd(month) > to ? to : monthEnd(month);
         const byCategory: Record<string, number> = {};
-        for (const row of expenseBreakdown(expenses, currency, mFrom, mTo)) {
+        for (const row of expenseBreakdown(costs, currency, mFrom, mTo)) {
           /*
            * `!== 0`, not `> 0`. A category that nets to a supplier credit is
            * still a category, and reading it as "nothing happened" dropped it
@@ -186,23 +188,23 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
            */
           if (row.amount !== 0) byCategory[row.category] = row.amount;
         }
-        const collected = collectedInPeriod(combined.payments, currency, mFrom, mTo, ownerBilled);
+        const collected = collectedInPeriod(combined.payments, currency, mFrom, mTo);
         return {
           month,
           billed: chargedInPeriod(combined.charges, currency, mFrom, mTo).total,
           received: collected.total,
           settledOfBilled: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).settled,
           collectable: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).billed,
-          paidOut: expensesInPeriod(expenses, currency, mFrom, mTo),
+          paidOut: expensesInPeriod(costs, currency, mFrom, mTo),
           byCategory
         };
       });
 
-      const breakdown = categoriesWithSpend(expenseBreakdown(expenses, currency, from, to));
+      const breakdown = categoriesWithSpend(expenseBreakdown(costs, currency, from, to));
       const active = rows.some(r => r.billed || r.received || r.paidOut) || breakdown.length > 0;
       return { currency, rows, breakdown, active };
     });
-  }, [months, charges, payments, expenses, units, from, to, ownerBilled, invalidRange]);
+  }, [months, charges, payments, expenses, units, from, to, invalidRange]);
 
   const shown = byCurrency.filter(c => c.active);
 
@@ -1129,8 +1131,7 @@ function ChartsDocument({
       ))}
 
       <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
-        USD and JMD are charted separately and are never combined. Utility recoveries billed directly to owners of
-        owner-occupied and short-let villas are excluded from received income, matching the operating statement.
+        USD and JMD are charted separately and are never combined. {UTILITY_RECOVERY_NOTE}
         Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD, for display only.
       </p>
 

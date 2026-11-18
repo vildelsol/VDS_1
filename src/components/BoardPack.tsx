@@ -31,7 +31,8 @@ import {
   strataExpenses,
   occupancySeries,
   occupiedUnitIdsOn,
-  ownerBilledUnitIds
+  UTILITY_RECOVERY_NOTE,
+  withUtilityRecoveries
 } from '../lib/finance';
 import { formatMoney, round2, sumMoney } from '../lib/money';
 import { addDays, formatDayLabel, monthEnd, monthStart, monthsBetween } from '../lib/dates';
@@ -73,7 +74,6 @@ export default function BoardPack({
   generatedBy,
   onClose
 }: BoardPackProps) {
-  const ownerBilled = ownerBilledUnitIds(units);
   const months = monthsBetween(from, to);
 
   /*
@@ -84,7 +84,8 @@ export default function BoardPack({
    * four places below that count spend — the alternative is four chances to
    * forget, and a pack that disagrees with the operating statement beside it.
    */
-  const strataCosts = strataExpenses(expenses);
+  // Utility recoveries netted from the utility cost, a pass-through (Ro, 2026-11-18).
+  const strataCosts = strataExpenses(withUtilityRecoveries(expenses, payments));
   // Money on both books counted once; see consolidateEverything.
   const combined = consolidateEverything(charges, payments, units);
 
@@ -99,7 +100,7 @@ export default function BoardPack({
           // still a category, and `> 0` hid it from the pack the board reads.
           if (row.amount !== 0) byCategory[row.category] = row.amount;
         }
-        const collectedInMonth = collectedInPeriod(combined.payments, currency, mFrom, mTo, ownerBilled);
+        const collectedInMonth = collectedInPeriod(combined.payments, currency, mFrom, mTo);
         return {
           month,
           billed: chargedInPeriod(combined.charges, currency, mFrom, mTo).total,
@@ -111,7 +112,7 @@ export default function BoardPack({
         };
       });
 
-      const collected = collectedInPeriod(combined.payments, currency, from, to, ownerBilled);
+      const collected = collectedInPeriod(combined.payments, currency, from, to);
       const billed = chargedInPeriod(combined.charges, currency, from, to);
       const spent = expensesInPeriod(strataCosts, currency, from, to);
 
@@ -259,8 +260,7 @@ export default function BoardPack({
       ))}
 
       <p className="mt-4 border-t border-slate-300 pt-2 font-mono text-[9px] leading-relaxed text-slate-500">
-        USD and JMD are reported separately and are never combined. Utility recoveries billed directly to owners of
-        owner-occupied and short-let villas are excluded from received income, matching the operating statement.
+        USD and JMD are reported separately and are never combined. {UTILITY_RECOVERY_NOTE}
         Indicative rate on file: 1 USD = {settings.fxRateJmdPerUsd} JMD, for display only, no stored amount is
         converted.
       </p>

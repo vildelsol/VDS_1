@@ -16,7 +16,8 @@ import {
   settledOfBilled,
   expensesInPeriod,
   strataExpenses,
-  isBillable
+  isBillable,
+  withUtilityRecoveries
 } from './finance';
 import { round2, sumMoney } from './money';
 import { addMonths, currentMonth, today } from './dates';
@@ -105,7 +106,8 @@ export function buildProjection(
    * that was never the fund's, which is the same fault as the annual report's
    * and worse for being on a page that says what it excludes.
    */
-  const expensesPaid = expensesInPeriod(strataExpenses(expenses), currency, from, to);
+  // Utility recoveries netted from the utility cost: a pass-through (Ro, 2026-11-18).
+  const expensesPaid = expensesInPeriod(strataExpenses(withUtilityRecoveries(expenses, payments)), currency, from, to);
 
   const avgReceived = round2(maintReceived / lookback);
   const avgExpense = round2(expensesPaid / lookback);

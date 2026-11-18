@@ -15,6 +15,7 @@ import {
   EXPENSE_FUND_LABELS,
   MANAGING_COMPANY_NAME,
   PAYMENT_METHODS,
+  Payment,
   PaymentMethod,
   RecurringExpense,
   SessionUser,
@@ -25,7 +26,7 @@ import {
   invoiceDateOf,
   getUnitDisplayName
 } from '../types';
-import { utilitiesForUnit } from '../lib/finance';
+import { UTILITY_RECOVERY_NOTE, utilitiesForUnit, utilityRecoveries } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { dayOfTimestamp, addMonths, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
@@ -56,6 +57,8 @@ interface UtilitiesAndExpensesProps {
   units: Unit[];
   utilities: UtilityReading[];
   expenses: Expense[];
+  /** The receipts, for the utility recoveries netted against the utility cost. */
+  payments?: Payment[];
   recurringExpenses: RecurringExpense[];
   settings: AppSettings;
   session: SessionUser;
@@ -78,6 +81,7 @@ export default function UtilitiesAndExpenses({
   units,
   utilities,
   expenses,
+  payments = [],
   recurringExpenses,
   settings,
   session,
@@ -163,6 +167,7 @@ export default function UtilitiesAndExpenses({
       ) : tab === 'expenses' ? (
         <ExpensesPanel
           expenses={expenses}
+          payments={payments}
           canEdit={canExpenses}
           canVoid={canExpenses && canModifySettled}
           onEdit={setEditingExpense}
@@ -471,6 +476,7 @@ function UtilitiesPanel({
 
 function ExpensesPanel({
   expenses,
+  payments,
   canEdit,
   canVoid,
   onEdit,
@@ -478,6 +484,7 @@ function ExpensesPanel({
   generatedBy
 }: {
   expenses: Expense[];
+  payments: Payment[];
   canEdit: boolean;
   canVoid: boolean;
   onEdit: (e: Expense) => void;
@@ -560,6 +567,26 @@ function ExpensesPanel({
     }
     return out;
   }, [rows]);
+
+  /*
+   * Utility recoveries, named beside the utility bills shown (Ro, 2026-11-18).
+   * The register lists what was paid to suppliers, so its totals stay gross and
+   * reconcile to the bank; this line says how much of the utility cost was
+   * recovered from villas (a pass-through, not income) and what is left net.
+   * Recoveries are counted by receipt date over the same date range and book.
+   */
+  const utilityNet = useMemo(() => {
+    if (categoryFilter !== 'all' && categoryFilter !== 'Utilities') return [];
+    if (statusFilter === 'pending' || statusFilter === 'void') return [];
+    const book = fundFilter === 'all' ? 'everything' : fundFilter;
+    return (['JMD', 'USD'] as Currency[])
+      .map(currency => {
+        const paid = sumMoney(rows.filter(e => e.status === 'paid' && e.currency === currency && e.category === 'Utilities').map(e => e.amount));
+        const { recovered } = utilityRecoveries(payments, expenses, currency, fromDate || '0000-01-01', toDate || '9999-12-31', book);
+        return { currency, paid, recovered, net: sumMoney([paid, -recovered]) };
+      })
+      .filter(r => r.recovered !== 0);
+  }, [rows, payments, expenses, categoryFilter, statusFilter, fundFilter, fromDate, toDate]);
 
   return (
     <div className="space-y-4">
@@ -670,6 +697,12 @@ function ExpensesPanel({
               </span>
             ) : null
           )}
+          {utilityNet.map(r => (
+            <span key={`util-${r.currency}`} className="text-slate-500" title={UTILITY_RECOVERY_NOTE}>
+              {r.currency} utilities: paid {formatMoney(r.paid, r.currency)}, recovered from villas {formatMoney(r.recovered, r.currency)}, net{' '}
+              {formatMoney(r.net, r.currency)} (recoveries are a pass-through, not income)
+            </span>
+          ))}
         </div>
 
         {rows.length === 0 ? (

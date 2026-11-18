@@ -93,6 +93,7 @@ export default async function run({ port, projectRoot }) {
     expensesInPeriod,
     paymentsInBook,
     expensesInBook,
+    withUtilityRecoveries,
     bookOfPaymentCategory,
     accountBalance,
     REPORT_BOOK_SCOPE
@@ -217,8 +218,10 @@ export default async function run({ port, projectRoot }) {
 
     T.check(
       'the period went in as intended — there is rent, a booking, contributions and both kinds of cost to separate',
-      everything.totalIncome === RENT + BOOKING + UTILITY_RECOVERED + CONTRIBUTION &&
-        everything.totalExpenditure === STRATA_TOTAL + ISPO_TOTAL,
+      // Utility recoveries are a pass-through (Ro, 2026-11-18): not income, netted
+      // from the utility cost. This expected them in income, which was the defect.
+      everything.totalIncome === RENT + BOOKING + CONTRIBUTION &&
+        everything.totalExpenditure === STRATA_TOTAL - UTILITY_RECOVERED + ISPO_TOTAL,
       `income ${everything.totalIncome}, expenditure ${everything.totalExpenditure}`
     );
 
@@ -237,9 +240,10 @@ export default async function run({ port, projectRoot }) {
       JSON.stringify(strata.income.map(g => g.label))
     );
     T.check(
-      'the corporation’s income is its contributions and what it recovered, and nothing else',
-      strata.totalIncome === CONTRIBUTION * 2 + UTILITY_RECOVERED,
-      `${strata.totalIncome}, expected ${CONTRIBUTION * 2 + UTILITY_RECOVERED}`
+      // Was "+ UTILITY_RECOVERED": recoveries are no longer income (pass-through, 2026-11-18).
+      'the corporation’s income is its contributions, and nothing else; the utility recovery is not income',
+      strata.totalIncome === CONTRIBUTION * 2 && strata.utilityRecovered === UTILITY_RECOVERED,
+      `${strata.totalIncome}, expected ${CONTRIBUTION * 2}; recovered named ${strata.utilityRecovered}`
     );
     T.check(
       'the company cell phone is not expenditure of the strata corporation',
@@ -252,8 +256,10 @@ export default async function run({ port, projectRoot }) {
       JSON.stringify(payeesOn(strata))
     );
     T.check(
-      'the corporation’s expenditure is the costs contributions fund, and nothing else',
-      strata.totalExpenditure === STRATA_TOTAL && strata.ispoExpenditure === 0,
+      // Net of the villa's utility recovery, which lands on the corporation's book
+      // (no villa utility bill says otherwise). The gross figure was the old definition.
+      'the corporation’s expenditure is the costs contributions fund, net of utilities recovered, and nothing else',
+      strata.totalExpenditure === STRATA_TOTAL - UTILITY_RECOVERED && strata.ispoExpenditure === 0,
       `${strata.totalExpenditure} total, ${strata.ispoExpenditure} ISPO`
     );
 
@@ -320,7 +326,7 @@ export default async function run({ port, projectRoot }) {
     );
     T.check(
       'and the combined statement still names the split it always named',
-      everything.strataExpenditure === STRATA_TOTAL && everything.ispoExpenditure === ISPO_TOTAL,
+      everything.strataExpenditure === STRATA_TOTAL - UTILITY_RECOVERED && everything.ispoExpenditure === ISPO_TOTAL,
       `${everything.strataExpenditure} strata, ${everything.ispoExpenditure} ISPO`
     );
 
@@ -476,7 +482,8 @@ export default async function run({ port, projectRoot }) {
      */
     for (const b of ['everything', 'strata', 'ispo']) {
       const statement = operatingStatement(db2.payments, db2.expenses, db2.units, 'JMD', from, to, { book: b });
-      const costs = expensesForBook(db2.expenses, db2.units, b, 'JMD');
+      // Netted exactly as Reports.tsx nets them (utility recoveries, 2026-11-18).
+      const costs = expensesForBook(withUtilityRecoveries(db2.expenses, db2.payments), db2.units, b, 'JMD');
       const summarySpent =
         expensesInPeriod(costs, 'JMD', from, to) + (b === 'ispo' ? statement.internalTransfer : 0);
       T.check(
