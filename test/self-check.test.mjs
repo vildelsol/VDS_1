@@ -39,7 +39,8 @@ async function loadChecker(projectRoot) {
     bundle: true,
     format: 'esm',
     platform: 'neutral',
-    external: ['crypto'],
+    // fs and path: the audit chain's key file (server/auditChain.ts).
+    external: ['crypto', 'fs', 'path'],
     outfile,
     logLevel: 'silent'
   });

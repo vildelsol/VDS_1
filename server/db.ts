@@ -14,7 +14,7 @@
  */
 
 import fs from 'fs';
-import { AUDIT_CAP, auditEntryHash } from './auditChain';
+import { AUDIT_CAP, sealAuditEntry } from './auditChain';
 import { checkIntegrity, newBlockingFindings } from './integrity';
 import path from 'path';
 import { isExternalWindowsDrive, queryWindowsDrives } from './windowsDrives';
@@ -437,7 +437,9 @@ export function fullPermissions(): RolePermissions {
     postCharges: true,
     viewShortfall: true,
     viewIspoOperations: true,
-    takeBackups: true
+    takeBackups: true,
+    // Not part of the 'full' set: Administrator only unless granted (see RolePermissions).
+    overrideMoneyGuards: false
   };
 }
 
@@ -461,7 +463,8 @@ export function noPermissions(): RolePermissions {
     viewIspoOperations: true,
     // Unlike the two above this is NOT granted by default: a copy of every record
     // leaves the machine with it. Managers get it through fullPermissions().
-    takeBackups: false
+    takeBackups: false,
+    overrideMoneyGuards: false
   };
 }
 
@@ -1010,8 +1013,7 @@ export function addAudit(
   };
   // Chain each entry to the one before it, so an entry edited or removed by
   // hand in db.json no longer verifies. checkIntegrity walks the chain.
-  entry.prevSeal = db.auditLogs[0]?.seal || '';
-  entry.seal = auditEntryHash(entry);
+  sealAuditEntry(entry, db.auditLogs);
   db.auditLogs.unshift(entry);
   // The audit trail is append-only and unbounded by design; trim only the
   // in-memory tail beyond a very high water mark to keep the file manageable.

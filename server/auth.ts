@@ -311,6 +311,7 @@ export type GatedAction =
   | 'reverse_payment'
   | 'modify_settled'
   | 'take_backups'
+  | 'override_money_guard'
   | 'manage_settings'
   | 'manage_users';
 
@@ -325,7 +326,8 @@ const ACTION_TO_PERMISSION: Record<Exclude<GatedAction, 'manage_settings' | 'man
   post_charges: 'postCharges',
   reverse_payment: 'reversePayments',
   modify_settled: 'modifySettledRecords',
-  take_backups: 'takeBackups'
+  take_backups: 'takeBackups',
+  override_money_guard: 'overrideMoneyGuards'
 };
 
 export function can(auth: NonNullable<AuthedRequest['auth']>, action: GatedAction): boolean {
@@ -349,6 +351,7 @@ export const ACTION_DENIED_MESSAGE: Record<GatedAction, string> = {
   reverse_payment: 'Your role is not permitted to reverse payments or void receipts.',
   modify_settled: 'Your role is not permitted to modify settled ledger records.',
   take_backups: 'Your role is not permitted to take or download backups.',
+  override_money_guard: 'Only an Administrator can override this check. Ask one to record it, or correct the entry so the check passes.',
   manage_settings: 'Only Administrators and Managers can change system settings.',
   manage_users: 'Only Administrators can manage staff accounts.'
 };

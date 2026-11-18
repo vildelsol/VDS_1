@@ -33,7 +33,7 @@
 import type { Database } from './db';
 import { createHash } from 'crypto';
 import { accountBalance, chargeCurrency, creditHeldForOthers, isOwnAccount, netPaidAsOf, ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
-import { AUDIT_CAP, auditEntryHash } from './auditChain';
+import { AUDIT_CAP, AUDIT_KEY_FILE, verifyAuditChain } from './auditChain';
 
 export type IntegritySeverity =
   /** The books contradict themselves. Money is misstated somewhere. */
@@ -682,22 +682,18 @@ export function checkIntegrity(db: Database): IntegrityReport {
     /* ---------------- the audit trail's hash chain ---------------- */
 
     {
-      const logs = db.auditLogs || [];
-      const broken: string[] = [];
-      let seenHashedOlder = false;
-      // Oldest first: once the chain has begun, every later entry must be in it.
-      for (let i = logs.length - 1; i >= 0; i--) {
-        const e = logs[i];
-        const older = logs[i + 1];
-        if (!e.seal) {
-          if (seenHashedOlder) broken.push(`${e.id} (added outside the audit trail's chain)`);
-          continue;
-        }
-        seenHashedOlder = true;
-        if (auditEntryHash(e) !== e.seal) broken.push(`${e.id} (its content no longer matches its seal)`);
-        else if (older?.seal && e.prevSeal !== older.seal) broken.push(`${e.id} (an earlier entry was altered or removed)`);
-      }
+      const { broken, keyProblem } = verifyAuditChain(db.auditLogs || []);
       add('serious', 'audit-trail-broken', 'The audit trail has been altered: an entry was edited, inserted or removed after it was written.', broken);
+      if (keyProblem) {
+        add(
+          'serious',
+          'audit-key-missing',
+          `The audit trail is sealed with a key that is ${keyProblem === 'absent' ? 'missing from' : 'unreadable in'} the data folder (${AUDIT_KEY_FILE}). ` +
+            'Its keyed entries cannot be verified, and a new key has NOT been made over them. Put back the audit-key.json that belongs to these records ' +
+            '(it is kept beside db.json, not inside it or its backups); until then new entries are sealed without the key.',
+          [AUDIT_KEY_FILE]
+        );
+      }
     }
 
     /* ---------------- a closed period must not move ---------------- */

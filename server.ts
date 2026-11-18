@@ -18,6 +18,7 @@ import pkg from './package.json';
 import path from 'path';
 import fs from 'fs';
 import { createHash } from 'crypto';
+import { LoginThrottle } from './server/loginThrottle';
 import { execFileSync, spawn } from 'child_process';
 import {
   Booking,
@@ -663,48 +664,27 @@ async function resetAdminPasswordIfRequested() {
  * Auth routes (unauthenticated)
  * ------------------------------------------------------------------ */
 
-const loginAttempts = new Map<string, { count: number; first: number; noted?: boolean }>();
 const THROTTLE_WINDOW_MS = 15 * 60 * 1000;
-
 /**
- * Count a failed sign-in against a bucket, refusing once it is over its limit.
- *
- * Two buckets are checked per attempt: one per (address, username) and a looser
- * one per username. The second exists because an attacker on the LAN can hold more
- * than one address, and the account being guessed at is the thing worth protecting.
- * Its limit is set well above anything a person mistyping their own password will
- * reach.
+ * Per (username, client address) sign-in throttle — see server/loginThrottle.ts.
+ * There is deliberately no per-username bucket: that one let anybody lock a real
+ * user out of their account from anywhere on the network.
  */
-function bumpAttempt(key: string, limit: number) {
-  const now = Date.now();
-  const entry = loginAttempts.get(key);
-  if (!entry || now - entry.first > THROTTLE_WINDOW_MS) {
-    loginAttempts.set(key, { count: 1, first: now });
-    return;
-  }
-  entry.count += 1;
-  if (entry.count > limit) {
-    throw new ApiError(429, 'Too many sign-in attempts. Wait 15 minutes and try again.');
-  }
+const loginThrottle = new LoginThrottle();
+
+function throttledError(retryAfterMs: number): ApiError {
+  const secs = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  const wait = secs >= 90 ? `${Math.ceil(secs / 60)} minutes` : `${secs} seconds`;
+  return new ApiError(429, `Too many failed sign-in attempts from this computer. Wait ${wait} and try again, or ask an Administrator to clear it.`, 'sign-in-throttled');
 }
 
-/** Drop buckets whose window has closed, so the map cannot grow without bound. */
-function pruneLoginAttempts() {
-  const cutoff = Date.now() - THROTTLE_WINDOW_MS;
-  for (const [key, entry] of loginAttempts) {
-    if (entry.first < cutoff) loginAttempts.delete(key);
-  }
-}
-
-function throttleLogin(ip: string, username: string) {
-  if (loginAttempts.size > 1000) pruneLoginAttempts();
-  bumpAttempt(`ip:${ip}:${username}`, 10);
-  bumpAttempt(`user:${username}`, 30);
-}
-
-function clearLoginAttempts(ip: string, username: string) {
-  loginAttempts.delete(`ip:${ip}:${username}`);
-  loginAttempts.delete(`user:${username}`);
+/** Refuse while this (address, username) pair is blocked; the first refusal of a block is audit-logged. */
+function throttleLogin(ip: string, username: string, res?: express.Response) {
+  const check = loginThrottle.check(ip, username);
+  if (check.allowed) return;
+  if (check.firstRefusal && !username.startsWith('change:')) noteFailedLogin(ip, username, 'locked-out', check.retryAfterMs);
+  res?.setHeader('Retry-After', String(Math.max(1, Math.ceil(check.retryAfterMs / 1000))));
+  throw throttledError(check.retryAfterMs);
 }
 
 /**
@@ -751,7 +731,7 @@ function claimFailedLoginAudit(): 'write' | 'note-cap' | 'silent' {
  * Note a failed sign-in. Never records what was typed as the password — the near
  * misses of a real password are as good as the password itself.
  */
-function noteFailedLogin(ip: string, username: string, kind: 'refused' | 'locked-out') {
+function noteFailedLogin(ip: string, username: string, kind: 'refused' | 'locked-out', retryAfterMs = 0) {
   const claim = claimFailedLoginAudit();
   if (claim === 'silent') return;
 
@@ -760,32 +740,12 @@ function noteFailedLogin(ip: string, username: string, kind: 'refused' | 'locked
     claim === 'note-cap'
       ? 'Further failed sign-ins in this period are not being listed individually'
       : kind === 'locked-out'
-        ? `Sign-in blocked after too many failed attempts for "${who}"`
+        ? `Sign-in blocked after too many failed attempts for "${who}" from this address, for ${Math.ceil(retryAfterMs / 1000)}s (throttled; other addresses unaffected)`
         : `Failed sign-in attempt for "${who}"`;
 
   auditInBackground('a failed sign-in', db => {
     addAudit(db, who, 'UNKNOWN', action, 'Session', who, '', `from ${ip}`);
   });
-}
-
-/** True when this is the opening failure of a bucket, rather than one of a run. */
-function isFirstFailure(ip: string, username: string): boolean {
-  return (loginAttempts.get(`ip:${ip}:${username}`)?.count ?? 0) <= 1;
-}
-
-/**
- * True the first time a bucket is refused, and false for every attempt after.
- *
- * The lockout is worth one line — the moment it trips. Somebody who keeps
- * hammering after that is still being refused, and writing a line for each of
- * those attempts turns the one entry that matters into a wall of identical ones.
- */
-function claimLockoutNotice(ip: string, username: string): boolean {
-  const entry = loginAttempts.get(`ip:${ip}:${username}`) || loginAttempts.get(`user:${username}`);
-  if (!entry) return true;
-  if (entry.noted) return false;
-  entry.noted = true;
-  return true;
 }
 
 app.post(
@@ -797,16 +757,11 @@ app.post(
     const password = String(req.body.password).slice(0, 1000);
     if (!username || !password) bad('Username and password are required.');
     const ip = req.ip || 'unknown';
-    try {
-      throttleLogin(ip, username);
-    } catch (err) {
-      // The lockout tripping is the entry worth having: it is the difference
-      // between somebody fumbling their own password and somebody working
-      // through a list.
-      if (claimLockoutNotice(ip, username)) noteFailedLogin(ip, username, 'locked-out');
-      throw err;
-    }
-    const firstOfRun = isFirstFailure(ip, username);
+    // The first refusal of each block is recorded (inside throttleLogin): it is the
+    // difference between somebody fumbling their own password and somebody working
+    // through a list.
+    throttleLogin(ip, username, res);
+    const firstOfRun = loginThrottle.failuresFor(ip, username) === 0;
 
     // The password work happens OFF the event loop (see verifyPasswordAsync), before the write begins, so a flood of
     // sign-in attempts queues on the thread pool instead of freezing every other request. Same work either way for a
@@ -828,10 +783,11 @@ app.post(
     });
 
     if (!result) {
+      loginThrottle.fail(ip, username);
       if (firstOfRun) noteFailedLogin(ip, username, 'refused');
       throw new ApiError(401, 'Incorrect username or password.');
     }
-    clearLoginAttempts(ip, username);
+    loginThrottle.succeed(ip, username);
     setSessionCookie(res, result.token, isRequestSecure(req));
     res.json({ user: result.user });
   })
@@ -916,11 +872,12 @@ app.post(
     if (currentPassword === newPassword) bad('The new password must be different from the current one.');
 
     // The current password is being guessed here too: it gets the same throttle as signing in.
-    throttleLogin(req.ip || 'unknown', `change:${req.auth!.user.id}`);
+    throttleLogin(req.ip || 'unknown', `change:${req.auth!.user.id}`, res);
     await transaction(db => {
       const user = db.users.find(u => u.id === req.auth!.user.id);
       if (!user) throw new ApiError(404, 'Account not found.');
       if (!verifyPassword(currentPassword, user.passwordHash, user.passwordSalt)) {
+        loginThrottle.fail(req.ip || 'unknown', `change:${req.auth!.user.id}`);
         throw new ApiError(400, 'Your current password is incorrect.');
       }
       const { hash, salt } = hashPassword(newPassword);
@@ -933,8 +890,39 @@ app.post(
       db.sessions = db.sessions.filter(sess => sess.userId !== user.id || sess.token === keep);
       addAudit(db, user.name, user.role, 'Changed own password', 'User', user.username, '', '');
     });
-    clearLoginAttempts(req.ip || 'unknown', `change:${req.auth!.user.id}`);
+    loginThrottle.succeed(req.ip || 'unknown', `change:${req.auth!.user.id}`);
     res.json({ success: true });
+  })
+);
+
+/** Administrator: who is currently being slowed down at sign-in, and from where. */
+app.get(
+  '/api/auth/throttles',
+  handler((req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_users');
+    const now = Date.now();
+    res.json({
+      throttles: loginThrottle
+        .list()
+        .filter(e => !e.username.startsWith('change:'))
+        .map(e => ({ username: e.username, address: e.ip, failures: e.failures, blockedForSeconds: Math.max(0, Math.ceil((e.blockedUntil - now) / 1000)) }))
+    });
+  })
+);
+
+/** Administrator: clear a username's sign-in throttle at every address. Audit-logged. */
+app.post(
+  '/api/auth/throttles/clear',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_users');
+    const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase().slice(0, 120) : '';
+    if (!username) bad('Say which username to clear.');
+    const cleared = loginThrottle.clearUser(username);
+    const who = actor(req);
+    await transaction(db => {
+      addAudit(db, who.name, who.role, `Cleared the sign-in throttle for "${username}" (${cleared} address${cleared === 1 ? '' : 'es'})`, 'Session', username, '', '');
+    });
+    res.json({ success: true, cleared });
   })
 );
 
@@ -2690,14 +2678,18 @@ app.post(
 
       // A second deposit used to overwrite the first, amount and currency both,
       // with nothing on screen to say so. Replacing is allowed only when asked for.
-      if (record.depositAmount && body.replace !== true) {
+      if (record.depositAmount && body.replace === true) {
+        useMoneyOverride(db, req, body, 'replace', `replacing the ${record.depositCurrency} ${record.depositAmount} deposit held for ${record.tenantName}`);
+      } else if (record.depositAmount) {
         throw new ApiError(
           409,
           `A ${record.depositCurrency} ${record.depositAmount} deposit is already held for ${record.tenantName}. ` +
             'Recording another would replace it, not add to it. If the held figure was wrong, send replace: true; to add money, record the total held.'
         );
       }
-      if (depositCurrency !== (record.currency || 'JMD') && body.confirmCurrency !== true) {
+      if (depositCurrency !== (record.currency || 'JMD') && body.confirmCurrency === true) {
+        useMoneyOverride(db, req, body, 'confirmCurrency', `a ${depositCurrency} deposit on ${record.tenantName}'s ${record.currency || 'JMD'} tenancy`);
+      } else if (depositCurrency !== (record.currency || 'JMD')) {
         throw new ApiError(
           409,
           `The tenancy is in ${record.currency || 'JMD'} and this deposit is in ${depositCurrency}. Confirm that is genuinely what was received (confirmCurrency: true).`
@@ -4348,6 +4340,31 @@ app.post(
 const ALREADY_SETTLED = 'account-already-settled';
 
 /**
+ * Using an override on a money guard.
+ *
+ * The "confirm to record it anyway" flags used to be honoured for anybody allowed
+ * to take a payment — which by default includes the Junior Officer covering the
+ * desk. A ticked box was all that stood between a duplicate or already-settled
+ * receipt and the books. Now an override needs the `override_money_guard`
+ * permission (Administrator only unless granted in System Settings), a reason,
+ * and leaves an audit line saying who, what and why. Called only at the point the
+ * guard WOULD have refused, so a flag sent when nothing is wrong costs nothing.
+ */
+const OVERRIDE_NOT_PERMITTED = 'override-not-permitted';
+const OVERRIDE_REASON_REQUIRED = 'override-reason-required';
+function useMoneyOverride(db: Database, req: AuthedRequest, body: any, flag: string, what: string): void {
+  if (!req.auth || !can(req.auth, 'override_money_guard')) {
+    throw new ApiError(403, `${ACTION_DENIED_MESSAGE.override_money_guard} (${what})`, OVERRIDE_NOT_PERMITTED);
+  }
+  const reason = typeof body?.overrideReason === 'string' ? body.overrideReason.trim().slice(0, 500) : '';
+  if (reason.length < 4) {
+    throw new ApiError(400, `Overriding this check (${what}) needs a reason, sent as overrideReason.`, OVERRIDE_REASON_REQUIRED);
+  }
+  const who = actor(req);
+  addAudit(db, who.name, who.role, `Overrode a money check: ${what}. Reason: ${reason}`, 'Override', flag, '', '');
+}
+
+/**
  * The same money entered twice within minutes, in any category.
  *
  * `ALREADY_SETTLED` can only recognise a double entry against a debt, so it sees
@@ -4596,12 +4613,15 @@ app.post(
       // Warn loudly rather than quietly mis-filing money in the wrong currency.
       if (category === 'Rent' || category === 'Maintenance') {
         const expected = chargeCurrency(unit, category as ChargeCategory);
-        if (currency !== expected && !body.confirmCurrencyMismatch) {
-          throw new ApiError(
-            400,
-            `${unit.number} is billed for ${category.toLowerCase()} in ${expected}, but this receipt is in ${currency}. ` +
-              `A payment in a different currency will not reduce the ${expected} balance. Re-enter it in ${expected}, or confirm to record it anyway.`
-          );
+        if (currency !== expected) {
+          if (!body.confirmCurrencyMismatch) {
+            throw new ApiError(
+              400,
+              `${unit.number} is billed for ${category.toLowerCase()} in ${expected}, but this receipt is in ${currency}. ` +
+                `A payment in a different currency will not reduce the ${expected} balance. Re-enter it in ${expected}, or confirm to record it anyway.`
+            );
+          }
+          useMoneyOverride(db, req, body, 'confirmCurrencyMismatch', `a ${currency} receipt on ${unit.number}'s ${expected} ${category.toLowerCase()} account`);
         }
 
         // Money taken against an account with nothing billed becomes a credit
@@ -4626,7 +4646,9 @@ app.post(
             throw new ApiError(400, `An advance must be in the billed currency (${expected}). A ${currency} receipt would sit beside the account and offset nothing.`);
           }
         }
-        if (!hasOpenCharge && !body.confirmNoOpenCharge && body.advancePayment !== true) {
+        if (!hasOpenCharge && body.confirmNoOpenCharge && body.advancePayment !== true) {
+          useMoneyOverride(db, req, body, 'confirmNoOpenCharge', `a ${category.toLowerCase()} receipt on ${unit.number} with nothing billed, held as a credit`);
+        } else if (!hasOpenCharge && body.advancePayment !== true) {
           // A villa that is not billed for this category at all needs different
           // advice from one that is simply not posted yet: telling someone to
           // post the month's charges is useless for an owner-occupied villa,
@@ -4643,10 +4665,20 @@ app.post(
 
         // And, last, the one the browser cannot possibly know: has this debt
         // already been settled while this form was open?
-        assertAccountStillOwes(db, unit, category, currency, amount, body.confirmAlreadySettled === true || body.advancePayment === true);
+        try {
+          assertAccountStillOwes(db, unit, category, currency, amount, body.advancePayment === true);
+        } catch (err) {
+          if (!(err instanceof ApiError) || err.code !== ALREADY_SETTLED || body.confirmAlreadySettled !== true) throw err;
+          useMoneyOverride(db, req, body, 'confirmAlreadySettled', `a ${category.toLowerCase()} receipt on ${unit.number}, whose account was already settled`);
+        }
       }
 
-      assertNotJustEntered(db, unit.id, category, amount, currency, date, body.confirmDuplicate === true);
+      try {
+        assertNotJustEntered(db, unit.id, category, amount, currency, date, false);
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.code !== POSSIBLE_DUPLICATE || body.confirmDuplicate !== true) throw err;
+        useMoneyOverride(db, req, body, 'confirmDuplicate', `a possible duplicate of a receipt just entered for ${unit.number}`);
+      }
 
       const who = actor(req);
 
@@ -4914,10 +4946,15 @@ app.post(
         }
       }
       if (payee) {
-        assertAccountStillOwes(db, payee, target.category, target.currency, target.amount, body.confirmAlreadySettled === true || target.advance === true, {
-          excludePaymentId: target.id,
-          verb: 'This entry is'
-        });
+        try {
+          assertAccountStillOwes(db, payee, target.category, target.currency, target.amount, target.advance === true, {
+            excludePaymentId: target.id,
+            verb: 'This entry is'
+          });
+        } catch (err) {
+          if (!(err instanceof ApiError) || err.code !== ALREADY_SETTLED || body.confirmAlreadySettled !== true) throw err;
+          useMoneyOverride(db, req, body, 'confirmAlreadySettled', `confirming a receipt on ${payee.number}, whose account was already settled`);
+        }
       }
 
       const before = { ...target };
