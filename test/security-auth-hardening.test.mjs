@@ -123,8 +123,8 @@ export default async function run({ port, projectRoot }) {
     const keyFile = path.join(dir, 'audit-key.json');
     const dbFile = path.join(dir, 'db.json');
     T.check('the audit key is created in the data folder', fs.existsSync(keyFile));
-    if (process.platform !== 'win32') T.check('readable by the owner only', (fs.statSync(keyFile).mode & 0o777) === 0o600, (fs.statSync(keyFile).mode & 0o777).toString(8));
-    const keyHex = JSON.parse(fs.readFileSync(keyFile, 'utf8')).key;
+    if (process.platform !== 'win32') T.check('readable by the owner only', fs.existsSync(keyFile) && (fs.statSync(keyFile).mode & 0o777) === 0o600);
+    const keyHex = fs.existsSync(keyFile) ? JSON.parse(fs.readFileSync(keyFile, 'utf8')).key : 'no-key-file';
     await new Promise(r => setTimeout(r, 300));
     const dbText = fs.readFileSync(dbFile, 'utf8');
     T.check('the key is not inside db.json', !dbText.includes(keyHex));
@@ -171,7 +171,7 @@ export default async function run({ port, projectRoot }) {
     T.check('re-sealing with a guessed key is detected', codes.includes('audit-trail-broken'), codes.join(','));
 
     // Upgrade from an unkeyed chain: no key file, every entry sealed the old way, all dated in the past.
-    fs.renameSync(keyFile, keyFile + '.held');
+    if (fs.existsSync(keyFile)) fs.renameSync(keyFile, keyFile + '.held');
     codes = await tamper(j => {
       for (const e of j.auditLogs) e.dateTime = '2026-01-01T00:00:00.000Z';
       rechainPlain(j.auditLogs);
