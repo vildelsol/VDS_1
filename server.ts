@@ -68,7 +68,9 @@ import {
   findDriveToAdopt,
   migrate,
   readBackupFile,
-  saveSafetyCopy,
+  restoreTransaction,
+  acquireDataDirLock,
+  DataDirLockedError,
   SCHEMA_VERSION,
   markBackupFolder,
   setBackupRelocationHandler,
@@ -112,6 +114,15 @@ import {
   burnPasswordCheckAsync
 } from './server/auth';
 import { assertFetchableFeedUrl, classifyEvent, feedDateChange, fetchICal, parseICal, planWithdrawals } from './server/ical';
+
+// One server per data folder: a second copy would overwrite the first one's receipts.
+try {
+  acquireDataDirLock();
+} catch (err) {
+  if (!(err instanceof DataDirLockedError)) throw err;
+  console.error(`Refusing to start. ${err.message}`);
+  process.exit(3);
+}
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -1367,10 +1378,9 @@ app.post(
       bad('Type the word RESTORE to confirm. Nothing was changed.');
     }
 
-    const safetyCopy = saveSafetyCopy();
     const who = actor(req);
-    await transaction(
-      db => {
+    const safetyCopy = await restoreTransaction(
+      (db, safetyCopy) => {
         applyRestore(db, file);
         migrate(db);
         addAudit(
@@ -1384,6 +1394,7 @@ app.post(
           `${source}, dated ${summary.madeAt}; ${summary.counts.charges} charges, ${summary.counts.payments} payments after. ` +
             `A copy of the earlier records was kept at ${safetyCopy}.`
         );
+        return safetyCopy;
       },
       // The file is a past state of the books, not a new write on top of the present
       // ones: its own faults are reported below, never a reason to refuse it.
