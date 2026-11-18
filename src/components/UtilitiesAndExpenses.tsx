@@ -27,7 +27,7 @@ import {
 } from '../types';
 import { utilitiesForUnit } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
-import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth, today } from '../lib/dates';
+import { dayOfTimestamp, addMonths, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import MonthlyExpenses from './MonthlyExpenses';
@@ -742,7 +742,7 @@ function ExpensesPanel({
                           </Badge>
                           <p className="mt-1 max-w-[16rem] text-[10px] leading-relaxed text-slate-400">
                             {e.voidedBy || 'unknown'}
-                            {e.voidedAt ? ` · ${formatDayLabel(e.voidedAt.substring(0, 10))}` : ''}
+                            {e.voidedAt ? ` · ${formatDayLabel(dayOfTimestamp(e.voidedAt))}` : ''}
                             {e.voidReason ? `, ${e.voidReason}` : ''}
                           </p>
                         </>

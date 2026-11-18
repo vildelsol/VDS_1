@@ -54,6 +54,21 @@ export function today(): string {
   return toDayString(new Date());
 }
 
+/**
+ * The local calendar day a stored timestamp falls on, as YYYY-MM-DD.
+ *
+ * Server timestamps are UTC instants (`toISOString()`). Slicing the first ten
+ * characters gives the UTC day, which in Jamaica (UTC-5) after 7pm is tomorrow.
+ * A value that is already a plain calendar day is returned unchanged; anything
+ * unparseable comes back as ''.
+ */
+export function dayOfTimestamp(ts: string | null | undefined): string {
+  const value = String(ts || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? '' : toDayString(d);
+}
+
 /** Current month as YYYY-MM in local time. */
 export function currentMonth(): string {
   return today().substring(0, 7);

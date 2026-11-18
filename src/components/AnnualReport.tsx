@@ -30,7 +30,7 @@ import { useRemembered } from '../lib/screenState';
 import { AppSettings, Charge, Currency, Expense, Payment, Unit, AnnualReport as AnnualReportRecord, ANNUAL_REPORT_SECTIONS, AnnualReportSectionKey, bodyCorporateName } from '../types';
 import { AnnualOwnersReport, annualOwnersReport } from '../lib/finance';
 import { formatMoney } from '../lib/money';
-import { formatDayLabel, formatMonthLabel, today } from '../lib/dates';
+import { dayOfTimestamp, formatDayLabel, formatMonthLabel, today } from '../lib/dates';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import MonthlyOwnersReport from './MonthlyOwnersReport';
@@ -366,7 +366,7 @@ export default function AnnualReport({
 
         {stored && (
           <p className="text-[11px] text-slate-400">
-            Last saved {formatDayLabel(stored.updatedAt.slice(0, 10))} by {stored.updatedBy}.
+            Last saved {formatDayLabel(dayOfTimestamp(stored.updatedAt))} by {stored.updatedBy}.
           </p>
         )}
       </section>

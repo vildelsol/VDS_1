@@ -40,7 +40,7 @@ import {
   utilitiesForUnit
 } from '../lib/finance';
 import { convertIndicative, formatMoney, formatMoneyLong, round2, sumMoney } from '../lib/money';
-import { formatDayLabel, formatMonthLabel, nightsBetween, today } from '../lib/dates';
+import { dayOfTimestamp, formatDayLabel, formatMonthLabel, nightsBetween, today } from '../lib/dates';
 import { ApiError, errorMessage } from '../lib/api';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import ReceivePaymentModal from './ReceivePaymentModal';
@@ -768,7 +768,7 @@ function UnitDetail({
                   )}
 
                   <p className="font-mono text-[9px] text-slate-400">
-                    Logged by {activity.loggedBy} on {formatDayLabel(activity.loggedAt.substring(0, 10))}
+                    Logged by {activity.loggedBy} on {formatDayLabel(dayOfTimestamp(activity.loggedAt))}
                   </p>
                 </li>
               ))}

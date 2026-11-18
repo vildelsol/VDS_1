@@ -16,7 +16,7 @@ import {
   getUnitDisplayName,
   IntegrityReport
 } from '../types';
-import { formatDayLabel } from '../lib/dates';
+import { dayOfTimestamp, formatDayLabel } from '../lib/dates';
 import { api, errorMessage } from '../lib/api';
 import {
   Badge,
@@ -411,7 +411,7 @@ function StaffPanel({
                         </select>
                       </td>
                       <td className="p-4 font-mono text-[11px] text-slate-500">
-                        {user.lastLoginAt ? formatDayLabel(user.lastLoginAt.substring(0, 10)) : 'Never'}
+                        {user.lastLoginAt ? formatDayLabel(dayOfTimestamp(user.lastLoginAt)) : 'Never'}
                       </td>
                       <td className="p-4">
                         {!user.active ? (
@@ -730,7 +730,7 @@ function FeedsPanel({
                     {feed.url}
                   </p>
                   <p className="mt-0.5 text-[10px] text-slate-500">
-                    {feed.lastSyncAt ? `Last synced ${formatDayLabel(feed.lastSyncAt.substring(0, 10))}, ${feed.lastResult}` : 'Never synced'}
+                    {feed.lastSyncAt ? `Last synced ${formatDayLabel(dayOfTimestamp(feed.lastSyncAt))}, ${feed.lastResult}` : 'Never synced'}
                   </p>
                 </div>
                 <div className="flex shrink-0 gap-2">
@@ -1387,7 +1387,7 @@ function RestorePanel({ backups, onError }: { backups: BackupRecord[]; onError: 
         <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
           <p className="text-sm font-semibold">Go back to: {label}</p>
           <p>
-            That file was made {preview.summary.madeAt.slice(0, 10)} and holds {c.units} {c.units === 1 ? 'villa' : 'villas'},{' '}
+            That file was made {formatDayLabel(dayOfTimestamp(preview.summary.madeAt))} and holds {c.units} {c.units === 1 ? 'villa' : 'villas'},{' '}
             {c.charges} {c.charges === 1 ? 'charge' : 'charges'}, {c.payments} {c.payments === 1 ? 'payment' : 'payments'} and{' '}
             {c.expenses} {c.expenses === 1 ? 'expense' : 'expenses'}. The records today hold {preview.present.charges}{' '}
             {preview.present.charges === 1 ? 'charge' : 'charges'}, {preview.present.payments}{' '}

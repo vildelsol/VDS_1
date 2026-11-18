@@ -36,7 +36,7 @@ import {
   getUnitDisplayName
 } from '../types';
 import { formatMoney, sumMoney } from '../lib/money';
-import { currentMonth, formatDayLabel, formatMonthLabel, isValidMonth } from '../lib/dates';
+import { dayOfTimestamp, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import VoidCostModal from './VoidCostModal';
 import {
@@ -843,7 +843,7 @@ export default function MonthlyExpenses({
               <span className="font-semibold text-slate-800">{removing.vendor}</span>, {removing.category},{' '}
               {allocationLabel(allocationOf(removing), units)}, usually{' '}
               {formatMoney(removing.amount, removing.currency)} on day {removing.dueDay}
-              {removing.createdAt ? `, added ${formatDayLabel(removing.createdAt.substring(0, 10))}` : ''}.
+              {removing.createdAt ? `, added ${formatDayLabel(dayOfTimestamp(removing.createdAt))}` : ''}.
             </p>
             <p>
               This takes it out of the system entirely, not just off future runs. It is refused if any cost raised from it

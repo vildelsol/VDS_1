@@ -8,7 +8,7 @@ import { useRemembered } from '../lib/screenState';
 import { AppSettings, Booking, Currency, PAYMENT_METHODS, PaymentMethod, SessionUser, Unit, getUnitDisplayName } from '../types';
 import { BookingClash, bookingCoversNight, bookingOverlaps, bookingsForUnit, bookingsOverlap } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
-import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, today } from '../lib/dates';
+import { dayOfTimestamp, addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
 import { buildStayReceiptEmail, openMailDraft } from '../lib/email';
 import { STAY_PHASE_LABEL, StayPhase, guestGreetingName, isClosedDates, platformReservation, receiptStanding, stayPhase } from '../lib/stays';
@@ -335,7 +335,7 @@ export default function Bookings({
                   Platform feeds publish dates only, never guest contact details or pricing, so imported stays need a
                   stay value entered manually.
                   {activeFeeds[0].lastSyncAt && (
-                    <> Last synchronised {formatDayLabel(activeFeeds[0].lastSyncAt.substring(0, 10))}.</>
+                    <> Last synchronised {formatDayLabel(dayOfTimestamp(activeFeeds[0].lastSyncAt))}.</>
                   )}
                 </>
               )}
