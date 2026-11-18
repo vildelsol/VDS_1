@@ -717,7 +717,7 @@ export default function App() {
             onRecordPayment={recordPayment}
             onSettleUtility={(id, payload) => mutate(() => api.post(`/api/utilities/${id}/settle`, payload))}
             onUpdateExpense={(id, fields) => mutate(() => api.put(`/api/expenses/${id}`, fields))}
-            onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}
+            onPostMonth={month => mutate(() => api.post<{ message: string; created: number; skipped: number }>('/api/charges/post-month', { monthString: month }))}
           />
         )}
 
@@ -758,7 +758,7 @@ export default function App() {
             onReversePayment={(id, reason) => mutate(() => api.post(`/api/payments/${id}/reverse`, { reversalReason: reason }))}
             onRefundPayment={(id, fields) => mutate(() => api.post(`/api/payments/${id}/refund`, fields))}
             onUpdatePayment={(id, fields) => mutate(() => api.put(`/api/payments/${id}`, fields))}
-            onPostMonth={month => mutate(() => api.post<{ message: string }>('/api/charges/post-month', { monthString: month }))}
+            onPostMonth={month => mutate(() => api.post<{ message: string; created: number; skipped: number }>('/api/charges/post-month', { monthString: month }))}
             onRestateRent={() => mutate(() => api.post<{ restated: number }>('/api/charges/restate-rent', { confirm: true }))}
             onPreviewRestateRent={() => api.post<RestatePreview>('/api/charges/restate-rent', {})}
             onPreviewMoveReceipts={() => api.post<RestatePreview>('/api/payments/restate-maintenance-receipts', {})}

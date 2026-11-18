@@ -532,7 +532,8 @@ export default function Dashboard({
           <button onClick={() => onNavigateToTab('notifications')} className="font-semibold underline">
             Notifications Hub
           </button>{' '}
-          to see the detail.
+          to see the detail. Posting a month bills the whole property for that month, the maintenance levy included,
+          not only the tenancy named here; months already billed are left untouched.
         </InfoNote>
       )}
 

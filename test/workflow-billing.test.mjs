@@ -242,6 +242,62 @@ export default async function run({ port, projectRoot }) {
     const locked = await c.post(`/api/payments/${fresh.id}/refund`, { amount: 1, refundedOn: TODAY, method: 'Cash', reason: 'test' });
     T.check('with a second signature required, an action without one is refused (server side works)', locked.status === 403 && /cosign/i.test(locked.body?.code || ''), JSON.stringify(locked.body));
     await c.post('/api/settings', { requireCosign: false });
+
+    /* ----------------------------------------------------------------
+     * "Post the month" bills the whole property, and says so
+     *
+     * Ro, 2026-11-17: *"for the maintenance i'm telling u no one actions
+     * it, it occurs automatically"*. Nothing posts on a timer. What does
+     * happen is this: the Notifications Hub raises an alert about ONE
+     * tenancy's unbilled rent, and its button calls post-month, which bills
+     * every villa for that month — rent AND the maintenance levy. The button
+     * said "Post the month" and reported "the rent is now owed", never
+     * mentioning the levy, so the levy appeared on the Hub next month with
+     * nobody having knowingly billed it.
+     *
+     * The behaviour is right: a month is a month for the whole property. The
+     * words were wrong. Both halves are held here.
+     * ---------------------------------------------------------------- */
+
+    const quiet = '2026-06';
+    const quietBefore = (await c.get('/api/db')).body.charges.filter(x => x.periodMonth === quiet).length;
+    T.check('the month used for this check starts unbilled, so the check means something', quietBefore === 0, `${quietBefore} charges already in ${quiet}`);
+
+    const posted = await c.post('/api/charges/post-month', { monthString: quiet });
+    const afterDb = (await c.get('/api/db')).body;
+    const levies = afterDb.charges.filter(x => x.category === 'Maintenance' && x.periodMonth === quiet && x.status === 'open');
+    const payLevy = afterDb.units.filter(u => u.status !== 'unavailable' && Number(u.monthlyMaintenance) > 0).length;
+
+    T.check(
+      'posting a month raises the levy on every villa that pays one, not only the rent the alert asked about',
+      levies.length === payLevy && payLevy > 0,
+      `${levies.length} levies raised for ${payLevy} villas that pay one`
+    );
+    T.check(
+      'and the server reports how many charges it raised, so a screen can say what it did rather than guess',
+      typeof posted.body?.created === 'number' && posted.body.created === afterDb.charges.filter(x => x.periodMonth === quiet).length,
+      JSON.stringify({ created: posted.body?.created, inMonth: afterDb.charges.filter(x => x.periodMonth === quiet).length })
+    );
+
+    const dashSrc = fs.readFileSync(path.join(projectRoot, 'src/components/Dashboard.tsx'), 'utf8');
+    T.check(
+      'the dashboard note that sends a person to Post month says the same, so neither screen understates it',
+      /bills the whole property for that month, the maintenance levy included/.test(dashSrc),
+      'the dashboard still sends a person to Post month describing rent only'
+    );
+
+    const hubSrc = fs.readFileSync(path.join(projectRoot, 'src/components/NotificationsTab.tsx'), 'utf8');
+    T.check(
+      'the alert that offers it says it bills the levy too, instead of naming only the rent',
+      /maintenance levy on every villa/.test(hubSrc),
+      'the unbilled-rent alert still describes itself as rent only'
+    );
+    T.check(
+      'and its button says the whole property is billed, not just this tenancy',
+      /months`} for every villa/.test(hubSrc) || /for every villa/.test(hubSrc),
+      'the button still reads "Post the month" with no mention of scope'
+    );
+
     return T.done();
   } finally {
     cleanup();

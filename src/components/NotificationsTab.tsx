@@ -58,7 +58,7 @@ interface NotificationsTabProps {
   onSettleUtility: (id: string, payload: Record<string, unknown>) => Promise<unknown>;
   onUpdateExpense: (id: string, fields: Record<string, unknown>) => Promise<unknown>;
   /** Post a billing month. Lets an unbilled month be fixed here rather than sending someone to the ledger. */
-  onPostMonth: (month: string) => Promise<unknown>;
+  onPostMonth: (month: string) => Promise<{ created?: number; skipped?: number } | undefined>;
 }
 
 type Filter = 'all' | 'rent' | 'maintenance' | 'unbilled' | 'lease' | 'utility' | 'expense' | 'booking';
@@ -131,13 +131,20 @@ export default function NotificationsTab({
     setError('');
     setSuccess('');
     try {
+      let raised = 0;
+      let alreadyThere = 0;
       for (const month of [...months].sort()) {
-        await onPostMonth(month);
+        const result = await onPostMonth(month);
+        raised += result?.created || 0;
+        alreadyThere += result?.skipped || 0;
       }
+      const where = months.length === 1 ? formatMonthLabel(months[0]) : `${months.length} months (${months.map(formatMonthLabel).join(', ')})`;
       setSuccess(
-        months.length === 1
-          ? `${formatMonthLabel(months[0])} has been posted. The rent is now owed and can be collected.`
-          : `${months.length} months have been posted (${months.map(formatMonthLabel).join(', ')}). The rent is now owed and can be collected.`
+        `${where} posted for the whole property: ${raised} charge${raised === 1 ? '' : 's'} raised, ` +
+          'rent on every let villa and the maintenance levy on every villa that pays one.' +
+          // Only worth saying when it happened; "0 already billed" is noise on a
+          // first posting, and the figure is the reassurance that nothing doubled.
+          (alreadyThere > 0 ? ` ${alreadyThere} charge${alreadyThere === 1 ? ' was' : 's were'} already billed and left untouched.` : '')
       );
     } catch (err) {
       setError(errorMessage(err, 'The month could not be posted.'));
@@ -204,7 +211,8 @@ export default function NotificationsTab({
       description:
         `${row.tenancy.tenantName} has occupied ${row.months.length} month${row.months.length === 1 ? '' : 's'} ` +
         `that ${row.months.length === 1 ? 'has' : 'have'} never been billed (${row.months.map(formatMonthLabel).join(', ')}). ` +
-        'Post those months so the rent is owed and can be collected.',
+        'Posting a month bills the whole property for it — rent on every let villa and the monthly ' +
+        'maintenance levy on every villa that pays one. Months already billed are left untouched.',
       amount: row.amount,
       currency: row.currency,
       severity: row.months.length > 1 ? 'high' : 'medium',
@@ -633,7 +641,7 @@ function ItemAction({
     // month per villa — a month already billed is skipped, not billed twice.
     return (
       <SubmitButton type="button" busy={posting} busyLabel="Posting…" onClick={onPostMissingMonths} className="whitespace-nowrap px-3 py-2 text-[11px]">
-        Post {item.unbilledMonths && item.unbilledMonths.length === 1 ? 'the month' : `the ${item.unbilledMonths?.length} months`}
+        Post {item.unbilledMonths && item.unbilledMonths.length === 1 ? 'the month' : `the ${item.unbilledMonths?.length} months`} for every villa
       </SubmitButton>
     );
   }
