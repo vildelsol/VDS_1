@@ -138,6 +138,19 @@ export default async function run({ port, projectRoot }) {
     const cosignFlip = await env.finance.post('/api/settings', { requireCosign: false });
     T.check('even with veto power a finance officer cannot switch off the second-approver rule', cosignFlip.status === 403, `status ${cosignFlip.status}`);
 
+    // Veto power carries settings power: a Manager cannot hand it to the junior desk.
+    const juniorVeto = await env.manager.post('/api/settings', { rolePermissions: { JUNIOR_OFFICER: { ...none, recordPayments: true, hasVetoPower: true } } });
+    T.check('a manager cannot give the Junior Officer veto power', juniorVeto.status === 403 && /Only an administrator can give the Junior Officer veto power/.test(juniorVeto.body?.error || juniorVeto.body?.message || ''), `status ${juniorVeto.status}`);
+    T.check('and the junior desk is left without it', !(await env.admin.get('/api/db')).body?.settings?.rolePermissions?.JUNIOR_OFFICER?.hasVetoPower);
+    // A stale client that omits the key must not silently withdraw it.
+    const { hasVetoPower: _omit, ...financeWithoutVeto } = { ...rolePerms.FINANCE_OFFICER, hasVetoPower: true };
+    const stale = await env.manager.post('/api/settings', { rolePermissions: { FINANCE_OFFICER: financeWithoutVeto } });
+    T.check('a save that omits veto power keeps it (stale client)', stale.status === 200 && (await env.admin.get('/api/db')).body?.settings?.rolePermissions?.FINANCE_OFFICER?.hasVetoPower === true);
+    // Positive control: an administrator can grant it, then it is taken back.
+    const adminVeto = await env.admin.post('/api/settings', { rolePermissions: { JUNIOR_OFFICER: { ...none, recordPayments: true, hasVetoPower: true } } });
+    T.check('an administrator can give the Junior Officer veto power', adminVeto.status === 200);
+    await env.admin.post('/api/settings', { rolePermissions: { JUNIOR_OFFICER: { ...none, recordPayments: true, hasVetoPower: false } } });
+
     /* (F) forced password change: the API itself refuses writes */
     await env.admin.post('/api/users', { name: 'Fresh', username: 'fresh', role: 'MANAGER', password: 'Fresh-1111!aa' });
     const fresh = makeClient(env.srv.baseUrl);

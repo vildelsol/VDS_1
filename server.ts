@@ -1459,7 +1459,14 @@ app.post(
                 ? !!existing[key]
                 : !!rolePermissions[role][key];
           }
-          clean.hasVetoPower = !!rolePermissions[role].hasVetoPower;
+          // Veto power carries manage_settings. Omitted by a stale client, it keeps
+          // its stored value rather than silently switching off; and the Junior
+          // Officer desk can be given it only by an Administrator.
+          clean.hasVetoPower =
+            rolePermissions[role].hasVetoPower === undefined ? !!existing?.hasVetoPower : !!rolePermissions[role].hasVetoPower;
+          if (role === 'JUNIOR_OFFICER' && clean.hasVetoPower && !existing?.hasVetoPower && !can(req.auth!, 'manage_users')) {
+            throw new ApiError(403, 'Only an administrator can give the Junior Officer veto power. Nothing was saved.');
+          }
           // An override on a money check is granted by an Administrator only, both ways.
           for (const key of ADMIN_GRANTED_PERMISSIONS) {
             if (!!clean[key] !== !!existing?.[key] && !can(req.auth!, 'manage_users')) {
