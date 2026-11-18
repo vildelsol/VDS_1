@@ -27,8 +27,9 @@ import { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import { Banknote, CheckCircle2, Circle, Landmark, Printer } from 'lucide-react';
 
-import { Currency, CURRENCIES, Payment, SessionUser, Unit, getUnitDisplayName } from '../types';
+import { Booking, Currency, CURRENCIES, Expense, Payment, SessionUser, Tenancy, Unit, getUnitDisplayName } from '../types';
 import { Reconciliation as ReconciliationResult, reconciliation } from '../lib/finance';
+import { BankItem, BankItemKind, bankReconciliation } from '../lib/bankRec';
 import { formatMoney, formatMoneyLong } from '../lib/money';
 import { currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
@@ -53,9 +54,23 @@ interface ReconciliationProps {
   units: Unit[];
   session: SessionUser;
   onReconcile: (paymentId: string, fields: Record<string, unknown>) => Promise<unknown>;
+  /** Money out (Ro, 2026-11-18): paid costs, refunds and returned deposits. */
+  expenses?: Expense[];
+  tenancies?: Tenancy[];
+  bookings?: Booking[];
+  onReconcileOut?: (kind: Exclude<BankItemKind, 'receipt'>, id: string, fields: Record<string, unknown>) => Promise<unknown>;
 }
 
-export default function ReconciliationTab({ payments, units, session, onReconcile }: ReconciliationProps) {
+export default function ReconciliationTab({
+  payments,
+  units,
+  session,
+  onReconcile,
+  expenses = [],
+  tenancies = [],
+  bookings = [],
+  onReconcileOut
+}: ReconciliationProps) {
   const [month, setMonth] = useRemembered('reconciliation.month', currentMonth);
   const [currency, setCurrency] = useRemembered<Currency>('reconciliation.currency', 'JMD');
   const [show, setShow] = useState<'unmatched' | 'all'>('unmatched');
@@ -74,6 +89,37 @@ export default function ReconciliationTab({ payments, units, session, onReconcil
     () => reconciliation(payments, currency, from, to),
     [payments, currency, from, to]
   );
+
+  // Both directions, one currency: money in (receipts and supplier credits),
+  // money out (paid costs, refunds, returned deposits) and the net movement.
+  const both = useMemo(
+    () => bankReconciliation({ payments, expenses, tenancies, bookings }, currency, from, to),
+    [payments, expenses, tenancies, bookings, currency, from, to]
+  );
+  // Everything but the receipts, which keep their own table above.
+  const outRows = [...both.moneyOut.items, ...both.moneyIn.items.filter(i => i.kind !== 'receipt')].filter(
+    i => show === 'all' || !i.match
+  );
+
+  const toggleOut = async (item: BankItem) => {
+    if (!onReconcileOut || item.kind === 'receipt') return;
+    setError('');
+    setSuccess('');
+    setBusyId(item.key);
+    try {
+      if (item.match) {
+        await onReconcileOut(item.kind, item.id, { reconciled: false });
+        setSuccess(`Un-matched ${item.label}.`);
+      } else {
+        await onReconcileOut(item.kind, item.id, { reconciledOn: statementDate, currency });
+        setSuccess(`Matched ${item.label} to the statement of ${formatDayLabel(statementDate)}.`);
+      }
+    } catch (err) {
+      setError(errorMessage(err, 'Could not update that item.'));
+    } finally {
+      setBusyId('');
+    }
+  };
 
   const rows = show === 'unmatched' ? result.unmatched : result.receipts;
   const done = result.receipts.length > 0 && result.unmatched.length === 0;
@@ -148,6 +194,43 @@ export default function ReconciliationTab({ payments, units, session, onReconcil
           </span>
         </div>
       )}
+
+      {/* ---------------- both directions ---------------- */}
+
+      <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
+        <TableScroller>
+          <table className="w-full text-left text-xs" aria-label={`Money in and out, ${currency}`}>
+            <thead>
+              <tr className={tableHeadRowClass}>
+                <th scope="col" className="p-3">{currency} · {formatMonthLabel(month)}</th>
+                <th scope="col" className="p-3 text-right">Ledger</th>
+                <th scope="col" className="p-3 text-right">Found on the statement</th>
+                <th scope="col" className="p-3 text-right">Not yet found</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 font-mono">
+              <tr>
+                <td className="p-3 font-sans text-slate-700">Money in ({both.moneyIn.items.length})</td>
+                <td className="p-3 text-right">{formatMoney(both.moneyIn.total, currency)}</td>
+                <td className="p-3 text-right">{formatMoney(both.moneyIn.matchedTotal, currency)}</td>
+                <td className="p-3 text-right">{formatMoney(both.moneyIn.unmatchedTotal, currency)}</td>
+              </tr>
+              <tr>
+                <td className="p-3 font-sans text-slate-700">Money out ({both.moneyOut.items.length})</td>
+                <td className="p-3 text-right">{formatMoney(both.moneyOut.total, currency)}</td>
+                <td className="p-3 text-right">{formatMoney(both.moneyOut.matchedTotal, currency)}</td>
+                <td className="p-3 text-right">{formatMoney(both.moneyOut.unmatchedTotal, currency)}</td>
+              </tr>
+              <tr className="font-semibold">
+                <td className="p-3 font-sans text-slate-900">Net movement</td>
+                <td className="p-3 text-right">{formatMoney(both.net.total, currency)}</td>
+                <td className="p-3 text-right">{formatMoney(both.net.matched, currency)}</td>
+                <td className="p-3 text-right">{formatMoney(both.net.unmatched, currency)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </TableScroller>
+      </div>
 
       {/* ---------------- controls ---------------- */}
 
@@ -281,6 +364,72 @@ export default function ReconciliationTab({ payments, units, session, onReconcil
                         <>
                           {formatDayLabel(p.reconciledOn)}
                           <span className="block text-slate-400">by {p.reconciledBy}</span>
+                        </>
+                      ) : (
+                        <span className="text-slate-300">-</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroller>
+        </div>
+      )}
+
+      {/* ---------------- money out (and supplier credits back in) ---------------- */}
+
+      <h3 className="pt-2 text-sm font-semibold text-slate-900">Money out, and credits back from suppliers</h3>
+      {outRows.length === 0 ? (
+        <EmptyState
+          title={`No ${show === 'unmatched' ? 'unmatched ' : ''}${currency} payments out in ${formatMonthLabel(month)}`}
+          hint="Paid costs, refunds and returned deposits appear here. Pending and voided costs never do."
+          icon={<Landmark className="h-6 w-6" />}
+        />
+      ) : (
+        <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
+          <TableScroller>
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className={tableHeadRowClass}>
+                  <th scope="col" className="p-3">Seen</th>
+                  <th scope="col" className="p-3">Date</th>
+                  <th scope="col" className="p-3">What</th>
+                  <th scope="col" className="p-3">Villa</th>
+                  <th scope="col" className="p-3 text-right">In / out</th>
+                  <th scope="col" className="p-3">Matched</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {outRows.map(item => (
+                  <tr key={item.key} className={item.match ? 'bg-emerald-50/40' : ''}>
+                    <td className="p-3">
+                      <button
+                        type="button"
+                        disabled={!canReconcile || !onReconcileOut || busyId === item.key}
+                        onClick={() => void toggleOut(item)}
+                        aria-label={item.match ? `Un-match ${item.label}` : `Mark ${item.label} as seen on the statement`}
+                        aria-pressed={!!item.match}
+                        className="rounded-lg p-1 text-slate-300 transition-colors hover:bg-slate-100 disabled:opacity-40"
+                      >
+                        {item.match ? <CheckCircle2 className="h-5 w-5 text-emerald-600" /> : <Circle className="h-5 w-5" />}
+                      </button>
+                    </td>
+                    <td className="p-3 font-mono text-[11px] text-slate-500">{formatDayLabel(item.date)}</td>
+                    <td className="p-3">
+                      <p className="font-medium text-slate-900">{item.label}</p>
+                      {item.method && <p className="font-mono text-[10px] text-slate-400">{item.method}</p>}
+                    </td>
+                    <td className="p-3 font-mono text-[11px]">{item.unitNumber ? getUnitDisplayName(item.unitNumber) : '-'}</td>
+                    <td className={`p-3 text-right font-mono font-medium ${item.direction === 'out' ? 'text-slate-900' : 'text-emerald-700'}`}>
+                      {item.direction === 'out' ? '-' : '+'}
+                      {formatMoney(item.amount, item.currency)}
+                    </td>
+                    <td className="p-3 font-mono text-[10px] text-slate-500">
+                      {item.match ? (
+                        <>
+                          {formatDayLabel(item.match.on)}
+                          <span className="block text-slate-400">by {item.match.by}</span>
                         </>
                       ) : (
                         <span className="text-slate-300">-</span>

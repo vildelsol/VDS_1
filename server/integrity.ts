@@ -35,6 +35,7 @@ import { createHash } from 'crypto';
 import { accountBalance, chargeCurrency, creditHeldForOthers, isOwnAccount, netPaidAsOf, ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
 import { hasLevySchedule, isWellFormedFeeChange, levyForMonth, levySchedule } from '../src/lib/feeSchedule';
 import { AUDIT_CAP, AUDIT_KEY_FILE, verifyAuditChain } from './auditChain';
+import { bankItems } from '../src/lib/bankRec';
 
 export type IntegritySeverity =
   /** The books contradict themselves. Money is misstated somewhere. */
@@ -167,6 +168,32 @@ export function checkIntegrity(db: Database): IntegrityReport {
       'voided-but-reconciled',
       'A voided receipt is still ticked as found on a bank statement, it says the money both did and did not arrive.',
       payments.filter(p => p.status === 'reversed' && !!p.reconciledOn).map(p => p.receiptNo || p.id)
+    );
+    // Money out, the same rule (Ro, 2026-11-18): a bank tick vouches for money that
+    // moved. Taking the cost back, or never paying it, leaves the tick claiming a
+    // movement the books say did not happen. The routes clear it; this catches any
+    // path that did not.
+    add(
+      'warning',
+      'unpaid-cost-reconciled',
+      'A cost that is voided or not paid is still ticked as found leaving the bank, it says the money both did and did not go.',
+      expenses.filter(e => e.status !== 'paid' && !!e.bankMatch).map(e => `${e.vendor} ${e.currency} ${e.amount} (${e.id})`)
+    );
+    add(
+      'warning',
+      'bank-match-without-money-out',
+      'A refund or returned deposit is ticked as found on a bank statement, but the books record no money going out for it.',
+      [
+        ...payments
+          .filter(p => !!p.refundBankMatch && (p.status !== 'completed' || !p.refundedAmount || !p.refundedOn))
+          .map(p => `refund on ${p.receiptNo || p.id}`),
+        ...tenancies
+          .filter(t => !!t.depositReturnBankMatch && !(t.depositReturnedOn && (t.depositReturnedAmount || 0) > 0))
+          .map(t => `deposit return ${t.tenantName} (${t.id})`),
+        ...bookings
+          .filter(b => !!b.damageDepositReturnBankMatch && !(b.damageDepositReturnedOn && (b.damageDepositReturnedAmount || 0) > 0))
+          .map(b => `damage deposit return ${b.guestName} (${b.id})`)
+      ]
     );
 
     /* ---------------- charges ---------------- */
@@ -773,16 +800,18 @@ export function checkIntegrity(db: Database): IntegrityReport {
     /* ---------------- one statement line, one receipt ---------------- */
 
     {
+      // Every kind of bank movement, in and out: one line settles one item.
       const byRef = new Map<string, string[]>();
-      for (const p of payments) {
-        const ref = (p.reconciledReference || '').trim().toLowerCase();
-        if (!ref || !p.reconciledOn || p.status !== 'completed') continue;
-        byRef.set(ref, [...(byRef.get(ref) || []), p.receiptNo || p.id]);
+      for (const item of bankItems({ payments, expenses, tenancies, bookings })) {
+        const ref = (item.match?.reference || '').trim().toLowerCase();
+        if (!ref) continue;
+        const name = item.kind === 'receipt' ? payments.find(p => p.id === item.id)?.receiptNo || item.id : item.label;
+        byRef.set(ref, [...(byRef.get(ref) || []), name]);
       }
       add(
         'warning',
         'bank-line-matched-twice',
-        'The same bank reference is matched to more than one receipt. One line on a statement settles one receipt.',
+        'The same bank reference is matched to more than one item. One line on a statement settles one receipt, cost or refund.',
         [...byRef.entries()].filter(([, ids]) => ids.length > 1).map(([ref, ids]) => `"${ref}": ${ids.join(', ')}`)
       );
     }

@@ -572,6 +572,8 @@ export interface Tenancy {
   depositReceivedOn?: string;
   /** Set once the deposit has been reconciled at move-out. */
   depositReturnedOn?: string;
+  /** The returned part of the deposit found leaving the bank. See `BankMatch`. */
+  depositReturnBankMatch?: BankMatch;
   /** Given back to the tenant. */
   depositReturnedAmount?: number;
   /** Kept — for damage, cleaning, unpaid charges. Its reason is recorded. */
@@ -635,6 +637,8 @@ export interface Booking {
   damageDepositReceivedOn?: string;
   /** Set once the deposit has been reconciled after the stay. */
   damageDepositReturnedOn?: string;
+  /** The returned damage deposit found leaving the bank. See `BankMatch`. */
+  damageDepositReturnBankMatch?: BankMatch;
   damageDepositReturnedAmount?: number;
   damageDepositWithheldAmount?: number;
   damageDepositWithheldReason?: string;
@@ -777,6 +781,8 @@ export interface Payment {
   reconciledAt?: string;
   /** The bank's own reference for the line, when the statement shows one. */
   reconciledReference?: string;
+  /** The refund (money out) found leaving the bank. Separate from the receipt's own tick. */
+  refundBankMatch?: BankMatch;
   /** Number of times this receipt has been rendered for printing. >0 means a reprint. */
   printCount?: number;
   /**
@@ -972,6 +978,26 @@ export interface Expense {
    * statement that the money never left, so it is marked as the larger act it is.
    */
   voidedFromPaid?: boolean;
+  /** This paid cost found on a bank statement (a credit: found coming in). See `BankMatch`. */
+  bankMatch?: BankMatch;
+}
+
+/**
+ * Money out (and a supplier credit back in) ticked against a bank statement.
+ *
+ * Ro, 2026-11-18: bank reconciliation must cover money leaving the account as
+ * well as money arriving. A receipt carries its tick as flat `reconciled*`
+ * fields; every other bank movement carries this one shape, so a paid cost, a
+ * refund and a returned deposit are matched, un-matched and checked the same way.
+ * `on` is the bank's statement date, never before the movement and never in the
+ * future. Set and cleared only by the reconcile routes; dropped when the record
+ * it vouches for is voided or its money changes.
+ */
+export interface BankMatch {
+  on: string; // YYYY-MM-DD
+  by: string;
+  at: string;
+  reference?: string;
 }
 
 /**
