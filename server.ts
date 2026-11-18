@@ -56,6 +56,7 @@ import {
 import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
 import { accountBalance, bookingsOverlap, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate } from './src/lib/finance';
+import { billingBacklog, monthsToPost } from './src/lib/billingCalendar';
 import {
   DATA_DIR,
   DB_FILE,
@@ -3124,6 +3125,84 @@ app.put(
  * ------------------------------------------------------------------ */
 
 /**
+ * Raise the ordinary monthly rent and levy for one month, for the whole property.
+ *
+ * Extracted so that the person-driven endpoint and the automatic poster run the
+ * *same* code. Two routines that both bill a month would drift apart, and the one
+ * that ran unattended would be the one nobody noticed drifting.
+ *
+ * Idempotent: it tops up only what is missing and never duplicates. `automatic`
+ * changes nothing about what is billed — only how the audit entry reads, so the
+ * Compliance Log says plainly whether a person or the application raised a charge.
+ */
+function postRecurringForMonth(
+  db: Database,
+  monthString: string,
+  who: { name: string; role: UserRole | string },
+  automatic = false
+): { created: number; skipped: number } {
+  const created: Charge[] = [];
+  const skipped: string[] = [];
+
+  for (const unit of db.units) {
+    for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
+      if (!isBillable(unit, category)) continue;
+      // Only an ordinary monthly charge counts as "this month is posted".
+      // A one-off (a late fee, a recharged repair) and the move-in advance
+      // both carry the same period month, and counting them here would make
+      // posting believe the month was already billed and silently skip the
+      // actual rent.
+      const exists = db.charges.some(
+        c =>
+          c.unitId === unit.id &&
+          c.category === category &&
+          c.periodMonth === monthString &&
+          c.status === 'open' &&
+          c.kind === undefined
+      );
+      if (exists) {
+        skipped.push(`${unit.number}/${category}`);
+        continue;
+      }
+      const dueDay = category === 'Rent' ? unit.rentDueDay || 1 : unit.maintDueDay || 1;
+      const split = category === 'Rent' ? rentBreakdown(unit) : null;
+      const charge: Charge = {
+        // Re-posting a month after a charge was voided must raise a *new*
+        // charge, not a second row wearing the voided one's id.
+        id: uniqueRecordId(db.charges, `chg-${monthString}-${unit.id}-${category.toLowerCase()}`),
+        unitId: unit.id,
+        unitNumber: unit.number,
+        category,
+        periodMonth: monthString,
+        dueDate: dueDateForMonth(monthString, dueDay),
+        amount: chargeAmount(unit, category),
+        ...(split ? { rentPortion: split.rent, maintenancePortion: split.maintenance } : {}),
+        currency: chargeCurrency(unit, category),
+        status: 'open',
+        payerName: chargePayer(unit, category),
+        createdAt: new Date().toISOString(),
+        createdBy: who.name
+      };
+      db.charges.push(charge);
+      created.push(charge);
+    }
+  }
+
+  addAudit(
+    db,
+    who.name,
+    who.role,
+    `Posted recurring charges for ${monthString}${automatic ? ' (automatically)' : ''}`,
+    'Charge',
+    monthString,
+    `${skipped.length} already posted`,
+    `${created.length} charge(s) created: ${created.map(c => `${c.unitNumber}/${c.category} ${c.currency} ${c.amount}`).join(', ') || 'none'}`
+  );
+
+  return { created: created.length, skipped: skipped.length };
+}
+
+/**
  * Post rent and maintenance charges for a month.
  *
  * The previous implementation counted units and returned a success message
@@ -3139,68 +3218,7 @@ app.post(
     if (!isValidMonth(monthString)) bad('Billing month is required in YYYY-MM format.');
     if (monthString > today().substring(0, 7)) bad('You cannot post charges for a future month.');
 
-    const result = await transaction(db => {
-      const who = actor(req);
-      const created: Charge[] = [];
-      const skipped: string[] = [];
-
-      for (const unit of db.units) {
-        for (const category of ['Rent', 'Maintenance'] as ChargeCategory[]) {
-          if (!isBillable(unit, category)) continue;
-          // Only an ordinary monthly charge counts as "this month is posted".
-          // A one-off (a late fee, a recharged repair) and the move-in advance
-          // both carry the same period month, and counting them here would make
-          // posting believe the month was already billed and silently skip the
-          // actual rent.
-          const exists = db.charges.some(
-            c =>
-              c.unitId === unit.id &&
-              c.category === category &&
-              c.periodMonth === monthString &&
-              c.status === 'open' &&
-              c.kind === undefined
-          );
-          if (exists) {
-            skipped.push(`${unit.number}/${category}`);
-            continue;
-          }
-          const dueDay = category === 'Rent' ? unit.rentDueDay || 1 : unit.maintDueDay || 1;
-          const split = category === 'Rent' ? rentBreakdown(unit) : null;
-          const charge: Charge = {
-            // Re-posting a month after a charge was voided must raise a *new*
-            // charge, not a second row wearing the voided one's id.
-            id: uniqueRecordId(db.charges, `chg-${monthString}-${unit.id}-${category.toLowerCase()}`),
-            unitId: unit.id,
-            unitNumber: unit.number,
-            category,
-            periodMonth: monthString,
-            dueDate: dueDateForMonth(monthString, dueDay),
-            amount: chargeAmount(unit, category),
-            ...(split ? { rentPortion: split.rent, maintenancePortion: split.maintenance } : {}),
-            currency: chargeCurrency(unit, category),
-            status: 'open',
-            payerName: chargePayer(unit, category),
-            createdAt: new Date().toISOString(),
-            createdBy: who.name
-          };
-          db.charges.push(charge);
-          created.push(charge);
-        }
-      }
-
-      addAudit(
-        db,
-        who.name,
-        who.role,
-        `Posted recurring charges for ${monthString}`,
-        'Charge',
-        monthString,
-        `${skipped.length} already posted`,
-        `${created.length} charge(s) created: ${created.map(c => `${c.unitNumber}/${c.category} ${c.currency} ${c.amount}`).join(', ') || 'none'}`
-      );
-
-      return { created: created.length, skipped: skipped.length };
-    });
+    const result = await transaction(db => postRecurringForMonth(db, monthString, actor(req)));
 
     res.json({
       success: true,
@@ -3213,6 +3231,121 @@ app.post(
     });
   })
 );
+
+
+/* ------------------------------------------------------------------ *
+ * Automatic billing
+ * ------------------------------------------------------------------ */
+
+/**
+ * Raise every month that the register says is owed and the ledger does not hold.
+ *
+ * Billing used to wait for a person to notice an alert on the Notifications Hub
+ * and press a button. That worked for rent, which a tenancy's start date makes
+ * detectable, and not at all for the maintenance levy, which nothing checked
+ * month by month: a skipped November simply never existed, and every screen
+ * downstream agreed that nothing had been owed.
+ *
+ * So the application bills for itself, from `billingBacklog` — the one place
+ * that works out which months ought to carry a charge. The Hub keeps its alert,
+ * but it is now a backstop reporting what this failed to do, not the mechanism.
+ *
+ * The rails that make it safe to run unattended:
+ *
+ * - **Idempotent.** It posts through the same routine a person does, which tops
+ *   up only what is missing.
+ * - **Never the future.** The backlog ends at the current month.
+ * - **Never a closed month.** Those are excluded by the calendar; the integrity
+ *   guard would refuse the write in any case.
+ * - **Bounded.** More than `AUTO_POST_MAX_MONTHS` months outstanding is not a
+ *   backlog, it is a misconfigured register or a restored-from-old-backup file.
+ *   It bills nothing, says so in the Compliance Log once, and leaves it to a
+ *   person. Quietly raising two years of arrears would be far worse than waiting.
+ * - **Judged like any other write.** It goes through `transaction`, so the
+ *   integrity engine refuses it if it would make the books contradict themselves.
+ * - **Attributable.** Every charge is created by `System`, and the audit entry
+ *   reads "(automatically)", so the log distinguishes the machine from a person.
+ * - **Stoppable.** `VDS_AUTO_POST=off` disables it entirely.
+ *
+ * A failure is logged and the run stops; the next tick tries again. It never
+ * throws into the caller, because nothing about billing should be able to stop
+ * the server coming up.
+ */
+const AUTO_POST_ENABLED = String(process.env.VDS_AUTO_POST || '').toLowerCase() !== 'off';
+const AUTO_POST_MAX_MONTHS = Math.max(1, Number(process.env.VDS_AUTO_POST_MAX_MONTHS) || 18);
+const SYSTEM_ACTOR = { name: 'System', role: 'System' as const };
+
+/** Held backlogs already reported, so an hourly tick does not flood the log. */
+let autoPostHeldSignature = '';
+
+export interface AutoPostResult {
+  posted: string[];
+  created: number;
+  /** Set when the run billed nothing on purpose. */
+  held?: string;
+}
+
+export async function runAutomaticPosting(asOf: string = today()): Promise<AutoPostResult> {
+  if (!AUTO_POST_ENABLED) return { posted: [], created: 0, held: 'Automatic billing is switched off.' };
+
+  const months = read(db =>
+    monthsToPost(
+      billingBacklog(db.units, db.tenancies, db.charges, asOf, db.settings.booksBeginOn, db.settings.closedThrough)
+    )
+  );
+  if (months.length === 0) return { posted: [], created: 0 };
+
+  if (months.length > AUTO_POST_MAX_MONTHS) {
+    const held =
+      `${months.length} months are unbilled (${months[0]} to ${months[months.length - 1]}), which is more than ` +
+      `automatic billing will raise on its own. Nothing was billed. Check the villa register and post them deliberately.`;
+    const signature = months.join(',');
+    if (autoPostHeldSignature !== signature) {
+      autoPostHeldSignature = signature;
+      try {
+        await transaction(db => {
+          addAudit(db, SYSTEM_ACTOR.name, SYSTEM_ACTOR.role, 'Automatic billing held back', 'Charge', months[0], '', held);
+        });
+      } catch {
+        /* The log is a courtesy here; failing to write it must not retry forever. */
+      }
+    }
+    return { posted: [], created: 0, held };
+  }
+
+  autoPostHeldSignature = '';
+  const posted: string[] = [];
+  let created = 0;
+  for (const month of months) {
+    try {
+      const result = await transaction(db => postRecurringForMonth(db, month, SYSTEM_ACTOR, true));
+      if (result.created > 0) posted.push(month);
+      created += result.created;
+    } catch (err) {
+      console.error(`[billing] could not post ${month} automatically:`, err instanceof Error ? err.message : err);
+      break;
+    }
+  }
+  return { posted, created };
+}
+
+let autoPostTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Bill on starting up, then hourly.
+ *
+ * Hourly rather than at midnight because this machine is a desk computer that is
+ * switched off at night and at weekends: a run pinned to a time of day would be
+ * missed outright. Checking what is missing is cheap, and a check that finds
+ * nothing writes nothing.
+ */
+function startAutomaticPosting() {
+  if (autoPostTimer || !AUTO_POST_ENABLED) return;
+  const everyMs = Math.max(60_000, Number(process.env.VDS_AUTO_POST_MS) || 60 * 60 * 1000);
+  void runAutomaticPosting();
+  autoPostTimer = setInterval(() => void runAutomaticPosting(), everyMs);
+  if (typeof autoPostTimer.unref === 'function') autoPostTimer.unref();
+}
 
 /**
  * Restate rent charges raised before the tenant's total included maintenance.
@@ -6439,6 +6572,9 @@ async function startServer() {
   // Backups run on a timer, not only at boot, so an always-on server still gets
   // a daily copy.
   startBackupSchedule();
+
+  // Raise any month the register says is owed and the ledger does not hold.
+  startAutomaticPosting();
 
   /**
    * Watch for an external drive being connected, and start using it.

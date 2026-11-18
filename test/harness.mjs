@@ -42,6 +42,11 @@ export async function startServer({ port, adminPassword, projectRoot, dataDir: r
       // Never let a test server look at the real machine's drives: a CI runner's D:
       // or a plugged-in stick would be adopted as the backup folder by the drive watcher.
       VDS_DRIVE_ROOTS_ONLY: '1',
+      // Automatic billing is ON in the shipped application. It is off by default
+      // here so that a test's own fixtures are the only thing that raises a
+      // charge; the module that tests automatic billing turns it on explicitly
+      // through `env`.
+      VDS_AUTO_POST: 'off',
       ...(extraEnv || {})
     },
     stdio: ['ignore', 'pipe', 'pipe']

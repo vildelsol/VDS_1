@@ -21,6 +21,8 @@ import {
   AppSettings
 } from '../types';
 import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, maintenanceFundedFromRent, tenanciesMissingMoveInDate, scheduledCharges, unbilledOccupancy } from '../lib/finance';
+import { billingBacklog } from '../lib/billingCalendar';
+import { round2 } from '../lib/money';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { formatDayLabel, formatMonthLabel, daysSince, today } from '../lib/dates';
 import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, errorMessage } from '../lib/api';
@@ -221,6 +223,49 @@ export default function NotificationsTab({
     }));
 
     /*
+     * Months the maintenance levy should have been raised for and was not.
+     *
+     * The application bills these for itself every hour, so this card should
+     * normally be empty. It is here because an empty alarm that has never gone
+     * off is worth more than a skipped month nobody can see: if automatic billing
+     * is switched off, is held back by an implausibly long backlog, or fails, the
+     * levy months it did not raise appear here, against the villa that owes them.
+     * A levy with no tenancy behind it is otherwise invisible — the rent alarm
+     * above reads tenancy dates and an owner-occupied villa has none.
+     */
+    const levyBacklog = new Map<string, { unitNumber: string; months: string[]; amount: number; currency: Currency }>();
+    for (const row of billingBacklog(
+      units,
+      tenancies,
+      charges,
+      today(),
+      settings?.booksBeginOn,
+      settings?.closedThrough
+    )) {
+      if (row.category !== 'Maintenance') continue;
+      const key = `${row.unit.id}|${row.currency}`;
+      const entry = levyBacklog.get(key) || { unitNumber: row.unit.number, months: [], amount: 0, currency: row.currency };
+      entry.months.push(row.month);
+      entry.amount = round2(entry.amount + row.amount);
+      levyBacklog.set(key, entry);
+    }
+    const unbilledLevyItems = [...levyBacklog.entries()].map<Item>(([key, row]) => ({
+      id: `unbilled-levy-${key}`,
+      type: 'unbilled',
+      title: `Maintenance not yet billed, ${getUnitDisplayName(row.unitNumber)}`,
+      description:
+        `The monthly maintenance levy has never been raised for ${row.months.length} month` +
+        `${row.months.length === 1 ? '' : 's'} (${row.months.map(formatMonthLabel).join(', ')}), ` +
+        'so nothing on any screen counts it as owed. The application posts these on its own every hour; ' +
+        'seeing them here means it has not, so post them.',
+      amount: row.amount,
+      currency: row.currency,
+      severity: row.months.length > 1 ? 'high' : 'medium',
+      ageDays: 0,
+      unbilledMonths: row.months
+    }));
+
+    /*
      * A sitting tenant with no move-in date. Shown because the absence is what
      * silently disables the unbilled-months alarm for that villa — the warning
      * has to come from here, since nothing else would ever mention it.
@@ -307,7 +352,7 @@ export default function NotificationsTab({
       isBooking: true
     }));
 
-    return [...overlapItems, ...leaseItems, ...unbilledItems, ...missingMoveIn, ...accounts, ...utilityItems, ...expenseItems, ...scheduledItems].sort(
+    return [...overlapItems, ...leaseItems, ...unbilledItems, ...unbilledLevyItems, ...missingMoveIn, ...accounts, ...utilityItems, ...expenseItems, ...scheduledItems].sort(
       (a, b) => b.ageDays - a.ageDays
     );
   }, [units, charges, payments, utilities, expenses, bookings, tenancies]);
