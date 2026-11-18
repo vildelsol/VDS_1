@@ -14,7 +14,7 @@
  */
 
 import fs from 'fs';
-import { AUDIT_CAP, sealAuditEntry } from './auditChain';
+import { AUDIT_CAP, AUDIT_KEY_FILE, auditKeyPath, sealAuditEntry } from './auditChain';
 import { checkIntegrity, newBlockingFindings } from './integrity';
 import path from 'path';
 import { isExternalWindowsDrive, queryWindowsDrives } from './windowsDrives';
@@ -842,6 +842,19 @@ export function runDailyBackup(force = false): BackupRecord[] {
       // carries its marker — the folder may not have existed when it was chosen.
       if (location === 'external' && externalBackupMarkerId && !fs.existsSync(path.join(dir, BACKUP_MARKER))) {
         markBackupFolder(dir, externalBackupMarkerId);
+      }
+      /*
+       * The audit trail is sealed with a key that lives beside db.json, not in it.
+       * A backup without the key restores records whose seals cannot be verified
+       * (audit-key-missing), so every backup folder carries a copy. The key never
+       * changes once made, so an existing copy is left alone; it is never
+       * overwritten with a different key.
+       */
+      const keySource = auditKeyPath();
+      const keyCopy = path.join(dir, AUDIT_KEY_FILE);
+      if (fs.existsSync(keySource) && !fs.existsSync(keyCopy)) {
+        fs.copyFileSync(keySource, keyCopy, fs.constants.COPYFILE_EXCL);
+        try { fs.chmodSync(keyCopy, 0o600); } catch { /* Windows: permissions come from the folder */ }
       }
       pruneBackups(dir);
       backupErrors.delete(location);

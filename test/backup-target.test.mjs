@@ -49,6 +49,15 @@ export default async function run({ port, projectRoot }) {
         }
       })()
     );
+    // The audit seal key lives beside db.json, not in it; a backup without it
+    // restores records whose audit trail cannot be verified (audit-key-missing).
+    const liveKey = path.join(srv.dataDir, 'audit-key.json');
+    const keyCopy = path.join(drive, 'audit-key.json');
+    T.check('the live data folder holds the audit seal key', fs.existsSync(liveKey));
+    T.check(
+      'the backup folder carries an identical copy of the audit seal key',
+      fs.existsSync(keyCopy) && fs.readFileSync(keyCopy, 'utf-8') === fs.readFileSync(liveKey, 'utf-8')
+    );
     T.check('no half-written .partial file is left behind', !fs.readdirSync(drive).some(f => f.endsWith('.partial')));
 
     status = (await c.get('/api/backup/status')).body;

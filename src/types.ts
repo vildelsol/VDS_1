@@ -211,7 +211,8 @@ export const PERMISSION_LABELS: Record<string, string> = {
   modifySettledRecords: 'Modify settled ledger records',
   viewShortfall: 'See the out-of-pocket shortfall report (internal)',
   viewIspoOperations: `See the ${MANAGING_COMPANY_NAME} Operations statement (internal)`,
-  takeBackups: 'Take a backup now & download a records snapshot'
+  takeBackups: 'Take a backup now & download a records snapshot',
+  overrideMoneyGuards: 'Override money checks (duplicate, wrong currency, already settled) with a recorded reason'
 };
 
 export interface StaffProfile {

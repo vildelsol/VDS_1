@@ -29,7 +29,7 @@ import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, errorMessage } from '../
 import type { TabKey } from '../App';
 import {
   AlreadySettledNote,
-  DuplicateEntryNote,
+  DuplicateEntryNote, OverrideReasonField,
   Badge,
   EmptyState,
   ErrorNote,
@@ -738,6 +738,8 @@ function SettleAccountModal({
   const [confirmAlreadySettled, setConfirmAlreadySettled] = useState(false);
   const [duplicateNote, setDuplicateNote] = useState('');
   const [confirmDuplicate, setConfirmDuplicate] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  const overriding = confirmAlreadySettled || confirmDuplicate;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -763,7 +765,8 @@ function SettleAccountModal({
         // is issued now and the alert clears from here and the dashboard at once.
         receivedNow: true,
         confirmAlreadySettled,
-        confirmDuplicate
+        confirmDuplicate,
+        overrideReason: overriding ? overrideReason.trim() : undefined
       });
     } catch (err) {
       if (err instanceof ApiError && err.code === POSSIBLE_DUPLICATE) {
@@ -799,6 +802,7 @@ function SettleAccountModal({
 
         <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
         <DuplicateEntryNote message={duplicateNote} confirmed={confirmDuplicate} onConfirm={setConfirmDuplicate} />
+        <OverrideReasonField active={overriding} value={overrideReason} onChange={setOverrideReason} />
 
         <InfoNote>
           Unpaid months on this account:{' '}

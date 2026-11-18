@@ -46,7 +46,7 @@ import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import BookingDeposits from './BookingDeposits';
 import {
   AlreadySettledNote, AdvancePaymentToggle,
-  DuplicateEntryNote,
+  DuplicateEntryNote, OverrideReasonField,
   Badge,
   EmptyState,
   ErrorNote,
@@ -1250,6 +1250,8 @@ function RecordPaymentModal({
   const [advancePayment, setAdvancePayment] = useState(false);
   const [duplicateNote, setDuplicateNote] = useState('');
   const [confirmDuplicate, setConfirmDuplicate] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  const overriding = confirmMismatch || confirmNoCharge || confirmAlreadySettled || confirmDuplicate;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -1345,7 +1347,8 @@ function RecordPaymentModal({
         confirmNoOpenCharge: confirmNoCharge,
         confirmAlreadySettled,
         advancePayment: advancePayment && (category === 'Rent' || category === 'Maintenance'),
-        confirmDuplicate
+        confirmDuplicate,
+        overrideReason: overriding ? overrideReason.trim() : undefined
       });
     } catch (err) {
       if (err instanceof ApiError && err.code === POSSIBLE_DUPLICATE) {
@@ -1393,6 +1396,7 @@ function RecordPaymentModal({
         {(category === 'Rent' || category === 'Maintenance') && <AdvancePaymentToggle checked={advancePayment} onChange={setAdvancePayment} />}
         <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
         <DuplicateEntryNote message={duplicateNote} confirmed={confirmDuplicate} onConfirm={setConfirmDuplicate} />
+        <OverrideReasonField active={overriding} value={overrideReason} onChange={setOverrideReason} />
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Villa unit" htmlFor="pm-unit" required>

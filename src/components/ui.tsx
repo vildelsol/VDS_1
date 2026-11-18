@@ -367,3 +367,26 @@ export function PermissionNote({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+
+/**
+ * Any money-check override needs a written reason. The server refuses an override
+ * without one (override-reason-required) and records the reason in the audit log,
+ * so the field appears the moment a box is ticked and the form says why it waits.
+ */
+export function OverrideReasonField({ active, value, onChange }: { active: boolean; value: string; onChange: (value: string) => void }) {
+  if (!active) return null;
+  return (
+    <label className="block space-y-1 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+      <span className="font-semibold">Reason for overriding the check (kept in the audit log)</span>
+      <textarea
+        required
+        rows={2}
+        maxLength={500}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="w-full rounded-lg border border-amber-300 bg-white p-2 text-xs text-slate-900"
+      />
+      {!value.trim() && <span className="block text-red-700">A reason is required before this can be recorded.</span>}
+    </label>
+  );
+}

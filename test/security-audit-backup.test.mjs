@@ -112,11 +112,14 @@ export default async function run({ port, projectRoot }) {
     /* ---- backups on disk ---- */
     await a2.post('/api/backup/run', {});
     const bdir = path.join(dir, 'db-backups');
-    const files = fs.existsSync(bdir) ? fs.readdirSync(bdir) : [];
+    // Only the dated database copies: the folder also carries audit-key.json, the audit seal key.
+    const files = fs.existsSync(bdir) ? fs.readdirSync(bdir).filter(f => f.startsWith('db-') && f.endsWith('.json')) : [];
     T.check('a backup file was written', files.length > 0);
     // POSIX permission bits mean nothing on Windows (every file reads as 666); the folder's own rights apply there.
     const modeOf = p => (process.platform === 'win32' ? 0 : fs.statSync(p).mode & 0o777);
     const worldReadable = [path.join(bdir, files[0] || 'none'), bdir, dbFile].filter(p => fs.existsSync(p) && (modeOf(p) & 0o044)).map(p => `${path.basename(p)} ${modeOf(p).toString(8)}`);
+    const keyInBackup = path.join(bdir, 'audit-key.json');
+    T.check('the audit seal key copied into the backup folder is not readable by other local users', process.platform === 'win32' || (fs.existsSync(keyInBackup) && (modeOf(keyInBackup) & 0o077) === 0), fs.existsSync(keyInBackup) ? modeOf(keyInBackup).toString(8) : 'missing');
     T.check('backup files, the backup folder and db.json (all carry password hashes) are not readable by other local users', worldReadable.length === 0, worldReadable.join('; '));
     const bk = files[0] && fs.readFileSync(path.join(bdir, files[0]), 'utf8');
     T.check('backup files contain no live session tokens', bk && !/"token"/.test(bk) || (bk && JSON.parse(bk).sessions.length === 0));

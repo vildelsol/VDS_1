@@ -32,7 +32,7 @@ import { formatMonthLabel, today } from '../lib/dates';
 import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, errorMessage } from '../lib/api';
 import {
   AlreadySettledNote, AdvancePaymentToggle,
-  DuplicateEntryNote,
+  DuplicateEntryNote, OverrideReasonField,
   ErrorNote,
   Field,
   Modal,
@@ -75,6 +75,8 @@ export default function ReceivePaymentModal({
   const [advancePayment, setAdvancePayment] = useState(false);
   const [duplicateNote, setDuplicateNote] = useState('');
   const [confirmDuplicate, setConfirmDuplicate] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  const overriding = confirmMismatch || confirmNoCharge || confirmAlreadySettled || confirmDuplicate;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -168,7 +170,8 @@ export default function ReceivePaymentModal({
         confirmNoOpenCharge: confirmNoCharge,
         confirmAlreadySettled,
         advancePayment: advancePayment && (category === 'Rent' || category === 'Maintenance'),
-        confirmDuplicate
+        confirmDuplicate,
+        overrideReason: overriding ? overrideReason.trim() : undefined
       });
     } catch (err) {
       if (err instanceof ApiError && err.code === POSSIBLE_DUPLICATE) {
@@ -205,6 +208,7 @@ export default function ReceivePaymentModal({
         {(category === 'Rent' || category === 'Maintenance') && <AdvancePaymentToggle checked={advancePayment} onChange={setAdvancePayment} />}
         <AlreadySettledNote message={alreadySettled} confirmed={confirmAlreadySettled} onConfirm={setConfirmAlreadySettled} />
         <DuplicateEntryNote message={duplicateNote} confirmed={confirmDuplicate} onConfirm={setConfirmDuplicate} />
+        <OverrideReasonField active={overriding} value={overrideReason} onChange={setOverrideReason} />
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Villa unit" htmlFor="qr-unit" required>
