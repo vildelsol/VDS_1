@@ -13,6 +13,7 @@ export const allowUnknownRoutes = true;
 
 /** Permission each gated route demands (read off server.ts; an empty string means the handler checks none). */
 const REQUIRES = {
+  'GET /api/auth/throttles': 'manage_users', 'POST /api/auth/throttles/clear': 'manage_users',
   'POST /api/users': 'manage_users', 'PUT /api/users/:id': 'manage_users', 'POST /api/users/:id/reset-password': 'manage_users',
   'POST /api/periods/close': 'modify_settled', 'POST /api/periods/reopen': 'modify_settled',
   'GET /api/backup/status': 'take_backups', 'GET /api/backup/drives': 'manage_settings', 'POST /api/backup/check-folder': 'manage_settings',

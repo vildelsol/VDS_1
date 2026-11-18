@@ -252,7 +252,7 @@ export function outcomesSnapshot() {
 }
 
 /** An HTTP client with a cookie jar. Options are always forwarded (a real one bit us before). */
-export function makeClient(baseUrl, { autoConfirmDuplicates = true } = {}) {
+export function makeClient(baseUrl, { autoConfirmDuplicates = true, autoOverrideReason = true } = {}) {
   let cookie = '';
   /**
    * Every 404 this client received, in order.
@@ -280,7 +280,18 @@ export function makeClient(baseUrl, { autoConfirmDuplicates = true } = {}) {
      * its own suite (ecosystem-guards), which turns this off.
      */
     if (autoConfirmDuplicates && method === 'POST' && apiPath === '/api/payments' && body && typeof body === 'object' && body.confirmDuplicate === undefined) {
+      // Overriding a money guard now needs a reason (server.ts useMoneyOverride); the simulation gives one.
       body = { ...body, confirmDuplicate: true };
+    }
+    /*
+     * Overriding a money guard needs a reason (server.ts useMoneyOverride). Suites
+     * that override on purpose predate that, so the default client supplies one.
+     * A client made with autoOverrideReason: false sends exactly what it is
+     * given — security-auth-hardening pins the refusal that way.
+     */
+    const OVERRIDE_FLAGS = ['confirmDuplicate', 'confirmAlreadySettled', 'confirmCurrencyMismatch', 'confirmNoOpenCharge', 'confirmCurrency', 'replace'];
+    if (autoOverrideReason && method === 'POST' && body && typeof body === 'object' && body.overrideReason === undefined && OVERRIDE_FLAGS.some(f => body[f] === true)) {
+      body = { ...body, overrideReason: 'test: deliberate override' };
     }
     noteFields(method, apiPath, body);
     if (body !== undefined) headers['Content-Type'] = 'application/json';

@@ -172,6 +172,14 @@ export interface RolePermissions {
    */
   takeBackups: boolean;
   hasVetoPower?: boolean;
+  /**
+   * Override a money guard on a receipt (already settled, possible duplicate,
+   * currency mismatch, nothing billed, deposit replace/currency). These overrides
+   * let money onto the books that a check refused, so they are **Administrator
+   * only by default**: NOT granted to any role unless given here in System
+   * Settings. Every use needs a reason and is written to the audit trail.
+   */
+  overrideMoneyGuards: boolean;
 }
 
 export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
@@ -996,6 +1004,8 @@ export interface AuditLog {
   /** SHA-256 over this entry and the seal of the entry before it. Absent on entries written before the chain began. */
   seal?: string;
   prevSeal?: string;
+  /** 'hmac-sha256' when `seal` is keyed (server/auditChain.ts). Absent on the older, unkeyed SHA-256 entries. */
+  sealKind?: 'hmac-sha256';
 }
 
 /**

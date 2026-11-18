@@ -28,7 +28,10 @@ export default async function run({ port, projectRoot }) {
     // than tripping the "nothing has been billed yet" guard.
     await admin.post('/api/charges/post-month', { monthString: '2026-07' });
 
-    const pay = () => jr.post('/api/payments', { unitId: 'unit-1', category: 'Rent', amount: 5000, currency: 'JMD', payerName: 'Walk-in', method: 'Cash' });
+    // A different amount each time: a repeat of the same receipt is a possible duplicate, and overriding that
+    // guard is Administrator-only (useMoneyOverride), which is not what this suite is about.
+    let payN = 0;
+    const pay = () => jr.post('/api/payments', { unitId: 'unit-1', category: 'Rent', amount: 5000 + ++payN, currency: 'JMD', payerName: 'Walk-in', method: 'Cash' });
 
     // --- default: junior covers the desk ---
     T.check('junior has recordPayments by default', (await jr.get('/api/db')).body?.currentUser?.permissions?.recordPayments === true);
