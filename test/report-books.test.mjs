@@ -217,7 +217,7 @@ export default async function run({ port, projectRoot }) {
 
     T.check(
       'the period went in as intended — there is rent, a booking, contributions and both kinds of cost to separate',
-      everything.totalIncome === RENT + BOOKING + UTILITY_RECOVERED + CONTRIBUTION * 2 &&
+      everything.totalIncome === RENT + BOOKING + UTILITY_RECOVERED + CONTRIBUTION &&
         everything.totalExpenditure === STRATA_TOTAL + ISPO_TOTAL,
       `income ${everything.totalIncome}, expenditure ${everything.totalExpenditure}`
     );
@@ -299,9 +299,19 @@ export default async function run({ port, projectRoot }) {
      * is genuinely on both books — see rule 2 and `internalTransfer`'s own note.
      */
     T.check(
-      'income: the corporation’s plus ISPO’s is all of it, with nothing lost and nothing doubled',
-      strata.totalIncome + ispo.totalIncome === everything.totalIncome,
-      `${strata.totalIncome} + ${ispo.totalIncome} vs ${everything.totalIncome}`
+      'income: the corporation’s plus ISPO’s, less the one transfer between the books, is all of it, with nothing lost and nothing doubled',
+      strata.totalIncome + ispo.totalIncome - ispo.internalTransfer === everything.totalIncome,
+      `${strata.totalIncome} + ${ispo.totalIncome} - ${ispo.internalTransfer} vs ${everything.totalIncome}`
+    );
+    /*
+     * Audit, 2026-11-18: the combined statement used to count villa 1's levy as
+     * income on top of the rent it came out of, while the Reports summary above it
+     * counted it once. It is now left off and named, never dropped in silence.
+     */
+    T.check(
+      'the combined statement names the levy ISPO paid over as left off, with its amount',
+      everything.excludedIncome.some(e => /ISPO paid the corporation/.test(e.label) && e.total === ispo.internalTransfer),
+      JSON.stringify(everything.excludedIncome)
     );
     T.check(
       'expenditure: the same, once the one transfer between the books is taken out',

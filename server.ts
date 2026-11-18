@@ -5344,11 +5344,15 @@ app.post(
       // One line on the statement is one receipt. The same bank reference matched to a
       // second receipt means one of them is not on the statement at all.
       const reference = optionalString(body.reference, 120);
-      if (reference && body.confirmSameLine !== true) {
+      if (reference) {
         const twin = db.payments.find(
           p => p.id !== target.id && p.status === 'completed' && !!p.reconciledOn && (p.reconciledReference || '').toLowerCase() === reference.toLowerCase()
         );
-        if (twin) {
+        // Confirming a second receipt against one statement line is an override of a
+        // money check like any other: permission, a reason, an audit line (audit, 2026-11-18).
+        if (twin && body.confirmSameLine === true) {
+          useMoneyOverride(db, req, body, 'confirmSameLine', `bank reference "${reference}" matched to receipt ${target.receiptNo} as well as ${twin.receiptNo}`);
+        } else if (twin) {
           throw new ApiError(
             400,
             `The bank reference "${reference}" is already matched to receipt ${twin.receiptNo}. One line on the statement settles one receipt. ` +

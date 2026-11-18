@@ -55,16 +55,24 @@ export default async function run({ port, projectRoot }) {
     await c.put('/api/units/unit-1', { number: '1', ownerName: 'Owner One', tenantName: 'Tenant One', tenantChangeIntent: 'changeover', status: 'long-term', monthlyRent: 60000, monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1 });
     await c.put('/api/units/unit-2', { number: '2', ownerName: 'Owner Two', status: 'owner-occupied', monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1 });
     await c.put('/api/units/unit-3', { number: '3', ownerName: 'Owner Three', status: 'short-term', monthlyMaintenance: 200, currency: 'USD', maintCurrency: 'USD', maintDueDay: 1 });
+    /*
+     * The levy receipts sit on third-party (owner-occupied) villas. A levy receipt
+     * on one of ISPO's own villas (unit-1, unit-3) is ISPO paying the corporation,
+     * money moving between the two books, and the combined statement no longer
+     * counts it as income (audit, 2026-11-18; see test/audit-financial-ecosystem).
+     */
+    await c.put('/api/units/unit-4', { number: '4', ownerName: 'Owner One', status: 'owner-occupied', monthlyMaintenance: 20000, currency: 'JMD', maintCurrency: 'JMD', maintDueDay: 1 });
+    await c.put('/api/units/unit-5', { number: '5', ownerName: 'Owner Three', status: 'owner-occupied', monthlyMaintenance: 200, currency: 'USD', maintCurrency: 'USD', maintDueDay: 1 });
 
     await c.post('/api/charges/post-month', { monthString: '2026-06' });
 
     /* ---------------- money in ---------------- */
 
-    await recordAndConfirmPayment(c, { unitId: 'unit-1', category: 'Maintenance', amount: 20000, currency: 'JMD', payerName: 'Owner One', method: 'Bank Transfer', date: '2026-06-03' });
+    await recordAndConfirmPayment(c, { unitId: 'unit-4', category: 'Maintenance', amount: 20000, currency: 'JMD', payerName: 'Owner One', method: 'Bank Transfer', date: '2026-06-03' });
     await recordAndConfirmPayment(c, { unitId: 'unit-2', category: 'Maintenance', amount: 20000, currency: 'JMD', payerName: 'Owner Two', method: 'Cash', date: '2026-06-04' });
     await recordAndConfirmPayment(c, { unitId: 'unit-1', category: 'Rent', amount: 60000, currency: 'JMD', payerName: 'Tenant One', method: 'Cash', date: '2026-06-05' });
     await recordAndConfirmPayment(c, { unitId: 'unit-3', category: 'Booking', amount: 900, currency: 'USD', payerName: 'A Guest', method: 'Credit Card', date: '2026-06-08' });
-    await recordAndConfirmPayment(c, { unitId: 'unit-3', category: 'Maintenance', amount: 200, currency: 'USD', payerName: 'Owner Three', method: 'Bank Transfer', date: '2026-06-09' });
+    await recordAndConfirmPayment(c, { unitId: 'unit-5', category: 'Maintenance', amount: 200, currency: 'USD', payerName: 'Owner Three', method: 'Bank Transfer', date: '2026-06-09' });
 
     // Entered but never confirmed: money that has not arrived is not income.
     await c.post('/api/payments', { unitId: 'unit-1', category: 'Rent', amount: 15000, currency: 'JMD', payerName: 'Tenant One', method: 'Cheque', date: '2026-06-20', confirmNoOpenCharge: true });

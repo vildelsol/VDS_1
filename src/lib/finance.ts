@@ -3937,7 +3937,18 @@ export function operatingStatement(
    * half-filtered one.
    */
   const book: ReportBook = options.book ?? 'everything';
-  const payments = paymentsInBook(allPayments, book);
+  /*
+   * On the combined book, the levy ISPO pays on its own villas is money moving
+   * between the two books, not income: it is already inside the rent or booking
+   * it came out of. `consolidateEverything` drops it for the Reports summary on
+   * the same tab; this statement counted it again, so the page reported the
+   * levy twice beside a summary that counted it once (audit, 2026-11-18). Same
+   * rule, same register, and the amount is named under "Not included" below.
+   */
+  const ownVillas = ownAccountUnitIds(units);
+  const isTransferBetweenBooks = (p: Payment): boolean =>
+    book === 'everything' && p.category === 'Maintenance' && ownVillas.has(p.unitId);
+  const payments = paymentsInBook(allPayments, book).filter(p => !isTransferBetweenBooks(p));
   const expenses = expensesInBook(allExpenses, book);
 
   /*
@@ -4017,6 +4028,15 @@ export function operatingStatement(
       continue;
     }
     income.push({ label, lines: visibility === 'itemised' ? lines : [], total, itemised: visibility === 'itemised' });
+  }
+
+  const transferBetweenBooks = netReceivedInPeriod(
+    allPayments.filter(p => p.currency === currency && isTransferBetweenBooks(p)),
+    start,
+    end
+  );
+  if (transferBetweenBooks !== 0) {
+    excludedIncome.push({ label: "Maintenance ISPO paid the corporation on its own villas (already inside rent and bookings)", total: transferBetweenBooks });
   }
 
   const totalIncome = sumMoney(income.map(g => g.total));
