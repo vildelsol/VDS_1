@@ -297,7 +297,8 @@ try {
 }
 
 process.on('exit', () => flushIdempotencyNow());
-for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+// SIGHUP: the console window was closed (Windows); SIGBREAK: Ctrl+Break.
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGBREAK'] as const) {
   process.on(sig, () => {
     flushIdempotencyNow();
     process.exit(0);

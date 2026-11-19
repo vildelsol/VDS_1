@@ -115,7 +115,13 @@ export default async function run({ port, projectRoot }) {
     T.check('the refused copy left the first one\'s lock in place', fs.existsSync(lockFile) && JSON.parse(fs.readFileSync(lockFile, 'utf-8')).pid === held.pid);
 
     await srv.stop();
-    T.check('a clean stop (SIGTERM) releases the lock', !fs.existsSync(lockFile));
+    if (process.platform !== 'win32') {
+      T.check('a clean stop (SIGTERM) releases the lock', !fs.existsSync(lockFile));
+    } else {
+      // Windows has no SIGTERM: kill() is TerminateProcess and no exit handler runs, so
+      // the lock is left behind. What matters is that the next start is not blocked by it.
+      T.check('on Windows a stop leaves the lock naming a process that has gone', !fs.existsSync(lockFile) || !JSON.parse(fs.readFileSync(lockFile, 'utf-8')).pid || JSON.parse(fs.readFileSync(lockFile, 'utf-8')).pid === held.pid);
+    }
 
     srv = await startServer({ port, adminPassword: 'LockTest-1234!', projectRoot, dataDir });
     T.check('the same folder starts again after a clean stop', (await fetch(srv.baseUrl + '/api/health')).ok);
@@ -125,6 +131,37 @@ export default async function run({ port, projectRoot }) {
     srv = await startServer({ port, adminPassword: 'LockTest-1234!', projectRoot, dataDir });
     T.check('a lock left by a dead process is taken over', (await fetch(srv.baseUrl + '/api/health')).ok);
     await srv.stop();
+
+    /*
+     * Pid reuse. Windows hands an old pid to another program quickly, so a lock left
+     * by a stopped app can name a process that is alive and has nothing to do with
+     * us. This test process stands in for it: it is alive and it is not a server.
+     */
+    const past = new Date(Date.now() - 10 * 60 * 1000);
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, startedAt: '2026-01-01T00:00:00.000Z' }));
+    const fresh = await runServerOnce(projectRoot, port + 1000, dataDir);
+    T.check('a lock naming a live process, touched just now, is respected', fresh.code === 3 && fresh.log.includes(`process ${process.pid},`), `code=${fresh.code} ${fresh.log.slice(0, 200)}`);
+    fs.utimesSync(lockFile, past, past);
+    let reused = null;
+    try {
+      reused = await startServer({ port, adminPassword: 'LockTest-1234!', projectRoot, dataDir, env: { VDS_LOCK_HEARTBEAT_MS: '200' } });
+    } catch (err) {
+      reused = null;
+      T.check('a lock naming a live process but untouched for ten minutes is taken over (pid reused)', false, String(err && err.message).slice(0, 200));
+    }
+    if (reused) {
+      T.check('a lock naming a live process but untouched for ten minutes is taken over (pid reused)', (await fetch(reused.baseUrl + '/api/health')).ok);
+      const taken = JSON.parse(fs.readFileSync(lockFile, 'utf-8'));
+      T.check('and the lock now names the new server', taken.pid !== process.pid, JSON.stringify(taken));
+
+      // The holder keeps its lock fresh, so a running copy never looks abandoned.
+      fs.utimesSync(lockFile, past, past);
+      await new Promise(r => setTimeout(r, 1200));
+      const age = Date.now() - fs.statSync(lockFile).mtimeMs;
+      T.check('the running server touches its lock (heartbeat)', age < 1000, `${Math.round(age)} ms old`);
+      await reused.stop();
+    }
+    if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
 
     if (process.platform !== 'win32') {
       // pid 1 exists and cannot be signalled by us: process.kill answers EPERM, which means alive.

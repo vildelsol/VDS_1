@@ -616,6 +616,32 @@ function fsyncDir(dir: string) {
 
 const LOCK_FILE = path.join(DATA_DIR, 'vds.lock');
 let lockHeld = false;
+let lockHeartbeat: NodeJS.Timeout | null = null;
+
+/*
+ * A live pid is not proof the lock is live. On Windows a stopped app never runs
+ * its exit handler (closing the window, a shutdown and TerminateProcess all skip
+ * it), so the lock is left behind; and Windows reuses pids quickly, so after a
+ * restart the old pid often belongs to some other program. Trusting the pid
+ * alone meant the app refused to start until somebody deleted the file. The
+ * holder therefore touches the lock every few seconds, and a lock whose touch is
+ * older than LOCK_STALE_MS is not held by anyone, whatever its pid says.
+ *
+ * The window is generous because a false takeover is the expensive mistake: two
+ * copies on one db.json overwrite each other's receipts. A busy event loop must
+ * never look dead, so it is minutes, not seconds.
+ */
+const LOCK_HEARTBEAT_MS = Math.max(50, Number(process.env.VDS_LOCK_HEARTBEAT_MS) || 5_000);
+const LOCK_STALE_MS = Math.max(LOCK_HEARTBEAT_MS * 4, Number(process.env.VDS_LOCK_STALE_MS) || 120_000);
+
+/** Milliseconds since the lock was last touched; Infinity when it cannot be read. */
+function lockAgeMs(): number {
+  try {
+    return Date.now() - fs.statSync(LOCK_FILE).mtimeMs;
+  } catch {
+    return Infinity;
+  }
+}
 
 /** True when a process with this pid exists. EPERM means it exists but is not ours (always so for services on Windows). */
 function pidAlive(pid: number): boolean {
@@ -650,11 +676,21 @@ export function acquireDataDirLock(): void {
         fs.closeSync(fd);
       }
       lockHeld = true;
+      lockHeartbeat = setInterval(() => {
+        try {
+          const now = new Date();
+          fs.utimesSync(LOCK_FILE, now, now);
+        } catch {
+          /* The next start judges by pid and age; nothing more can be done here. */
+        }
+      }, LOCK_HEARTBEAT_MS);
+      if (typeof lockHeartbeat.unref === 'function') lockHeartbeat.unref();
       process.on('exit', releaseDataDirLock);
       // A signal exits through process.exit, which runs the release above. Checked after
       // start-up so the server's own handlers (which flush first) are not pre-empted.
       setImmediate(() => {
-        for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+        // SIGHUP is closing the console window on Windows, SIGBREAK is Ctrl+Break.
+        for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const) {
           if (process.listenerCount(sig) === 0) process.on(sig, () => process.exit(0));
         }
       });
@@ -668,18 +704,11 @@ export function acquireDataDirLock(): void {
     } catch {
       // Empty or half-written: the holder died while writing it, or is writing it right now.
       // Give a live writer a moment before treating it as stale.
-      const age = (() => {
-        try {
-          return Date.now() - fs.statSync(LOCK_FILE).mtimeMs;
-        } catch {
-          return Infinity;
-        }
-      })();
-      if (age < 2000) {
+      if (lockAgeMs() < 2000) {
         throw new DataDirLockedError(`Another copy of the app is starting on this data folder (${DATA_DIR}). Close it first.`);
       }
     }
-    if (holder.pid && pidAlive(holder.pid)) {
+    if (holder.pid && pidAlive(holder.pid) && lockAgeMs() < LOCK_STALE_MS) {
       throw new DataDirLockedError(
         `Another copy of the app is already running on this data folder (${DATA_DIR}): process ${holder.pid}, started ${holder.startedAt || 'at an unknown time'}. ` +
           'Close it first. Two copies would overwrite each other\'s records.'
@@ -697,6 +726,8 @@ export function acquireDataDirLock(): void {
 
 export function releaseDataDirLock(): void {
   if (!lockHeld) return;
+  if (lockHeartbeat) clearInterval(lockHeartbeat);
+  lockHeartbeat = null;
   try {
     const holder = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
     if (holder.pid === process.pid) fs.unlinkSync(LOCK_FILE);
