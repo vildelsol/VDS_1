@@ -59,7 +59,7 @@ import {
 import { bankItems, itemOnBankLine } from './src/lib/bankRec';
 import { ADMIN_GRANTED_PERMISSIONS, PERMISSION_LABELS } from './src/types';
 import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
-import { formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
+import { dayOfTimestamp, formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
 import { accountBalance, bookingsOverlap, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
 import { billingBacklog, monthsToPost } from './src/lib/billingCalendar';
 import { FEE_CODES, FEE_MAX, levyChangeInForce, levyForMonth, monthsAffectedBy } from './src/lib/feeSchedule';
@@ -1453,6 +1453,7 @@ app.post(
           if (!rolePermissions[role]) continue;
           const clean: RolePermissions = { ...noPermissions() };
           const existing = db.settings.rolePermissions?.[role];
+          const VETO_ROLE_NAME: Record<string, string> = { FINANCE_OFFICER: 'Finance Officer', JUNIOR_OFFICER: 'Junior Officer' };
           for (const key of Object.keys(clean) as (keyof RolePermissions)[]) {
             // A key the client did not send keeps its stored value rather than
             // becoming false: a browser still running a bundle from before a new
@@ -1463,13 +1464,22 @@ app.post(
                 ? !!existing[key]
                 : !!rolePermissions[role][key];
           }
-          // Veto power carries manage_settings. Omitted by a stale client, it keeps
-          // its stored value rather than silently switching off; and the Junior
-          // Officer desk can be given it only by an Administrator.
+          // Veto power carries manage_settings, which includes this permission
+          // matrix: whoever holds it can hand out every other permission. So it is
+          // given AND withdrawn by an Administrator only, for every role (a Manager
+          // could otherwise make the Finance Officer a second settings manager, or
+          // strip a veto the Administrator gave). Omitted by a stale client, it
+          // keeps its stored value rather than silently switching off. A Manager
+          // already holds settings authority, so their flag changes nothing.
           clean.hasVetoPower =
             rolePermissions[role].hasVetoPower === undefined ? !!existing?.hasVetoPower : !!rolePermissions[role].hasVetoPower;
-          if (role === 'JUNIOR_OFFICER' && clean.hasVetoPower && !existing?.hasVetoPower && !can(req.auth!, 'manage_users')) {
-            throw new ApiError(403, 'Only an administrator can give the Junior Officer veto power. Nothing was saved.');
+          if (role !== 'MANAGER' && clean.hasVetoPower !== !!existing?.hasVetoPower && !can(req.auth!, 'manage_users')) {
+            throw new ApiError(
+              403,
+              clean.hasVetoPower
+                ? `Only an administrator can give the ${VETO_ROLE_NAME[role] || role} veto power. Nothing was saved.`
+                : `Only an administrator can withdraw veto power from the ${VETO_ROLE_NAME[role] || role}. Nothing was saved.`
+            );
           }
           // An override on a money check is granted by an Administrator only, both ways.
           for (const key of ADMIN_GRANTED_PERMISSIONS) {
@@ -3694,9 +3704,15 @@ export async function runAutomaticPosting(asOf: string = today()): Promise<AutoP
    * "no future months" guard is no help because it reads the same wrong clock.
    * A clock AHEAD of the records is ordinary — that is every Monday morning.
    */
-  if (state.newestRecord && asOf < state.newestRecord.slice(0, 10)) {
+  /*
+   * Records are stamped in UTC; `asOf` is the local day. Compare like with like:
+   * slicing the UTC stamp made every evening after 19:00 in Jamaica (UTC-5) look
+   * like a clock behind the records, and billing held itself back until midnight.
+   */
+  const newestDay = state.newestRecord ? dayOfTimestamp(state.newestRecord) : '';
+  if (newestDay && asOf < newestDay) {
     const held =
-      `This machine's date is ${asOf}, which is before the newest record on file (${state.newestRecord.slice(0, 10)}). ` +
+      `This machine's date is ${asOf}, which is before the newest record on file (${newestDay}). ` +
       'Nothing was billed. Correct the date, or check that these are the right records for this machine.';
     await reportAutoPostHold(`clock:${asOf}`, held, asOf);
     return { posted: [], created: 0, held };
@@ -6175,7 +6191,7 @@ app.put(
       if (original.status === 'void') {
         throw new ApiError(
           400,
-          `That cost was taken back on ${(original.voidedAt || '').substring(0, 10)} and cannot be edited. ` +
+          `That cost was taken back on ${dayOfTimestamp(original.voidedAt)} and cannot be edited. ` +
             `If it is owed after all, log it again as a new expense.`
         );
       }

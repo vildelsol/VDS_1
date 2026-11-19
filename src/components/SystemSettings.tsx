@@ -311,6 +311,38 @@ function PermissionsPanel({
                   ))}
                 </tr>
               ))}
+              {/*
+                Veto power is not in PERMISSION_KEYS: it is not a task permission but
+                settings authority (this matrix, staff details, feeds, the backup
+                folder). Whoever holds it can hand out every other permission, so only
+                an Administrator gives or withdraws it; the server refuses anyone else.
+                A Manager already holds it by role, so their column says so.
+              */}
+              <tr className="bg-amber-50/30 hover:bg-amber-50/60">
+                <td className="p-4">
+                  <span className="font-medium text-slate-800">Veto power: change System Settings</span>
+                  <span className="mt-0.5 block text-[10px] text-amber-700">
+                    Lets this role change these permissions, staff details, calendar feeds and the backup folder. Only an
+                    Administrator can give or withdraw it. It never allows managing users or restoring a backup.
+                  </span>
+                </td>
+                {EDITABLE_ROLES.map(role => (
+                  <td key={role} className="p-4 text-center">
+                    {role === 'MANAGER' ? (
+                      <span className="font-mono text-[10px] text-slate-500">Always</span>
+                    ) : (
+                      <input
+                        type="checkbox"
+                        checked={!!draft[role].hasVetoPower}
+                        onChange={() => toggle(role, 'hasVetoPower')}
+                        disabled={!isAdmin}
+                        aria-label={`Veto power for ${ROLE_LABELS[role]}`}
+                        className="h-4 w-4 cursor-pointer rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    )}
+                  </td>
+                ))}
+              </tr>
             </tbody>
           </table>
         </TableScroller>

@@ -19,6 +19,7 @@ const REQUIRES = {
   'GET /api/backup/status': 'take_backups', 'GET /api/backup/drives': 'manage_settings', 'POST /api/backup/check-folder': 'manage_settings',
   'POST /api/backup/run': 'take_backups', 'GET /api/backup/download': 'take_backups', 'POST /api/backup/restore': 'admin_only',
   'POST /api/settings': 'manage_settings',
+  'POST /api/units/:id/fee-schedule': 'edit_unit', 'DELETE /api/units/:id/fee-schedule/:month': 'edit_unit', 'POST /api/fee-schedule': 'edit_unit',
   'PUT /api/tenancies/:id': 'edit_unit', 'POST /api/tenancies/:id/deposit': 'record_payment', 'POST /api/tenancies/:id/deposit/settle': 'reverse_payment',
   'POST /api/tenancies/:id/evict': 'reverse_payment', 'PUT /api/units/:id': 'edit_unit',
   'POST /api/charges/post-month': 'post_charges', 'POST /api/charges/restate-rent': 'modify_settled', 'POST /api/payments/restate-maintenance-receipts': 'modify_settled',
@@ -132,8 +133,9 @@ export default async function run({ port, projectRoot }) {
 
     /* (E) a Manager (settings power) cannot lift anyone to manage users or restore */
     await env.admin.post('/api/settings', { rolePermissions: { JUNIOR_OFFICER: { ...none, recordPayments: true, hasVetoPower: false } } });
-    const grant = await env.manager.post('/api/settings', { rolePermissions: { FINANCE_OFFICER: { ...rolePerms.FINANCE_OFFICER, hasVetoPower: true } } });
-    T.check('(setup) manager can grant veto power to finance role', grant.status === 200);
+    // Only an Administrator gives veto power (test/veto-power pins the refusal for a Manager).
+    const grant = await env.admin.post('/api/settings', { rolePermissions: { FINANCE_OFFICER: { ...rolePerms.FINANCE_OFFICER, hasVetoPower: true } } });
+    T.check('(setup) administrator can grant veto power to finance role', grant.status === 200);
     T.check('even with veto power a finance officer cannot manage users', (await env.finance.post('/api/users', { name: 'X', username: 'xx', role: 'JUNIOR_OFFICER', password: 'Sneaky-1111!a' })).status === 403);
     const restore = await env.finance.post('/api/backup/restore', { snapshot: {} });
     T.check('even with veto power a finance officer cannot restore a backup', restore.status === 403, `status ${restore.status}`);
