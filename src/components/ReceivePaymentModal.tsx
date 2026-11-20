@@ -18,17 +18,20 @@
 
 import React, { useState } from 'react';
 import {
+  Booking,
   Charge,
   Currency,
   PAYMENT_METHODS,
   Payment,
   PaymentMethod,
   Unit,
+  UtilityReading,
   getUnitDisplayName
 } from '../types';
 import { AccountBalance, accountBalance, chargeAmount, chargeCurrency } from '../lib/finance';
 import { formatMoneyLong } from '../lib/money';
-import { formatMonthLabel, today } from '../lib/dates';
+import { formatDayLabel, formatMonthLabel, today } from '../lib/dates';
+import { stayMoney } from '../lib/stays';
 import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, errorMessage } from '../lib/api';
 import {
   AlreadySettledNote, AdvancePaymentToggle,
@@ -42,10 +45,58 @@ import {
   monoInputClass
 } from './ui';
 
+/**
+ * Which stay a Booking receipt pays toward.
+ *
+ * Without it a guest's balance paid on arrival was a receipt nothing tied to the
+ * reservation, so the stay went on reading as owing (QA, 2026-11-19). Only the
+ * villa's stays in the receipt's currency are offered; the server checks the
+ * same. Shared by every form that records or corrects a receipt.
+ */
+export function StayLinkField({
+  bookings,
+  payments,
+  unitId,
+  currency,
+  value,
+  onChange,
+  id = 'stay-link'
+}: {
+  bookings: Booking[];
+  payments: Payment[];
+  unitId: string;
+  currency: Currency;
+  value: string;
+  onChange: (next: string) => void;
+  id?: string;
+}) {
+  const stays = bookings
+    .filter(b => b.unitId === unitId && b.currency === currency && (b.status !== 'cancelled' || b.id === value) && b.source !== 'Blocked' && b.source !== 'Unavailable')
+    .sort((a, b) => b.checkIn.localeCompare(a.checkIn));
+  return (
+    <Field label="For which stay" htmlFor={id} hint="Ties this receipt to the reservation, so the stay's balance goes down.">
+      <select id={id} value={value} onChange={e => onChange(e.target.value)} className={inputClass}>
+        <option value="">Not linked to a reservation</option>
+        {stays.map(b => {
+          const money = stayMoney(b, payments);
+          return (
+            <option key={b.id} value={b.id}>
+              {b.guestName}, {formatDayLabel(b.checkIn)} to {formatDayLabel(b.checkOut)}
+              {b.amount > 0 ? `, ${money.balance > 0 ? `${formatMoneyLong(money.balance, b.currency)} still due` : 'paid'}` : ''}
+            </option>
+          );
+        })}
+      </select>
+    </Field>
+  );
+}
+
 export default function ReceivePaymentModal({
   units,
   charges,
   payments,
+  bookings = [],
+  utilities = [],
   account,
   onClose,
   onSubmit
@@ -53,10 +104,14 @@ export default function ReceivePaymentModal({
   units: Unit[];
   charges: Charge[];
   payments: Payment[];
+  bookings?: Booking[];
+  /** Open utility bills, so a utility receipt defaults to the bill's currency. */
+  utilities?: UtilityReading[];
   account: AccountBalance | null;
   onClose: () => void;
   onSubmit: (payload: Record<string, unknown>) => Promise<void>;
 }) {
+  const [forBookingId, setForBookingId] = useState('');
   const [unitId, setUnitId] = useState(account?.unit.id || '');
   const [category, setCategory] = useState<'Rent' | 'Maintenance' | 'Booking' | 'Utility' | 'Other'>(account?.category || 'Maintenance');
   const [payerName, setPayerName] = useState(account ? account.unpaidCharges[0]?.payerName || '' : '');
@@ -130,6 +185,14 @@ export default function ReceivePaymentModal({
       // as a figure someone has already checked. Leave it empty so it asks to be
       // filled in — the submit refuses zero anyway.
       setAmount(suggested > 0 ? String(suggested) : '');
+    } else if (nextCategory === 'Utility') {
+      // A utility is recovered in the currency it was billed in: the villa's open
+      // bill if there is one, else the currency its levy is billed in. The rent
+      // currency was the default, so a US$-let villa's J$ bill was offered in US$.
+      const openBill = utilities
+        .filter(b => b.unitId === u.id && b.status === 'unpaid')
+        .sort((a, b) => a.billingPeriod.localeCompare(b.billingPeriod))[0];
+      setCurrency(openBill ? openBill.currency : u.maintCurrency || u.currency);
     } else {
       setCurrency(u.currency);
     }
@@ -170,6 +233,7 @@ export default function ReceivePaymentModal({
         confirmNoOpenCharge: confirmNoCharge,
         confirmAlreadySettled,
         advancePayment: advancePayment && (category === 'Rent' || category === 'Maintenance'),
+        forBookingId: category === 'Booking' && forBookingId ? forBookingId : undefined,
         confirmDuplicate,
         overrideReason: overriding ? overrideReason.trim() : undefined
       });
@@ -278,6 +342,22 @@ export default function ReceivePaymentModal({
               <>Nothing is outstanding on this account. Anything recorded here will sit as a credit against future billing.</>
             )}
           </div>
+        )}
+
+        {category === 'Booking' && unitId && (
+          <StayLinkField
+            id="qr-stay"
+            bookings={bookings}
+            payments={payments}
+            unitId={unitId}
+            currency={currency}
+            value={forBookingId}
+            onChange={next => {
+              setForBookingId(next);
+              const stay = bookings.find(b => b.id === next);
+              if (stay && !payerName) setPayerName(stay.guestName);
+            }}
+          />
         )}
 
         <Field label="Payer name" htmlFor="qr-payer" required>

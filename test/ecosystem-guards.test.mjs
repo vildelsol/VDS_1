@@ -137,7 +137,7 @@ export default async function run({ port, projectRoot }) {
 
       const refund = await c2.post(`/api/payments/${p3}/refund`, { amount: 100, reason: 'overpaid', refundedOn: localToday() });
       T.check('a refund is gated the same way', refund.status === 403 && refund.body?.code === 'cosign-required', `${refund.status} ${refund.body?.code}`);
-      const edit = await c2.put(`/api/payments/${p4}`, { amount: 4445 });
+      const edit = await c2.put(`/api/payments/${p4}`, { reason: 'corrected in test', amount: 4445 });
       T.check('so is a correction to a received receipt', edit.status === 403 && edit.body?.code === 'cosign-required', `${edit.status} ${edit.body?.code}`);
 
       let locked = null;

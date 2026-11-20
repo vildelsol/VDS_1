@@ -413,13 +413,14 @@ export default async function run({ port, projectRoot }) {
      * ================================================================ */
 
     T.check(
+      // Villa 4 is ISPO's and took J$ rent, so it is on the J$ report since 2026-11-19.
       'only the villas the corporation owns and lets appear',
-      jmd.byVilla.map(v => v.villa).join(',') === 'Villa Unit 1',
+      jmd.byVilla.map(v => v.villa).sort().join(',') === 'Villa Unit 1,Villa Unit 4',
       jmd.byVilla.map(v => v.villa).join(',')
     );
     T.check(
       'a villa that is not VDS’s own contributes nothing to any figure',
-      jmd.totalRentReceived === 240000 && jmd.totalMaintenancePaid === 120000,
+      jmd.totalRentReceived === 280000 && jmd.totalMaintenancePaid === 120000,
       `rent ${jmd.totalRentReceived}, maintenance ${jmd.totalMaintenancePaid}`
     );
     T.check('and none of its money leaks into the shortfall', jmd.totalShortfall === 40000, String(jmd.totalShortfall));
@@ -475,7 +476,8 @@ export default async function run({ port, projectRoot }) {
     );
     T.check(
       'the by-month view names which villas were empty',
-      jmd.byMonth.find(m => m.month === '2026-06').vacantVillas.join(',') === 'Villa Unit 1',
+      // Villa 4 is ISPO's and stood empty too; it is on the J$ report since 2026-11-19.
+      jmd.byMonth.find(m => m.month === '2026-06').vacantVillas.join(',') === 'Villa Unit 1,Villa Unit 4',
       jmd.byMonth.find(m => m.month === '2026-06').vacantVillas.join(',')
     );
 
@@ -536,8 +538,8 @@ export default async function run({ port, projectRoot }) {
       `${usd.totalShortStayReceived} / ${usd.totalEarned}`
     );
     T.check(
-      'and the contribution paid is unchanged by any of it',
-      usd.totalMaintenancePaid === 1200,
+      'and the contribution paid is every US$ contribution receipt, Villa 4 included',
+      usd.totalMaintenancePaid === 1350,
       String(usd.totalMaintenancePaid)
     );
 
@@ -545,23 +547,59 @@ export default async function run({ port, projectRoot }) {
      * A villa whose two currencies differ gets no figure at all
      * ================================================================ */
 
+    /*
+     * Ro, 2026-11-19: the J$ report read short stay J$0 while ISPO Operations
+     * showed J$72,000, because every villa whose nominal rent currency differed
+     * from its contribution currency was dropped wholesale. Each receipt now
+     * counts in its own currency; only a gap here with earnings there is set aside.
+     */
+    const v4jmd = jmd.byVilla.find(v => v.villa === 'Villa Unit 4');
     T.check(
-      'a villa taking rent in one currency and billed in another is named, not computed',
-      jmd.currencyNotes.some(n => n.villa === 'Villa Unit 4') && usd.currencyNotes.some(n => n.villa === 'Villa Unit 4'),
-      JSON.stringify(jmd.currencyNotes)
+      'a villa billed in one currency still counts what it earned in the other',
+      !!v4jmd && v4jmd.rentReceived === 40000 && v4jmd.maintenancePaid === 0 && v4jmd.shortfall === 0,
+      JSON.stringify(v4jmd)
     );
+    const v4feb = usd.lines.find(l => l.villa === 'Villa Unit 4' && l.month === '2026-02');
     T.check(
-      'and it is kept out of the rows entirely rather than given half a row',
-      !jmd.byVilla.some(v => v.villa === 'Villa Unit 4') && !usd.byVilla.some(v => v.villa === 'Villa Unit 4'),
-      'Villa Unit 4 was given a row'
+      'its US$ contribution, uncovered in US$ but with J$ earned that month, is no shortfall',
+      !!v4feb && v4feb.maintenancePaid === 150 && v4feb.shortfall === 0 && v4feb.crossCurrency?.gap === 150,
+      JSON.stringify(v4feb)
     );
+    const cross = usd.crossCurrencyMonths.find(n => n.villa === 'Villa Unit 4');
     T.check(
-      'its rent does not inflate the totals it has no contribution to sit against',
-      jmd.totalRentReceived === 240000,
-      String(jmd.totalRentReceived)
+      'and that month is named with both figures, in their own currencies',
+      !!cross && cross.month === '2026-02' && cross.otherCurrency === 'JMD' && cross.otherEarned === 40000 && cross.gap === 150,
+      JSON.stringify(usd.crossCurrencyMonths)
     );
-    const note = jmd.currencyNotes.find(n => n.villa === 'Villa Unit 4');
-    T.check('the note says which currency is which', note.rentCurrency === 'JMD' && note.maintCurrency === 'USD', JSON.stringify(note));
+    T.check('nothing is set aside on the J$ side, where there was no gap', jmd.crossCurrencyMonths.length === 0, JSON.stringify(jmd.crossCurrencyMonths));
+    const v4mar = usd.lines.find(l => l.villa === 'Villa Unit 4' && l.month === '2026-03');
+    T.check('a month with nothing earned in either currency is not set aside', !v4mar?.crossCurrency, JSON.stringify(v4mar));
+
+    /*
+     * Ro's October 2026 case exactly: a short-let villa recorded in US$ took a
+     * J$62,000 booking. ISPO Operations counted it; the out-of-pocket report
+     * read short stay J$0 because it gated booking money on the villa's nominal
+     * currency. Computed in memory so no other figure in this suite moves.
+     */
+    const jmdStay = {
+      id: 'synthetic-jmd-stay', receiptNo: 'T-1', unitId: 'unit-3', unitNumber: '3', category: 'Booking',
+      amount: 62000, currency: 'JMD', date: '2026-03-18', method: 'Cash', payerName: 'Guest',
+      status: 'completed', staffMember: 'test'
+    };
+    const withStay = outOfPocketShortfall(db.units, db.tenancies, db.bookings, [...db.payments, jmdStay], 'JMD', FROM, TO);
+    T.check(
+      'a J$ booking on a villa recorded in US$ counts as J$ short-stay income',
+      withStay.totalShortStayReceived === jmd.totalShortStayReceived + 62000 &&
+        withStay.byVilla.find(v => v.villa === 'Villa Unit 3')?.shortStayReceived === 62000,
+      `${withStay.totalShortStayReceived} vs ${jmd.totalShortStayReceived}`
+    );
+
+    const ops = fin.ispoOperations(db.expenses, [...db.payments, jmdStay], db.units, 'JMD', FROM, TO);
+    T.check(
+      'ISPO Operations does not call that booking income from a villa belonging to somebody else',
+      !ops.unflaggedVillasWithIncome.includes('Villa Unit 3'),
+      JSON.stringify(ops.unflaggedVillasWithIncome)
+    );
 
     /* ================================================================
      * Refunds land in the month the money went back out

@@ -44,6 +44,7 @@ import { ALREADY_SETTLED, POSSIBLE_DUPLICATE, ApiError, CURRENCY_CHANGE, errorMe
 import { openMailDraft } from '../lib/email';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import BookingDeposits from './BookingDeposits';
+import { StayLinkField } from './ReceivePaymentModal';
 import {
   AlreadySettledNote, AdvancePaymentToggle,
   DuplicateEntryNote, OverrideReasonField,
@@ -810,6 +811,8 @@ export default function FinanceHub({
         <RecordPaymentModal
           units={units}
           charges={charges}
+          bookings={bookings}
+          payments={payments}
           initial={payTarget}
           staffName={session.name}
           onClose={() => setPayTarget(null)}
@@ -870,6 +873,8 @@ export default function FinanceHub({
         <PaymentDetailModal
           payment={detailTarget}
           units={units}
+          bookings={bookings}
+          payments={payments}
           canEdit={canModifySettled}
           onClose={() => setDetailTarget(null)}
           onPrint={() => onOpenReceipt(detailTarget)}
@@ -1226,6 +1231,8 @@ function AccountTable({
 function RecordPaymentModal({
   units,
   charges,
+  bookings = [],
+  payments = [],
   initial,
   staffName,
   onClose,
@@ -1233,11 +1240,14 @@ function RecordPaymentModal({
 }: {
   units: Unit[];
   charges: Charge[];
+  bookings?: Booking[];
+  payments?: Payment[];
   initial: { unit: Unit; category: PaymentCategory; amount: number; currency: Currency; receivedNow: boolean };
   staffName: string;
   onClose: () => void;
   onSubmit: (payload: Record<string, unknown>) => Promise<void>;
 }) {
+  const [forBookingId, setForBookingId] = useState('');
   const [unitId, setUnitId] = useState(initial.unit?.id || units[0]?.id || '');
   const [category, setCategory] = useState<PaymentCategory>(initial.category);
   const [payerName, setPayerName] = useState('');
@@ -1358,6 +1368,7 @@ function RecordPaymentModal({
         confirmNoOpenCharge: confirmNoCharge,
         confirmAlreadySettled,
         advancePayment: advancePayment && (category === 'Rent' || category === 'Maintenance'),
+        forBookingId: category === 'Booking' && forBookingId ? forBookingId : undefined,
         confirmDuplicate,
         overrideReason: overriding ? overrideReason.trim() : undefined
       });
@@ -1430,6 +1441,22 @@ function RecordPaymentModal({
             </select>
           </Field>
         </div>
+
+        {category === 'Booking' && unitId && (
+          <StayLinkField
+            id="pm-stay"
+            bookings={bookings}
+            payments={payments}
+            unitId={unitId}
+            currency={currency}
+            value={forBookingId}
+            onChange={next => {
+              setForBookingId(next);
+              const stay = bookings.find(b => b.id === next);
+              if (stay && !payerName) setPayerName(stay.guestName);
+            }}
+          />
+        )}
 
         <Field label="Payer full name" htmlFor="pm-payer" required>
           <input id="pm-payer" type="text" value={payerName} onChange={e => setPayerName(e.target.value)} required className={inputClass} />
@@ -1871,6 +1898,8 @@ function ReversalModal({
 function PaymentDetailModal({
   payment,
   units,
+  bookings = [],
+  payments = [],
   canEdit,
   onClose,
   onPrint,
@@ -1878,6 +1907,8 @@ function PaymentDetailModal({
 }: {
   payment: Payment;
   units: Unit[];
+  bookings?: Booking[];
+  payments?: Payment[];
   canEdit: boolean;
   onClose: () => void;
   onPrint: () => void;
@@ -1893,6 +1924,8 @@ function PaymentDetailModal({
   const [method, setMethod] = useState<PaymentMethod>(payment.method);
   const [reference, setReference] = useState(payment.reference || '');
   const [notes, setNotes] = useState(payment.notes || '');
+  // A received receipt is only corrected with a reason, which the audit trail keeps.
+  const [correctionReason, setCorrectionReason] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   /**
@@ -1906,7 +1939,15 @@ function PaymentDetailModal({
   const [currencyWarning, setCurrencyWarning] = useState('');
   const [confirmCurrency, setConfirmCurrency] = useState(false);
 
-  const locked = payment.status === 'reversed' || !!payment.bookingId || !!payment.utilityId;
+  /*
+   * A reservation's deposit receipt can be corrected here for when and how the
+   * money came (it used to be locked, so a deposit dated the day it was typed
+   * could never be moved to the day it arrived); what it is for and how much
+   * follow the reservation and stay read-only.
+   */
+  const depositReceipt = !!payment.bookingId;
+  const locked = payment.status === 'reversed' || !!payment.utilityId;
+  const [forBookingId, setForBookingId] = useState(payment.forBookingId || '');
   const currencyChanged = currency !== payment.currency;
   React.useEffect(() => {
     if (!currencyChanged) {
@@ -1922,6 +1963,9 @@ function PaymentDetailModal({
     try {
       await onSave({
         payerName, unitId, category, amount: Number(amount), currency, date, method, reference, notes,
+        ...(payment.status === 'completed' ? { reason: correctionReason.trim() } : {}),
+        ...(!depositReceipt && category === 'Booking' ? { forBookingId } : {}),
+        ...(!depositReceipt && category !== 'Booking' && payment.forBookingId ? { forBookingId: '' } : {}),
         ...(confirmCurrency ? { confirmCurrencyChange: true } : {})
       });
     } catch (err) {
@@ -1974,10 +2018,19 @@ function PaymentDetailModal({
             </ErrorNote>
           )}
           {locked && payment.status !== 'reversed' && (
+            <InfoNote>This receipt was generated when a utility bill was settled. Void it to reopen that bill.</InfoNote>
+          )}
+          {depositReceipt && payment.status !== 'reversed' && (
             <InfoNote>
-              {payment.bookingId
-                ? 'This receipt is generated from a reservation deposit. Edit the reservation and the receipt follows automatically.'
-                : 'This receipt was generated when a utility bill was settled. Void it to reopen that bill.'}
+              This is a reservation&apos;s deposit receipt. Its amount, currency, villa and guest follow the reservation. The date
+              received, method, reference and notes can be corrected here.
+            </InfoNote>
+          )}
+          {!depositReceipt && payment.category === 'Booking' && payment.status !== 'reversed' && (
+            <InfoNote tone="amber">
+              {payment.forBookingId
+                ? `Paid toward ${bookings.find(b => b.id === payment.forBookingId)?.guestName || 'a reservation'}'s stay.`
+                : 'Not linked to a reservation, so no stay’s balance counts it. Correct this record to say which stay it paid for.'}
             </InfoNote>
           )}
 
@@ -2054,12 +2107,16 @@ function PaymentDetailModal({
             void status cannot be changed here, void the receipt and re-enter it if the payment itself was wrong.
           </InfoNote>
 
+          {!depositReceipt && category === 'Booking' && (
+            <StayLinkField id="pe-stay" bookings={bookings} payments={payments} unitId={unitId} currency={currency} value={forBookingId} onChange={setForBookingId} />
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <Field label="Payer name" htmlFor="pe-payer" required>
-              <input id="pe-payer" type="text" value={payerName} onChange={e => setPayerName(e.target.value)} required className={inputClass} />
+              <input id="pe-payer" type="text" value={payerName} disabled={depositReceipt} onChange={e => setPayerName(e.target.value)} required className={inputClass} />
             </Field>
             <Field label="Villa" htmlFor="pe-unit" required>
-              <select id="pe-unit" value={unitId} onChange={e => setUnitId(e.target.value)} required className={inputClass}>
+              <select id="pe-unit" value={unitId} disabled={depositReceipt} onChange={e => setUnitId(e.target.value)} required className={inputClass}>
                 {units.map(u => (
                   <option key={u.id} value={u.id}>
                     {getUnitDisplayName(u.number)}
@@ -2071,7 +2128,7 @@ function PaymentDetailModal({
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Category" htmlFor="pe-cat" required>
-              <select id="pe-cat" value={category} onChange={e => setCategory(e.target.value as PaymentCategory)} className={inputClass}>
+              <select id="pe-cat" value={category} disabled={depositReceipt} onChange={e => setCategory(e.target.value as PaymentCategory)} className={inputClass}>
                 {PAYMENT_CATEGORIES.map(c => (
                   <option key={c} value={c}>
                     {c}
@@ -2080,7 +2137,7 @@ function PaymentDetailModal({
               </select>
             </Field>
             <Field label="Amount" htmlFor="pe-amount" required>
-              <input id="pe-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
+              <input id="pe-amount" type="number" min="0.01" step="0.01" value={amount} disabled={depositReceipt} onChange={e => setAmount(e.target.value)} required className={monoInputClass} />
             </Field>
           </div>
 
@@ -2096,6 +2153,7 @@ function PaymentDetailModal({
               <select
                 id="pe-cur"
                 value={currency}
+                disabled={depositReceipt}
                 onChange={e => setCurrency(e.target.value as Currency)}
                 className={`${inputClass} ${currencyChanged ? 'border-red-300 bg-red-50' : ''}`}
               >
@@ -2126,6 +2184,12 @@ function PaymentDetailModal({
           <Field label="Notes" htmlFor="pe-notes">
             <textarea id="pe-notes" rows={3} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} />
           </Field>
+
+          {payment.status === 'completed' && (
+            <Field label="Reason for the correction" htmlFor="pe-reason" required hint="At least 5 characters. Kept in the audit trail.">
+              <input id="pe-reason" type="text" value={correctionReason} minLength={5} maxLength={500} onChange={e => setCorrectionReason(e.target.value)} required className={inputClass} />
+            </Field>
+          )}
         </form>
       )}
     </Modal>

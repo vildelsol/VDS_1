@@ -319,18 +319,17 @@ export default function ShortfallReport({ units, tenancies, bookings, payments, 
         ]);
       }
 
-      if (r.currencyNotes.length > 0) {
+      if (r.crossCurrencyMonths.length > 0) {
         rows.push([cell.blank()]);
         rows.push([cell.section('No shortfall computed', 8)]);
-        for (const n of r.currencyNotes) {
-          rows.push([cell.text(n.villa), cell.text(`rent in ${n.rentCurrency}, contribution in ${n.maintCurrency}`)]);
+        for (const n of r.crossCurrencyMonths) {
+          rows.push([
+            cell.text(n.villa),
+            cell.text(formatMonthLabel(n.month)),
+            cell.text(crossCurrencyText(n, r.currency))
+          ]);
         }
-        rows.push([
-          cell.note(
-            'Rent and contribution are in different currencies, so subtracting one from the other would invent a figure. Named here rather than left out.',
-            8
-          )
-        ]);
+        rows.push([cell.note(CROSS_CURRENCY_NOTE, 8)]);
       }
 
       rows.push([cell.blank()]);
@@ -724,6 +723,16 @@ function FundedList({ report: r }: { report: Report }) {
   );
 }
 
+const CROSS_CURRENCY_NOTE =
+  'Counted as no shortfall: whether earnings in one currency covered a contribution paid in the other needs an exchange rate, and this report never converts. Named so it is not lost.';
+
+function crossCurrencyText(n: Report['crossCurrencyMonths'][number], currency: Currency): string {
+  return (
+    `paid ${formatMoney(n.gap, currency)} more contribution than it earned in ${currency}, ` +
+    `and earned ${formatMoney(n.otherEarned, n.otherCurrency)} in ${n.otherCurrency} the same month.`
+  );
+}
+
 /**
  * What the report does not count, said on the page.
  *
@@ -733,12 +742,10 @@ function FundedList({ report: r }: { report: Report }) {
  * here rather than silently dropped.
  */
 function Caveats({ report: r }: { report: Report }) {
-  const parts: string[] = [];
-  for (const n of r.currencyNotes) {
-    parts.push(
-      `${n.villa} takes rent in ${n.rentCurrency} and is billed its contribution in ${n.maintCurrency}, so no shortfall is computed for it, subtracting one currency from the other would invent a figure.`
-    );
-  }
+  const parts: string[] = r.crossCurrencyMonths.map(
+    n => `${n.villa}, ${formatMonthLabel(n.month)}: ${crossCurrencyText(n, r.currency)}`
+  );
+  if (parts.length > 0) parts.push(CROSS_CURRENCY_NOTE);
   if (parts.length === 0) return null;
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-2 font-mono text-[10px] leading-relaxed text-slate-500">
@@ -916,16 +923,20 @@ export function ShortfallDocument({
             </>
           )}
 
-          {r.currencyNotes.length > 0 && (
+          {r.crossCurrencyMonths.length > 0 && (
             <div className="mt-2 rounded border border-slate-300 p-2 text-[9px] leading-relaxed">
-              {r.currencyNotes.map(n => (
-                <p key={n.unitId} className="mt-1">
-                  <strong>No shortfall computed for {n.villa}:</strong> rent is taken in {n.rentCurrency} and the contribution is billed in{' '}
-                  {n.maintCurrency}. Subtracting one from the other would invent a figure.
+              {r.crossCurrencyMonths.map(n => (
+                <p key={`${n.unitId}|${n.month}`} className="mt-1">
+                  <strong>
+                    No shortfall computed for {n.villa}, {formatMonthLabel(n.month)}:
+                  </strong>{' '}
+                  {crossCurrencyText(n, r.currency)}
                 </p>
               ))}
+              <p className="mt-1">{CROSS_CURRENCY_NOTE}</p>
             </div>
           )}
+
         </section>
       ))}
 

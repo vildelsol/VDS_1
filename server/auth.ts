@@ -311,6 +311,7 @@ export type GatedAction =
   | 'reverse_payment'
   | 'modify_settled'
   | 'take_backups'
+  | 'reconcile_bank'
   | 'override_money_guard'
   | 'manage_settings'
   | 'manage_users';
@@ -327,6 +328,7 @@ const ACTION_TO_PERMISSION: Record<Exclude<GatedAction, 'manage_settings' | 'man
   reverse_payment: 'reversePayments',
   modify_settled: 'modifySettledRecords',
   take_backups: 'takeBackups',
+  reconcile_bank: 'reconcileBank',
   override_money_guard: 'overrideMoneyGuards'
 };
 
@@ -351,6 +353,7 @@ export const ACTION_DENIED_MESSAGE: Record<GatedAction, string> = {
   reverse_payment: 'Your role is not permitted to reverse payments or void receipts.',
   modify_settled: 'Your role is not permitted to modify settled ledger records.',
   take_backups: 'Your role is not permitted to take or download backups.',
+  reconcile_bank: 'Your role is not permitted to tick items off against the bank statement.',
   override_money_guard: 'Only an Administrator can override this check. Ask one to record it, or correct the entry so the check passes.',
   manage_settings: 'Only Administrators and Managers can change system settings.',
   manage_users: 'Only Administrators can manage staff accounts.'

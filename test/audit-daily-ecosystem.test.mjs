@@ -156,14 +156,15 @@ export default async function run({ port, projectRoot }) {
     ok('full refund of a stay', await c.post(`/api/payments/${receiptOf(g5).id}/refund`, { amount: 20000, reason: 'Guest cancelled in time', method: 'Cash', refundedOn: TODAY }));
 
     /* ---------- the refunded stay can still be put right and cancelled ---------- */
-    const edit5 = await c.put(`/api/bookings/${g5.id}`, { notes: 'Guest phoned to cancel' });
+    const edit5 = await c.put(`/api/bookings/${g5.id}`, { editReason: 'Test correction', notes: 'Guest phoned to cancel' });
     T.check('a fully refunded reservation can still be edited (a note, a phone number)', edit5.status === 200, `${edit5.status} ${JSON.stringify(edit5.body).slice(0, 220)}`);
-    const cancel5 = await c.put(`/api/bookings/${g5.id}`, { status: 'cancelled' });
+    const cancel5 = await c.put(`/api/bookings/${g5.id}`, { editReason: 'Test correction', status: 'cancelled' });
     T.check('and cancelled, so its nights stop counting as sold', cancel5.status === 200, `${cancel5.status} ${JSON.stringify(cancel5.body).slice(0, 220)}`);
     db = (await c.get('/api/db')).body;
     const r5 = db.payments.find(p => p.bookingId === g5.id);
     T.check('its receipt and refund both stand: money in and money back, netting to nothing', r5 && r5.status === 'completed' && cents(r5.amount) === cents(r5.refundedAmount), JSON.stringify(r5 && { s: r5.status, a: r5.amount, r: r5.refundedAmount }));
-    const cancel4 = await c.put(`/api/bookings/${g4.id}`, { status: 'cancelled' });
+    // Hunt, 2026-11-20: a cancel with money held must say what happens to it; asking to void is still refused.
+    const cancel4 = await c.put(`/api/bookings/${g4.id}`, { editReason: 'Test correction', status: 'cancelled', depositOutcome: 'void' });
     T.check('a part-refunded reservation still holding money is not voided by cancelling it', cancel4.status === 400 && cancel4.body?.code === 'deposit-receipt-already-refunded', `${cancel4.status} ${JSON.stringify(cancel4.body).slice(0, 220)}`);
     T.check('and the refusal says what to do: refund the rest first', /Refund the rest/.test(cancel4.body?.error || ''), cancel4.body?.error);
     db = (await c.get('/api/db')).body;
@@ -321,9 +322,10 @@ export default async function run({ port, projectRoot }) {
         - db.payments.filter(p => p.category === 'Booking' && p.status === 'completed' && p.currency === cur && (p.refundedOn || '').startsWith(M0)).reduce((s, p) => s + cents(p.refundedAmount), 0);
       T.check(`${cur}: dashboard bookings received this month = booking receipts less refunds paid out this month`, cents(panel) === rawMonth && dash.includes(`Bookings ${fm(panel, cur)}`), `${panel} vs ${rawMonth / 100}`);
     }
-    const depLine = dash.match(/Deposits received (\S+) USD (\S+) JMD/) || [];
+    // Read from the receipts since QA 2026-11-19 (stayMoney): deposits and later payments, net of refunds.
+    const depLine = dash.match(/Paid toward stays (\S+) USD (\S+) JMD/) || [];
     const dep = cur => live.filter(b => b.currency === cur).reduce((s, b) => s + cents(b.depositPaid), 0) / 100;
-    T.check('the dashboard calls stay part-payments what they are, "Deposits received", matching the bookings report', depLine[1] === fm(dep('USD'), 'USD') && depLine[2] === fm(dep('JMD'), 'JMD') && !/Deposits held/.test(dash), depLine[0]);
+    T.check('the dashboard calls stay part-payments what they are, "Paid toward stays", and they equal the receipts', depLine[1] === fm(dep('USD'), 'USD') && depLine[2] === fm(dep('JMD'), 'JMD') && !/Deposits held/.test(dash), depLine[0]);
     const damageHeld = db.bookings.filter(b => b.damageDepositAmount && !b.damageDepositReturnedOn).reduce((s, b) => s + cents(b.damageDepositAmount), 0);
     T.check('a damage deposit is held, so the next check means something', damageHeld > 0);
     T.check('no damage deposit is ever a receipt', !db.payments.some(p => /damage/i.test(p.notes || '') && p.category === 'Booking' && !p.bookingId));

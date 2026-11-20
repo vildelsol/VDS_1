@@ -235,7 +235,7 @@ export default async function run({ port, projectRoot }) {
       amount: 6000, refundedOn: '2026-07-20', reason: 'Overpaid maintenance; part returned.'
     });
 
-    const shrunkBelow = await c.put(`/api/payments/${editTarget.body.payment.id}`, { amount: 1000 });
+    const shrunkBelow = await c.put(`/api/payments/${editTarget.body.payment.id}`, { reason: 'corrected in test', amount: 1000 });
     T.check('a refunded receipt cannot be corrected below what was handed back', shrunkBelow.status === 400,
       `status ${shrunkBelow.status}`);
 
@@ -244,15 +244,15 @@ export default async function run({ port, projectRoot }) {
     T.check('so what a receipt is worth can never go negative', edited.amount - (edited.refundedAmount || 0) >= 0,
       `amount ${edited.amount}, refunded ${edited.refundedAmount}`);
 
-    const shrunkToRefund = await c.put(`/api/payments/${editTarget.body.payment.id}`, { amount: 6000 });
+    const shrunkToRefund = await c.put(`/api/payments/${editTarget.body.payment.id}`, { reason: 'corrected in test', amount: 6000 });
     T.check('but it can be corrected down as far as the refunded amount', shrunkToRefund.status === 200,
       String(shrunkToRefund.body?.error || ''));
 
-    const currencyFlip = await c.put(`/api/payments/${editTarget.body.payment.id}`, { currency: 'USD' });
+    const currencyFlip = await c.put(`/api/payments/${editTarget.body.payment.id}`, { reason: 'corrected in test', currency: 'USD' });
     T.check('a refunded receipt cannot change currency — the refund was paid in the original',
       currencyFlip.status === 400);
 
-    const datePush = await c.put(`/api/payments/${editTarget.body.payment.id}`, { date: '2026-07-25' });
+    const datePush = await c.put(`/api/payments/${editTarget.body.payment.id}`, { reason: 'corrected in test', date: '2026-07-25' });
     T.check('and cannot be re-dated to after its own refund', datePush.status === 400);
 
     /* ---------------- changing a receipt's currency is a deliberate act ---------------- */
@@ -270,7 +270,7 @@ export default async function run({ port, projectRoot }) {
       currency: 'JMD', date: '2026-07-13', method: 'Cash'
     });
 
-    const firstAsk = await c.put(`/api/payments/${curTarget.body.payment.id}`, { currency: 'USD' });
+    const firstAsk = await c.put(`/api/payments/${curTarget.body.payment.id}`, { reason: 'corrected in test', currency: 'USD' });
     T.check('changing the currency is refused the first time', firstAsk.status === 400, `status ${firstAsk.status}`);
     T.check('and the refusal carries a code the screen can act on',
       firstAsk.body?.code === 'currency-change-not-confirmed', `code ${firstAsk.body?.code}`);
@@ -281,13 +281,13 @@ export default async function run({ port, projectRoot }) {
     T.check('and nothing was changed by the refused attempt', unchanged.currency === 'JMD');
 
     const confirmed = await c.put(`/api/payments/${curTarget.body.payment.id}`, {
-      currency: 'USD', confirmCurrencyChange: true
+      reason: 'corrected in test', currency: 'USD', confirmCurrencyChange: true
     });
     T.check('confirming it explicitly is allowed', confirmed.status === 200, String(confirmed.body?.error || ''));
     T.check('and the figure is deliberately not converted', confirmed.body?.payment?.amount === 400);
     T.check('the currency really moved', confirmed.body?.payment?.currency === 'USD');
 
-    const otherEdit = await c.put(`/api/payments/${curTarget.body.payment.id}`, { payerName: 'Renamed Payer' });
+    const otherEdit = await c.put(`/api/payments/${curTarget.body.payment.id}`, { reason: 'corrected in test', payerName: 'Renamed Payer' });
     T.check('an ordinary correction that leaves the currency alone still needs no confirmation',
       otherEdit.status === 200, String(otherEdit.body?.error || ''));
 

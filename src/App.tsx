@@ -775,6 +775,7 @@ export default function App() {
           <Bookings
             units={data.units}
             bookings={data.bookings}
+            payments={data.payments}
             settings={settings}
             session={session}
             onAddBooking={payload => mutate(() => api.post<{ booking: Booking }>('/api/bookings', payload).then(r => r.booking))}
@@ -844,7 +845,11 @@ export default function App() {
                       ? `/api/payments/${id}/refund/reconcile`
                       : kind === 'deposit-return'
                         ? `/api/tenancies/${id}/deposit/reconcile`
-                        : `/api/bookings/${id}/damage-deposit/reconcile`,
+                        : kind === 'deposit-received'
+                          ? `/api/tenancies/${id}/deposit-received/reconcile`
+                          : kind === 'damage-deposit-received'
+                            ? `/api/bookings/${id}/damage-deposit-received/reconcile`
+                            : `/api/bookings/${id}/damage-deposit/reconcile`,
                   fields
                 )
               )

@@ -88,7 +88,8 @@ export default async function run({ port, projectRoot }) {
         ledgerRentArrears: sum(ledgerRent.filter(a => a.balance > 0).map(a => a.balance)),
         delinquent: sum(del.map(a => a.balance)),
         monthlyReceived: sum(monthly.map(r => r.contributionsReceived)),
-        monthlyCosts: sum(monthly.map(r => r.costsPaid + r.villaRecharged)),
+        // Villa costs are inside costsPaid since 2026-11-19 (it equals the strata Operating Statement).
+        monthlyCosts: sum(monthly.map(r => r.costsPaid)),
         monthlyOctArrears: monthly[2].arrearsOutstanding,
         ownersPaid: sum(owners.map(s => s.maintenancePaid)),
         ownersOutstanding: sum(owners.map(s => s.maintenanceOutstanding)),
@@ -149,14 +150,14 @@ export default async function run({ port, projectRoot }) {
     eq('annual return expenditure = the records', r.ann.expenditure, rawExp);
     eq('projection expenses = the records', r.proj.expensesPaid, rawExp);
     eq('operations statement: costs paid + recharged to a villa = the records', r.ops.costsPaid + r.ops.villaRecharged, rawExp);
-    eq('monthly reports: costs + recharged add up to the records', r.monthlyCosts, rawExp);
+    eq('monthly reports: costs paid add up to the records', r.monthlyCosts, rawExp);
     eq('operating statement surplus = income - expenditure', r.opSt.surplus, r.opSt.totalIncome - r.opSt.totalExpenditure);
     eq('operating statement income lines add up to its total', sum(r.opSt.income.map(g => g.total)), r.opSt.totalIncome);
 
     // ---- the shortfall report reads the same money ----
     const own = new Set(F.ownAccountUnitIds(r.db.units));
     const ownCash = (cat, ps = r.S) => sum(ps.filter(p => p.status === 'completed' && p.currency === cur && p.category === cat && own.has(p.unitId) && p.date >= from && p.date <= to).map(p => p.amount));
-    console.log('SHORTFALL', JSON.stringify({ rent: r.sf.totalRentReceived, stay: r.sf.totalShortStayReceived, earned: r.sf.totalEarned, maint: r.sf.totalMaintenancePaid, short: r.sf.totalShortfall, own: [...own], ownRent: ownCash('Rent'), ownMaint: ownCash('Maintenance'), noneFlagged: r.sf.noneFlagged, notes: r.sf.currencyNotes }));
+    console.log('SHORTFALL', JSON.stringify({ rent: r.sf.totalRentReceived, stay: r.sf.totalShortStayReceived, earned: r.sf.totalEarned, maint: r.sf.totalMaintenancePaid, short: r.sf.totalShortfall, own: [...own], ownRent: ownCash('Rent'), ownMaint: ownCash('Maintenance'), noneFlagged: r.sf.noneFlagged, notes: r.sf.crossCurrencyMonths }));
     eq('shortfall: rent received = rent in the records on ISPO villas', r.sf.totalRentReceived, ownCash('Rent'));
     eq('shortfall: earnings = rent + short stay', r.sf.totalEarned, r.sf.totalRentReceived + r.sf.totalShortStayReceived);
     eq('shortfall: maintenance paid = maintenance received from ISPO villas (cash + settled from rent)', r.sf.totalMaintenancePaid, ownCash('Maintenance'));

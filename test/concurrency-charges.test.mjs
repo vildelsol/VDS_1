@@ -71,8 +71,8 @@ export default async function run({ port, projectRoot }) {
     // 6. lost update on a payment: parallel PUT of different fields (PUT replaces fields from body, merges rest)
     const p = (await a.post('/api/payments', rent({ amount: 222, confirmAlreadySettled: true, confirmNoOpenCharge: true }))).body.payment;
     rs = await Promise.all([
-      a.put(`/api/payments/${p.id}`, { notes: 'note-from-A' }),
-      b.put(`/api/payments/${p.id}`, { reference: 'ref-from-B' })
+      a.put(`/api/payments/${p.id}`, { reason: 'corrected in test', notes: 'note-from-A' }),
+      b.put(`/api/payments/${p.id}`, { reason: 'corrected in test', reference: 'ref-from-B' })
     ]);
     d = await db();
     const pp = d.payments.find(x => x.id === p.id);

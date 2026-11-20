@@ -290,7 +290,7 @@ export default async function run({ port, projectRoot }) {
       const b3 = await admin.post('/api/bookings', mk('D', '2026-04-02', '2026-04-04'));
       const b3id = b3.body?.booking?.id;
       if (b3id) {
-        const moved = await admin.put(`/api/bookings/${b3id}`, { ...b3.body.booking, checkIn: '2026-03-05', checkOut: '2026-03-07' });
+        const moved = await admin.put(`/api/bookings/${b3id}`, { editReason: 'Test correction', ...b3.body.booking, checkIn: '2026-03-05', checkOut: '2026-03-07' });
         T.check('editing a stay onto another guest\'s dates is refused', is4(moved), `status ${moved.status}`);
         T.check('and it stayed where it was', (await dbOf()).bookings.find(b => b.id === b3id).checkIn === '2026-04-02');
       }
@@ -315,9 +315,9 @@ export default async function run({ port, projectRoot }) {
         T.check('a deposit cannot be taken again after settling', is4(await dd({ amount: 50, currency: 'USD', receivedOn: TODAY })));
         T.check('a junior cannot settle a deposit', (await globalThis.__junior.post(`/api/bookings/${bid}/damage-deposit/settle`, { returnedAmount: 1 })).status === 403);
         // Cancel, then refund bounds.
-        const canc = await admin.put(`/api/bookings/${bid}`, { ...b1.body.booking, status: 'cancelled' });
+        const canc = await admin.put(`/api/bookings/${bid}`, { editReason: 'Test correction', ...b1.body.booking, status: 'cancelled', depositOutcome: 'void' });
         noErr('cancel booking', canc);
-        const reinstate = await admin.put(`/api/bookings/${bid}`, { ...b1.body.booking, status: 'confirmed' });
+        const reinstate = await admin.put(`/api/bookings/${bid}`, { editReason: 'Test correction', ...b1.body.booking, status: 'confirmed' });
         T.check('a cancelled stay cannot be reinstated', is4(reinstate), `status ${reinstate.status}`);
         const ghost = await admin.put('/api/bookings/ghost', mk('G', '2026-06-01', '2026-06-02'));
         T.check('editing a ghost booking is a 404', ghost.status === 404);

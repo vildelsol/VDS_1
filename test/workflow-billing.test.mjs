@@ -157,7 +157,7 @@ export default async function run({ port, projectRoot }) {
     T.check('reversal: the balance goes back up by exactly the receipt, to the cent', ok2(rv) && r2(bal('unit-1', 'Rent') - before) === 12345.67, `${bal('unit-1', 'Rent') - before}`);
     T.check('reversal: the receipt is kept, marked void, with its number, who and why', rvPay.status === 'reversed' && !!rvPay.receiptNo && !!rvPay.reversalReason);
     T.check('reversal: voiding it a second time is refused', (await c.post(`/api/payments/${p2.body.payment.id}/reverse`, { reversalReason: 'again please' })).status >= 400);
-    T.check('reversal: a voided receipt cannot be refunded or edited', (await c.post(`/api/payments/${p2.body.payment.id}/refund`, { amount: 1, refundedOn: TODAY, method: 'Cash', reason: 'x' })).status >= 400 && (await c.put(`/api/payments/${p2.body.payment.id}`, { amount: 5 })).status >= 400);
+    T.check('reversal: a voided receipt cannot be refunded or edited', (await c.post(`/api/payments/${p2.body.payment.id}/refund`, { amount: 1, refundedOn: TODAY, method: 'Cash', reason: 'x' })).status >= 400 && (await c.put(`/api/payments/${p2.body.payment.id}`, { reason: 'corrected in test', amount: 5 })).status >= 400);
 
     /* ---- voided charges and late fees ---- */
     await refresh();
@@ -198,11 +198,11 @@ export default async function run({ port, projectRoot }) {
     await refresh();
     const mp = db.payments.find(p => p.unitId === 'unit-3' && p.status === 'completed');
     const balBefore = bal('unit-3', 'Maintenance');
-    const edit = await c.put(`/api/payments/${mp.id}`, { amount: 10000 });
+    const edit = await c.put(`/api/payments/${mp.id}`, { reason: 'corrected in test', amount: 10000 });
     await refresh();
     const edited = db.payments.find(p => p.id === mp.id);
     T.check('correcting a receipt amount moves the balance by exactly the difference and keeps its number', ok2(edit) && r2(bal('unit-3', 'Maintenance') - balBefore) === 5000 && edited.receiptNo === mp.receiptNo, `${bal('unit-3', 'Maintenance') - balBefore}`);
-    T.check('a receipt cannot be corrected into the future', (await c.put(`/api/payments/${mp.id}`, { date: '2099-01-01' })).status === 400);
+    T.check('a receipt cannot be corrected into the future', (await c.put(`/api/payments/${mp.id}`, { reason: 'corrected in test', date: '2099-01-01' })).status === 400);
     const m1 = await c.post(`/api/payments/${mp.id}/mark-printed`, {});
     const m2 = await c.post(`/api/payments/${mp.id}/mark-printed`, {});
     await refresh();

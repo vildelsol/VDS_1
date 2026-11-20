@@ -15,7 +15,7 @@
 
 import fs from 'fs';
 import { AUDIT_CAP, AUDIT_KEY_FILE, auditKeyPath, sealAuditEntry } from './auditChain';
-import { checkIntegrity, newBlockingFindings } from './integrity';
+import { checkIntegrity, FINGERPRINT_V2, ledgerFingerprint, legacyLedgerFingerprint, newBlockingFindings } from './integrity';
 import path from 'path';
 import { isExternalWindowsDrive, queryWindowsDrives } from './windowsDrives';
 import {
@@ -37,6 +37,7 @@ import {
   RolePermissions
 } from '../src/types';
 import { DEFAULT_FX_RATE_JMD_PER_USD } from '../src/lib/money';
+import { fundForCost, recoveryFundFor, utilityRecoveryBook } from '../src/lib/finance';
 
 export interface StoredUser extends User {
   passwordHash: string;
@@ -73,7 +74,7 @@ export interface Database {
   settings: AppSettings;
 }
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const DATA_DIR = process.env.VDS_DATA_DIR || process.cwd();
 const DB_FILE = path.join(DATA_DIR, 'db.json');
@@ -438,6 +439,7 @@ export function fullPermissions(): RolePermissions {
     viewShortfall: true,
     viewIspoOperations: true,
     takeBackups: true,
+    reconcileBank: true,
     // Not part of the 'full' set: Administrator only unless granted (see RolePermissions).
     overrideMoneyGuards: false
   };
@@ -464,6 +466,9 @@ export function noPermissions(): RolePermissions {
     // Unlike the two above this is NOT granted by default: a copy of every record
     // leaves the machine with it. Managers get it through fullPermissions().
     takeBackups: false,
+    // Granted by default (Ro, 2026-11-20), withdrawable per role in Settings.
+    // Being in this set is what makes an absent value read as granted.
+    reconcileBank: true,
     overrideMoneyGuards: false
   };
 }
@@ -1537,6 +1542,55 @@ export function migrate(db: Database): boolean {
       changed = true;
     }
   });
+
+  /*
+   * Schema 4 (2026-11-19): a utility bill paid on one of ISPO's villas is ISPO's
+   * cost (Ro). Bills already on file were saved under the form's default, the
+   * strata fund, so move them once — by the version, not on every start, so a
+   * villa that changes hands later never drags its old bills between books.
+   */
+  if ((Number(db.schemaVersion) || 0) < 4) {
+    const unitById = new Map(db.units.map(u => [u.id, u]));
+    for (const e of db.expenses) {
+      if (e.fund === 'ispo') continue;
+      if (fundForCost(e.category, unitById.get(e.unitId), 'strata') === 'ispo') {
+        e.fund = 'ispo';
+        note('UPDATE', 'Expense', e.id, `Utility bill on ${e.unitNumber} moved to ISPO's book: a utility paid on an ISPO villa is ISPO's cost (Ro, 2026-11-19).`);
+      }
+    }
+    for (const r of db.recurringExpenses) {
+      if (r.fund === 'ispo') continue;
+      if (fundForCost(r.category, unitById.get(r.unitId), 'strata') === 'ispo') {
+        r.fund = 'ispo';
+        note('UPDATE', 'RecurringExpense', r.id, `Monthly utility on ${r.unitNumber} moved to ISPO's book (Ro, 2026-11-19).`);
+      }
+    }
+  }
+
+  /*
+   * Stamp the book on every confirmed utility recovery that predates the stamp
+   * (2026-11-20). A closed month keeps the book it was closed with; anything
+   * later follows the villa, as every new recovery does.
+   */
+  for (const p of db.payments || []) {
+    if (p.category !== 'Utility' || p.status !== 'completed' || p.recoveryFund || p.derived) continue;
+    const closed = !!db.settings?.closedThrough && (p.date || '').slice(0, 7) <= db.settings.closedThrough;
+    p.recoveryFund = closed ? utilityRecoveryBook(p, db.expenses || []) : recoveryFundFor((db.units || []).find(u => u.id === p.unitId), p.date);
+    note('UPDATE', 'Payment', p.id, `Utility recovery booked to ${p.recoveryFund === 'ispo' ? "ISPO's" : "the corporation's"} book${closed ? ' (closed month, unchanged)' : ''}.`);
+  }
+
+  /*
+   * A month closed before 2026-11-20 was sealed over receipts and charges only.
+   * Where that seal still verifies, re-seal it in the current form so its costs,
+   * utility bills and deposits are protected from here on. A seal that no longer
+   * verifies is left exactly as it is, for the integrity check to report.
+   */
+  if (db.settings?.closedThrough && db.settings.closeFingerprint && !db.settings.closeFingerprint.startsWith(FINGERPRINT_V2)) {
+    if (legacyLedgerFingerprint(db, db.settings.closedThrough) === db.settings.closeFingerprint) {
+      db.settings.closeFingerprint = ledgerFingerprint(db, db.settings.closedThrough);
+      note('UPDATE', 'Period', db.settings.closedThrough, 'Closed-month seal extended to costs, utility bills and deposits (2026-11-20).');
+    }
+  }
 
   // Seed the receipt counter above anything already issued.
   const highest = db.payments

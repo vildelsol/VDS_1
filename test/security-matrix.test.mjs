@@ -26,9 +26,10 @@ const REQUIRES = {
   'POST /api/charges': 'post_charges', 'POST /api/charges/:id/void': 'modify_settled',
   'POST /api/bookings': 'add_booking', 'POST /api/bookings/:id/damage-deposit': 'record_payment', 'POST /api/bookings/:id/damage-deposit/settle': 'reverse_payment',
   'POST /api/payments': 'record_payment', 'PUT /api/payments/:id': 'modify_settled', 'POST /api/payments/:id/confirm': 'record_payment',
-  'POST /api/payments/:id/reverse': 'reverse_payment', 'POST /api/payments/:id/refund': 'reverse_payment', 'POST /api/payments/:id/reconcile': 'record_payment',
-  'POST /api/payments/:id/refund/reconcile': 'record_payment', 'POST /api/expenses/:id/reconcile': 'record_payment',
-  'POST /api/tenancies/:id/deposit/reconcile': 'record_payment', 'POST /api/bookings/:id/damage-deposit/reconcile': 'record_payment',
+  'POST /api/payments/:id/reverse': 'reverse_payment', 'POST /api/payments/:id/refund': 'reverse_payment', 'POST /api/payments/:id/reconcile': 'reconcile_bank',
+  'POST /api/payments/:id/refund/reconcile': 'reconcile_bank', 'POST /api/expenses/:id/reconcile': 'reconcile_bank',
+  'POST /api/tenancies/:id/deposit/reconcile': 'reconcile_bank', 'POST /api/bookings/:id/damage-deposit/reconcile': 'reconcile_bank',
+  'POST /api/tenancies/:id/deposit-received/reconcile': 'reconcile_bank', 'POST /api/bookings/:id/damage-deposit-received/reconcile': 'reconcile_bank',
   'POST /api/utilities': 'enter_utility', 'PUT /api/utilities/:id': 'enter_utility', 'POST /api/utilities/:id/settle': 'enter_utility',
   'POST /api/expenses': 'record_expense', 'PUT /api/expenses/:id': 'record_expense', 'POST /api/expenses/:id/void': 'modify_settled', 'POST /api/expenses/recall-month': 'modify_settled',
   'POST /api/recurring-expenses': 'record_expense', 'PUT /api/recurring-expenses/:id': 'record_expense', 'DELETE /api/recurring-expenses/:id': 'record_expense',
@@ -52,7 +53,7 @@ const allowedFor = (perms, role, req) => {
   if (role === 'ADMINISTRATOR') return true;
   if (req === 'admin_only' || req === 'manage_users') return false;
   if (req === 'manage_settings') return role === 'MANAGER' || !!perms.hasVetoPower;
-  const key = { record_payment: 'recordPayments', add_booking: 'addBookings', edit_unit: 'editUnits', reverse_payment: 'reversePayments', enter_utility: 'enterUtilities', record_expense: 'recordExpenses', post_charges: 'postCharges', modify_settled: 'modifySettledRecords', take_backups: 'takeBackups' }[req];
+  const key = { record_payment: 'recordPayments', add_booking: 'addBookings', edit_unit: 'editUnits', reverse_payment: 'reversePayments', enter_utility: 'enterUtilities', record_expense: 'recordExpenses', post_charges: 'postCharges', modify_settled: 'modifySettledRecords', take_backups: 'takeBackups', reconcile_bank: 'reconcileBank' }[req];
   return !!perms[key];
 };
 

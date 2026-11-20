@@ -81,7 +81,7 @@ export default async function run({ port, projectRoot }) {
 
     /* ---- 5. PUT edit mass assignment (manager has modify_settled) ---- */
     const pay = (await admin.post('/api/payments', { ...base, category: 'Other', amount: 400, receivedNow: true, confirmDuplicate: true })).body.payment;
-    const edit = await manager.put(`/api/payments/${pay.id}`, { amount: 450, receiptNo: 'REC-6666-6666', status: 'pending', receivedBy: 'Forged', receivedAt: '2001-01-01', refundedAmount: 450, refundedOn: today, id: 'p-hijack', advance: true, bookingId: 'b-x', utilityId: 'u-x', printCount: 99, createdAt: '2001-01-01', staffMember: 'Forged', reconciledOn: today, reconciledBy: 'Forged' });
+    const edit = await manager.put(`/api/payments/${pay.id}`, { reason: 'corrected in test', amount: 450, receiptNo: 'REC-6666-6666', status: 'pending', receivedBy: 'Forged', receivedAt: '2001-01-01', refundedAmount: 450, refundedOn: today, id: 'p-hijack', advance: true, bookingId: 'b-x', utilityId: 'u-x', printCount: 99, createdAt: '2001-01-01', staffMember: 'Forged', reconciledOn: today, reconciledBy: 'Forged' });
     const ep = edit.body?.payment;
     T.check('edit of a settled receipt by a Manager succeeds (control)', edit.status === 200 && ep?.amount === 450, `status ${edit.status} ${JSON.stringify(edit.body).slice(0, 120)}`);
     if (ep) {
@@ -95,7 +95,7 @@ export default async function run({ port, projectRoot }) {
       T.check('edit: printCount/createdAt/staffMember cannot be set by body', ep.printCount === pay.printCount && ep.createdAt === pay.createdAt && ep.staffMember === pay.staffMember, `${ep.printCount} ${ep.createdAt} ${ep.staffMember}`);
       T.check('edit: reconciliation cannot be forged by body', !ep.reconciledOn, ep.reconciledOn);
     }
-    T.check('a junior cannot edit a settled receipt', (await junior.put(`/api/payments/${pay.id}`, { amount: 1 })).status === 403);
+    T.check('a junior cannot edit a settled receipt', (await junior.put(`/api/payments/${pay.id}`, { reason: 'corrected in test', amount: 1 })).status === 403);
 
     /* ---- 6. refund caps ---- */
     const r1 = await manager.post(`/api/payments/${pay.id}/refund`, { amount: 99999, reason: 'too much', refundedOn: today });
@@ -111,7 +111,7 @@ export default async function run({ port, projectRoot }) {
     const rr = rent && (await manager.post(`/api/payments/${rent.id}/refund`, { amount: rent.amount, reason: 'rent already applied to charge', refundedOn: today }));
     T.check('refund cap: rent receipt that settled a charge cannot be refunded in full', rr && rr.status === 400 && rr.body?.code === 'refund-exceeds-unspent-credit', `${rr?.status} ${rr?.body?.code}`);
     // The cap checks the account only for Rent/Maintenance. Re-categorise a settled rent receipt as "Other" by edit, then refund it.
-    const recat = rent && (await manager.put(`/api/payments/${rent.id}`, { category: 'Other' }));
+    const recat = rent && (await manager.put(`/api/payments/${rent.id}`, { reason: 'corrected in test', category: 'Other' }));
     const rr2 = rent && (await manager.post(`/api/payments/${rent.id}/refund`, { amount: rent.amount, reason: 'after recategorise', refundedOn: today }));
     T.check('refund cap cannot be sidestepped by editing the receipt category to Other and refunding', rr2 && rr2.status === 400, `edit ${recat?.status}, refund ${rr2?.status}: paid-out ${rr2?.body?.payment?.refundedAmount}`);
     const integ = (await admin.get('/api/integrity')).body;
@@ -133,17 +133,17 @@ export default async function run({ port, projectRoot }) {
     T.check('only an administrator can turn the cosign rule on', (await manager.post('/api/settings', { requireCosign: true })).status === 403);
     T.check('admin turns cosign on', (await admin.post('/api/settings', { requireCosign: true })).status === 200);
     const p2 = (await admin.post('/api/payments', { ...base, category: 'Other', amount: 123, receivedNow: true, confirmDuplicate: true, cosign: { username: 'admin', password: ADMIN_PW } })).body?.payment;
-    const noCo = await manager.put(`/api/payments/${p2.id}`, { amount: 124 });
+    const noCo = await manager.put(`/api/payments/${p2.id}`, { reason: 'corrected in test', amount: 124 });
     T.check('cosign on: edit without approver refused', noCo.status === 403 && noCo.body?.code === 'cosign-required', `${noCo.status}`);
-    const selfCo = await manager.put(`/api/payments/${p2.id}`, { amount: 124, cosign: { username: 'manager', password: 'SecManager-22!x' } });
+    const selfCo = await manager.put(`/api/payments/${p2.id}`, { reason: 'corrected in test', amount: 124, cosign: { username: 'manager', password: 'SecManager-22!x' } });
     T.check('cosign on: approving your own change is refused', selfCo.status === 403, `${selfCo.status}`);
-    const juniorCo = await manager.put(`/api/payments/${p2.id}`, { amount: 124, cosign: { username: 'junior', password: 'SecJunior-22!x' } });
+    const juniorCo = await manager.put(`/api/payments/${p2.id}`, { reason: 'corrected in test', amount: 124, cosign: { username: 'junior', password: 'SecJunior-22!x' } });
     T.check('cosign on: a junior (no modifySettled) cannot approve', juniorCo.status === 403, `${juniorCo.status}`);
     for (const weird of [{ username: ['admin'], password: ADMIN_PW }, { username: 'admin', password: 12345 }, { username: 'admin' }, 'admin', 7, { username: { $ne: '' }, password: { $ne: '' } }]) {
-      const r = await manager.put(`/api/payments/${p2.id}`, { amount: 124, cosign: weird });
+      const r = await manager.put(`/api/payments/${p2.id}`, { reason: 'corrected in test', amount: 124, cosign: weird });
       T.check(`cosign with malformed value ${JSON.stringify(weird).slice(0, 40)} is refused`, r.status === 403 || r.status === 429, `${r.status}`);
     }
-    const okCo = await manager.put(`/api/payments/${p2.id}`, { amount: 124, cosign: { username: 'admin', password: ADMIN_PW } });
+    const okCo = await manager.put(`/api/payments/${p2.id}`, { reason: 'corrected in test', amount: 124, cosign: { username: 'admin', password: ADMIN_PW } });
     T.check('control: a real second approver is accepted', okCo.status === 200 || okCo.status === 429, `${okCo.status}`);
     const burst = [];
     for (let i = 0; i < 8; i++) burst.push((await manager.post(`/api/payments/${p2.id}/reverse`, { reversalReason: 'guessing', cosign: { username: 'admin', password: `Wrong-guess-${i}!A` } })).status);

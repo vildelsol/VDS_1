@@ -137,7 +137,7 @@ export default async function run({ port, projectRoot }) {
       finance.post('/api/payments', { unitId: 'unit-1', category: 'Rent', amount: 5000, currency: 'JMD', method: 'Cash', payerName: 'Tenant One' })
     );
     const payId = pay.body?.payment?.id;
-    await audited('PUT /api/payments/:id', 'correcting a payment', M, () => manager.put(`/api/payments/${payId}`, { notes: 'audit probe' }));
+    await audited('PUT /api/payments/:id', 'correcting a payment', M, () => manager.put(`/api/payments/${payId}`, { reason: 'corrected in test', notes: 'audit probe' }));
     await audited('POST /api/payments/:id/confirm', 'confirming a payment', F, () => finance.post(`/api/payments/${payId}/confirm`, {}));
     await audited('POST /api/payments/:id/reconcile', 'reconciling a payment', F, () =>
       finance.post(`/api/payments/${payId}/reconcile`, { reconciledOn: today, reference: 'BNK-1' })
@@ -166,10 +166,13 @@ export default async function run({ port, projectRoot }) {
       manager.post('/api/bookings', { unitId: 'unit-2', guestName: 'Guest', checkIn: dayAhead(10), checkOut: dayAhead(13), amount: 900, depositPaid: 0, currency: 'USD', source: 'Direct' })
     );
     const bkId = bk.body?.booking?.id;
-    await audited('PUT /api/bookings/:id', 'editing a reservation', M, () => manager.put(`/api/bookings/${bkId}`, { guestName: 'Guest Edited' }));
+    await audited('PUT /api/bookings/:id', 'editing a reservation', M, () => manager.put(`/api/bookings/${bkId}`, { editReason: 'Test correction', guestName: 'Guest Edited' }));
     await audited('POST /api/bookings/:id/damage-deposit', 'taking a damage deposit', F, () =>
       manager.post(`/api/bookings/${bkId}/damage-deposit`, { amount: 200, currency: 'USD', method: 'Cash', receivedOn: today })
     , { expectUser: nameOf('manager'), expectRole: 'MANAGER' });
+    await audited('POST /api/bookings/:id/damage-deposit-received/reconcile', 'matching a damage deposit received to the statement', F, () =>
+      finance.post(`/api/bookings/${bkId}/damage-deposit-received/reconcile`, { reconciledOn: today })
+    );
     await audited('POST /api/bookings/:id/damage-deposit/settle', 'settling a damage deposit', M, () =>
       manager.post(`/api/bookings/${bkId}/damage-deposit/settle`, { withheldAmount: 0, returnedAmount: 200 })
     );
@@ -222,6 +225,9 @@ export default async function run({ port, projectRoot }) {
     await audited('DELETE /api/ical/feeds/:id', 'removing a calendar feed', M, () => manager.del(`/api/ical/feeds/${feedId}`));
 
     /* ---------------- tenancy end ---------------- */
+    await audited('POST /api/tenancies/:id/deposit-received/reconcile', 'matching a deposit received to the statement', F, () =>
+      finance.post(`/api/tenancies/${tenancy.id}/deposit-received/reconcile`, { reconciledOn: today })
+    );
     await audited('POST /api/tenancies/:id/deposit/settle', 'settling a security deposit', M, () =>
       manager.post(`/api/tenancies/${tenancy.id}/deposit/settle`, { returnedAmount: 50000, withheldAmount: 0 })
     );

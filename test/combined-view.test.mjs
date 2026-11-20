@@ -75,7 +75,11 @@ export default async function run({ port, projectRoot }) {
     const rawBilled = F.chargedInPeriod(db.charges, 'JMD', from, to);
     T.check('without the fix the combined total double counts: 960,000', rawBilled.total === 960000, String(rawBilled.total));
     T.check('combined billed is the real 780,000', billed.total === 780000, String(billed.total));
-    T.check('made of 540,000 rent and 240,000 maintenance', billed.rent === 540000 && billed.maintenance === 240000, `${billed.rent}/${billed.maintenance}`);
+    // 2026-11-19: ISPO's own levy is eliminated on both sides (charge and
+    // receipt), so the tenants' agreed rents stand whole and only the private
+    // owner's levy is maintenance billed outside the group. It was 540,000 /
+    // 240,000 while the levy was moved out of the rent instead.
+    T.check('made of 720,000 rent (the agreed rents, whole) and 60,000 maintenance (the owner\'s levy)', billed.rent === 720000 && billed.maintenance === 60000, `${billed.rent}/${billed.maintenance}`);
     T.check('combined received is the real money in: 720,000 from tenants + 60,000 from the owner', collected.total === 780000, String(collected.total));
     T.check('so the combined collection rate is exactly 100%', billed.total === collected.rent + collected.maintenance);
     const receivable = sum(db.units.flatMap(u => ['Rent', 'Maintenance'].map(cat => F.accountBalance(u, cat, merged.charges, merged.payments, to, db.units)).filter(a => a.currency === 'JMD').map(a => a.balance)));

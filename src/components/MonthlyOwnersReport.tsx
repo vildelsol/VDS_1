@@ -32,7 +32,7 @@
 import { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import { AppSettings, Charge, Currency, Expense, Payment, Unit, bodyCorporateName } from '../types';
-import { MonthlyOwnersReport as Report, monthlyOwnersReport } from '../lib/finance';
+import { MonthlyOwnersReport as Report, individualVillasNote, monthlyOwnersReport } from '../lib/finance';
 import { formatMoney } from '../lib/money';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, today } from '../lib/dates';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
@@ -82,7 +82,7 @@ export default function MonthlyOwnersReport({ units, charges, payments, expenses
         [cell.section('The fund this month', 3)],
         [cell.header('Item'), cell.header(''), cell.header('Amount', 'right')],
         [cell.text('Maintenance contributions received'), cell.text(''), cell.money(r.contributionsReceived, r.currency)],
-        [cell.text('Common costs paid'), cell.text(''), cell.money(r.costsPaid, r.currency)],
+        [cell.text('Costs paid'), cell.text(''), cell.money(r.costsPaid, r.currency)],
         [
           cell.total(r.surplus >= 0 ? 'SURPLUS FOR THE MONTH' : 'DEFICIT FOR THE MONTH'),
           cell.total(''),
@@ -96,7 +96,7 @@ export default function MonthlyOwnersReport({ units, charges, payments, expenses
       for (const category of r.categories) {
         rows.push([cell.text(category.label), cell.text(''), cell.money(category.total, r.currency)]);
       }
-      rows.push([cell.total('Total common costs'), cell.total(''), cell.totalMoney(r.costsPaid, r.currency)]);
+      rows.push([cell.total('Total costs paid'), cell.total(''), cell.totalMoney(r.costsPaid, r.currency)]);
 
       rows.push([cell.blank()]);
       rows.push([cell.section('Also worth knowing', 3)]);
@@ -112,19 +112,21 @@ export default function MonthlyOwnersReport({ units, charges, payments, expenses
           cell.money(r.unpaidAtMonthEnd, r.currency)
         ]);
       }
-      if (r.villaRechargedCount > 0) {
+      const villasNote = individualVillasNote(r);
+      if (villasNote) {
         rows.push([
-          cell.text('Work on individual villas, recharged to those owners'),
+          cell.text('Of the costs paid, spent on individual villas (included above)'),
           cell.text(''),
-          cell.money(r.villaRecharged, r.currency)
+          cell.money(r.onIndividualVillas, r.currency)
         ]);
+        rows.push([cell.note(villasNote, 3)]);
       }
 
       rows.push([cell.blank()]);
       rows.push([
         cell.note(
           `All figures are in ${r.currency} and nothing on this sheet is converted. Prepared on a cash basis: contributions are counted ` +
-            'when received and costs when paid. Work on an individual villa is recharged to that owner and is not a common cost. ' +
+            'when received and costs when paid, the same costs as the Operating Statement for the month. ' +
             'No lot is named anywhere on this report, the arrears line is a count and a total only.',
           3
         )
@@ -215,7 +217,7 @@ function CurrencyBlock({ report: r }: { report: Report }) {
 
       <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Tile label="Contributions received" value={formatMoney(r.contributionsReceived, r.currency)} tone="positive" />
-        <Tile label="Common costs paid" value={formatMoney(r.costsPaid, r.currency)} tone="negative" />
+        <Tile label="Costs paid" value={formatMoney(r.costsPaid, r.currency)} tone="negative" />
         <Tile
           label={r.surplus >= 0 ? 'Surplus for the month' : 'Deficit for the month'}
           value={formatMoney(Math.abs(r.surplus), r.currency)}
@@ -247,7 +249,7 @@ function CurrencyBlock({ report: r }: { report: Report }) {
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-slate-300 font-semibold">
-                <td className="p-3">Total common costs</td>
+                <td className="p-3">Total costs paid</td>
                 <td className="p-3 text-right font-mono">{formatMoney(r.costsPaid, r.currency)}</td>
               </tr>
             </tfoot>
@@ -264,8 +266,8 @@ function CurrencyBlock({ report: r }: { report: Report }) {
  * The facts that qualify the figures above.
  *
  * Each one is here because leaving it out would flatter the month: unsettled
- * bills make a good surplus, and recharged work would otherwise vanish from
- * both sides of the statement. The arrears line is the fund's health, stated the
+ * bills make a good surplus, and the share spent on individual villas is
+ * stated (inside the costs, never outside them). The arrears line is the fund's health, stated the
  * only way an owners' circular may state it — a count and a total.
  */
 function Notes({ report: r }: { report: Report }) {
@@ -285,13 +287,7 @@ function Notes({ report: r }: { report: Report }) {
           above, and stated here so the surplus is not read as the whole picture.
         </li>
       )}
-      {r.villaRechargedCount > 0 && (
-        <li>
-          <strong>{formatMoney(r.villaRecharged, r.currency)}</strong> was spent on work to individual villas across{' '}
-          {r.villaRechargedCount} {r.villaRechargedCount === 1 ? 'item' : 'items'}. That is recharged to those owners
-          and is not a common cost, so it is excluded above rather than shared.
-        </li>
-      )}
+      {individualVillasNote(r) && <li>{individualVillasNote(r)}</li>}
     </ul>
   );
 }
@@ -354,7 +350,7 @@ export function MonthlyReportDocument({
                 <td className="p-2 text-right">{formatMoney(r.contributionsReceived, r.currency)}</td>
               </tr>
               <tr>
-                <td className="p-2 font-sans">Common costs paid</td>
+                <td className="p-2 font-sans">Costs paid</td>
                 <td className="p-2 text-right">{formatMoney(r.costsPaid, r.currency)}</td>
               </tr>
               <tr className="border-t-2 border-slate-900 font-bold">
@@ -378,7 +374,7 @@ export function MonthlyReportDocument({
                     </tr>
                   ))}
                   <tr className="border-t border-slate-400 font-bold">
-                    <td className="p-1.5 font-sans">Total common costs</td>
+                    <td className="p-1.5 font-sans">Total costs paid</td>
                     <td className="p-1.5 text-right">{formatMoney(r.costsPaid, r.currency)}</td>
                   </tr>
                 </tbody>
@@ -401,12 +397,7 @@ export function MonthlyReportDocument({
                 picture.
               </p>
             )}
-            {r.villaRechargedCount > 0 && (
-              <p className="mt-1">
-                <strong>{formatMoney(r.villaRecharged, r.currency)}</strong> was spent on work to individual villas,
-                recharged to those owners. Not a common cost, so it is excluded above rather than shared.
-              </p>
-            )}
+            {individualVillasNote(r) && <p className="mt-1">{individualVillasNote(r)}</p>}
           </div>
         </section>
       ))}

@@ -208,13 +208,13 @@ export default async function run({ port, projectRoot }) {
     // --- the two currencies stay apart ---
     const villa2Usd = find('unit-2', 'USD');
     const villa2Jmd = find('unit-2', 'JMD');
-    T.check('a villa earning USD and assessed in JMD yields two statements', !!villa2Usd && !!villa2Jmd);
-    T.check('booking income is collected for the owner', villa2Usd?.bookingCollected === 1200, `${villa2Usd?.bookingCollected}`);
-    T.check(
-      'the JMD maintenance is not deducted from the USD statement',
-      villa2Usd?.maintenanceBilled === 0 && villa2Usd?.net === 0,
-      `billed ${villa2Usd?.maintenanceBilled}, net ${villa2Usd?.net}`
-    );
+    /*
+     * Hunt, 2026-11-19: guest income is the letting party's own and is never on
+     * an owner statement (`net` does not use it). A USD statement holding only
+     * that income printed as all $0, "18 statements" for 16 villas. The JMD
+     * levy statement is the one this villa owes on; no empty USD one is made.
+     */
+    T.check('a villa earning USD guest income and assessed in JMD yields only its JMD levy statement', !villa2Usd && !!villa2Jmd, `USD ${!!villa2Usd}, JMD ${!!villa2Jmd}`);
     T.check(
       'the USD income is not credited against the JMD statement',
       villa2Jmd?.collected === 0,
@@ -276,7 +276,7 @@ export default async function run({ port, projectRoot }) {
     const groups = groupStatementsByOwner(statements);
     T.check('statements are gathered under the proprietor, not the villa', groups.length === 1, `${groups.length} groups`);
     const alba = groups[0];
-    T.check('the owner holds both villas', alba?.statements.length === 3, `${alba?.statements.length} statements`);
+    T.check('the owner holds both villas', alba?.statements.length === 2 && new Set(alba.statements.map(x => x.unit.id)).size === 2, `${alba?.statements.length} statements`);
     T.check(
       'the net position is totalled per currency and never across',
       alba?.netByCurrency.find(r => r.currency === 'JMD')?.net === -18000 &&

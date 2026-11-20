@@ -56,7 +56,7 @@ export default async function run({ port, projectRoot }) {
     const aNew = await admin.call('POST', '/api/payments', JSON.parse('{"unitId":"unit-1","category":"Other","amount":6,"currency":"JMD","method":"Cash","payerName":"after","confirmDuplicate":true}'));
     T.check('after pollution probes a fresh payment is still pending with no receipt (Object.prototype intact)', aNew.body?.payment?.status === 'pending' && !aNew.body.payment.isAdmin, JSON.stringify(aNew.body?.payment?.status));
     for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
-      const r = await manager.put(`/api/payments/${id}`, { amount: 1 });
+      const r = await manager.put(`/api/payments/${id}`, { reason: 'corrected in test', amount: 1 });
       const q = await admin.put(`/api/units/${id}`, { number: 'zz' });
       T.check(`record id "${id}" is a clean 404/400, not a crash`, r.status >= 400 && r.status < 500 && q.status >= 400 && q.status < 500, `${r.status}/${q.status}`);
     }
@@ -161,10 +161,10 @@ export default async function run({ port, projectRoot }) {
     T.check('a role WITHOUT recordPayments cannot cause a completed receipt to be issued by creating a booking with depositPaid', !rec || rec.status !== 'completed', rec ? `receipt ${rec.receiptNo} ${rec.status} ${rec.amount} issued by "${rec.receivedBy}"` : 'no receipt');
     if (bk.body?.booking) {
       await admin.post('/api/settings', { requireCosign: true });
-      const edit = await junior.put(`/api/bookings/${bk.body.booking.id}`, { depositPaid: 100 });
+      const edit = await junior.put(`/api/bookings/${bk.body.booking.id}`, { editReason: 'Test correction', depositPaid: 100 });
       const after = (await admin.get('/api/db')).body.payments.find(p => p.bookingId === bk.body.booking.id);
       T.check('a role WITHOUT modifySettledRecords cannot rewrite an issued receipt\'s amount (cosign on) by editing the booking deposit', !(after && after.amount === 100 && after.status === 'completed'), `booking edit ${edit.status}; receipt now ${after?.amount} ${after?.status}`);
-      const zero = await junior.put(`/api/bookings/${bk.body.booking.id}`, { depositPaid: 0 });
+      const zero = await junior.put(`/api/bookings/${bk.body.booking.id}`, { editReason: 'Test correction', depositPaid: 0 });
       const gone = (await admin.get('/api/db')).body.payments.find(p => p.bookingId === bk.body.booking.id);
       T.check('a role WITHOUT reversePayments cannot void an issued receipt (cosign on) by setting the booking deposit to 0', !(gone && gone.status === 'reversed'), `booking edit ${zero.status}; receipt ${gone?.status}`);
     }

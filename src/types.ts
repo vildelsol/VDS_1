@@ -180,6 +180,16 @@ export interface RolePermissions {
    * Settings. Every use needs a reason and is written to the audit trail.
    */
   overrideMoneyGuards: boolean;
+  /**
+   * Tick receipts and payments off against a bank statement, both directions.
+   *
+   * Ro, 2026-11-20: allowed for a junior officer by default, but a choice in
+   * System Settings for the Administrator and Managers, so the person who takes
+   * the money can be kept from also being the one who confirms it reached the
+   * bank. Until now it rode on `recordPayments`. **Absent means granted**, like
+   * `viewShortfall`, so an upgrade takes it from nobody.
+   */
+  reconcileBank: boolean;
 }
 
 export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
@@ -196,6 +206,7 @@ export const PERMISSION_KEYS: (keyof RolePermissions)[] = [
   'viewShortfall',
   'viewIspoOperations',
   'takeBackups',
+  'reconcileBank',
   // A labelled permission with no row here cannot be seen or granted on the
   // System Settings screen (test/audit-records-settings pins the two lists together).
   'overrideMoneyGuards'
@@ -222,6 +233,7 @@ export const PERMISSION_LABELS: Record<string, string> = {
   viewShortfall: 'See the out-of-pocket shortfall report (internal)',
   viewIspoOperations: `See the ${MANAGING_COMPANY_NAME} Operations statement (internal)`,
   takeBackups: 'Take a backup now & download a records snapshot',
+  reconcileBank: 'Tick receipts & payments off against the bank statement',
   overrideMoneyGuards: 'Override money checks (duplicate, wrong currency, already settled) with a recorded reason'
 };
 
@@ -456,6 +468,15 @@ export interface Unit {
    * wrong and the status is what to fix.
    */
   letOnOwnAccount?: boolean;
+  /**
+   * When the villa moved between ISPO's own account and a third-party proprietor,
+   * oldest first: each entry is the own-account answer from `from` (YYYY-MM-DD).
+   * Written by the unit register when a status change flips `isOwnAccount`, dated
+   * the day the villa changed hands for a sale. Absent means the status has never
+   * flipped, so today's status answers every date (`isOwnAccountOn`). Selling a
+   * villa in November must not move September's books (QA, 2026-11-20).
+   */
+  ownAccountHistory?: { from: string; ownAccount: boolean }[];
   currency: Currency;
   maintCurrency?: Currency;
   meterNumber: string;
@@ -570,6 +591,8 @@ export interface Tenancy {
   depositAmount?: number;
   depositCurrency?: Currency;
   depositReceivedOn?: string;
+  /** The deposit found arriving in the bank (money in). See `BankMatch`. */
+  depositBankMatch?: BankMatch;
   /** Set once the deposit has been reconciled at move-out. */
   depositReturnedOn?: string;
   /** The returned part of the deposit found leaving the bank. See `BankMatch`. */
@@ -616,8 +639,41 @@ export interface Booking {
    * property pay cash (Ro, 2026-11-17), hence the default.
    */
   depositMethod?: PaymentMethod;
+  /**
+   * The day the deposit was actually handed over, which dates its receipt.
+   *
+   * The receipt used to be dated the day the reservation was typed in, so a
+   * deposit taken for a 25 September stay and entered in November landed in
+   * November on every cash report. Absent on reservations saved before this
+   * existed; their receipt keeps the date it already has.
+   */
+  depositReceivedOn?: string;
+  /**
+   * The reservation's own record of what it costs and what was put down on it.
+   * Neither is what the guest has PAID: further receipts, refunds and voids all
+   * live on the receipts. Every screen reads `stayMoney` (src/lib/stays.ts) for
+   * that, never these two fields.
+   */
   balanceDue: number;
   status: 'confirmed' | 'checked-in' | 'checked-out' | 'cancelled';
+  /**
+   * A stay given free on purpose (Ro, 2026-11-19: the wedding party, a family
+   * guest). Its value is J$0 by design rather than missing, so it is never
+   * flagged "stay value not entered", it takes no money, and the observations
+   * list it with the levy ISPO still paid on those nights. Any role that may
+   * create or edit a reservation may mark one, junior officers included, but
+   * only with a reason, and the person who marked it is recorded.
+   */
+  complimentary?: boolean;
+  complimentaryReason?: string;
+  complimentaryBy?: string;
+  /**
+   * What was decided about a deposit that had really been received when the stay
+   * was cancelled (hunt, 2026-11-20): handed back (`refund`), or entered by
+   * mistake (`void`). Cancelling used to void it whatever happened. Ro,
+   * 2026-11-20: no deposit is kept as a cancellation fee.
+   */
+  depositOutcome?: 'refund' | 'void';
 
   /**
    * A refundable damage deposit held against the stay. **Entirely optional** —
@@ -635,6 +691,8 @@ export interface Booking {
   damageDepositAmount?: number;
   damageDepositCurrency?: Currency;
   damageDepositReceivedOn?: string;
+  /** The damage deposit found arriving in the bank (money in). See `BankMatch`. */
+  damageDepositBankMatch?: BankMatch;
   /** Set once the deposit has been reconciled after the stay. */
   damageDepositReturnedOn?: string;
   /** The returned damage deposit found leaving the bank. See `BankMatch`. */
@@ -679,6 +737,13 @@ export interface Charge {
    * month is not charged again when they leave. Absent means an ordinary month.
    */
   kind?: 'advance-final-month' | 'one-off';
+  /**
+   * For an `advance-final-month` charge applied at move-out while its own month
+   * was already closed: the final month it pays for. The charge cannot be moved
+   * (that would rewrite a closed month), so this says where the levy inside it
+   * goes instead. See `settledFromRent`.
+   */
+  paysForMonth?: string;
   /** For a one-off charge, what it is for. Drives reporting and the ledger label. */
   oneOffType?: OneOffChargeType;
   /** Shown on statements and the charge history where the month alone is not enough. */
@@ -797,9 +862,27 @@ export interface Payment {
    * tenant's rent (restate-maintenance-receipts). Internal only: never printed.
    */
   movedFrom?: PaymentCategory;
-  /** Set when the payment was generated from another record, so the two stay in step. */
+  /**
+   * Set when the payment was generated from another record, so the two stay in step.
+   * For `bookingId` that means the reservation's own deposit receipt: voiding or
+   * refunding it changes the reservation's `depositPaid`.
+   */
   bookingId?: string;
+  /**
+   * A further Booking receipt that pays toward a reservation — the balance on
+   * arrival, a second instalment. Deliberately NOT `bookingId`: that field means
+   * "this is the reservation's deposit receipt" to the void, refund and
+   * reservation-edit paths, and a balance payment must not drag the deposit with
+   * it. Same villa and currency as the reservation, checked by the server.
+   */
+  forBookingId?: string;
   utilityId?: string;
+  /**
+   * On a Utility receipt: the book that bore the cost it recovers, decided from
+   * the villa when the receipt was confirmed (an ISPO villa's utilities are ISPO's)
+   * and never re-derived later. See `utilityRecoveryBook`.
+   */
+  recoveryFund?: ExpenseFund;
 }
 
 export interface UtilityReading {
@@ -812,6 +895,8 @@ export interface UtilityReading {
   currentReading: number;
   consumption: number;
   amountCharged: number;
+  /** What the bill was before part of its settlement was refunded (the bill then reads the net kept). */
+  amountBeforeRefund?: number;
   currency: Currency;
   status: 'unpaid' | 'paid';
   /** Receipt raised when the reading was settled. */

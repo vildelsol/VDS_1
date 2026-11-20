@@ -9,8 +9,8 @@
  * time and they shape everything here:
  *
  *   - **Common costs only.** Fuel, grounds staff, pool chemicals — the cost of
- *     running the place. Work on one villa is recharged to that owner and shows
- *     on their own statement; itemising it here would tell all sixteen owners
+ *     running the place. Work on one villa is left out and totalled underneath
+ *     (no recharge is raised for it, so none is claimed: QA, 2026-11-19); itemising it here would tell all sixteen owners
  *     what was done to each other's villas.
  *   - **One statement, not sixteen.** It is the fund's position, which is the
  *     same for every proprietor. Nothing on this page is personal to anyone, so
@@ -152,7 +152,7 @@ export default function OperationsStatement({ expenses, payments, settings, sess
           rows.push([cell.blank()]);
           rows.push([
             cell.note(
-              `Excluded from this statement: ${formatMoney(s.villaRecharged, s.currency)} over ${s.villaRechargedCount} item(s) charged to individual villas and recharged to those proprietors. Shown so this statement always reconciles to the expense register.`,
+              `Excluded from this statement: ${formatMoney(s.villaRecharged, s.currency)} over ${s.villaRechargedCount} item(s) paid on individual villas. No recharge has been raised for them. Shown so this statement always reconciles to the expense register.`,
               5
             )
           ]);
@@ -161,7 +161,7 @@ export default function OperationsStatement({ expenses, payments, settings, sess
         rows.push([cell.blank()]);
         rows.push([
           cell.note(
-            'The costs of the common property only, grounds, pool, security, fuel and payroll. Work on an individual villa is recharged to that proprietor. Prepared on a cash basis. USD and JMD are reported separately and are never combined.',
+            'The costs of the common property only, grounds, pool, security, fuel and payroll. Work paid on an individual villa is totalled separately. Prepared on a cash basis. USD and JMD are reported separately and are never combined.',
             5
           )
         ]);
@@ -204,7 +204,7 @@ export default function OperationsStatement({ expenses, payments, settings, sess
 
       <InfoNote>
         The costs of the common property only, the grounds, the pool, security, fuel, payroll. Work done to an
-        individual villa is recharged to that proprietor and appears on their own statement, not here. Costs count in
+        individual villa is left out and totalled underneath; no recharge is raised for it. Costs count in
         the month they were <strong>paid</strong>, against the contributions received in the same month, so the surplus
         is money that actually moved. Anything billed but not yet settled is listed underneath and is deliberately not
         in that figure. USD and JMD are reported separately and never combined.
@@ -318,7 +318,7 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
       {s.villaRecharged !== 0 && (
         <p className="font-mono text-[10px] leading-relaxed text-slate-400">
           Excluded from this statement: {formatMoney(s.villaRecharged, s.currency)} over {s.villaRechargedCount}{' '}
-          item(s) charged to individual villas and recharged to those proprietors. Shown so this statement always
+          item(s) paid on individual villas; no recharge has been raised for them. Shown so this statement always
           reconciles to the expense register.
         </p>
       )}
@@ -361,8 +361,7 @@ function OperationsDocument({
       <p className="mb-4 text-[11px] leading-relaxed">
         This statement sets out what the corporation collected in maintenance contributions during the month, and what
         those contributions paid for. It covers the <strong>common property</strong>, the grounds, the pool, security,
-        fuel and payroll. Work carried out on an individual villa is recharged to that proprietor and appears on their
-        own statement rather than here.
+        fuel and payroll. Work carried out on an individual villa is totalled separately below rather than itemised here.
       </p>
 
       {statements.map(s => (

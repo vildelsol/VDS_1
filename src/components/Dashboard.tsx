@@ -15,6 +15,7 @@ import {
   SessionUser,
   Unit,
   getUnitDisplayName,
+  MANAGING_COMPANY_NAME,
   Tenancy
 } from '../types';
 import {
@@ -24,6 +25,7 @@ import {
   consolidateEverything,
   combinedSettledOfBilled,
   delinquentAccounts,
+  ownLevyArrears,
   maintenanceFundedFromRent,
   expensesInPeriod,
   residentialOccupancy,
@@ -38,7 +40,7 @@ import {
   OperationalHealth
 } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2, sumMoney } from '../lib/money';
-import { arrivalsWithin, departuresWithin } from '../lib/stays';
+import { arrivalsWithin, departuresWithin, stayTotals } from '../lib/stays';
 import ReceivePaymentModal from './ReceivePaymentModal';
 import { addDays, addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
 import {
@@ -163,6 +165,18 @@ export default function Dashboard({
     }
     return out;
   }, [arrears]);
+  /*
+   * Of those, ISPO's own levy on the villas it lets: owed to the corporation, but
+   * on the combined books it is ISPO owing itself and is eliminated. Shown apart
+   * so this tile and the combined report are seen to differ by exactly it.
+   */
+  const ownLevyByCurrency = useMemo(() => {
+    const out: Record<Currency, number> = { USD: 0, JMD: 0 };
+    for (const account of ownLevyArrears(arrears)) {
+      out[account.currency] = sumMoney([out[account.currency], account.balance]);
+    }
+    return out;
+  }, [arrears]);
 
   const chargesPostedForMonth = charges.some(c => c.periodMonth === month && c.status === 'open');
 
@@ -259,17 +273,24 @@ export default function Dashboard({
   const upcomingArrivals = arrivalsWithin(activeBookings, todayStr, horizon);
   const upcomingDepartures = departuresWithin(activeBookings, todayStr, horizon);
 
+  /*
+   * From the receipts, not the reservation's own fields (QA, 2026-11-19: stays
+   * paid in full read as owing $3,610 where $300 was true). See `stayTotals`.
+   */
   const stayBalances = useMemo(() => {
-    const out: Record<Currency, { collected: number; outstanding: number }> = {
-      USD: { collected: 0, outstanding: 0 },
-      JMD: { collected: 0, outstanding: 0 }
-    };
-    for (const b of activeBookings) {
-      out[b.currency].collected = sumMoney([out[b.currency].collected, b.depositPaid]);
-      out[b.currency].outstanding = sumMoney([out[b.currency].outstanding, b.balanceDue]);
+    const totals = stayTotals(activeBookings, payments, bookings);
+    const out = {} as Record<Currency, { collected: number; outstanding: number; overpaid: number; unlinked: number; unlinkedCount: number }>;
+    for (const c of ['USD', 'JMD'] as Currency[]) {
+      out[c] = {
+        collected: totals[c].paid,
+        outstanding: totals[c].outstanding,
+        overpaid: totals[c].overpaid,
+        unlinked: totals[c].unlinked,
+        unlinkedCount: totals[c].unlinkedReceipts.length
+      };
     }
     return out;
-  }, [activeBookings]);
+  }, [activeBookings, payments, bookings]);
 
   const importedWithoutValue = activeBookings.filter(b => b.externalUid && b.amount === 0 && b.source !== 'Blocked');
 
@@ -356,7 +377,16 @@ export default function Dashboard({
                   arrearsByCurrency.USD > 0 ? formatMoney(arrearsByCurrency.USD, 'USD') : null
                 ]
                   .filter(Boolean)
-                  .join(' + ') + ' outstanding'
+                  .join(' + ') +
+                ' outstanding' +
+                (ownLevyByCurrency.JMD > 0 || ownLevyByCurrency.USD > 0
+                  ? `, of which ${[
+                      ownLevyByCurrency.JMD > 0 ? formatMoney(ownLevyByCurrency.JMD, 'JMD') : null,
+                      ownLevyByCurrency.USD > 0 ? formatMoney(ownLevyByCurrency.USD, 'USD') : null
+                    ]
+                      .filter(Boolean)
+                      .join(' + ')} is ${MANAGING_COMPANY_NAME}'s own levy (left out of the combined books)`
+                  : '')
               : 'All billed accounts settled'
           }
           // Unbilled accounts used to share this line, which meant they vanished
@@ -423,8 +453,18 @@ export default function Dashboard({
                       Payer: <span className="font-medium text-slate-700">{account.unpaidCharges[0]?.payerName || '-'}</span>
                     </p>
                     <p className="mt-0.5 text-[10px] text-slate-500">
-                      {account.unpaidCharges.length} unpaid month{account.unpaidCharges.length === 1 ? '' : 's'} from{' '}
-                      {formatMonthLabel(account.unpaidCharges[0]?.periodMonth || '')}
+                      {(() => {
+                        // A one-off fee is not a month (hunt, 2026-11-19: a J$5,000
+                        // fee read as "3 unpaid months"). Months and fees counted apart.
+                        const monthly = account.unpaidCharges.filter(c => !c.oneOffType);
+                        const fees = account.unpaidCharges.length - monthly.length;
+                        const monthCount = new Set(monthly.map(c => c.periodMonth)).size;
+                        const parts = [
+                          monthCount > 0 ? `${monthCount} unpaid month${monthCount === 1 ? '' : 's'}` : '',
+                          fees > 0 ? `${fees} one-off charge${fees === 1 ? '' : 's'}` : ''
+                        ].filter(Boolean);
+                        return `${parts.join(' and ')} from ${formatMonthLabel(account.unpaidCharges[0]?.periodMonth || '')}`;
+                      })()}
                     </p>
                     {account.oldestUnpaidDays > 0 && (
                       <p className="mt-1 font-mono text-[10px] text-red-600">{account.oldestUnpaidDays} days overdue</p>
@@ -708,11 +748,20 @@ export default function Dashboard({
             {/* "Deposits held" read as money owed back to guests. It is the opposite:
                 part-payments toward stays, already income (audit/daily, 2026-11-18). The
                 name now matches the reservations report's "Deposits received". */}
-            <span className="block font-mono text-[10px] uppercase text-emerald-700">Deposits received</span>
+            <span className="block font-mono text-[10px] uppercase text-emerald-700">Paid toward stays</span>
             <div className="mt-1 space-y-0.5">
               <p className="font-mono text-sm font-bold text-emerald-800">{formatMoney(stayBalances.USD.collected, 'USD')} USD</p>
               <p className="font-mono text-sm font-bold text-emerald-800">{formatMoney(stayBalances.JMD.collected, 'JMD')} JMD</p>
             </div>
+            <span className="mt-1 block text-xs text-slate-500">Deposits and later payments, net of refunds</span>
+            {(['USD', 'JMD'] as Currency[])
+              .filter(c => stayBalances[c].unlinkedCount > 0)
+              .map(c => (
+                <p key={c} className="mt-1 text-xs text-amber-800" data-testid={`stay-unlinked-${c}`}>
+                  Plus {formatMoney(stayBalances[c].unlinked, c)} {c} on {stayBalances[c].unlinkedCount} booking receipt
+                  {stayBalances[c].unlinkedCount === 1 ? '' : 's'} not linked to a reservation. Link each one to its stay in the Receipts ledger.
+                </p>
+              ))}
           </div>
           <div className="rounded-xl bg-amber-50/50 p-4">
             <span className="block font-mono text-[10px] uppercase text-amber-700">Balance outstanding</span>
@@ -720,6 +769,13 @@ export default function Dashboard({
               <p className="font-mono text-sm font-bold text-amber-800">{formatMoney(stayBalances.USD.outstanding, 'USD')} USD</p>
               <p className="font-mono text-sm font-bold text-amber-800">{formatMoney(stayBalances.JMD.outstanding, 'JMD')} JMD</p>
             </div>
+            {(['USD', 'JMD'] as Currency[])
+              .filter(c => stayBalances[c].overpaid > 0)
+              .map(c => (
+                <p key={c} className="mt-1 text-xs text-slate-600">
+                  {formatMoney(stayBalances[c].overpaid, c)} {c} received beyond the stay price, to return or explain.
+                </p>
+              ))}
           </div>
         </div>
 
@@ -748,6 +804,7 @@ export default function Dashboard({
           units={units}
           charges={charges}
           payments={payments}
+          bookings={bookings}
           account={payTarget === 'blank' ? null : payTarget}
           onClose={() => setPayTarget(null)}
           onSubmit={async payload => {

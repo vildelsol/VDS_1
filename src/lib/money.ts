@@ -73,6 +73,20 @@ export function parseMoneyInput(value: unknown): number | null {
   return Number.isFinite(n) ? round2(n) : null;
 }
 
+/**
+ * The currency a typed amount names, if it names one: "J$5,000" or "5000 JMD" is
+ * Jamaican, "US$300" or "USD 300" American. A bare "$" names neither. The parser
+ * above strips the marker, so the record's own currency has to be checked against
+ * it, or "J$5,000" on a US$ receipt was recorded as US$5,000 (QA, 2026-11-20).
+ */
+export function currencyMarker(value: unknown): 'USD' | 'JMD' | undefined {
+  if (typeof value !== 'string') return undefined;
+  const raw = value.trim();
+  if (/^(US\$|USD)/i.test(raw) || /USD$/i.test(raw)) return 'USD';
+  if (/^(J\$|JMD)/i.test(raw) || /JMD$/i.test(raw)) return 'JMD';
+  return undefined;
+}
+
 /** Sum monetary values without accumulating float error. */
 export function sumMoney(values: number[]): number {
   const cents = values.reduce((acc, v) => acc + Math.round(round2(v) * 100), 0);

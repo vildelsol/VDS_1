@@ -342,18 +342,67 @@ export function expensesInBook(expenses: Expense[], book: ReportBook): Expense[]
  * Is this cost row actually the monthly contribution, already counted from its
  * receipt?
  *
- * A plumber or a locksmith on one of ISPO's villas is a genuine ISPO cost. A
- * **Maintenance**-category row against a villa VDS lets on its own account is the
- * contribution, which has a receipt and is counted from it — the one shape that
- * would put the same money on ISPO's books twice.
+ * A plumber or a locksmith on one of ISPO's villas is a genuine ISPO cost, and
+ * so is a repair filed under **Maintenance**, the expense form's default
+ * category. Until 2026-11-19 every Maintenance-category ISPO row on an
+ * own-account villa was taken to be the contribution: a J$9,000 repair on A3
+ * vanished from ISPO's book while the combined statement still counted it, so
+ * combined no longer equalled strata plus ISPO, and the self-check told staff
+ * to void a real bill.
  *
- * One definition, used by `ispoOperations`, by `operatingStatement` and by the
- * management summary on the reports tab, so those three cannot disagree about
- * what ISPO spent. They did: the summary counted such a row and the statement
- * under it did not.
+ * A row is now the contribution only when the row itself carries the evidence:
+ *   - it is ISPO's cost, categorised Maintenance, on a villa VDS lets on its own
+ *     account, in the currency that villa's contribution is billed in;
+ *   - it says what it is: the payee or the description names the contribution
+ *     (contribution, levy, strata, maintenance fee/dues, the corporation);
+ *   - and its amount is a whole number of that villa's monthly contribution for
+ *     the month the row is for (`levyForMonth`, so a dated fee change counts).
+ * Anything short of all three is a real ISPO cost and is counted.
+ *
+ * One definition, used by `ispoOperations`, by `operatingStatement` (every
+ * book), by `expensesForBook` and by the self-check, so none of them can
+ * disagree about which rows are the contribution again.
  */
-export function isContributionCountedFromReceipts(expense: Expense, ownAccountUnitIds: Set<string>): boolean {
-  return expense.category === 'Maintenance' && !!expense.unitId && ownAccountUnitIds.has(expense.unitId);
+export function isContributionCountedFromReceipts(expense: Expense, ownAccountUnitIds: Set<string> | OwnAccountTest, units: Unit[]): boolean {
+  if (fundOf(expense) !== 'ispo' || expense.category !== 'Maintenance') return false;
+  // Own-account as at the row's own day, so a later sale cannot move a closed month.
+  const rowDay = expense.datePaid || expense.date || '';
+  const own = typeof ownAccountUnitIds === 'function' ? ownAccountUnitIds : (id: string) => ownAccountUnitIds.has(id);
+  if (!expense.unitId || !own(expense.unitId, rowDay)) return false;
+  const villa = units.find(u => u.id === expense.unitId);
+  // The levy in force for the month the row is for, so a dated fee change is honoured.
+  const month = expense.periodMonth || (expense.datePaid || expense.date || '').slice(0, 7);
+  const levy = villa ? levyForMonth(villa, month) : 0;
+  if (!villa || levy <= 0 || (villa.maintCurrency || villa.currency) !== expense.currency) return false;
+  const amount = round2(expense.amount);
+  const months = Math.round(amount / levy);
+  if (months < 1 || Math.abs(round2(amount - months * levy)) >= 0.01) return false;
+  return CONTRIBUTION_WORDS.test(`${expense.vendor || ''} ${expense.description || ''}`);
+}
+
+/** Words that name the contribution itself, never a job done on the villa. */
+const CONTRIBUTION_WORDS =
+  /contribution|\blev(y|ies)\b|strata|maintenance (fee|dues|charge)|body corporate|corporation|villaggio|\bvds\b/i;
+
+/**
+ * The note every place ISPO's statement is shown carries when cost rows were
+ * left out as the contribution already counted from receipts. One wording, so
+ * the screen, the printout and the export cannot say different things.
+ */
+export function contributionExclusionNote(s: {
+  currency: Currency;
+  excludedAsContribution: number;
+  excludedAsContributionCount: number;
+}): { heading: string; body: string } | null {
+  if (s.excludedAsContributionCount <= 0) return null;
+  return {
+    heading: `${formatMoney(s.excludedAsContribution, s.currency)} left out of the costs above`,
+    body:
+      `${s.excludedAsContributionCount} cost row(s) in the expense register are the maintenance contribution itself on a villa let ` +
+      `on the corporation's own account: each names the contribution and is a whole number of that villa's monthly contribution. ` +
+      `That contribution is already counted from its receipt, on the maintenance line, so counting the cost row as well would be ` +
+      `the same money twice. Take those rows back in the expense register; the self-check flags them.`
+  };
 }
 
 /**
@@ -387,6 +436,66 @@ export function isOwnAccount(unit: Pick<Unit, 'status'>): boolean {
   return unit.status !== 'owner-occupied';
 }
 
+/**
+ * Was this villa ISPO's on a given day?
+ *
+ * `isOwnAccount` answers for today. A record dated before the villa changed
+ * hands has to be read with the answer of its own day, or selling A4 in
+ * November moved closed September's levy between "ISPO paying itself" and
+ * "a proprietor paying the corporation" (QA, 2026-11-20). The history is written
+ * by the unit register when a status change flips the answer; a villa whose
+ * status never flipped has none, and today's status answers every date, so every
+ * figure on such a villa is exactly what it was.
+ */
+export function isOwnAccountOn(unit: Pick<Unit, 'status' | 'ownAccountHistory'>, day: string): boolean {
+  const history = unit.ownAccountHistory;
+  if (!history || history.length === 0 || !day) return isOwnAccount(unit);
+  // From the latest change on, the register's status is the answer, so a later
+  // correction of the status (which records no date) is honoured going forward.
+  if (day >= history[history.length - 1].from) return isOwnAccount(unit);
+  let answer = !history[0].ownAccount;
+  for (const h of history) if (h.from <= day) answer = h.ownAccount;
+  return answer;
+}
+
+/** Was the villa ISPO's on any day of the span? */
+export function isOwnAccountDuring(unit: Pick<Unit, 'status' | 'ownAccountHistory'>, start: string, end: string): boolean {
+  const history = unit.ownAccountHistory;
+  if (!history || history.length === 0) return isOwnAccount(unit);
+  return isOwnAccountOn(unit, start) || history.some(h => h.ownAccount && h.from > start && h.from <= end);
+}
+
+/** Is a record on this villa, on this day, on ISPO's own account? Optionally only villas levied in one currency. */
+export type OwnAccountTest = (unitId: string, day: string) => boolean;
+
+export function ownAccountAsAt(units: Unit[], currency?: Currency): OwnAccountTest {
+  const byId = new Map(units.map(u => [u.id, u]));
+  return (unitId, day) => {
+    const u = byId.get(unitId);
+    if (!u || (currency && (u.maintCurrency || u.currency) !== currency)) return false;
+    return isOwnAccountOn(u, day);
+  };
+}
+
+/** The day a charge is read as at: its due date, else the first of its month. */
+function chargeDay(c: Pick<Charge, 'dueDate' | 'periodMonth'>): string {
+  return c.dueDate || (c.periodMonth ? `${c.periodMonth.slice(0, 7)}-01` : '');
+}
+
+/**
+ * The book a cost is paid from, after the one rule that overrides the choice.
+ *
+ * Ro, 2026-11-19: a utility bill paid on one of ISPO's villas is **ISPO's cost**,
+ * not the corporation's. The expense form defaults every cost to the strata fund,
+ * so an electricity bill on a let villa landed on the proprietors' books and the
+ * monthly report to owners. Applied when a cost is saved and once to the records
+ * already on file (`migrate`), never read back from today's villa status: a villa
+ * sold later must not move its old bills between books.
+ */
+export function fundForCost(category: ExpenseCategory, unit: Pick<Unit, 'status'> | undefined, chosen: ExpenseFund): ExpenseFund {
+  return category === 'Utilities' && !!unit && isOwnAccount(unit) ? 'ispo' : chosen;
+}
+
 /** The villas VDS lets on the corporation's own account, optionally in one currency. */
 export function ownAccountUnitIds(units: Unit[], currency?: Currency): Set<string> {
   return new Set(
@@ -405,9 +514,11 @@ export function ownAccountUnitIds(units: Unit[], currency?: Currency): Set<strin
  */
 export function expensesForBook(expenses: Expense[], units: Unit[], book: ReportBook, currency?: Currency): Expense[] {
   const inBook = expensesInBook(expenses, book);
-  if (book !== 'ispo') return inBook;
-  const own = ownAccountUnitIds(units, currency);
-  return inBook.filter(e => !isContributionCountedFromReceipts(e, own));
+  if (book === 'strata') return inBook;
+  // On the combined book too: the contribution is a transfer between the two
+  // books there, so its duplicate row must not survive as a cost either.
+  const own = ownAccountAsAt(units, currency);
+  return inBook.filter(e => !isContributionCountedFromReceipts(e, own, units));
 }
 
 /** What each book is called on a screen and at the head of a printed page. */
@@ -792,12 +903,15 @@ export function maintenanceReceiptsToMove(
  * one total, though, the J$20,000 is counted twice, and "billed" reads J$95,000
  * for a month in which the tenant is asked for J$75,000.
  *
- * This takes it out once, for the combined view only: the Rent charge is reduced
- * by the maintenance that has its own Maintenance charge for the same villa,
- * month and currency, and the maintenance receipts on those villas (ISPO paying
- * the corporation its share) are dropped, being a transfer between the two books,
- * not money from anyone. The single-book views are not given these lists and so
- * are untouched. Inputs are never modified; adjusted copies are returned.
+ * This takes it out once, for the combined view only. On a villa ISPO owns, the
+ * levy is ISPO's debt to the corporation, a transfer between the two books: its
+ * Maintenance charges AND its Maintenance receipts are both dropped, and the
+ * tenant's Rent charge stands whole (2026-11-19; before, the rent was reduced and
+ * the levy charge kept with nothing left to pay it). On a villa somebody else
+ * owns, a Rent charge carrying a split is reduced by that villa's own levy
+ * charge for the month, each levy charge pairing with one rent charge at most.
+ * The single-book views are not given these lists and so are untouched. Inputs
+ * are never modified; adjusted copies are returned.
  */
 export function consolidateEverything(
   charges: Charge[],
@@ -813,24 +927,77 @@ export function consolidateEverything(
    */
   units: Unit[]
 ): { charges: Charge[]; payments: Payment[]; eliminatedCharges: number } {
+  // As at each record's own day: a villa sold later keeps its history (QA, 2026-11-20).
+  const ownOn = ownAccountAsAt(units);
+  /*
+   * ISPO's own levy is eliminated on BOTH sides, charge and receipt alike.
+   *
+   * The receipts are dropped below (a transfer between the two books). The
+   * charges they settle used to be kept: on a short-let or vacant villa the levy
+   * then read as owed for ever, and on a let villa it was moved out of the rent
+   * into a levy charge nothing on this book could pay, leaving a rent credit
+   * beside a levy debt. Reports printed J$545,000 receivable beside the
+   * Dashboard's J$205,000, "14 accounts, 11 over 60 days" against a truth of 3
+   * and none, and an October collection rate of 49% beside 72% (QA, 2026-11-19).
+   *
+   * On the combined book ISPO and the corporation are one, so the levy ISPO owes
+   * the corporation is owed by nobody outside. A let villa's tenant is billed one
+   * figure, the agreed rent, and it stands whole; the levy inside it is the
+   * internal part and is simply not raised again. Every per-category balance read
+   * off this list is then the villa's true position, and the Reports rate,
+   * receivable and accounts agree with `receivableAsOf` and
+   * `combinedSettledOfBilled` by construction.
+   *
+   * Only a villa somebody ELSE owns is paired below: its levy is a real
+   * proprietor's debt and its receipts real income.
+   */
   const maintenance = new Map<string, Charge>();
   for (const c of charges) {
-    if (c.category === 'Maintenance' && c.status === 'open' && c.kind === undefined) {
+    if (c.category === 'Maintenance' && c.status === 'open' && c.kind === undefined && !c.oneOffType && !ownOn(c.unitId, chargeDay(c))) {
       maintenance.set(`${c.unitId}|${c.periodMonth}|${c.currency}`, c);
     }
   }
-  const fundedFromRent = new Set<string>(); // unitId|currency
+  /*
+   * One levy charge pairs with ONE month's rent, never more.
+   *
+   * A new tenancy raises two rent charges in its first month: the month itself
+   * and the last month held in advance (`kind: 'advance-final-month'`), each
+   * carrying the split. Both used to pair with the single levy charge, so the
+   * levy was taken out twice: C15's September read J$140,000 billed against the
+   * J$160,000 the tenant was actually asked for, and the tenant showed J$20,000
+   * in credit (QA, 2026-11-19). The levy is now consumed as it is paired, the
+   * month's own rent first, so whatever is left over pairs with nothing.
+   */
+  const levyLeft = new Map<string, number>();
+  for (const [key, m] of maintenance) levyLeft.set(key, m.amount);
+  const intraByRent = new Map<string, number>();
+  const rentWithSplit = charges
+    .filter(c => c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0)
+    .sort((a, b) => (a.kind === undefined ? 0 : 1) - (b.kind === undefined ? 0 : 1) || a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
+  for (const c of rentWithSplit) {
+    const key = `${c.unitId}|${c.periodMonth}|${c.currency}`;
+    const pair = maintenance.get(key);
+    if (!pair) continue;
+    const intra = round2(Math.min(c.maintenancePortion || 0, levyLeft.get(key) || 0));
+    if (!(intra > 0)) continue;
+    levyLeft.set(key, round2((levyLeft.get(key) || 0) - intra));
+    intraByRent.set(c.id, intra);
+  }
   let eliminated = 0;
-  const adjusted = charges.map(c => {
-    if (c.category !== 'Rent' || c.status !== 'open' || !(c.maintenancePortion && c.maintenancePortion > 0)) return c;
-    const pair = maintenance.get(`${c.unitId}|${c.periodMonth}|${c.currency}`);
-    if (!pair) return c;
-    const intra = Math.min(c.maintenancePortion, pair.amount);
-    if (!(intra > 0)) return c;
-    fundedFromRent.add(`${c.unitId}|${c.currency}`);
+  const adjusted: Charge[] = [];
+  for (const c of charges) {
+    if (c.category === 'Maintenance' && ownOn(c.unitId, chargeDay(c))) {
+      eliminated++;
+      continue;
+    }
+    const intra = intraByRent.get(c.id);
+    if (intra === undefined) {
+      adjusted.push(c);
+      continue;
+    }
     eliminated++;
-    return { ...c, amount: round2(c.amount - intra), maintenancePortion: round2(c.maintenancePortion - intra) };
-  });
+    adjusted.push({ ...c, amount: round2(c.amount - intra), maintenancePortion: round2((c.maintenancePortion || 0) - intra) });
+  }
   /*
    * Whose money is this? Ownership decides, in ANY letting mode.
    *
@@ -853,11 +1020,10 @@ export function consolidateEverything(
    * `fundedFromRent` deliberately does NOT appear here any more. It describes how
    * a levy is settled, not who owns the villa, and using it would drop a receipt
    * on an `owner-occupied` villa that happens to carry a rent split — real money
-   * from a real proprietor, hidden as an internal transfer. It still governs the
-   * charge elimination above, which is what it is actually about.
+   * from a real proprietor, hidden as an internal transfer. The rent pairing
+   * above is what is about how a levy is settled.
    */
-  const ownAccount = ownAccountUnitIds(units);
-  const keptPayments = payments.filter(p => !(p.category === 'Maintenance' && ownAccount.has(p.unitId)));
+  const keptPayments = payments.filter(p => !(p.category === 'Maintenance' && ownOn(p.unitId, p.date)));
   return { charges: adjusted, payments: keptPayments, eliminatedCharges: eliminated };
 }
 
@@ -883,9 +1049,12 @@ export function consolidateEverything(
  *   - charges raised before the split existed carry no maintenance share and give
  *     no credit; restating them brings them in.
  *
- * Each credit is returned as a derived Payment dated the day the rent arrived, so
- * every screen that already sums maintenance receipts, statements included, picks
- * it up without having to know about it.
+ * Each credit is returned as a derived Payment dated the day the rent arrived, or
+ * the day the levy it settles fell due if that is later (capped at `asOf`, today),
+ * so every screen that already sums maintenance receipts, statements included,
+ * picks it up in the month it belongs to without having to know about it. Rent
+ * paid ahead therefore never moves a later month's levy into an earlier — possibly
+ * closed — month.
  *
  * **What this money is, stated once so nothing has to infer it.** Ro, 2026-11-18:
  * *"the levy is not credited to ISPO, that levy is ISPO's maintenance payment to
@@ -901,7 +1070,7 @@ export function consolidateEverything(
  * on a let villa. A separate maintenance receipt on such a villa and month is the
  * same obligation paid twice.
  */
-export function settledFromRent(charges: Charge[], payments: Payment[]): Payment[] {
+export function settledFromRent(charges: Charge[], payments: Payment[], asOf: string = today()): Payment[] {
   const out: Payment[] = [];
   const cents = (n: number) => Math.round((Number(n) || 0) * 100);
   const keys = new Set<string>();
@@ -930,7 +1099,22 @@ export function settledFromRent(charges: Charge[], payments: Payment[]): Payment
     }
 
     const rentReceipts = payments.filter(p => settled(p) && p.category === 'Rent').sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
-    const queue = rentCharges.map(c => ({ month: c.periodMonth, total: cents(c.amount), left: cents(c.amount), share: cents(c.maintenancePortion || 0) }));
+    /*
+     * An advance applied at move-out while its own month was closed could not be
+     * moved to the final month (that would rewrite the closed month), so it says
+     * which month's levy it pays for instead. See applyAdvanceRentOnMoveOut.
+     */
+    const levyMonthOf = (c: Charge) => (c.kind === 'advance-final-month' && c.paysForMonth) || c.periodMonth;
+    const queue = rentCharges.map(c => ({ month: levyMonthOf(c), total: cents(c.amount), left: cents(c.amount), share: cents(c.maintenancePortion || 0) }));
+    /*
+     * When each month's levy fell due: the earliest a credit settling it can be
+     * dated. Rent paid ahead (or an advance applied to a final month) used to
+     * credit that later levy on the day the rent arrived, so October's
+     * contribution counted as September's strata income — and, once September
+     * was closed, applying a move-in advance rewrote it.
+     */
+    const levyDueByMonth = new Map<string, string>();
+    for (const c of maintCharges) if (!levyDueByMonth.has(c.periodMonth)) levyDueByMonth.set(c.periodMonth, c.dueDate);
     let idx = 0;
     /*
      * Credited per month, not against the villa's whole maintenance balance.
@@ -943,8 +1127,23 @@ export function settledFromRent(charges: Charge[], payments: Payment[]): Payment
      */
     const exactByMonth = new Map<string, number>();
     const emittedByMonth = new Map<string, number>();
-    for (const receipt of rentReceipts) {
-      let money = cents(netPaidAsOf(receipt));
+    /*
+     * Refunds take back the LATEST rent money, not the receipt they happen to be
+     * booked against. A refund of a November overpayment recorded against the
+     * September receipt zeroed September's rent, so September's levy was then
+     * settled by November money: closed September's contributions fell J$280,000
+     * to J$260,000 and November's rose (hunt, 2026-11-19). The total settled is
+     * unchanged; only which month's money is treated as handed back.
+     */
+    const usable = rentReceipts.map(r => cents(r.amount));
+    let refundLeft = rentReceipts.reduce((a, r) => a + (cents(r.amount) - cents(netPaidAsOf(r))), 0);
+    for (let i = usable.length - 1; i >= 0 && refundLeft > 0; i--) {
+      const take = Math.min(usable[i], refundLeft);
+      usable[i] -= take;
+      refundLeft -= take;
+    }
+    for (const [ri, receipt] of rentReceipts.entries()) {
+      let money = usable[ri];
       const touched = new Set<string>();
       while (money > 0 && idx < queue.length) {
         const q = queue[idx];
@@ -957,7 +1156,9 @@ export function settledFromRent(charges: Charge[], payments: Payment[]): Payment
         money -= take;
         if (q.left <= 0) idx++;
       }
-      let credit = 0;
+      // Credit per date: never before the rent arrived, never before the levy it
+      // settles fell due, never after today (no future-dated money).
+      const creditByDate = new Map<string, number>();
       for (const month of touched) {
         const owed = owedByMonth.get(month) || 0;
         const already = emittedByMonth.get(month) || 0;
@@ -965,12 +1166,15 @@ export function settledFromRent(charges: Charge[], payments: Payment[]): Payment
         if (want > 0) {
           emittedByMonth.set(month, already + want);
           owedByMonth.set(month, owed - want);
-          credit += want;
+          const due = levyDueByMonth.get(month) || '';
+          let date = due > receipt.date ? due : receipt.date;
+          if (date > asOf) date = asOf > receipt.date ? asOf : receipt.date;
+          creditByDate.set(date, (creditByDate.get(date) || 0) + want);
         }
       }
-      if (credit > 0) {
+      for (const [date, credit] of creditByDate) {
         out.push({
-          id: `from-rent-${receipt.id}`,
+          id: date === receipt.date ? `from-rent-${receipt.id}` : `from-rent-${receipt.id}@${date}`,
           receiptNo: '',
           payerName: 'Settled from rent',
           unitId,
@@ -978,7 +1182,7 @@ export function settledFromRent(charges: Charge[], payments: Payment[]): Payment
           category: 'Maintenance',
           amount: credit / 100,
           currency,
-          date: receipt.date,
+          date,
           method: 'Other',
           reference: 'Settled from rent',
           notes:
@@ -1341,6 +1545,19 @@ export function delinquentAccounts(
 }
 
 /**
+ * The arrears that are ISPO's own levy on the villas it lets.
+ *
+ * A real debt on the corporation's book, but on the combined book it is ISPO
+ * owing itself and is eliminated (`consolidateEverything`). The Dashboard reads
+ * the single books, so it counts this and the combined report does not: each
+ * screen names it, so the two figures are seen to differ by exactly this
+ * (hunt, 2026-11-19).
+ */
+export function ownLevyArrears(accounts: AccountBalance[]): AccountBalance[] {
+  return accounts.filter(a => a.category === 'Maintenance' && isOwnAccount(a.unit));
+}
+
+/**
  * Rent and maintenance that has been posted but is not owed yet.
  *
  * Posting a month raises every charge in it at once, each carrying the due date
@@ -1533,6 +1750,11 @@ export function isUtilityRecoveryRow(expense: Pick<Expense, 'id'>): boolean {
  * cost.
  */
 export function utilityRecoveryBook(payment: Payment, expenses: Expense[]): ExpenseFund {
+  // Stamped when the receipt was confirmed, from the villa (`recoveryFundFor`), and
+  // never re-read: a bill entered later used to move a closed month's recovery
+  // between books, and an ISPO villa with no bill yet landed on strata (QA, 2026-11-20).
+  // The bill lookup below is only for a receipt that predates the stamp.
+  if (payment.recoveryFund) return payment.recoveryFund;
   const bills = expenses
     .filter(e => !isUtilityRecoveryRow(e) && e.category === 'Utilities' && e.status === 'paid' && e.unitId === payment.unitId && !!payment.unitId && e.currency === payment.currency)
     .map(e => ({ e, date: e.datePaid || e.date }))
@@ -1540,6 +1762,16 @@ export function utilityRecoveryBook(payment: Payment, expenses: Expense[]): Expe
   const before = bills.filter(b => b.date <= payment.date);
   const chosen = before.length > 0 ? before[before.length - 1] : bills[0];
   return chosen ? fundOf(chosen.e) : 'strata';
+}
+
+/**
+ * The book a utility recovery belongs to, decided once from the villa as at the
+ * day the money came in: an ISPO villa's utilities are ISPO's cost
+ * (`fundForCost`), so what is recovered on it nets ISPO's cost; anybody else's
+ * villa is supplied through the corporation.
+ */
+export function recoveryFundFor(unit: Pick<Unit, 'status' | 'ownAccountHistory'> | undefined, day: string): ExpenseFund {
+  return unit && isOwnAccountOn(unit, day) ? 'ispo' : 'strata';
 }
 
 /** The derived recovery rows, every currency and all time. */
@@ -1832,6 +2064,11 @@ export function creditHeldForOthers(
  * (the levy inside the rent IS paid by the rent), and a levy ISPO owes the
  * corporation on a villa with no rent split is money moving between the two books,
  * not something anyone outside owes, so it is left out of what fell due.
+ *
+ * Since 2026-11-19 `consolidateEverything` itself drops every Maintenance charge
+ * on ISPO's villas (and leaves the rent whole), so the filter below no longer
+ * removes anything; it is kept as a second statement of the same rule, and the
+ * Reports summary, which reads the consolidated list directly, ties to this.
  */
 export function combinedSettledOfBilled(
   charges: Charge[],
@@ -1843,7 +2080,7 @@ export function combinedSettledOfBilled(
   asOf: string = to
 ) {
   const combined = consolidateEverything(charges, payments, units);
-  const own = ownAccountUnitIds(units);
+  const ownOn = ownAccountAsAt(units);
   const rentSplit = new Set(
     charges.filter(c => c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0).map(c => `${c.unitId}|${c.periodMonth}|${c.currency}`)
   );
@@ -1861,7 +2098,7 @@ export function combinedSettledOfBilled(
      * which basis either used.
      */
     c => {
-      if (c.category !== 'Maintenance' || !own.has(c.unitId)) return true;
+      if (c.category !== 'Maintenance' || !ownOn(c.unitId, chargeDay(c))) return true;
       // The ORDINARY levy stays collectable where the rent carries it, because
       // consolidation takes it out of the rent charge instead. Nothing else does:
       // a special assessment is never inside anybody's rent, so the exemption
@@ -1918,16 +2155,29 @@ export function isOccupied(unit: Unit): boolean {
  * breakdown beside it rather than making the reader take that on trust.
  */
 export interface OccupancyToday {
-  /** Villas with somebody in them: a tenancy, a guest tonight, or the owner. */
+  /** Villas ISPO lets with somebody in them: a tenancy or a guest tonight. */
   occupied: number;
-  /** Villas that could take somebody tonight and have not. */
+  /** Villas ISPO lets that could take somebody tonight and have not. */
   available: number;
   /** Off the market — not counted as a missed letting. */
   unavailable: number;
+  /**
+   * Proprietors' villas. Owner-occupied is third-party OWNERSHIP, not occupancy
+   * (Ro): such a villa may stand empty and is not ISPO's to let, so it is
+   * neither occupied nor available and sits outside the rate.
+   */
+  ownerOccupied: number;
   /** Every villa on the register. */
   total: number;
-  /** occupied ÷ (total − unavailable), or null when nothing could be let. */
+  /** The villas ISPO can let: total − unavailable − ownerOccupied. */
+  lettable: number;
+  /** occupied ÷ lettable, or null when nothing could be let. */
   rate: number | null;
+}
+
+/** The villas ISPO lets: not a proprietor's, not off the market. One rule for the day figure and the series. */
+export function inLettingPool(unit: Pick<Unit, 'status'>): boolean {
+  return unit.status !== 'owner-occupied' && unit.status !== 'unavailable';
 }
 
 /**
@@ -2101,21 +2351,28 @@ export function occupancyOn(units: Unit[], tenancies: Tenancy[], bookings: Booki
 
   let occupied = 0;
   let unavailable = 0;
+  let ownerOccupied = 0;
   for (const unit of units) {
     if (unit.status === 'unavailable') {
       unavailable++;
       continue;
     }
-    // The owner living in their own villa files no tenancy and no booking.
-    if (inResidence.has(unit.id) || unit.status === 'owner-occupied') occupied++;
+    // A proprietor's villa is ownership, not occupancy: never counted as let.
+    if (unit.status === 'owner-occupied') {
+      ownerOccupied++;
+      continue;
+    }
+    if (inResidence.has(unit.id)) occupied++;
   }
 
-  const lettable = units.length - unavailable;
+  const lettable = units.length - unavailable - ownerOccupied;
   return {
     occupied,
     available: Math.max(0, lettable - occupied),
     unavailable,
+    ownerOccupied,
     total: units.length,
+    lettable,
     rate: lettable > 0 ? Math.round((occupied / lettable) * 100) : null
   };
 }
@@ -2159,7 +2416,8 @@ export function occupiedUnitIdsOn(units: Unit[], tenancies: Tenancy[], bookings:
 }
 
 /**
- * Villas rented out, at the end of each month in the range.
+ * Villas rented out, at the end of each month in the range, out of the villas
+ * ISPO lets (proprietors' villas and those off the market are outside it).
  *
  * Sampled on the last day of the month rather than averaged across it: a single
  * consistent sample point is a figure someone can verify against the register by
@@ -2176,8 +2434,12 @@ export function occupancySeries(
     const raw = monthEnd(month);
     // Never sample past the report date — a future month would read as empty.
     const day = asOfCap && raw > asOfCap ? asOfCap : raw;
-    const occupied = occupiedUnitIdsOn(units, tenancies, bookings, day).size;
-    const total = units.length;
+    // The same pool as `occupancyOn`: the villas ISPO lets, so a proprietor's
+    // villa is neither a letting nor a missed one.
+    const pool = units.filter(inLettingPool);
+    const poolIds = new Set(pool.map(u => u.id));
+    const occupied = [...occupiedUnitIdsOn(units, tenancies, bookings, day)].filter(id => poolIds.has(id)).length;
+    const total = pool.length;
     return { month, occupied, total, rate: total > 0 ? round2((occupied / total) * 100) : null };
   });
 }
@@ -2726,9 +2988,17 @@ export function ownerStatement(
     maintenanceCharges,
     utilityCharges,
     expenseItems,
+    /*
+     * Only what the statement itself shows. Rent and guest income are the letting
+     * party's own and are not on an owner statement (`net` never uses them), so a
+     * villa whose only activity was ISPO's USD guest income produced an all-$0
+     * USD statement: four of them, "18 statements" for 16 villas (hunt,
+     * 2026-11-19). Utility money is shown, because the utility bill is.
+     */
     active:
-      collected !== 0 ||
-      refunded !== 0 ||
+      utilityCollected !== 0 ||
+      refundedIn('Utility') !== 0 ||
+      refundedIn('Maintenance') !== 0 ||
       maintenanceBilled !== 0 ||
       maintenancePaid !== 0 ||
       utilityBilled !== 0 ||
@@ -3446,7 +3716,13 @@ export function annualOwnersReport(
         : round2(feeBilled * contributingUnits * monthsRecorded);
 
   const perUnitAnnual = round2(expenditure / divisor);
-  const perUnitMonthly = round2(perUnitAnnual / 12);
+  /*
+   * Over the months the books actually cover. Dividing a part year's cost by
+   * twelve stated September–November's J$631,000 as J$3,756 a villa a month
+   * against a true J$15,024, and proposed that to the meeting (hunt, 2026-11-19).
+   */
+  const costMonths = monthsRecorded > 0 && monthsRecorded < 12 ? monthsRecorded : 12;
+  const perUnitMonthly = round2(perUnitAnnual / costMonths);
   const monthlyPositionPerUnit = round2(feeBilled - perUnitMonthly);
   /**
    * The residual, not the per-villa figure multiplied back up.
@@ -3485,10 +3761,13 @@ export function annualOwnersReport(
   const draft = Array.from(names).map(category => {
     const actual = round2(actualByCategory.get(category) || 0);
     const prior = round2(priorByCategory.get(category) || 0);
-    // An untouched line budgets at this year's actual: a flat run-rate, never zero.
+    // An untouched line budgets at this year's actual run rate, never zero: a
+    // part year is annualised (actual × 12 ÷ months recorded), because the
+    // budget is for a full year and the fee below divides it by twelve.
     const budgeted = budgetByCategory[category];
-    const budget = round2(Number.isFinite(budgeted) ? (budgeted as number) : actual);
-    return { category, actual, prior, budget };
+    const runRate = round2((actual * 12) / costMonths);
+    const budget = round2(Number.isFinite(budgeted) ? (budgeted as number) : runRate);
+    return { category, actual, prior, budget, runRate };
   });
 
   const budgetExpenditure = sumMoney(draft.map(l => l.budget));
@@ -3497,7 +3776,8 @@ export function annualOwnersReport(
     .map(l => ({
       ...l,
       priorChangePct: pct(l.prior, l.actual),
-      budgetChangePct: pct(l.actual, l.budget),
+      // Against the annualised run rate, so a part year does not read as a 300% rise.
+      budgetChangePct: pct(l.runRate, l.budget),
       budgetShare: budgetExpenditure > 0 ? round2((l.budget / budgetExpenditure) * 100) : 0
     }))
     .sort((a, b) => b.budget - a.budget || a.category.localeCompare(b.category));
@@ -3554,15 +3834,20 @@ export function annualOwnersReport(
     const month = `${reportYear}-${String(m).padStart(2, '0')}`;
     const spend = expensesInPeriod(expenses, currency, monthStart(month), monthEnd(month));
     const got = collectedInPeriod(payments, currency, monthStart(month), monthEnd(month)).maintenance;
+    // A month outside the books (before they began, or not yet reached) has no
+    // contribution to credit and is not "covered" (hunt, 2026-11-19).
+    const recorded = m >= recordedRange.first && m <= recordedRange.last;
+    const income = recorded ? monthlyContribution : 0;
     months.push({
       month,
       expenditure: spend,
-      income: monthlyContribution,
+      income,
       received: got,
-      shortfall: round2(spend - monthlyContribution)
+      shortfall: round2(spend - income)
     });
   }
   const monthsOver = months.filter(r => r.shortfall > 0).map(r => r.month);
+  const recordedMonthCount = months.filter((_, i) => i + 1 >= recordedRange.first && i + 1 <= recordedRange.last).length;
 
   return {
     currency,
@@ -3596,7 +3881,7 @@ export function annualOwnersReport(
     cutsThatWouldClose,
     categories,
     months,
-    monthsCovered: 12 - monthsOver.length,
+    monthsCovered: Math.max(0, recordedMonthCount - monthsOver.filter(mo => { const n = Number(mo.slice(5, 7)); return n >= recordedRange.first && n <= recordedRange.last; }).length),
     monthsOver
   };
 }
@@ -4157,9 +4442,9 @@ export function operatingStatement(
    * levy twice beside a summary that counted it once (audit, 2026-11-18). Same
    * rule, same register, and the amount is named under "Not included" below.
    */
-  const ownVillas = ownAccountUnitIds(units);
+  const ownVillasOn = ownAccountAsAt(units);
   const isTransferBetweenBooks = (p: Payment): boolean =>
-    book === 'everything' && p.category === 'Maintenance' && ownVillas.has(p.unitId);
+    book === 'everything' && p.category === 'Maintenance' && ownVillasOn(p.unitId, p.date);
   /*
    * Utility recoveries are not income on any book (Ro, 2026-11-18). They are a
    * pass-through, netted from the utility cost of the book that bore it, where
@@ -4174,7 +4459,7 @@ export function operatingStatement(
    * into the expense register out of its own costs — see `isTheContributionAgain`
    * below and the identical rule in `ispoOperations`.
    */
-  const ownAccount = ownAccountUnitIds(units, currency);
+  const ownAccount = ownAccountAsAt(units, currency);
 
   const incomeVisibility = (category: PaymentCategory): LineVisibility =>
     options.income?.[category] ?? options.defaultIncome ?? 'itemised';
@@ -4271,17 +4556,16 @@ export function operatingStatement(
    * Is this cost row actually the monthly contribution, already counted from its
    * receipt?
    *
-   * Only asked on the ISPO book, and only there because that book's income and
-   * costs must agree with `ispoOperations` — which applies exactly this rule — by
-   * construction rather than by coincidence. A plumber on one of ISPO's villas is
-   * a genuine ISPO cost; a **Maintenance**-category row against a villa VDS lets
-   * on its own account is the contribution, which has a receipt.
-   *
-   * The combined book is left exactly as it was: Ro keeps `everything` as his
-   * all-in view and nothing is quietly removed from a figure he already reads.
+   * Asked on the ISPO book so it agrees with `ispoOperations`, which applies
+   * exactly this rule, and on the combined book so that combined = strata + ISPO
+   * (2026-11-19). The combined book already drops the contribution receipt as a
+   * transfer between the two books; leaving its duplicate cost row in made the
+   * combined surplus smaller than the two books added up. The row is named in
+   * `excludedExpenditure` below, never removed in silence. The strata book never
+   * holds an ISPO row, so the question does not arise there.
    */
   const isTheContributionAgain = (e: Expense): boolean =>
-    book === 'ispo' && isContributionCountedFromReceipts(e, ownAccount);
+    book !== 'strata' && isContributionCountedFromReceipts(e, ownAccount, units);
 
   const contributionAgain = settled.filter(isTheContributionAgain);
   const paid = settled.filter(e => !isTheContributionAgain(e));
@@ -4348,7 +4632,7 @@ export function operatingStatement(
    * the same money on every book.
    */
   const internalTransfer = netReceivedInPeriod(
-    allPayments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownAccount.has(p.unitId)),
+    allPayments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownAccount(p.unitId, p.date)),
     start,
     end
   );
@@ -4373,10 +4657,10 @@ export function operatingStatement(
   const totalExpenditure = sumMoney(expenditure.map(g => g.total));
 
   /*
-   * Anything the ISPO book dropped as already-receipted is named here rather than
-   * removed in silence — the standing rule in this codebase. Without the line, a
-   * register showing a Maintenance cost against an own-account villa and a
-   * statement that does not carry it would look like a fault.
+   * Anything dropped as already-receipted is named here rather than removed in
+   * silence — the standing rule in this codebase. Without the line, a register
+   * showing the contribution as a cost and a statement that does not carry it
+   * would look like a fault.
    */
   if (contributionAgain.length > 0) {
     excludedExpenditure.push({
@@ -4500,9 +4784,11 @@ export interface IspoOperations {
    * cost row as well would put the same money into this statement twice.
    *
    * So the statement does not merely *detect* that shape, it is immune to it: a
-   * paid ISPO cost categorised Maintenance against a villa let on VDS's own
-   * account is the contribution by definition, and it is excluded here and
-   * **named**, never silently dropped. The self-check raises
+   * paid ISPO cost that `isContributionCountedFromReceipts` identifies as the
+   * contribution (Maintenance, own-account villa, names the contribution, a
+   * whole number of that villa's monthly contribution) is excluded here and
+   * **named** through `contributionExclusionNote`, never silently dropped. A
+   * repair under Maintenance is not that shape and is counted. The self-check raises
    * `contribution-entered-as-a-cost` as well, so the stray row gets tidied up
    * rather than living on as a permanent exclusion.
    */
@@ -4590,19 +4876,22 @@ export function ispoOperations(
    * The own-account villas, needed before the cost groups are built because a
    * contribution typed into the register has to be kept out of them.
    */
-  const ownAccountUnits = units.filter(isOwnAccount);
+  // The villas ISPO let IN THE PERIOD, from the dated ownership record, not
+  // today's status: a reprint of November after a December sale still names the
+  // villa it let in November (Ro, 2026-11-20).
+  const ownAccountUnits = units.filter(u => isOwnAccountDuring(u, start, end));
   const inThisCurrency = ownAccountUnits.filter(u => (u.maintCurrency || u.currency) === currency);
-  const ownIds = ownAccountUnitIds(units, currency);
+  const ownIds = ownAccountAsAt(units, currency);
 
   /**
    * Is this cost row actually the contribution, already counted from receipts?
    *
-   * A plumber or a locksmith on one of ISPO's villas is a genuine ISPO cost and
-   * belongs in the groups. A **Maintenance**-category row against a villa VDS
-   * lets on its own account is the monthly contribution, which has a receipt and
-   * is counted from it — the one shape that would be the same money twice.
+   * A plumber, a locksmith or a repair filed under Maintenance on one of ISPO's
+   * villas is a genuine ISPO cost and belongs in the groups. Only a row that
+   * names the contribution and is a whole number of the villa's monthly
+   * contribution is the contribution again — see `isContributionCountedFromReceipts`.
    */
-  const isTheContributionAgain = (expense: Expense): boolean => isContributionCountedFromReceipts(expense, ownIds);
+  const isTheContributionAgain = (expense: Expense): boolean => isContributionCountedFromReceipts(expense, ownIds, units);
 
   const duplicated = paid.filter(isTheContributionAgain);
   const ownCosts = paid.filter(e => !isTheContributionAgain(e));
@@ -4632,7 +4921,7 @@ export function ispoOperations(
    * than a converted figure — the rule the whole application keeps.
    */
   const maintenanceOnOwnVillas = netReceivedInPeriod(
-    payments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownIds.has(p.unitId)),
+    payments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownIds(p.unitId, p.date)),
     start,
     end
   );
@@ -4647,12 +4936,13 @@ export function ispoOperations(
    * bills maintenance on. Either the money is on the wrong villa or the villa is
    * on the wrong status, and both are worth seeing.
    */
-  const flaggedForIncome = new Set(units.filter(u => isOwnAccount(u) && u.currency === currency).map(u => u.id));
+  // Own-account by status alone: a US$ villa's J$ booking is still ISPO's (2026-11-19).
+  const flaggedForIncome = ownAccountAsAt(units);
   const unflaggedReceipts = payments.filter(
     p =>
       p.currency === currency &&
       (p.category === 'Rent' || p.category === 'Booking') &&
-      !flaggedForIncome.has(p.unitId)
+      !flaggedForIncome(p.unitId, p.date)
   );
   const incomeFromUnflaggedVillas = netReceivedInPeriod(unflaggedReceipts, start, end);
   const unflaggedVillasWithIncome = [
@@ -4736,9 +5026,10 @@ export function ispoOperations(
  *
  * One currency per report and never combined, for the same reason as
  * everywhere else in this system: J$ and US$ are not the same money and
- * subtracting one from the other would invent a number. A villa whose rent and
- * contribution are denominated differently cannot have a shortfall computed at
- * all, so it is named in `currencyNotes` rather than quietly given one.
+ * subtracting one from the other would invent a number. Every receipt counts in
+ * its own currency's report. A villa-month whose contribution exceeded its
+ * earnings in one currency while it also earned in the other is undecidable, so
+ * it is named in `crossCurrencyMonths` rather than quietly given a figure.
  */
 export interface ShortfallLine {
   unitId: string;
@@ -4758,6 +5049,13 @@ export interface ShortfallLine {
   shortfall: number;
   /** No let at all in this month, which is the case the report was asked for. */
   vacant: boolean;
+  /**
+   * Set when the contribution paid in this currency exceeded what the villa
+   * earned in it, but the villa ALSO earned money in the other currency that
+   * month. Whether that other money covered the gap cannot be said without an
+   * exchange rate, so no shortfall is counted and the month is named instead.
+   */
+  crossCurrency?: { gap: number; otherCurrency: Currency; otherEarned: number };
 }
 
 export interface ShortfallVillaRow {
@@ -4832,12 +5130,18 @@ export interface ShortfallReport {
   vacantShortfall: number;
   vacantVillaMonths: number;
   /**
-   * Villas whose rent and contribution are in different currencies.
+   * Villa-months whose gap in this currency may have been covered by earnings in
+   * the other one (see `ShortfallLine.crossCurrency`).
    *
-   * Deliberately given no shortfall rather than a converted one. Stated on the
-   * page and in the export so a villa cannot drop out of the report in silence.
+   * Before 2026-11-19 a villa whose nominal rent currency differed from its
+   * contribution currency was dropped from the rows wholesale. A short-let villa
+   * takes bookings in either currency, so that dropped six of ISPO's villas and
+   * every short-stay dollar they earned: the report read J$0 short stay while
+   * ISPO Operations showed J$72,000 and US$2,560 for the same month (Ro,
+   * 2026-11-19). Now every receipt is counted in its own currency, and only the
+   * one undecidable case — a gap here, earnings there — is set aside, by month.
    */
-  currencyNotes: { unitId: string; villa: string; rentCurrency: Currency; maintCurrency: Currency }[];
+  crossCurrencyMonths: { unitId: string; villa: string; month: string; gap: number; otherCurrency: Currency; otherEarned: number }[];
   /** No villa is let on VDS's own account in this currency at all. */
   noneFlagged: boolean;
   empty: boolean;
@@ -4874,31 +5178,26 @@ export function outOfPocketShortfall(
   const months = monthsBetween(start, end);
 
   /*
-   * Only villas VDS lets on its own account, and only where this currency is
-   * one the villa actually deals in. A villa billed entirely in US dollars has
-   * no place on the Jamaican dollar report, and padding it in with zeroes would
-   * read as a villa that cost nothing.
+   * Every villa ISPO lets that deals in this currency at all: billed in it, let
+   * in it, or holding a receipt in it during the period. Membership is by money,
+   * not by the villa's nominal currency, because a short-let villa recorded as
+   * US$ routinely takes Jamaican-dollar bookings, and those are ISPO's earnings
+   * as much as any other. A villa with nothing in this currency is left off
+   * rather than padded with zeroes.
    */
-  const flagged = units.filter(isOwnAccount);
-  const mine = flagged.filter(u => u.currency === currency || (u.maintCurrency || u.currency) === currency);
-
-  const currencyNotes = mine
-    .filter(u => (u.maintCurrency || u.currency) !== u.currency)
-    .map(u => ({
-      unitId: u.id,
-      villa: getUnitDisplayName(u.number),
-      rentCurrency: u.currency,
-      maintCurrency: (u.maintCurrency || u.currency) as Currency
-    }));
-  /*
-   * A villa whose rent and contribution are denominated differently is left off
-   * the rows entirely rather than given half a row. Counting its rent while its
-   * contribution is invisible would put a figure into the totals that answers no
-   * question, and computing a shortfall across two currencies would invent one.
-   * It is named in `currencyNotes` instead, so it cannot drop out in silence.
-   */
-  const mismatched = new Set(currencyNotes.map(n => n.unitId));
-  const usable = mine.filter(u => !mismatched.has(u.id));
+  // ISPO's at any time in the span; each month below is counted only while it was.
+  const flagged = units.filter(u => isOwnAccountDuring(u, start, end));
+  const other: Currency = currency === 'JMD' ? 'USD' : 'JMD';
+  const touchesCurrency = (u: Unit) =>
+    payments.some(
+      p =>
+        p.unitId === u.id &&
+        p.currency === currency &&
+        p.status === 'completed' &&
+        (p.category === 'Rent' || p.category === 'Booking' || p.category === 'Maintenance') &&
+        (isWithin(p.date, start, end) || (!!p.refundedOn && isWithin(p.refundedOn, start, end)))
+    );
+  const usable = flagged.filter(u => u.currency === currency || (u.maintCurrency || u.currency) === currency || touchesCurrency(u));
 
   /*
    * Occupied days are counted from the dated records, one day at a time, rather
@@ -4931,12 +5230,16 @@ export function outOfPocketShortfall(
   const lines: ShortfallLine[] = [];
   for (const unit of usable) {
     const villa = getUnitDisplayName(unit.number);
-    const forUnit = paymentsForUnit(payments, unit, units).filter(p => p.currency === currency);
+    const allForUnit = paymentsForUnit(payments, unit, units);
+    const forUnit = allForUnit.filter(p => p.currency === currency);
+    const forOther = allForUnit.filter(p => p.currency === other);
     for (const month of months) {
-      const rentReceived = unit.currency === currency ? receivedInMonth(forUnit, 'Rent', month, start, end) : 0;
-      const maintenancePaid =
-        (unit.maintCurrency || unit.currency) === currency ? receivedInMonth(forUnit, 'Maintenance', month, start, end) : 0;
-      const shortStayReceived = unit.currency === currency ? receivedInMonth(forUnit, 'Booking', month, start, end) : 0;
+      const fromDay = monthStart(month) < start ? start : monthStart(month);
+      if (!isOwnAccountOn(unit, fromDay)) continue;
+      // Every receipt counts in its own currency, whatever the villa's nominal one.
+      const rentReceived = receivedInMonth(forUnit, 'Rent', month, start, end);
+      const maintenancePaid = receivedInMonth(forUnit, 'Maintenance', month, start, end);
+      const shortStayReceived = receivedInMonth(forUnit, 'Booking', month, start, end);
       const days = occupiedDays.get(`${unit.id}|${month}`) || 0;
       /*
        * Everything the villa earned VDS in the month, whichever way it was let.
@@ -4944,7 +5247,22 @@ export function outOfPocketShortfall(
        * and counting only the rent would report money VDS never had to find.
        */
       const earned = addMoney(rentReceived, shortStayReceived);
-      const gap = subtractMoney(maintenancePaid, earned);
+      /*
+       * Never more than the levy actually paid. A month whose only booking money
+       * was a refund of an earlier stay earned less than nothing, and the gap read
+       * J$30,000 on a J$20,000 levy (hunt, 2026-11-19). The refund still shows as
+       * negative earnings on the line; it just cannot make the levy larger.
+       */
+      const rawGap = subtractMoney(maintenancePaid, Math.max(0, earned));
+      /*
+       * A gap here with earnings in the other currency is undecidable without a
+       * rate: US$2,200 of bookings almost certainly covered a J$20,000 levy, but
+       * "almost certainly" is a conversion. Counted as no shortfall, named.
+       */
+      const otherEarned =
+        rawGap > 0 ? addMoney(receivedInMonth(forOther, 'Rent', month, start, end), receivedInMonth(forOther, 'Booking', month, start, end)) : 0;
+      const crossCurrency = rawGap > 0 && otherEarned > 0 ? { gap: round2(rawGap), otherCurrency: other, otherEarned } : undefined;
+      const gap = crossCurrency ? 0 : rawGap;
       lines.push({
         unitId: unit.id,
         villa,
@@ -4956,7 +5274,8 @@ export function outOfPocketShortfall(
         earned,
         maintenancePaid,
         shortfall: gap > 0 ? round2(gap) : 0,
-        vacant: days === 0
+        vacant: days === 0,
+        ...(crossCurrency ? { crossCurrency } : {})
       });
     }
   }
@@ -5004,6 +5323,11 @@ export function outOfPocketShortfall(
     .map(l => ({ unitId: l.unitId, villa: l.villa, month: l.month, shortfall: l.shortfall, vacant: l.vacant }))
     .sort((a, b) => a.month.localeCompare(b.month) || a.villa.localeCompare(b.villa, undefined, { numeric: true }));
 
+  const crossCurrencyMonths = lines
+    .filter(l => l.crossCurrency)
+    .map(l => ({ unitId: l.unitId, villa: l.villa, month: l.month, ...l.crossCurrency! }))
+    .sort((a, b) => a.month.localeCompare(b.month) || a.villa.localeCompare(b.villa, undefined, { numeric: true }));
+
   const totalRentReceived = sumMoney(lines.map(l => l.rentReceived));
   const totalShortStayReceived = sumMoney(lines.map(l => l.shortStayReceived));
   const totalMaintenancePaid = sumMoney(lines.map(l => l.maintenancePaid));
@@ -5031,16 +5355,14 @@ export function outOfPocketShortfall(
     fundedVillaMonths: fundedMonths.length,
     vacantShortfall: sumMoney(fundedMonths.filter(m => m.vacant).map(m => m.shortfall)),
     vacantVillaMonths: fundedMonths.filter(m => m.vacant).length,
-    currencyNotes,
+    crossCurrencyMonths,
     noneFlagged: flagged.length === 0,
     /*
-     * A villa named in `currencyNotes` keeps the report on screen even when
-     * there is nothing to total. It was deliberately given no shortfall, and a
-     * report that hid itself would take that statement with it — leaving a
-     * villa VDS lets silently unaccounted for.
+     * A villa-month named in `crossCurrencyMonths` keeps the report on screen
+     * even when there is nothing to total, so the statement is not hidden.
      */
     empty:
-      currencyNotes.length === 0 &&
+      crossCurrencyMonths.length === 0 &&
       (lines.length === 0 || (totalRentReceived === 0 && totalShortStayReceived === 0 && totalMaintenancePaid === 0))
   };
 }
@@ -5096,32 +5418,59 @@ export interface MonthlyOwnersReport {
   to: string;
   /** Contributions actually received in the month, net of refunds. */
   contributionsReceived: number;
-  /** Common costs of running the property, settled in the month. */
+  /**
+   * Every cost the corporation paid in the month, net of utility recoveries:
+   * exactly the strata Operating Statement's expenditure for the same month, and
+   * so, month by month, exactly what the Annual Report adds up.
+   *
+   * Until 2026-11-19 this left out every cost tied to a villa as "recharged to
+   * those owners". No recharge existed for most of them: a J$40,000 electricity
+   * bill on A5 (less J$8,000 recovered from the tenant) vanished from this
+   * report, so October read J$32,000 better than the Operating Statement and
+   * the year's monthly reports did not add up to the Annual Report.
+   */
   costsPaid: number;
   /** Received less paid. Negative means the fund spent more than it took in. */
   surplus: number;
   /** Where the money went, by category. Totals only — no payee is named. */
   categories: { label: string; total: number }[];
   /**
-   * Memo, never netted into the surplus: common bills that fell due in the month
-   * and were still unsettled at the end of it. A month with a large unpaid bill
+   * Memo, never netted into the surplus: bills that fell due in the month and
+   * were still unsettled at the end of it. A month with a large unpaid bill
    * would otherwise read as a good month.
    */
   unpaidAtMonthEnd: number;
   unpaidCount: number;
   /**
-   * Memo: work on individual villas, recharged to those owners and therefore not
-   * a common cost. Stated as a total so that a cost put against the wrong villa
-   * shows as a visible exclusion instead of vanishing from both sides.
+   * Of `costsPaid`, the part spent on individual villas rather than the common
+   * property, net of utility recoveries on those villas. **Included** in
+   * `costsPaid`, never subtracted from it: stated so a proprietor can see how
+   * much of the month went on villas rather than common areas. No villa is named.
    */
-  villaRecharged: number;
-  villaRechargedCount: number;
+  onIndividualVillas: number;
+  onIndividualVillasCount: number;
   /** Lots with contributions outstanding at month end. A count, never a list. */
   lotsInArrears: number;
   lotsTotal: number;
   arrearsOutstanding: number;
   /** Nothing at all happened in this month, in this currency. */
   empty: boolean;
+}
+
+/**
+ * The one wording the monthly report uses, on screen, printed and exported, for
+ * the part of its costs spent on individual villas. It claims no recharge: none
+ * is raised by the system for a villa's utilities, and a cost is counted here
+ * because the corporation paid it.
+ */
+export function individualVillasNote(r: Pick<MonthlyOwnersReport, 'currency' | 'onIndividualVillas' | 'onIndividualVillasCount'>): string | null {
+  if (r.onIndividualVillasCount <= 0 && r.onIndividualVillas === 0) return null;
+  const n = r.onIndividualVillasCount;
+  return (
+    `Of the costs paid, ${formatMoney(r.onIndividualVillas, r.currency)} across ${n} ${n === 1 ? 'item' : 'items'} was spent on ` +
+    'individual villas rather than the common property, net of any utility recovered from those villas. It is included in the ' +
+    'costs above because the corporation paid it. No villa is named on this report.'
+  );
 }
 
 export function monthlyOwnersReport(
@@ -5135,7 +5484,21 @@ export function monthlyOwnersReport(
   const from = monthStart(month);
   const to = monthEnd(month);
 
-  const ops = operationsStatement(expenses, payments, currency, from, to);
+  /*
+   * Costs come from the strata Operating Statement itself, so the two cannot
+   * disagree for the same month (2026-11-19). Income stays contributions only,
+   * per Ro's rule above, so where the corporation also had "Other income" in the
+   * month the Operating Statement's surplus is larger by exactly that.
+   */
+  const op = operatingStatement(payments, expenses, units, currency, from, to, { book: 'strata' });
+  const contributionsReceived = collectedInPeriod(payments, currency, from, to).maintenance;
+  const costsPaid = op.totalExpenditure;
+
+  const strataCosts = strataExpenses(withUtilityRecoveries(expenses, payments)).filter(e => e.currency === currency);
+  const onVillas = strataCosts.filter(
+    e => e.status === 'paid' && isWithin(e.datePaid || e.date, from, to) && !isCommonCost(e)
+  );
+  const unpaid = strataCosts.filter(e => e.status === 'pending' && isWithin(e.dueDate || e.date, from, to));
 
   /*
    * Contributions only. Rent arrears are a landlord's business between an owner
@@ -5161,21 +5524,21 @@ export function monthlyOwnersReport(
     month,
     from,
     to,
-    contributionsReceived: ops.maintenanceCollected,
-    costsPaid: ops.costsPaid,
-    surplus: ops.surplus,
+    contributionsReceived,
+    costsPaid,
+    surplus: subtractMoney(contributionsReceived, costsPaid),
     // Largest first: the question a proprietor asks of this table is "what did
     // most of it go on?", and alphabetical order answers a different one.
-    categories: ops.groups
-      .map(g => ({ label: g.category, total: g.total }))
+    categories: op.expenditure
+      .map(g => ({ label: g.label, total: g.total }))
       .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label)),
-    unpaidAtMonthEnd: ops.costsUnpaid,
-    unpaidCount: ops.unpaidLines.length,
-    villaRecharged: ops.villaRecharged,
-    villaRechargedCount: ops.villaRechargedCount,
+    unpaidAtMonthEnd: sumMoney(unpaid.map(e => e.amount)),
+    unpaidCount: unpaid.length,
+    onIndividualVillas: sumMoney(onVillas.map(e => e.amount)),
+    onIndividualVillasCount: onVillas.filter(e => !isUtilityRecoveryRow(e)).length,
     lotsInArrears,
     lotsTotal,
     arrearsOutstanding: round2(arrearsOutstanding),
-    empty: ops.empty && lotsInArrears === 0
+    empty: contributionsReceived === 0 && costsPaid === 0 && unpaid.length === 0 && lotsInArrears === 0
   };
 }

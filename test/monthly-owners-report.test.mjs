@@ -132,7 +132,9 @@ export default async function run({ port, projectRoot }) {
     await c.post('/api/expenses', spend({ category: 'Payroll', vendor: 'Darryl Whyte', description: 'Grounds', amount: 20000 }));
     await c.post('/api/expenses', spend({ category: 'Security', vendor: 'Guardsman', description: 'Night patrol', amount: 12000 }));
     await c.post('/api/expenses', spend({ category: 'Supplies', vendor: 'AquaChem', description: 'Pool chemicals', amount: 3000 }));
-    // Work on one villa: recharged to that owner, so not a common cost.
+    // Work on one villa. Since 2026-11-19 it is counted, as the Operating Statement
+    // and the Annual Report count it: the corporation paid it, and no recharge of it
+    // reaches the fund as income anywhere in the system.
     await c.post('/api/expenses', spend({ category: 'Maintenance', vendor: 'A. Plumber', description: 'Kitchen tap', amount: 7800, unitId: 'unit-3', unitNumber: '3' }));
     // A bill that fell due in the month and was not settled.
     await c.post('/api/expenses', spend({ category: 'Contractors', vendor: 'GateTech', amount: 40000, status: 'pending', dueDate: '2026-06-25' }));
@@ -145,8 +147,8 @@ export default async function run({ port, projectRoot }) {
      * ================================================================ */
 
     T.check('contributions received are what actually came in', jmd.contributionsReceived === 40000, String(jmd.contributionsReceived));
-    T.check('common costs are what was actually paid', jmd.costsPaid === 35000, `${jmd.costsPaid} (20000 + 12000 + 3000)`);
-    T.check('and the surplus is the subtraction a proprietor would do', jmd.surplus === 5000, String(jmd.surplus));
+    T.check('costs are what was actually paid', jmd.costsPaid === 42800, `${jmd.costsPaid} (20000 + 12000 + 3000 + 7800)`);
+    T.check('and the surplus is the subtraction a proprietor would do', jmd.surplus === -2800, String(jmd.surplus));
     T.check(
       'the categories add up to the total, exactly',
       jmd.categories.reduce((t, g) => t + Math.round(g.total * 100), 0) === Math.round(jmd.costsPaid * 100),
@@ -159,14 +161,18 @@ export default async function run({ port, projectRoot }) {
      * ================================================================ */
 
     T.check(
-      'work on one villa is excluded from common costs',
-      !jmd.categories.some(g => Math.round(g.total * 100) === 780000),
-      'recharged work was shared across the proprietors'
+      'work on one villa is counted in its category, as the Operating Statement counts it',
+      jmd.categories.some(g => g.label === 'Maintenance' && Math.round(g.total * 100) === 780000),
+      JSON.stringify(jmd.categories)
     );
-    T.check('but it is declared as a total rather than dropped', jmd.villaRecharged === 7800 && jmd.villaRechargedCount === 1, JSON.stringify([jmd.villaRecharged, jmd.villaRechargedCount]));
+    T.check(
+      'and the share spent on individual villas is declared inside the costs, not outside them',
+      jmd.onIndividualVillas === 7800 && jmd.onIndividualVillasCount === 1,
+      JSON.stringify([jmd.onIndividualVillas, jmd.onIndividualVillasCount])
+    );
     T.check(
       'a bill due in the month and unsettled is stated, not netted off',
-      jmd.unpaidAtMonthEnd === 40000 && jmd.unpaidCount === 1 && jmd.surplus === 5000,
+      jmd.unpaidAtMonthEnd === 40000 && jmd.unpaidCount === 1 && jmd.surplus === -2800,
       `${jmd.unpaidAtMonthEnd} unpaid against a surplus of ${jmd.surplus}`
     );
 
@@ -234,12 +240,17 @@ export default async function run({ port, projectRoot }) {
       date: '2026-06-08',
       confirmNoOpenCharge: true
     });
+    /*
+     * On the proprietor's own villa (unit-1, owner-occupied). It was on unit-4,
+     * which is let (`long-term`) and therefore ISPO's: since 2026-11-20 a utility
+     * recovered on an ISPO villa nets ISPO's cost, never the owners' report.
+     */
     await recordAndConfirmPayment(c, {
-      unitId: 'unit-4',
+      unitId: 'unit-1',
       category: 'Utility',
       amount: 6000,
       currency: 'JMD',
-      payerName: 'Owner Four',
+      payerName: 'Marcia Bloomfield',
       method: 'Cash',
       date: '2026-06-09',
       confirmNoOpenCharge: true
@@ -253,8 +264,17 @@ export default async function run({ port, projectRoot }) {
       after.contributionsReceived === 40000,
       `contributions read ${after.contributionsReceived} after rent was banked`
     );
-    T.check('nor does a short-stay receipt', after.contributionsReceived === 40000 && after.surplus === 5000, JSON.stringify([after.contributionsReceived, after.surplus]));
-    T.check('nor a utility recovery from an owner', after.costsPaid === 35000, String(after.costsPaid));
+    T.check(
+      'nor does a short-stay receipt',
+      after.contributionsReceived === 40000 && after.surplus === 40000 - after.costsPaid,
+      JSON.stringify([after.contributionsReceived, after.surplus])
+    );
+    /*
+     * A utility recovery is never income here. Under the pass-through rule (Ro,
+     * 2026-11-18) it nets the corporation's utility cost, exactly as the strata
+     * Operating Statement nets it, so costs fall by the J$6,000 recovered.
+     */
+    T.check('a utility recovery from an owner is not income: it nets utilities, as on the Operating Statement', after.contributionsReceived === 40000 && after.costsPaid === 36800, String(after.costsPaid));
     T.check(
       'the arrears count is over contributions only, never rent',
       after.lotsInArrears === 1,
@@ -299,15 +319,16 @@ export default async function run({ port, projectRoot }) {
 
     T.check('the printed report renders', html.length > 500, `${html.length} characters`);
     T.check('it names the month it covers', /June 2026/.test(text), text.slice(0, 200));
-    T.check('it states what came in and what went out', /Maintenance contributions received/i.test(text) && /Common costs paid/i.test(text));
-    T.check('and the surplus a proprietor can check by subtraction', /Surplus for the month/i.test(text) && /J\$5,000\.00/.test(text), 'the surplus is not on the page');
+    T.check('it states what came in and what went out', /Maintenance contributions received/i.test(text) && /Costs paid/i.test(text));
+    T.check('and the deficit a proprietor can check by subtraction', /Deficit for the month/i.test(text) && /J\$2,800\.00/.test(text), 'the deficit is not on the page');
     T.check('the categories are on it', /Payroll/.test(text) && /Security/.test(text));
     T.check(
       'the unsettled bill is declared',
       /unsettled/i.test(text) && /J\$40,000\.00/.test(text),
       'a month with an unpaid bill read as a clean surplus'
     );
-    T.check('and so is the work recharged to one owner', /recharged/i.test(text) && /J\$7,800\.00/.test(text), 'recharged work vanished from the printed report');
+    T.check('and so is the share spent on individual villas', /individual villas/i.test(text) && /J\$7,800\.00/.test(text), 'villa spend vanished from the printed report');
+    T.check('and no recharge is claimed that the system never raised', !/recharg/i.test(text), 'the report claims a recharge');
 
     /* --- the rule that matters most on a document sent to owners --- */
 

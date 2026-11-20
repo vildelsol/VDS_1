@@ -30,7 +30,7 @@
 import React, { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import { AppSettings, Currency, Expense, MANAGING_COMPANY_NAME, Payment, SessionUser, Unit } from '../types';
-import { IspoOperations as Statement, ispoOperations } from '../lib/finance';
+import { IspoOperations as Statement, contributionExclusionNote, ispoOperations } from '../lib/finance';
 import { formatMoney } from '../lib/money';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
@@ -95,93 +95,7 @@ export default function IspoOperations({ units, expenses, payments, settings, se
   if (!allowed) return null;
 
   const downloadXlsx = () => {
-    const sheets = live.map(s => {
-      const rows: XlsxCell[][] = [
-        ...documentHeader({
-          documentTitle: `${MANAGING_COMPANY_NAME} Operations (${s.currency})`,
-          period: formatMonthLabel(month),
-          generatedOn: formatDayLabel(today()),
-          generatedBy: session.name,
-          planNumber: settings.strataPlanNumber,
-          span: 5
-        }),
-        [cell.section('Income received', 5)],
-        [cell.text('Rent'), cell.text(''), cell.text(''), cell.text(''), cell.money(s.rentReceived, s.currency)],
-        [cell.text('Short-stay bookings'), cell.text(''), cell.text(''), cell.text(''), cell.money(s.bookingReceived, s.currency)],
-        [cell.total('Total income'), cell.total(''), cell.total(''), cell.total(''), cell.totalMoney(s.totalIncome, s.currency)],
-        [cell.blank()],
-        [cell.section(`${MANAGING_COMPANY_NAME}'s own costs paid`, 5)],
-        [cell.header('Date'), cell.header('Payee'), cell.header('What it was for'), cell.header('Allocation'), cell.header('Amount', 'right')]
-      ];
-
-      for (const group of s.groups) {
-        rows.push([cell.section(group.category, 5)]);
-        for (const line of group.lines) {
-          rows.push([
-            cell.date(line.date),
-            cell.text(line.vendor || '-'),
-            cell.text(line.description || '-'),
-            cell.text(line.allocation || '-'),
-            cell.money(line.amount, s.currency)
-          ]);
-        }
-        rows.push([
-          cell.total(`Total ${group.category.toLowerCase()}`),
-          cell.total(''),
-          cell.total(''),
-          cell.total(''),
-          cell.totalMoney(group.total, s.currency)
-        ]);
-        rows.push([cell.blank()]);
-      }
-
-      rows.push([
-        cell.total(`Total ${MANAGING_COMPANY_NAME} costs`),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.totalMoney(s.ownCostsPaid, s.currency)
-      ]);
-      rows.push([
-        cell.total('Maintenance paid on villas let on own account'),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.totalMoney(s.maintenanceOnOwnVillas, s.currency)
-      ]);
-      rows.push([
-        cell.total(s.net >= 0 ? 'Net for the month' : 'Loss for the month'),
-        cell.total(''),
-        cell.total(''),
-        cell.total(''),
-        cell.totalMoney(Math.abs(s.net), s.currency)
-      ]);
-
-      if (s.unpaidLines.length > 0) {
-        rows.push([cell.blank()]);
-        rows.push([cell.section('Billed and not yet paid, not in the figures above', 5)]);
-        for (const line of s.unpaidLines) {
-          rows.push([
-            cell.date(line.date),
-            cell.text(line.vendor || '-'),
-            cell.text(line.description || '-'),
-            cell.text(line.allocation || '-'),
-            cell.money(line.amount, s.currency)
-          ]);
-        }
-      }
-
-      rows.push([cell.blank()]);
-      rows.push([
-        cell.note(
-          `Internal. ${MANAGING_COMPANY_NAME}'s own trading position and not the proprietors' business, no part of this belongs on an owner statement or a statutory return. The maintenance line is read from receipts issued against villas let on the corporation's own account, never from the expense register, so it is counted once. Cash basis. USD and JMD are reported separately and never combined.`,
-          5
-        )
-      ]);
-
-      const headerRow = rows.findIndex(r => r.some(c => c.style === 'header')) + 1;
-      return { name: `${MANAGING_COMPANY_NAME} ${s.currency}`, widths: [14, 26, 40, 20, 18], rows, freezeRows: headerRow, repeatRow: headerRow };
-    });
+    const sheets = live.map(s => ispoSheet(s, { month, generatedBy: session.name, planNumber: settings.strataPlanNumber }));
 
     if (sheets.length === 0) return;
     downloadWorkbook(sheets, `${MANAGING_COMPANY_NAME} Operations ${month}.xlsx`);
@@ -254,7 +168,9 @@ export default function IspoOperations({ units, expenses, payments, settings, se
 
 /* ------------------------------------------------------------------ */
 
-function CurrencyBlock({ statement: s }: { statement: Statement }) {
+/** Exported so a test can read what the screen says beside the printout and the export. */
+export function CurrencyBlock({ statement: s }: { statement: Statement }) {
+  const excludedNote = contributionExclusionNote(s);
   return (
     <div className="space-y-3 rounded-xl border border-slate-100 p-4">
       <h3 className="font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">{s.currency}</h3>
@@ -349,17 +265,10 @@ function CurrencyBlock({ statement: s }: { statement: Statement }) {
         </div>
       )}
 
-      {s.excludedAsContributionCount > 0 && (
+      {excludedNote && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
-          <p className="mb-1 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-800">
-            {formatMoney(s.excludedAsContribution, s.currency)} left out of the costs above
-          </p>
-          <p>
-            {s.excludedAsContributionCount} cost row(s) in the expense register are the maintenance contribution on a villa let
-            on the corporation&rsquo;s own account. That contribution is already counted from its receipt, on the line above, so
-            counting the cost row as well would be the same money twice. Take those rows back in the expense register, the
-            self-check flags them.
-          </p>
+          <p className="mb-1 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-800">{excludedNote.heading}</p>
+          <p>{excludedNote.body}</p>
         </div>
       )}
 
@@ -410,6 +319,107 @@ function Tile({
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * One currency's sheet of the Excel export. Exported so a test can read what the
+ * export says, as it reads the printout and the screen: the three carry the same
+ * figures and the same notes.
+ */
+export function ispoSheet(s: Statement, meta: { month: string; generatedBy: string; planNumber?: string }) {
+  const rows: XlsxCell[][] = [
+    ...documentHeader({
+      documentTitle: `${MANAGING_COMPANY_NAME} Operations (${s.currency})`,
+      period: formatMonthLabel(meta.month),
+      generatedOn: formatDayLabel(today()),
+      generatedBy: meta.generatedBy,
+      planNumber: meta.planNumber,
+      span: 5
+    }),
+    [cell.section('Income received', 5)],
+    [cell.text('Rent'), cell.text(''), cell.text(''), cell.text(''), cell.money(s.rentReceived, s.currency)],
+    [cell.text('Short-stay bookings'), cell.text(''), cell.text(''), cell.text(''), cell.money(s.bookingReceived, s.currency)],
+    [cell.total('Total income'), cell.total(''), cell.total(''), cell.total(''), cell.totalMoney(s.totalIncome, s.currency)],
+    [cell.blank()],
+    [cell.section(`${MANAGING_COMPANY_NAME}'s own costs paid`, 5)],
+    [cell.header('Date'), cell.header('Payee'), cell.header('What it was for'), cell.header('Allocation'), cell.header('Amount', 'right')]
+  ];
+
+  for (const group of s.groups) {
+    rows.push([cell.section(group.category, 5)]);
+    for (const line of group.lines) {
+      rows.push([
+        cell.date(line.date),
+        cell.text(line.vendor || '-'),
+        cell.text(line.description || '-'),
+        cell.text(line.allocation || '-'),
+        cell.money(line.amount, s.currency)
+      ]);
+    }
+    rows.push([
+      cell.total(`Total ${group.category.toLowerCase()}`),
+      cell.total(''),
+      cell.total(''),
+      cell.total(''),
+      cell.totalMoney(group.total, s.currency)
+    ]);
+    rows.push([cell.blank()]);
+  }
+
+  rows.push([
+    cell.total(`Total ${MANAGING_COMPANY_NAME} costs`),
+    cell.total(''),
+    cell.total(''),
+    cell.total(''),
+    cell.totalMoney(s.ownCostsPaid, s.currency)
+  ]);
+  rows.push([
+    cell.total('Maintenance paid on villas let on own account'),
+    cell.total(''),
+    cell.total(''),
+    cell.total(''),
+    cell.totalMoney(s.maintenanceOnOwnVillas, s.currency)
+  ]);
+  rows.push([
+    cell.total(s.net >= 0 ? 'Net for the month' : 'Loss for the month'),
+    cell.total(''),
+    cell.total(''),
+    cell.total(''),
+    cell.totalMoney(Math.abs(s.net), s.currency)
+  ]);
+
+  // The same note the screen and the printout carry, word for word.
+  const excluded = contributionExclusionNote(s);
+  if (excluded) {
+    rows.push([cell.blank()]);
+    rows.push([cell.section(excluded.heading, 5)]);
+    rows.push([cell.note(excluded.body, 5)]);
+  }
+
+  if (s.unpaidLines.length > 0) {
+    rows.push([cell.blank()]);
+    rows.push([cell.section('Billed and not yet paid, not in the figures above', 5)]);
+    for (const line of s.unpaidLines) {
+      rows.push([
+        cell.date(line.date),
+        cell.text(line.vendor || '-'),
+        cell.text(line.description || '-'),
+        cell.text(line.allocation || '-'),
+        cell.money(line.amount, s.currency)
+      ]);
+    }
+  }
+
+  rows.push([cell.blank()]);
+  rows.push([
+    cell.note(
+      `Internal. ${MANAGING_COMPANY_NAME}'s own trading position and not the proprietors' business, no part of this belongs on an owner statement or a statutory return. The maintenance line is read from receipts issued against villas let on the corporation's own account, never from the expense register, so it is counted once. Cash basis. USD and JMD are reported separately and never combined.`,
+      5
+    )
+  ]);
+
+  const headerRow = rows.findIndex(r => r.some(c => c.style === 'header')) + 1;
+  return { name: `${MANAGING_COMPANY_NAME} ${s.currency}`, widths: [14, 26, 40, 20, 18], rows, freezeRows: headerRow, repeatRow: headerRow };
+}
 
 /**
  * Exported so the printed statement can actually be asserted on.
@@ -516,6 +526,13 @@ export function IspoDocument({
               </tr>
             </tbody>
           </table>
+
+          {contributionExclusionNote(s) && (
+            <div className="mt-2 rounded border border-slate-300 p-2 text-[9px] leading-relaxed text-slate-600">
+              <p className="font-bold">{contributionExclusionNote(s)!.heading}</p>
+              <p>{contributionExclusionNote(s)!.body}</p>
+            </div>
+          )}
 
           {s.unpaidLines.length > 0 && (
             <p className="mt-2 text-[9px] italic leading-relaxed text-slate-500">

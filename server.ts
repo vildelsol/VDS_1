@@ -57,10 +57,11 @@ import {
   getUnitDisplayName
 } from './src/types';
 import { bankItems, itemOnBankLine } from './src/lib/bankRec';
-import { ADMIN_GRANTED_PERMISSIONS, PERMISSION_LABELS } from './src/types';
-import { formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
+import { ADMIN_GRANTED_PERMISSIONS, MANAGING_COMPANY_NAME, PERMISSION_LABELS } from './src/types';
+import { currencyMarker, formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
 import { dayOfTimestamp, formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
-import { accountBalance, bookingsOverlap, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
+import { stayMoney, stayPhase } from './src/lib/stays';
+import { accountBalance, bookingsOverlap, fundForCost, isOwnAccount, recoveryFundFor, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
 import { billingBacklog, monthsToPost } from './src/lib/billingCalendar';
 import { FEE_CODES, FEE_MAX, levyChangeInForce, levyForMonth, monthsAffectedBy } from './src/lib/feeSchedule';
 import {
@@ -383,6 +384,54 @@ function bad(message: string): never {
   throw new ApiError(400, message);
 }
 
+/**
+ * A write that would land money in, or take it out of, a closed month.
+ *
+ * Expenses, utility bills and cost runs carried no check of their own, so a
+ * cost could be backdated into a closed September, edited, voided or recalled
+ * there, and nothing said so (QA, 2026-11-20). One refusal, one code, for every
+ * route that writes a dated cost or bill.
+ */
+const PERIOD_CLOSED = 'period-closed';
+function refuseClosedMonth(db: Database, day: string | undefined, what: string): void {
+  const closedThrough = db.settings.closedThrough || '';
+  if (!closedThrough || !day) return;
+  if (day.slice(0, 7) <= closedThrough) {
+    throw new ApiError(
+      409,
+      `${what} is dated ${day}, in a month that has been closed (books closed through ${closedThrough}). ` +
+        'Reopen the period first, with a reason, to change it.',
+      PERIOD_CLOSED
+    );
+  }
+}
+
+/**
+ * Why a settled record is being corrected. A correction to a received receipt or
+ * a paid cost said what changed but never why (QA, 2026-11-20); the reason is
+ * now required and written into the audit line itself.
+ */
+const CORRECTION_REASON_REQUIRED = 'correction-reason-required';
+function requireCorrectionReason(body: Record<string, unknown> | undefined, what: string): string {
+  const reason = typeof body?.reason === 'string' ? body.reason.trim().slice(0, 500) : '';
+  if (reason.length < 5) {
+    throw new ApiError(400, `Correcting ${what} needs a reason of at least 5 characters, sent as reason.`, CORRECTION_REASON_REQUIRED);
+  }
+  return reason;
+}
+
+/** The first day of the month after `month` (YYYY-MM). */
+function nextMonthStart(month: string): string {
+  const [y, m] = month.split('-').map(Number);
+  return m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
+}
+
+/** The day a cost counts as money out, or undefined for one that never left the account (cash basis, as the statements read it). */
+function expenseMoneyDay(e: Pick<Expense, 'status' | 'date' | 'datePaid' | 'voidedFromPaid'>): string | undefined {
+  if (e.status === 'paid' || (e.status === 'void' && e.voidedFromPaid === true)) return e.datePaid || e.date;
+  return undefined;
+}
+
 function requirePermission(req: AuthedRequest, action: GatedAction) {
   if (!req.auth) throw new ApiError(401, 'Not signed in.');
   if (!can(req.auth, action)) throw new ApiError(403, ACTION_DENIED_MESSAGE[action]);
@@ -452,6 +501,14 @@ function requireEnum<T extends string>(value: unknown, allowed: readonly T[], fi
 
 function requireCurrency(value: unknown, field = 'Currency'): Currency {
   return requireEnum(value, ['USD', 'JMD'] as const, field);
+}
+
+/** Refuse an amount typed with the other currency's marker ("J$5,000" on a US$ record). */
+function assertMarkerMatches(value: unknown, currency: Currency, field: string): void {
+  const marked = currencyMarker(value);
+  if (marked && marked !== currency) {
+    bad(`${field} was typed as ${String(value).trim()}, which is ${marked}, but the record is in ${currency}. The figure is never converted: enter it in ${currency}, or change the currency.`);
+  }
 }
 
 /** The complaint made when a figure cannot be read, wherever that happens. */
@@ -1845,7 +1902,29 @@ function applyAdvanceRentOnMoveOut(db: Database, tenancy: Tenancy, endedOn: stri
    * final month's levy like any other rent, with no special case anywhere else.
    */
   const paidForMonth = advance.periodMonth;
-  if (paidForMonth !== finalMonth) {
+  /*
+   * Unless the month it was raised in is closed. Moving it then takes a billed
+   * line out of a sealed month — a statement already issued would read
+   * differently — and the integrity guard refused the whole move-out (409), so a
+   * tenant could not be moved out at all once their move-in month was closed.
+   * The charge stays where it was billed and records the month it pays for;
+   * `settledFromRent` reads that, and dates the levy credit no earlier than that
+   * month's levy fell due, so nothing dated in the closed month changes.
+   */
+  const closedThrough = db.settings.closedThrough || '';
+  if (paidForMonth !== finalMonth && closedThrough && paidForMonth.slice(0, 7) <= closedThrough) {
+    advance.paysForMonth = finalMonth;
+    addAudit(
+      db,
+      staffName,
+      role,
+      `${tenancy.tenantName}'s advance at ${tenancy.unitNumber} pays for the final month (${finalMonth}); it stays billed in ${paidForMonth}, which is closed`,
+      'Charge',
+      advance.id,
+      `period ${paidForMonth}`,
+      `period ${paidForMonth}, pays for ${finalMonth}; the maintenance inside it settles that month's levy`
+    );
+  } else if (paidForMonth !== finalMonth) {
     advance.periodMonth = finalMonth;
     advance.dueDate = dueDateForMonth(finalMonth, Number((advance.dueDate || '').slice(8, 10)) || 1);
     addAudit(
@@ -2718,6 +2797,13 @@ app.post(
 
       // A second deposit used to overwrite the first, amount and currency both,
       // with nothing on screen to say so. Replacing is allowed only when asked for.
+      if (record.depositAmount && record.depositBankMatch) {
+        throw new ApiError(
+          409,
+          `The ${record.depositCurrency} ${record.depositAmount} deposit is matched to the bank statement of ${record.depositBankMatch.on}. Un-match it on the reconciliation first, then correct it.`,
+          BANK_ITEM_ALREADY_MATCHED
+        );
+      }
       if (record.depositAmount && body.replace === true) {
         useMoneyOverride(db, req, body, 'replace', `replacing the ${record.depositCurrency} ${record.depositAmount} deposit held for ${record.tenantName}`);
       } else if (record.depositAmount) {
@@ -3253,6 +3339,42 @@ app.put(
       }
       const acquiredOn = body.ownerAcquiredOn ? requireDay(body.ownerAcquiredOn, 'Date the villa changed hands') : undefined;
       if (acquiredOn && acquiredOn > today()) bad('The date the villa changed hands cannot be in the future.');
+
+      /*
+       * A status change that moves the villa between ISPO and a third-party
+       * proprietor is dated, so every record before it keeps the book it was
+       * counted in (`isOwnAccountOn`). Selling A4 in November used to flip closed
+       * September's combined income and ISPO's costs (QA, 2026-11-20).
+       *
+       * A sale is dated the day it changed hands, the date its ownership period
+       * opens; one dated in a closed month waits for a reopen. Any other flip is a
+       * correction of the register, true for all time, except that it cannot
+       * reach back into closed books: it then takes effect from the first open
+       * month. Setting up the register (nothing closed yet) records no history.
+       */
+      if (isOwnAccount(original) !== isOwnAccount(updatedUnit)) {
+        const closedThrough = db.settings.closedThrough || '';
+        let from = '';
+        if (ownerIntent === 'sale') {
+          from = acquiredOn || today();
+          if (closedThrough && from.slice(0, 7) <= closedThrough) {
+            throw new ApiError(
+              409,
+              `${getUnitDisplayName(original.number)} would change hands on ${from}, in a month that has been closed (books closed through ${closedThrough}). ` +
+                'Reopen the period first, with a reason, or date the sale after it.',
+              PERIOD_CLOSED
+            );
+          }
+        } else if (closedThrough) {
+          from = nextMonthStart(closedThrough);
+        }
+        if (from) {
+          updatedUnit.ownAccountHistory = [
+            ...(original.ownAccountHistory || []).filter(h => h.from < from),
+            { from, ownAccount: isOwnAccount(updatedUnit) }
+          ];
+        }
+      }
 
       const tenancyNote = syncTenancy(db, updatedUnit, original, who.name, who.role, movedInOn, intent, typeof body.formerArrears === 'string' ? body.formerArrears : undefined);
       const ownershipNote = syncOwnership(db, updatedUnit, who.name, who.role, acquiredOn, ownerIntent);
@@ -4015,6 +4137,7 @@ app.post(
       // the balance without ever being settleable by a payment against it.
       const expected = chargeCurrency(unit, category);
       const currency = body.currency ? requireCurrency(body.currency) : expected;
+      assertMarkerMatches(body.amount, currency, 'The charge amount');
       if (currency !== expected && body.confirmCurrencyMismatch !== true) {
         throw new ApiError(
           400,
@@ -4024,6 +4147,10 @@ app.post(
             `Confirm on the form if that is genuinely what happened.`,
           CHARGE_CURRENCY_MISMATCH
         );
+      }
+      // Going past it is an override like any other money check: permission, reason, audit (QA, 2026-11-20).
+      if (currency !== expected) {
+        useMoneyOverride(db, req, body, 'confirmCurrencyMismatch', `a ${currency} ${category.toLowerCase()} charge on ${unit.number}'s ${expected} account`);
       }
 
       /*
@@ -4053,6 +4180,7 @@ app.post(
           'possible-duplicate-charge'
         );
       }
+      if (twin) useMoneyOverride(db, req, body, 'confirmDuplicate', `a possible duplicate of a ${oneOffType.toLowerCase()} just raised on ${unit.number}`);
 
       const who = actor(req);
       const created: Charge = {
@@ -4200,6 +4328,46 @@ type DepositGate = (kind: DepositAction, receiptNo?: string) => void;
  */
 const DEFAULT_DEPOSIT_METHOD: PaymentMethod = 'Cash';
 
+const DEPOSIT_DATE_IN_FUTURE = 'The date the deposit was received cannot be in the future.';
+const DEPOSIT_RECEIPT_FOLLOWS_RESERVATION =
+  "This receipt is the reservation's own deposit. Its amount, currency, villa and guest follow the reservation: change them there. " +
+  'The date received, method, reference and notes can be corrected here.';
+
+/**
+ * A Booking receipt that pays toward a stay names the stay (`forBookingId`).
+ * It must be a real reservation at the same villa, in the same currency —
+ * otherwise a guest's money would reduce somebody else's balance. Linking a
+ * new receipt to a cancelled stay is refused; one already linked stays linked
+ * when the stay is later cancelled (its refund is recorded against it).
+ */
+function assertStayLink(db: Database, p: Payment, newlyLinked: boolean, receiving = false) {
+  if (!p.forBookingId) return;
+  if (p.category !== 'Booking') bad('Only a Booking receipt can be linked to a reservation.');
+  if (p.bookingId) bad(DEPOSIT_RECEIPT_FOLLOWS_RESERVATION);
+  const stay = db.bookings.find(b => b.id === p.forBookingId);
+  if (!stay) bad('That reservation was not found. Choose the stay this payment was for.');
+  if (stay!.unitId !== p.unitId) {
+    bad(`That reservation is at ${stay!.unitNumber}, not ${p.unitNumber}. A receipt can only pay toward a stay at the same villa.`);
+  }
+  if (stay!.currency !== p.currency) {
+    bad(`That reservation is priced in ${stay!.currency} and this receipt is in ${p.currency}. A receipt can only pay toward a stay in the same currency.`);
+  }
+  if (newlyLinked && stay!.status === 'cancelled') bad('That reservation has been cancelled. Link the receipt to the stay it actually paid for.');
+  if ((newlyLinked || receiving) && stay!.complimentary) bad('That stay is complimentary, so no money is taken for it. Untick complimentary on the reservation first if the guest did pay.');
+}
+
+/**
+ * A deposit receipt may not be dated into, or moved out of, a closed month.
+ * The integrity guard would refuse it anyway (409, "closed period changed");
+ * this says so in words that name the date and what to do.
+ */
+function assertDepositMonthOpen(db: Database, date: string) {
+  const closedThrough = db.settings.closedThrough || '';
+  if (closedThrough && date.slice(0, 7) <= closedThrough) {
+    bad(`The deposit receipt would be dated ${date}, in a month that has been closed (books closed through ${closedThrough}). Reopen the period first, with a reason.`);
+  }
+}
+
 function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: string, role: UserRole, gate: DepositGate = () => {}) {
   // Anything not voided counts as the live deposit receipt — including one that
   // is still awaiting confirmation. Matching only completed receipts would raise a
@@ -4277,9 +4445,16 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     const before = { ...live };
     let changed = false;
 
-    if (live.amount !== booking.depositPaid || live.currency !== booking.currency) {
+    /*
+     * Compared on what the receipt still holds (hunt, 2026-11-20). A refund lowers
+     * `depositPaid` to the net, so comparing it with the gross `amount` rewrote a
+     * part-refunded receipt on every later edit (500 less 200 became 300 less 200),
+     * losing the refund a second time. The gross is never written below what was
+     * received: amount = deposit still held + what has gone back.
+     */
+    if (round2(live.amount - refunded) !== round2(booking.depositPaid) || live.currency !== booking.currency) {
       if (live.status === 'completed') gate('modify', live.receiptNo);
-      live.amount = booking.depositPaid;
+      live.amount = round2(booking.depositPaid + refunded);
       live.currency = booking.currency;
       live.payerName = booking.guestName;
       live.unitId = booking.unitId;
@@ -4297,6 +4472,30 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     if (live.method !== depositMethod) {
       if (live.status === 'completed') gate('modify', live.receiptNo);
       live.method = depositMethod;
+      changed = true;
+    }
+
+    /*
+     * The date it was received follows too — the correction path for a deposit
+     * receipt dated the day it was typed rather than the day the money came.
+     * Same guards as correcting any receipt: never in the future, never into or
+     * out of a closed month, never after a refund paid against it, and a
+     * second approver for a received receipt. A bank match no longer holds.
+     */
+    if (booking.depositReceivedOn && live.date !== booking.depositReceivedOn) {
+      assertDepositMonthOpen(db, live.date);
+      assertDepositMonthOpen(db, booking.depositReceivedOn);
+      if (live.refundedOn && booking.depositReceivedOn > live.refundedOn) {
+        bad('That date is after the refund was paid out. A refund cannot precede the payment it refunds.');
+      }
+      if (live.status === 'completed') gate('modify', live.receiptNo);
+      live.date = booking.depositReceivedOn;
+      if (live.reconciledOn) {
+        delete live.reconciledOn;
+        delete live.reconciledBy;
+        delete live.reconciledAt;
+        delete live.reconciledReference;
+      }
       changed = true;
     }
 
@@ -4324,6 +4523,14 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
   }
 
   gate('issue');
+  /*
+   * Dated the day the money was handed over, as entered. It used to be today()
+   * whatever was typed, so a September stay's deposit entered in November was
+   * November cash on every report.
+   */
+  const receivedOn = booking.depositReceivedOn || today();
+  assertDepositMonthOpen(db, receivedOn);
+  if (!booking.depositReceivedOn) booking.depositReceivedOn = receivedOn;
   const payment: Payment = {
     id: uniqueRecordId(db.payments, `p-booking-${booking.id}`),
     payerName: booking.guestName,
@@ -4332,7 +4539,7 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
     category: 'Booking',
     amount: booking.depositPaid,
     currency: booking.currency,
-    date: today(),
+    date: receivedOn,
     method: booking.depositMethod || DEFAULT_DEPOSIT_METHOD,
     reference: `BOOK-${booking.id.slice(-6).toUpperCase()}`,
     notes: `Deposit for reservation by ${booking.guestName} (${booking.checkIn} to ${booking.checkOut}).`,
@@ -4367,6 +4574,18 @@ function syncBookingDepositReceipt(db: Database, booking: Booking, staffName: st
   addAudit(db, staffName, role, `Recorded the reservation deposit and issued receipt ${payment.receiptNo}`, 'Payment', payment.id, '', payment);
 }
 
+const COMP_REASON_REQUIRED = 'Say why this stay is complimentary (at least 5 characters), for example "wedding party, owner\'s guests".';
+const COMP_TAKES_NO_MONEY =
+  'A complimentary stay is free, so its stay value and deposit must be 0. Untick complimentary if the guest is paying anything.';
+const COMP_HAS_RECEIPTS =
+  'Money has already been received against this stay, so it cannot be marked complimentary. Refund or move those receipts first, or leave it as a paid stay.';
+
+/** Who marked a stay complimentary: kept from the first marking, cleared when it is unmarked. */
+function complimentaryBy(fields: { complimentary?: boolean }, who: string, existing?: Booking): string | undefined {
+  if (!fields.complimentary) return undefined;
+  return existing?.complimentary && existing.complimentaryBy ? existing.complimentaryBy : who;
+}
+
 function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?: Booking) {
   const checkIn = requireDay(body.checkIn ?? existing?.checkIn, 'Arrival date');
   const checkOut = requireDay(body.checkOut ?? existing?.checkOut, 'Departure date');
@@ -4384,6 +4603,20 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
   if (depositPaid > amount) {
     bad('The deposit cannot exceed the total stay cost. Record the surplus as a separate payment if it is an overpayment.');
   }
+  // The day the deposit was handed over, which dates its receipt. Absent means
+  // "today" for a new deposit, and "leave the receipt's date alone" for an old one.
+  const receivedRaw = body.depositReceivedOn ?? existing?.depositReceivedOn;
+  const depositReceivedOn =
+    receivedRaw === undefined || receivedRaw === null || receivedRaw === '' ? undefined : requireDay(receivedRaw, 'The date the deposit was received');
+  if (depositReceivedOn && depositReceivedOn > today()) bad(DEPOSIT_DATE_IN_FUTURE);
+  /*
+   * A complimentary stay is free on purpose: it carries a reason and no money.
+   * Refused rather than quietly zeroed, so nobody believes a price was kept.
+   */
+  const complimentary = body.complimentary === undefined ? !!existing?.complimentary : body.complimentary === true;
+  const complimentaryReason = complimentary ? optionalString(body.complimentaryReason ?? existing?.complimentaryReason, 300).trim() : '';
+  if (complimentary && complimentaryReason.length < 5) bad(COMP_REASON_REQUIRED);
+  if (complimentary && (amount > 0 || depositPaid > 0)) bad(COMP_TAKES_NO_MONEY);
   const nightlyRateRaw = body.nightlyRate ?? existing?.nightlyRate;
   const nightlyRate =
     nightlyRateRaw === undefined || nightlyRateRaw === null || nightlyRateRaw === ''
@@ -4397,8 +4630,11 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
     amount,
     depositPaid,
     depositMethod,
+    depositReceivedOn,
     balanceDue: round2(amount - depositPaid),
-    nightlyRate,
+    nightlyRate: complimentary ? undefined : nightlyRate,
+    complimentary: complimentary || undefined,
+    complimentaryReason: complimentary ? complimentaryReason : undefined,
     guestName: requireString(body.guestName ?? existing?.guestName, 'Guest name', 120),
     guestEmail: emailField(body.guestEmail, existing?.guestEmail, 'The guest e-mail'),
     guestPhone: optionalString(body.guestPhone ?? existing?.guestPhone, 60),
@@ -4434,7 +4670,8 @@ app.post(
         id: `b-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         unitId: unit.id,
         unitNumber: unit.number,
-        ...fields
+        ...fields,
+        complimentaryBy: complimentaryBy(fields, who.name)
       };
       db.bookings.push(created);
       syncBookingDepositReceipt(db, created, who.name, who.role, depositGate(req, db, req.body));
@@ -4444,6 +4681,70 @@ app.post(
     res.json({ success: true, booking });
   })
 );
+
+const COMPLETED_STAY_LOCKED =
+  'This stay is completed, so it is a settled record. Only a role allowed to modify settled ledger records can change it. Ask a Manager or an Administrator.';
+const EDIT_REASON_REQUIRED = 'Say why this reservation is being changed (at least 5 characters). The reason is kept on the audit trail.';
+const DEPOSIT_OUTCOME_REQUIRED = 'deposit-outcome-required';
+
+/**
+ * A cancelled stay whose deposit was really received: say what happened to it.
+ *
+ * Hunt, 2026-11-20: cancelling voided the deposit receipt whatever had happened,
+ * which says the money never arrived. A forfeited deposit kept as a cancellation
+ * fee vanished from income, and a deposit handed back left no refund record. So
+ * a cancel with money still held on the deposit receipt is refused until one of
+ * two outcomes is chosen, and the choice is audited (Ro, 2026-11-20: "refund it",
+ * and "if entered by mistake void it"; keeping it as a fee was removed):
+ *   - `refund`: handed back, recorded as a refund on the receipt (the refund route's rules);
+ *   - `void`: entered by mistake, the receipt is voided (the old behaviour, now only on purpose).
+ */
+function decideCancelledDeposit(db: Database, req: AuthedRequest, body: any, booking: Booking, reason: string) {
+  const live = db.payments.find(p => p.bookingId === booking.id && p.status === 'completed');
+  if (!live) return;
+  const refunded = round2(live.refundedAmount || 0);
+  const held = round2(live.amount - refunded);
+  if (held <= 0) return;
+  const outcome = body.depositOutcome;
+  if (outcome !== 'refund' && outcome !== 'void') {
+    throw new ApiError(
+      400,
+      `${live.currency} ${held} of deposit is held on receipt ${live.receiptNo} for this reservation. Say what happens to it before cancelling: ` +
+        'refund it to the guest, or void the receipt if the deposit was entered by mistake.',
+      DEPOSIT_OUTCOME_REQUIRED
+    );
+  }
+  const who = actor(req);
+  const receiptBefore = { ...live };
+  if (outcome === 'void') {
+    // The sync voids it, with its own gate and audit; a refunded receipt is still refused there.
+    booking.depositOutcome = 'void';
+    return;
+  }
+  // refund: the same permission, approval and dating rules as POST /api/payments/:id/refund.
+  requirePermission(req, 'reverse_payment');
+  if (refunded > 0) {
+    throw new ApiError(
+      400,
+      `${live.currency} ${refunded} was already refunded against receipt ${live.receiptNo}, and a receipt takes one refund, so the ${live.currency} ${held} still held cannot be refunded here. Ask an Administrator to settle it.`,
+      DEPOSIT_ALREADY_REFUNDED
+    );
+  }
+  assertCosigned(db, req, body, `receipt ${live.receiptNo} is refunded`);
+  const refundedOn = requireDay(body.depositRefundedOn || today(), 'Refund date');
+  if (refundedOn < live.date) throw new ApiError(400, 'The refund cannot be dated before the payment it refunds.');
+  if (refundedOn > today()) throw new ApiError(400, 'A refund cannot be dated in the future. Record it on the day the money actually goes back.');
+  assertDepositMonthOpen(db, refundedOn);
+  live.refundedAmount = held;
+  live.refundedOn = refundedOn;
+  live.refundMethod = requireEnum(body.depositRefundMethod ?? live.method, PAYMENT_METHODS, 'How the money was returned') as PaymentMethod;
+  live.refundReason = `Reservation cancelled: ${reason}`;
+  live.refundedBy = who.name;
+  booking.depositOutcome = 'refund';
+  booking.depositPaid = 0;
+  booking.balanceDue = round2(booking.amount);
+  addAudit(db, who.name, who.role, `Cancelled stay: refunded ${live.currency} ${held} against receipt ${live.receiptNo}. Reason: ${reason}`, 'Payment', live.id, receiptBefore, live, who.name);
+}
 
 app.put(
   '/api/bookings/:id',
@@ -4464,6 +4765,19 @@ app.put(
       if (original.status === 'cancelled' && body.status && body.status !== 'cancelled') {
         throw new ApiError(400, 'A cancelled reservation cannot be reinstated. Create a new reservation instead.');
       }
+      /*
+       * Ro, 2026-11-19: a completed stay is a settled record. Its money has been
+       * reported, so changing it needs the same authority as any settled ledger
+       * record — a junior officer cannot edit one, whatever else they may do.
+       */
+      if (stayPhase(original, today()) === 'completed' && !can(req.auth!, 'modify_settled')) {
+        throw new ApiError(403, COMPLETED_STAY_LOCKED, 'completed-stay-locked');
+      }
+      // Every change to a reservation says why, and the reason goes on the audit trail (Ro, 2026-11-19).
+      const editReason = typeof body.editReason === 'string' ? body.editReason.trim().slice(0, 500) : '';
+      if (editReason.length < 5) {
+        throw new ApiError(400, EDIT_REASON_REQUIRED, 'edit-reason-required');
+      }
 
       const unit = body.unitId || body.unitNumber ? resolveUnit(db, body) : findUnitOrFail(db, original.unitId);
       if (unit.id !== original.unitId) assertBookableUnit(unit);
@@ -4473,11 +4787,37 @@ app.put(
         assertNoOverlap(db, unit.id, fields.checkIn, fields.checkOut, id);
       }
 
+      /*
+       * An upcoming stay moved onto dates already over becomes a completed, settled
+       * record: the same authority is needed to make one as to change one (hunt, 2026-11-20).
+       */
+      if (fields.status !== 'cancelled' && fields.checkOut <= today() && !can(req.auth!, 'modify_settled')) {
+        throw new ApiError(403, COMPLETED_STAY_LOCKED, 'completed-stay-locked');
+      }
+      /*
+       * Receipts follow their stay's currency and villa. Changing either after money
+       * is linked mixed USD with JMD on one balance, or moved a guest's money to
+       * another villa's books (hunt, 2026-11-20). Received or still expected, either way.
+       */
+      const stayReceipts = db.payments.filter(p => p.status !== 'reversed' && (p.bookingId === id || p.forBookingId === id));
+      if (stayReceipts.length > 0 && (fields.currency !== original.currency || unit.id !== original.unitId)) {
+        throw new ApiError(
+          400,
+          `${stayReceipts.length} receipt(s) (${stayReceipts.map(p => p.receiptNo || p.id).join(', ')}) are recorded against this stay in ${original.currency} at ${original.unitNumber}, ` +
+            'so its currency and villa cannot change. Void or refund those receipts first, or cancel this reservation and create a new one.',
+          'stay-has-receipts'
+        );
+      }
+
       const who = actor(req);
-      const updated: Booking = { ...original, unitId: unit.id, unitNumber: unit.number, ...fields };
+      // Pending receipts count too: confirming one later would put money on a free stay.
+      const pendingOnStay = db.payments.some(p => p.status === 'pending' && (p.bookingId === id || p.forBookingId === id));
+      if (fields.complimentary && !original.complimentary && (stayMoney(original, db.payments).received > 0 || pendingOnStay)) bad(COMP_HAS_RECEIPTS);
+      const updated: Booking = { ...original, unitId: unit.id, unitNumber: unit.number, ...fields, complimentaryBy: complimentaryBy(fields, who.name, original) };
+      if (updated.status === 'cancelled') decideCancelledDeposit(db, req, body, updated, editReason);
       db.bookings[idx] = updated;
       syncBookingDepositReceipt(db, updated, who.name, who.role, depositGate(req, db, body));
-      addAudit(db, who.name, who.role, cancelling ? 'Cancelled reservation' : 'Updated reservation', 'Booking', id, original, updated);
+      addAudit(db, who.name, who.role, `${cancelling ? 'Cancelled reservation' : 'Updated reservation'}. Reason: ${editReason}`, 'Booking', id, original, updated);
       return updated;
     });
     res.json({ success: true, booking });
@@ -4514,6 +4854,13 @@ app.post(
       }
 
       const before = { ...record };
+      if (record.damageDepositBankMatch) {
+        throw new ApiError(
+          409,
+          `This damage deposit is matched to the bank statement of ${record.damageDepositBankMatch.on}. Un-match it on the reconciliation first, then correct it.`,
+          BANK_ITEM_ALREADY_MATCHED
+        );
+      }
       const amount = requirePositiveAmount(body.amount, 'Damage deposit amount');
       const receivedOn = requireDay(body.receivedOn || today(), 'Date received');
       if (receivedOn > today()) bad('A damage deposit cannot be dated in the future.');
@@ -4902,6 +5249,7 @@ app.post(
       const category = requireEnum(body.category, PAYMENT_CATEGORIES, 'Payment category') as PaymentCategory;
       const amount = requirePositiveAmount(body.amount, 'Payment amount');
       const currency = requireCurrency(body.currency);
+      assertMarkerMatches(body.amount, currency, 'The payment amount');
       const date = requireDay(body.date || today(), 'Payment date');
       if (date > today()) bad('A payment cannot be dated in the future.');
       const method = requireEnum(body.method, PAYMENT_METHODS, 'Payment method') as PaymentMethod;
@@ -5010,8 +5358,11 @@ app.post(
         status: receivedNow ? 'completed' : 'pending',
         printCount: 0,
         ...(body.advancePayment === true && (category === 'Rent' || category === 'Maintenance') ? { advance: true } : {}),
+        ...(body.forBookingId ? { forBookingId: requireString(body.forBookingId, 'The reservation', 120) } : {}),
         ...(receivedNow ? { receivedBy: who.name, receivedAt: new Date().toISOString() } : {})
       };
+      if (receivedNow && created.category === 'Utility') created.recoveryFund = recoveryFundFor(unit, created.date);
+      assertStayLink(db, created, true);
       db.payments.push(created);
       addAudit(
         db,
@@ -5055,11 +5406,47 @@ app.put(
       }
       // A pending entry holds no money yet; only a received one needs a second signature.
       if (original.status === 'completed') assertCosigned(db, req, body, `receipt ${original.receiptNo} is changed`);
+      /*
+       * A reservation's deposit receipt: what it is for, how much and in what
+       * currency follow the reservation and are changed there. When and how it
+       * was received, and its reference and notes, are corrected here like any
+       * other receipt — this used to refuse the receipt outright, so a deposit
+       * dated the day it was typed could not be put into the month it arrived.
+       */
       if (original.bookingId) {
-        throw new ApiError(
-          400,
-          'This receipt is generated from a reservation deposit. Edit the reservation and the receipt will follow.'
-        );
+        const differs = (key: 'amount' | 'currency' | 'category' | 'payerName' | 'unitId') =>
+          body[key] !== undefined && body[key] !== null && String(body[key]) !== String(original[key]);
+        if (
+          differs('amount') ||
+          differs('currency') ||
+          differs('category') ||
+          differs('payerName') ||
+          differs('unitId') ||
+          (body.unitNumber !== undefined && String(body.unitNumber) !== original.unitNumber) ||
+          (body.forBookingId !== undefined && body.forBookingId !== null && body.forBookingId !== '')
+        ) {
+          throw new ApiError(400, DEPOSIT_RECEIPT_FOLLOWS_RESERVATION);
+        }
+      }
+
+      /*
+       * A utility receipt says what its bill says. Changing its amount, currency
+       * or category here left a J$12,000 bill marked paid against a J$8,000
+       * receipt, or a bill paid by a receipt that no longer read as a utility
+       * payment (QA, 2026-11-20). The correction is to reverse and re-settle.
+       */
+      if (original.utilityId) {
+        const changes = (key: 'amount' | 'currency' | 'category') =>
+          body[key] !== undefined && body[key] !== null && String(body[key]) !== String(original[key]) &&
+          !(key === 'amount' && Number(parseMoneyInput(body[key])) === original.amount);
+        if (changes('amount') || changes('currency') || changes('category')) {
+          throw new ApiError(
+            400,
+            `Receipt ${original.receiptNo || '(awaiting confirmation)'} settles a utility bill, so its amount, currency and category follow the bill. ` +
+              'Reverse the receipt, correct the bill if it is wrong, and settle it again.',
+            'utility-receipt-follows-bill'
+          );
+        }
       }
 
       const unit = body.unitId || body.unitNumber ? resolveUnit(db, body) : findUnitOrFail(db, original.unitId);
@@ -5077,6 +5464,19 @@ app.put(
         notes: optionalString(body.notes ?? original.notes, 2000)
       };
       if (updated.date > today()) bad('A payment cannot be dated in the future.');
+      assertMarkerMatches(body.amount, updated.currency, 'The payment amount');
+      // Moved onto another villa, or into or out of Utility: the recovery's book is decided again, for the villa it is now on.
+      if (updated.category !== 'Utility') delete updated.recoveryFund;
+      else if (updated.status === 'completed' && (updated.unitId !== original.unitId || original.category !== 'Utility')) {
+        updated.recoveryFund = recoveryFundFor(unit, updated.date);
+      }
+      // Linking (or unlinking) a receipt to the stay it paid toward, and keeping
+      // an existing link true if the villa, currency or category is corrected.
+      if (body.forBookingId !== undefined) {
+        if (body.forBookingId === null || body.forBookingId === '') delete updated.forBookingId;
+        else updated.forBookingId = requireString(body.forBookingId, 'The reservation', 120);
+      }
+      assertStayLink(db, updated, updated.forBookingId !== original.forBookingId);
       /*
        * A received rent or maintenance receipt cannot be moved OUT of those categories by an edit. The refund cap only
        * looks at Rent and Maintenance accounts, so re-labelling an applied receipt "Other" and then refunding it paid
@@ -5134,6 +5534,57 @@ app.put(
         );
       }
 
+      /*
+       * The checks a receipt meets on entry, met again by the corrected one.
+       *
+       * An edit could move a US$ rent receipt onto a J$ maintenance account, or
+       * lift J$150,000 to J$950,000 on an account owing J$300,000, with none of the
+       * questions entering it would have asked (QA, 2026-11-20). Re-run when what
+       * the money is, whose it is, or how much of it there is grows; each can be
+       * overridden exactly as on entry, through the audited override.
+       */
+      const moneyChanged =
+        updated.unitId !== original.unitId ||
+        updated.category !== original.category ||
+        updated.currency !== original.currency ||
+        updated.amount > original.amount;
+      if (moneyChanged && (updated.category === 'Rent' || updated.category === 'Maintenance')) {
+        const category = updated.category as ChargeCategory;
+        // The correction's own reason stands as the override's reason, so one form asks once.
+        const overrideBody = { ...body, overrideReason: body.overrideReason ?? body.reason };
+        const expected = chargeCurrency(unit, category);
+        if (updated.currency !== expected) {
+          // Confirming a currency change ("the money really was received in it") is the same acknowledgement.
+          if (!body.confirmCurrencyMismatch && body.confirmCurrencyChange !== true) {
+            throw new ApiError(
+              400,
+              `${unit.number} is billed for ${category.toLowerCase()} in ${expected}, but this receipt would be in ${updated.currency}. ` +
+                `A payment in a different currency will not reduce the ${expected} balance. Correct it in ${expected}, or confirm to record it anyway.`
+            );
+          }
+          useMoneyOverride(db, req, overrideBody, 'confirmCurrencyMismatch', `a corrected ${updated.currency} receipt on ${unit.number}'s ${expected} ${category.toLowerCase()} account`);
+        }
+        const hasOpenCharge = db.charges.some(
+          c => c.unitId === unit.id && c.category === category && c.status === 'open' && c.currency === updated.currency
+        );
+        // A receipt in the other currency sits beside the account by definition; the mismatch above was its acknowledgement.
+        if (!hasOpenCharge && !original.advance && updated.currency === expected) {
+          if (!body.confirmNoOpenCharge) {
+            throw new ApiError(400, `Nothing has been billed to ${unit.number} for ${category.toLowerCase()} in ${updated.currency}, so the corrected receipt would be held as a credit. Confirm to record it that way.`);
+          }
+          useMoneyOverride(db, req, overrideBody, 'confirmNoOpenCharge', `a corrected ${category.toLowerCase()} receipt on ${unit.number} with nothing billed, held as a credit`);
+        }
+        try {
+          assertAccountStillOwes(db, unit, category, updated.currency, updated.amount, original.advance === true, {
+            excludePaymentId: original.id,
+            verb: 'The corrected receipt is'
+          });
+        } catch (err) {
+          if (!(err instanceof ApiError) || err.code !== ALREADY_SETTLED || body.confirmAlreadySettled !== true) throw err;
+          useMoneyOverride(db, req, overrideBody, 'confirmAlreadySettled', `a corrected ${category.toLowerCase()} receipt on ${unit.number} beyond what the account owes`);
+        }
+      }
+
       /**
        * A bank match asserts *this* money was found on the statement. Change what
        * the money was, when it arrived, or how it came in, and the assertion no
@@ -5163,14 +5614,31 @@ app.put(
         unmatched = true;
       }
 
+      // Asked last, so a correction that is refused anyway says why first.
+      const correctionReason = original.status === 'completed' ? requireCorrectionReason(body, `received receipt ${original.receiptNo}`) : '';
       db.payments[idx] = updated;
+      /*
+       * A deposit receipt corrected here carries the reservation with it, or the
+       * next save of the reservation would put the old date and method back.
+       */
+      if (original.bookingId) {
+        const booking = db.bookings.find(b => b.id === original.bookingId);
+        if (booking && (booking.depositReceivedOn !== updated.date || (booking.depositMethod || DEFAULT_DEPOSIT_METHOD) !== updated.method)) {
+          const bBefore = { ...booking };
+          booking.depositReceivedOn = updated.date;
+          booking.depositMethod = updated.method;
+          const who0 = actor(req);
+          addAudit(db, who0.name, who0.role, `Reservation deposit brought into step with corrected receipt ${original.receiptNo}`, 'Booking', booking.id, bBefore, booking);
+        }
+      }
       const who = actor(req);
       addAudit(
         db,
         who.name,
         who.role,
         `Corrected settled receipt ${original.receiptNo}` +
-          (unmatched ? ', its bank-statement match was cleared and needs checking again' : ''),
+          (unmatched ? ', its bank-statement match was cleared and needs checking again' : '') +
+          (correctionReason ? `. Reason: ${correctionReason}` : ''),
         'Payment',
         id,
         original,
@@ -5212,6 +5680,11 @@ app.post(
       // The date money actually arrived may differ from the date it was logged.
       const receivedOn = requireDay(body.date || target.date, 'Date received');
       if (receivedOn > today()) bad('A payment cannot be dated in the future.');
+      /*
+       * The stay it pays toward is judged again as it is now (hunt, 2026-11-20): a
+       * stay marked complimentary while this was pending takes no money.
+       */
+      assertStayLink(db, target, false, true);
 
       // Confirming is the moment an expectation becomes money on the ledger, so
       // it is also a moment the debt can already have been settled by someone
@@ -5271,6 +5744,9 @@ app.post(
         target.method = requireEnum(body.method, PAYMENT_METHODS, 'Payment method') as PaymentMethod;
       }
       if (body.reference !== undefined) target.reference = optionalString(body.reference, 120);
+
+      // A utility recovery's book is decided now, from the villa, and kept.
+      if (target.category === 'Utility') target.recoveryFund = recoveryFundFor(db.units.find(u => u.id === target.unitId), target.date);
 
       // A utility bill is only settled once its payment is confirmed.
       if (target.utilityId) {
@@ -5548,6 +6024,31 @@ app.post(
           delete utility.paymentId;
           addAudit(db, who.name, who.role, 'Reopened the utility bill after its settlement was refunded in full', 'Utility', utility.id, 'paid', 'unpaid');
         }
+      } else if (target.utilityId) {
+        /*
+         * A part refund of a utility receipt says the villa was billed too much:
+         * the receipt equalled the bill, so handing part of it back leaves the bill
+         * standing at what was kept. It used to stay "paid" at the full figure, so
+         * the bill said J$10,000 recovered while J$6,000 was (QA, 2026-11-20). The
+         * bill now reads the net kept, settled, and the figure it was is recorded.
+         */
+        const utility = db.utilities.find(u => u.id === target.utilityId);
+        if (utility) {
+          refuseClosedMonth(db, `${utility.billingPeriod}-01`, `The utility bill for ${utility.billingPeriod}`);
+          const uBefore = { ...utility };
+          utility.amountBeforeRefund = utility.amountBeforeRefund ?? utility.amountCharged;
+          utility.amountCharged = round2(target.amount - amount);
+          addAudit(
+            db,
+            who.name,
+            who.role,
+            `Utility bill for ${utility.unitNumber} (${utility.billingPeriod}) reduced to ${utility.currency} ${utility.amountCharged} after ${utility.currency} ${amount} of its settlement was refunded`,
+            'Utility',
+            utility.id,
+            uBefore,
+            utility
+          );
+        }
       }
 
       addAudit(
@@ -5586,7 +6087,7 @@ app.post(
 app.post(
   '/api/payments/:id/reconcile',
   handler(async (req: AuthedRequest, res) => {
-    requirePermission(req, 'record_payment');
+    requirePermission(req, 'reconcile_bank');
     const { id } = req.params;
     const body = req.body || {};
     const clearing = body.reconciled === false;
@@ -5628,6 +6129,7 @@ app.post(
         throw new ApiError(400, 'A statement date cannot be in the future.', 'bank-date-in-future');
       }
       assertStatementCurrency(body, target.currency);
+      assertStatementBook(db, body, `receipt:${target.id}`);
 
       // One line on the statement is one item, whichever way the money went. The same
       // bank reference matched to a second receipt, or to a cost or refund paid out,
@@ -5670,6 +6172,7 @@ const BANK_DATE_BEFORE_ITEM = 'bank-date-before-item';
 const BANK_ITEM_NOT_PAID = 'bank-item-not-paid';
 const BANK_ITEM_VOIDED = 'bank-item-voided';
 const BANK_ITEM_ALREADY_MATCHED = 'bank-item-already-matched';
+const BANK_BOOK_MISMATCH = 'bank-book-mismatch';
 const BANK_ITEM_NOT_MATCHED = 'bank-item-not-matched';
 const BANK_NOTHING_TO_MATCH = 'bank-nothing-to-match';
 const BANK_CURRENCY_MISMATCH = 'bank-currency-mismatch';
@@ -5696,6 +6199,25 @@ function assertStatementCurrency(body: any, currency: string) {
   }
 }
 
+/**
+ * The corporation and ISPO bank separately (Ro, 2026-11-20). When the screen says
+ * whose statement is being ticked, an item that moved through the other entity's
+ * account is refused: ISPO's rent is never found on the corporation's statement.
+ */
+function assertStatementBook(db: Database, body: any, key: string) {
+  if (body?.book === undefined || body?.book === null || body?.book === '') return;
+  if (body.book !== 'strata' && body.book !== 'ispo') throw new ApiError(400, 'The statement must be the corporation\'s (strata) or ISPO\'s.', BANK_BOOK_MISMATCH);
+  const item = allBankItems(db).find(i => i.key === key);
+  if (item && item.book !== body.book) {
+    const name = (b: string) => (b === 'ispo' ? MANAGING_COMPANY_NAME : 'the corporation');
+    throw new ApiError(
+      400,
+      `${capitalise(item.label)} went through ${name(item.book)}'s bank account, and the statement being ticked is ${name(body.book)}'s. The two are separate entities and are never matched across.`,
+      BANK_BOOK_MISMATCH
+    );
+  }
+}
+
 /** Refuse a second item on a statement line unless the money-check override is used. */
 function assertBankLineFree(db: Database, req: AuthedRequest, body: any, reference: string, key: string, label: string) {
   if (!reference) return;
@@ -5713,7 +6235,8 @@ function assertBankLineFree(db: Database, req: AuthedRequest, body: any, referen
   );
 }
 
-type MoneyOutKind = 'expense' | 'refund' | 'deposit-return' | 'damage-deposit-return';
+/** Every bank item but a receipt, which keeps its own route. Deposits received are money IN. */
+type MoneyOutKind = 'expense' | 'refund' | 'deposit-received' | 'damage-deposit-received' | 'deposit-return' | 'damage-deposit-return';
 
 interface MoneyOutTarget {
   entity: string;
@@ -5755,6 +6278,30 @@ function moneyOutTarget(db: Database, kind: MoneyOutKind, id: string): MoneyOutT
       get: () => p.refundBankMatch, set: m => { if (m) p.refundBankMatch = m; else delete p.refundBankMatch; }
     };
   }
+  if (kind === 'deposit-received') {
+    const t = db.tenancies.find(x => x.id === id);
+    if (!t) throw new ApiError(404, 'Tenancy record not found.');
+    if (!t.depositReceivedOn || !(t.depositAmount && t.depositAmount > 0)) {
+      throw new ApiError(400, 'No deposit has been recorded as received for this tenancy, so there is nothing to find on a statement.', BANK_NOTHING_TO_MATCH);
+    }
+    return {
+      entity: 'Tenancy', entityId: t.id, record: t, currency: t.depositCurrency || t.currency, date: t.depositReceivedOn,
+      label: `the deposit received from ${t.tenantName}`,
+      get: () => t.depositBankMatch, set: m => { if (m) t.depositBankMatch = m; else delete t.depositBankMatch; }
+    };
+  }
+  if (kind === 'damage-deposit-received') {
+    const b = db.bookings.find(x => x.id === id);
+    if (!b) throw new ApiError(404, 'Booking not found.');
+    if (!b.damageDepositReceivedOn || !(b.damageDepositAmount && b.damageDepositAmount > 0)) {
+      throw new ApiError(400, 'No damage deposit has been recorded as received for this stay, so there is nothing to find on a statement.', BANK_NOTHING_TO_MATCH);
+    }
+    return {
+      entity: 'Booking', entityId: b.id, record: b, currency: b.damageDepositCurrency || b.currency, date: b.damageDepositReceivedOn,
+      label: `the damage deposit received from ${b.guestName}`,
+      get: () => b.damageDepositBankMatch, set: m => { if (m) b.damageDepositBankMatch = m; else delete b.damageDepositBankMatch; }
+    };
+  }
   if (kind === 'deposit-return') {
     const t = db.tenancies.find(x => x.id === id);
     if (!t) throw new ApiError(404, 'Tenancy record not found.');
@@ -5789,7 +6336,7 @@ function moneyOutTarget(db: Database, kind: MoneyOutKind, id: string): MoneyOutT
  */
 function moneyOutReconcileRoute(kind: MoneyOutKind) {
   return handler(async (req: AuthedRequest, res) => {
-    requirePermission(req, 'record_payment');
+    requirePermission(req, 'reconcile_bank');
     const { id } = req.params;
     const body = req.body || {};
     const clearing = body.reconciled === false;
@@ -5820,6 +6367,7 @@ function moneyOutReconcileRoute(kind: MoneyOutKind) {
         throw new ApiError(400, `${capitalise(target.label)} is already matched to the statement of ${m.on}. Un-match it first to move it.`, BANK_ITEM_ALREADY_MATCHED);
       }
       assertStatementCurrency(body, target.currency);
+      assertStatementBook(db, body, `${kind}:${target.entityId}`);
 
       const reconciledOn = requireDay(body.reconciledOn || today(), 'Statement date');
       if (reconciledOn > today()) throw new ApiError(400, 'A statement date cannot be in the future.', BANK_DATE_IN_FUTURE);
@@ -5853,6 +6401,8 @@ function moneyOutReconcileRoute(kind: MoneyOutKind) {
 function moneyOutAmount(kind: MoneyOutKind, r: any): number {
   if (kind === 'expense') return round2(Math.abs(r.amount));
   if (kind === 'refund') return round2(r.refundedAmount);
+  if (kind === 'deposit-received') return round2(r.depositAmount);
+  if (kind === 'damage-deposit-received') return round2(r.damageDepositAmount);
   if (kind === 'deposit-return') return round2(r.depositReturnedAmount);
   return round2(r.damageDepositReturnedAmount);
 }
@@ -5862,10 +6412,16 @@ function clearableTarget(db: Database, kind: MoneyOutKind, id: string): MoneyOut
   const r: any =
     kind === 'expense' ? db.expenses.find(x => x.id === id)
     : kind === 'refund' ? db.payments.find(x => x.id === id)
-    : kind === 'deposit-return' ? db.tenancies.find(x => x.id === id)
+    : kind === 'deposit-return' || kind === 'deposit-received' ? db.tenancies.find(x => x.id === id)
     : db.bookings.find(x => x.id === id);
-  const field = kind === 'expense' ? 'bankMatch' : kind === 'refund' ? 'refundBankMatch' : kind === 'deposit-return' ? 'depositReturnBankMatch' : 'damageDepositReturnBankMatch';
-  const entity = kind === 'expense' ? 'Expense' : kind === 'refund' ? 'Payment' : kind === 'deposit-return' ? 'Tenancy' : 'Booking';
+  const field =
+    kind === 'expense' ? 'bankMatch'
+    : kind === 'refund' ? 'refundBankMatch'
+    : kind === 'deposit-received' ? 'depositBankMatch'
+    : kind === 'damage-deposit-received' ? 'damageDepositBankMatch'
+    : kind === 'deposit-return' ? 'depositReturnBankMatch'
+    : 'damageDepositReturnBankMatch';
+  const entity = kind === 'expense' ? 'Expense' : kind === 'refund' ? 'Payment' : kind === 'deposit-return' || kind === 'deposit-received' ? 'Tenancy' : 'Booking';
   return {
     entity, entityId: r.id, record: r, currency: r.currency, date: '', label: `the ${kind.replace(/-/g, ' ')} ${r.id}`,
     get: () => r[field], set: m => { if (m) r[field] = m; else delete r[field]; }
@@ -5879,6 +6435,8 @@ function capitalise(s: string): string {
 app.post('/api/expenses/:id/reconcile', moneyOutReconcileRoute('expense'));
 app.post('/api/payments/:id/refund/reconcile', moneyOutReconcileRoute('refund'));
 app.post('/api/tenancies/:id/deposit/reconcile', moneyOutReconcileRoute('deposit-return'));
+app.post('/api/tenancies/:id/deposit-received/reconcile', moneyOutReconcileRoute('deposit-received'));
+app.post('/api/bookings/:id/damage-deposit-received/reconcile', moneyOutReconcileRoute('damage-deposit-received'));
 app.post('/api/bookings/:id/damage-deposit/reconcile', moneyOutReconcileRoute('damage-deposit-return'));
 
 /** Record that a receipt was rendered, so reprints are marked as such. */
@@ -5920,6 +6478,8 @@ app.post(
       const unit = resolveUnit(db, body);
       const billingPeriod = String(body.billingPeriod ?? '').trim();
       if (!isValidMonth(billingPeriod)) bad('Billing period is required in YYYY-MM format.');
+      if (billingPeriod > today().substring(0, 7)) bad('A utility bill cannot be entered for a future month.');
+      refuseClosedMonth(db, `${billingPeriod}-01`, `The utility bill for ${billingPeriod}`);
 
       const duplicate = db.utilities.find(u => u.unitId === unit.id && u.billingPeriod === billingPeriod);
       if (duplicate) {
@@ -5951,6 +6511,7 @@ app.post(
         currency: requireCurrency(body.currency),
         status: 'unpaid'
       };
+      assertMarkerMatches(body.amountCharged, created.currency, 'The bill amount');
       db.utilities.push(created);
       addAudit(db, who.name, who.role, `Recorded utility reading for ${unit.number} (${billingPeriod})`, 'Utility', created.id, '', created);
       return created;
@@ -5970,6 +6531,7 @@ app.put(
       const idx = db.utilities.findIndex(u => u.id === id);
       if (idx === -1) throw new ApiError(404, 'Utility record not found.');
       const original = db.utilities[idx];
+      refuseClosedMonth(db, `${original.billingPeriod}-01`, `The utility bill for ${original.billingPeriod}`);
       if (original.status === 'paid' && !can(req.auth!, 'modify_settled')) {
         throw new ApiError(403, 'This utility bill is settled. Modifying settled records requires additional permission.');
       }
@@ -5982,6 +6544,7 @@ app.put(
 
       const newAmount = requirePositiveAmount(body.amountCharged ?? original.amountCharged, 'Charge amount');
       const newCurrency = requireCurrency(body.currency ?? original.currency);
+      assertMarkerMatches(body.amountCharged, newCurrency, 'The bill amount');
       // Once a receipt exists (even one still awaiting funds) the bill and the receipt
       // must keep saying the same thing: changing the figure here used to leave a bill
       // of 12,000 marked paid against a receipt of 8,000.
@@ -6138,6 +6701,11 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
   const dueDate = body.dueDate || existing?.dueDate ? requireDay(body.dueDate ?? existing?.dueDate, 'Due date') : date;
   const datePaidRaw = body.datePaid ?? existing?.datePaid;
   const datePaid = status === 'paid' ? requireDay(datePaidRaw || date, 'Date paid') : undefined;
+  // Money that has left the account left it on a day that has happened. An unpaid
+  // bill may carry a future date; a paid one may not (QA, 2026-11-20).
+  if (status === 'paid' && date > today()) bad('A paid cost cannot be dated in the future. Record it as pending until it is paid.');
+  if (datePaid && datePaid > today()) bad('A cost cannot be recorded as paid on a day that has not happened yet.');
+  assertMarkerMatches(body.amount, requireCurrency(body.currency ?? existing?.currency), 'The expense amount');
 
   return {
     category: requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'),
@@ -6155,7 +6723,7 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
     datePaid,
     paymentMethod: requireEnum(body.paymentMethod ?? existing?.paymentMethod ?? 'Bank Transfer', PAYMENT_METHODS, 'Payment method') as PaymentMethod,
     status,
-    fund,
+    fund: fundForCost(requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'), unit, fund),
     reference: optionalString(body.reference ?? existing?.reference, 120),
     notes: optionalString(body.notes ?? existing?.notes, 2000)
   };
@@ -6167,6 +6735,7 @@ app.post(
     requirePermission(req, 'record_expense');
     const expense = await transaction(db => {
       const fields = readExpenseFields(db, req.body || {});
+      refuseClosedMonth(db, expenseMoneyDay(fields), 'This cost');
       const who = actor(req);
       const created: Expense = { id: `ex-${Date.now()}-${Math.floor(Math.random() * 1000)}`, ...fields };
       db.expenses.push(created);
@@ -6200,6 +6769,28 @@ app.put(
         throw new ApiError(403, 'This expense is already settled. Modifying settled records requires additional permission.');
       }
       const updated: Expense = { ...original, ...readExpenseFields(db, req.body || {}, original) };
+      // Both ends of the edit: a closed month's cost cannot change, and no cost can be moved into one.
+      refuseClosedMonth(db, expenseMoneyDay(original), 'This cost');
+      refuseClosedMonth(db, expenseMoneyDay(updated), 'The corrected cost');
+      /*
+       * Un-paying a paid cost, or changing what left the account, is the same claim
+       * as taking it back in part: it needs the void's second approver and a reason.
+       */
+      const paidMoneyChanged =
+        original.status === 'paid' &&
+        (updated.status !== original.status ||
+          updated.amount !== original.amount ||
+          updated.currency !== original.currency ||
+          (updated.datePaid || updated.date) !== (original.datePaid || original.date) ||
+          fundOf(updated) !== fundOf(original) ||
+          updated.category !== original.category ||
+          updated.unitId !== original.unitId ||
+          updated.unitNumber !== original.unitNumber);
+      let correctionReason = '';
+      if (paidMoneyChanged) {
+        assertCosigned(db, req, req.body || {}, `paid expense ${id} is corrected`);
+        correctionReason = requireCorrectionReason(req.body, `a paid cost to ${original.vendor}`);
+      }
       // A bank match vouches for this money on this day. Change either, or make the
       // cost unpaid, and the match is dropped to be re-ticked (as a receipt's is).
       if (
@@ -6214,7 +6805,7 @@ app.put(
       }
       db.expenses[idx] = updated;
       const who = actor(req);
-      addAudit(db, who.name, who.role, 'Updated property expense', 'Expense', id, original, updated);
+      addAudit(db, who.name, who.role, 'Updated property expense' + (correctionReason ? `. Reason: ${correctionReason}` : ''), 'Expense', id, original, updated);
       return updated;
     });
     res.json({ success: true, expense });
@@ -6280,6 +6871,7 @@ app.post(
       const found = db.expenses.find(e => e.id === id);
       if (!found) throw new ApiError(404, 'Expense not found.');
       if (found.status === 'void') throw new ApiError(400, 'That cost has already been taken back.');
+      refuseClosedMonth(db, expenseMoneyDay(found), 'This cost');
       // A cost already paid is a record of money out; taking it back needs the same second approver as voiding a receipt.
       if (found.status === 'paid') assertCosigned(db, req, body, `expense ${id} is taken back`);
 
@@ -6352,6 +6944,7 @@ app.post(
       }
 
       const settled = candidates.filter(e => e.status === 'paid');
+      for (const e of settled) refuseClosedMonth(db, expenseMoneyDay(e), `The cost to ${e.vendor}`);
       if (settled.length > 0 && body.includeSettled !== true) {
         throw new ApiError(
           400,
@@ -6363,6 +6956,8 @@ app.post(
         );
       }
 
+      // Taking back paid rows as a group needs the same second approver as taking back one.
+      if (settled.length > 0) assertCosigned(db, req, body, `${settled.length} paid cost(s) posted for ${monthString} are taken back`);
       for (const expense of candidates) voidExpense(expense, who, reason);
 
       addAudit(
@@ -6431,7 +7026,11 @@ function readRecurringFields(db: Database, body: Record<string, unknown>, existi
       'Payment method'
     ) as PaymentMethod,
     dueDay: dueDayRaw,
-    fund: requireEnum(body.fund ?? existing?.fund ?? 'strata', EXPENSE_FUNDS, 'Which pot pays for this') as ExpenseFund,
+    fund: fundForCost(
+      requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'),
+      unit,
+      requireEnum(body.fund ?? existing?.fund ?? 'strata', EXPENSE_FUNDS, 'Which pot pays for this') as ExpenseFund
+    ),
     active: body.active === undefined ? (existing?.active ?? true) : body.active === true,
     notes: optionalString(body.notes ?? existing?.notes, 2000)
   };
@@ -6697,6 +7296,7 @@ app.post(
     if (body.items !== undefined && !Array.isArray(body.items)) bad('The list of costs to post is not in the expected form.');
 
     const result = await transaction(db => {
+      refuseClosedMonth(db, `${monthString}-01`, `The cost run for ${monthString}`);
       const who = actor(req);
       const created: Expense[] = [];
       const skipped: string[] = [];
@@ -7127,6 +7727,18 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
     let unchanged = 0;
     let cancelled = 0;
     const conflicts: string[] = [];
+    const heldBack = new Set<string>();
+    /*
+     * A stay carrying money, or already completed, is never changed by a feed
+     * (hunt, 2026-11-20). Sync is open to junior officers; cancelling a paid stay
+     * or moving a settled one is a decision about money, so it is raised as a
+     * conflict for a person, the way a withdrawn paid stay already was.
+     */
+    const lockedForFeed = (b: Booking): string | null => {
+      if (stayPhase(b, today()) === 'completed') return 'is a completed stay, a settled record';
+      if (db.payments.some(p => p.status !== 'reversed' && (p.bookingId === b.id || p.forBookingId === b.id))) return 'has money recorded against it';
+      return null;
+    };
 
     for (const event of events) {
       if (!event.start || !event.end || event.end <= event.start) continue;
@@ -7137,6 +7749,14 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
       // Cancelled in place: the platform still lists the entry but the stay is off.
       if (event.cancelled) {
         if (existing && existing.status !== 'cancelled') {
+          const locked = lockedForFeed(existing);
+          if (locked) {
+            conflicts.push(
+              `${existing.guestName} (${existing.checkIn} to ${existing.checkOut}) is cancelled on the ${live.source} calendar but ${locked}, so it was left as it is: check it and cancel it by hand if that is right.`
+            );
+            if (existing.externalUid) heldBack.add(existing.externalUid);
+            continue;
+          }
           const before = { ...existing };
           existing.status = 'cancelled';
           cancelled++;
@@ -7165,6 +7785,13 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
           unchanged++;
           continue;
         }
+        const locked = lockedForFeed(existing);
+        if (locked) {
+          conflicts.push(
+            `${existing.guestName} (${existing.checkIn} to ${existing.checkOut}) now reads ${change.checkIn} to ${change.checkOut} on the ${live.source} calendar but ${locked}, change the dates by hand.`
+          );
+          continue;
+        }
         const before = { ...existing };
         existing.checkIn = change.checkIn;
         existing.checkOut = change.checkOut;
@@ -7181,7 +7808,8 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
           guestPhone: '',
           checkIn: event.start,
           checkOut: event.end,
-          source: live.source === 'Booking.com' ? 'Booking.com' : live.source === 'Airbnb' ? 'Airbnb' : 'Blocked',
+          // An 'Other' feed's reservation is a guest, not closed dates (hunt, 2026-11-20); blocks are set below.
+          source: live.source === 'Booking.com' ? 'Booking.com' : live.source === 'Airbnb' ? 'Airbnb' : 'Direct',
           amount: 0,
           currency: unit.currency,
           depositPaid: 0,
@@ -7215,7 +7843,12 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
      * decides what happens to the money.
      */
     const seen = new Set(events.filter(e => !e.cancelled).map(e => e.uid));
-    const paidBookingIds = new Set(db.payments.filter(p => p.bookingId && p.status !== 'reversed').map(p => p.bookingId as string));
+    // Already raised above: not raised a second time as a withdrawal.
+    for (const uid of heldBack) seen.add(uid);
+    // Money attached by the deposit receipt or by any receipt paid toward the stay.
+    const paidBookingIds = new Set(
+      db.payments.filter(p => (p.bookingId || p.forBookingId) && p.status !== 'reversed').map(p => (p.bookingId || p.forBookingId) as string)
+    );
     const plan = planWithdrawals(db.bookings, paidBookingIds, seen, live.id, unit.id, live.source, today());
     for (const message of plan.conflicts) conflicts.push(message);
     for (const id of plan.cancelIds) {

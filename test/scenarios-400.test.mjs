@@ -455,7 +455,6 @@ function auditReporting(db, fin, asOf) {
       const r = fin.outOfPocketShortfall(flagged, tenancies, bookings, payments, currency, '2026-01-01', asOf);
       linesSeen += r.lines.length;
 
-      const named = new Set(r.currencyNotes.map(n => n.unitId));
       for (const line of r.lines) {
         if (isBadNumber(line.rentReceived) || isBadNumber(line.maintenancePaid) || isBadNumber(line.shortfall)) {
           problems.push(`${currency} shortfall line ${line.villa} ${line.month} carries a non-finite figure`);
@@ -468,7 +467,7 @@ function auditReporting(db, fin, asOf) {
           problems.push(`${currency} ${line.villa} ${line.month} earned ${cents(line.earned)}, not rent plus short stay`);
         }
         // The definition, restated: what was paid over and above what came in.
-        const expected = Math.max(0, cents(line.maintenancePaid) - cents(line.earned));
+        const expected = line.crossCurrency ? 0 : Math.max(0, cents(line.maintenancePaid) - cents(line.earned));
         if (cents(line.shortfall) !== expected) {
           problems.push(`${currency} shortfall for ${line.villa} ${line.month} is ${cents(line.shortfall)}, not ${expected}`);
         }
@@ -478,8 +477,8 @@ function auditReporting(db, fin, asOf) {
         if (line.vacant !== (line.occupiedDays === 0)) {
           problems.push(`${currency} ${line.villa} ${line.month} is marked vacant against ${line.occupiedDays} let day(s)`);
         }
-        if (named.has(line.unitId)) {
-          problems.push(`${currency} ${line.villa} was given a row and declared uncomputable at the same time`);
+        if (line.crossCurrency && line.shortfall !== 0) {
+          problems.push(`${currency} ${line.villa} ${line.month} was set aside as cross-currency and still given a shortfall`);
         }
       }
 
@@ -671,7 +670,8 @@ export default async function run({ port, projectRoot }) {
         const unitId = anyShort(rand);
         const start = 1 + (i % 18);
         const b = await c.post('/api/bookings', { unitId, guestName: `Cancelling ${i}`, checkIn: dayIn(month, start), checkOut: dayIn(month, start + 2), amount: money(rand, 300, 2000), depositPaid: money(rand, 100, 300), currency: 'USD', source: 'Direct' });
-        if (b.body?.booking?.id) await c.put(`/api/bookings/${b.body.booking.id}`, { status: 'cancelled' });
+        // A cancel with a received deposit names what happens to it (hunt, 2026-11-20); this scenario voids it.
+        if (b.body?.booking?.id) await c.put(`/api/bookings/${b.body.booking.id}`, { editReason: 'Test correction', status: 'cancelled', depositOutcome: 'void' });
       },
 
       // Overlapping stays: the second must be refused.

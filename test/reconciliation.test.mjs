@@ -169,18 +169,18 @@ export default async function run({ port, projectRoot }) {
     });
     await c.post(`/api/payments/${editable.body.payment.id}/reconcile`, { reconciledOn: '2026-07-15', reference: 'NCB 991' });
 
-    const amountChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { amount: 2000 });
+    const amountChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { reason: 'corrected in test', amount: 2000 });
     T.check('a reconciled receipt can still be corrected', amountChanged.status === 200, String(amountChanged.body?.error || ''));
     T.check('but changing its amount drops the bank match, so it is checked again',
       amountChanged.body?.payment?.reconciledOn === undefined,
       `still ticked for ${amountChanged.body?.payment?.reconciledOn}`);
 
     await c.post(`/api/payments/${editable.body.payment.id}/reconcile`, { reconciledOn: '2026-07-16' });
-    const noteChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { notes: 'Just a note' });
+    const noteChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { reason: 'corrected in test', notes: 'Just a note' });
     T.check('changing something the bank cannot see keeps the match',
       noteChanged.body?.payment?.reconciledOn === '2026-07-16', `tick now ${noteChanged.body?.payment?.reconciledOn}`);
 
-    const dateChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { date: '2026-07-13' });
+    const dateChanged = await c.put(`/api/payments/${editable.body.payment.id}`, { reason: 'corrected in test', date: '2026-07-13' });
     T.check('changing the date the money arrived drops the match',
       dateChanged.body?.payment?.reconciledOn === undefined);
 
@@ -212,7 +212,9 @@ export default async function run({ port, projectRoot }) {
         JUNIOR_OFFICER: {
           recordPayments: false, addBookings: false, editBookings: false, cancelBookings: false,
           editUnits: false, enterUtilities: false, recordExpenses: false, postCharges: false,
-          reversePayments: false, modifySettledRecords: false
+          reversePayments: false, modifySettledRecords: false,
+          // Its own permission since 2026-11-20 (Ro); withdrawn here too.
+          reconcileBank: false
         }
       }
     });
@@ -220,7 +222,7 @@ export default async function run({ port, projectRoot }) {
     await rc.post('/api/auth/login', { username: 'readonly', password: 'ReadOnly-1234!' }, { captureCookie: true });
     await rc.post('/api/auth/change-password', { currentPassword: 'ReadOnly-1234!', newPassword: 'ReadOnlyNew-9876!' });
     const denied = await rc.post(`/api/payments/${id}/reconcile`, { reconciledOn: '2026-07-06' });
-    T.check('a role without the till cannot reconcile', denied.status === 403, `saw ${denied.status}`);
+    T.check('a role without the bank-statement permission cannot reconcile', denied.status === 403, `saw ${denied.status}`);
 
     /* ---------------- on the audit trail ---------------- */
 

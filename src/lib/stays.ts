@@ -18,7 +18,9 @@
  * without a screen — see `test/components.test.mjs`.
  */
 
-import type { Booking } from '../types';
+import type { Booking, Currency, Payment } from '../types';
+import { refundedAsOf } from './finance';
+import { addMoney, round2, subtractMoney, sumMoney } from './money';
 
 /**
  * Dates that are closed rather than sold.
@@ -58,7 +60,7 @@ export const STAY_PHASE_LABEL: Record<StayPhase, string> = {
   cancelled: 'Cancelled'
 };
 
-export type ReceiptStanding = 'no-value' | 'balance-due' | 'paid';
+export type ReceiptStanding = 'complimentary' | 'no-value' | 'balance-due' | 'paid' | 'overpaid' | 'cancelled';
 
 /**
  * What a guest receipt may truthfully say about money.
@@ -69,7 +71,15 @@ export type ReceiptStanding = 'no-value' | 'balance-due' | 'paid';
  * starts here. It is only paid when there was something to pay and nothing is
  * left of it.
  */
-export function receiptStanding(booking: Pick<Booking, 'amount' | 'balanceDue'>): ReceiptStanding {
+export function receiptStanding(
+  booking: Pick<Booking, 'amount' | 'balanceDue' | 'complimentary'> & { status?: Booking['status']; overpaid?: number }
+): ReceiptStanding {
+  // A cancelled stay is not "paid in full", whatever its money (hunt, 2026-11-20).
+  if (booking.status === 'cancelled') return 'cancelled';
+  // Free on purpose, not missing a price (Ro, 2026-11-19).
+  if (booking.complimentary) return 'complimentary';
+  // Held beyond the price: the guest is owed money back, which "paid in full" hid.
+  if ((booking.overpaid || 0) > 0) return 'overpaid';
   if (!(booking.amount > 0)) return 'no-value';
   return booking.balanceDue > 0 ? 'balance-due' : 'paid';
 }
@@ -171,4 +181,114 @@ export function departuresWithin<T extends Pick<Booking, 'checkIn' | 'checkOut' 
     .filter(b => b.checkOut >= day && b.checkOut <= horizon && stayPhase(b, day) !== 'completed')
     .slice()
     .sort((a, b) => a.checkOut.localeCompare(b.checkOut));
+}
+
+/* ------------------------------------------------------------------ *
+ * What a stay has been paid, from the receipts
+ * ------------------------------------------------------------------ */
+
+export interface StayMoney {
+  /** Received on the stay's receipts, before refunds. */
+  received: number;
+  /** Handed back against those receipts. */
+  refunded: number;
+  /** Received less refunded: what the property holds for this stay. */
+  paid: number;
+  /** Still to collect. Zero on a cancelled stay, whose price is no longer owed. */
+  balance: number;
+  /** Held beyond the stay's price (or anything held on a cancelled stay). */
+  overpaid: number;
+  receipts: Payment[];
+}
+
+/**
+ * The one reading of a reservation's money, for every screen and document.
+ *
+ * QA, 2026-11-19: stays paid in full showed as owing — the Dashboard read
+ * "Balance outstanding $3,610" where $300 was true — because every screen read
+ * the reservation's own `depositPaid` / `balanceDue`. Those are what was typed on
+ * the reservation, not what was received: the balance paid on arrival is its own
+ * receipt, and a refund or a void lands on a receipt, never on those fields.
+ *
+ * So the receipts are the truth: the reservation's deposit receipt (`bookingId`)
+ * and every receipt recorded toward the stay (`forBookingId`). Only completed
+ * ones count, net of refunds — the same rule as every other balance.
+ */
+export function stayMoney(
+  booking: Pick<Booking, 'id' | 'amount' | 'status'> & Partial<Pick<Booking, 'currency'>>,
+  payments: Payment[],
+  opts: { asOf?: string } = {}
+): StayMoney {
+  const asOf = opts.asOf;
+  const receipts = payments.filter(
+    p =>
+      p.status === 'completed' &&
+      !p.derived &&
+      (p.bookingId === booking.id || p.forBookingId === booking.id) &&
+      // USD and JMD never combine, whatever a link says (hunt, 2026-11-20).
+      (!booking.currency || p.currency === booking.currency) &&
+      // As at a day: only what had arrived by then.
+      (!asOf || p.date <= asOf)
+  );
+  const received = sumMoney(receipts.map(p => p.amount));
+  const refunded = sumMoney(receipts.map(p => refundedAsOf(p, asOf)));
+  const paid = subtractMoney(received, refunded);
+  // A cancelled stay's price is nothing: any money still on it is held for the guest.
+  const price = booking.status === 'cancelled' ? 0 : booking.amount || 0;
+  if (booking.status === 'cancelled') {
+    return { received, refunded, paid, balance: 0, overpaid: round2(Math.max(0, paid - price)), receipts };
+  }
+  return {
+    received,
+    refunded,
+    paid,
+    balance: round2(Math.max(0, price - paid)),
+    overpaid: round2(Math.max(0, paid - price)),
+    receipts
+  };
+}
+
+export interface StayTotals {
+  /** Held against live (not cancelled) stays. */
+  paid: number;
+  /** Still to collect on live stays. */
+  outstanding: number;
+  /** Held beyond a stay's price, or held on a cancelled stay: owed back or to be explained. */
+  overpaid: number;
+  /** Booking receipts tied to no reservation. Counted here so they never vanish. */
+  unlinked: number;
+  unlinkedReceipts: Payment[];
+}
+
+/**
+ * Per-currency totals of `stayMoney` over a set of reservations, plus the
+ * Booking receipts that are not tied to any reservation at all — receipts
+ * recorded before a receipt could name its stay. Those cannot reduce any one
+ * stay's balance (nobody has said which), so they are counted and shown on
+ * their own line rather than dropped.
+ */
+export function stayTotals(bookings: Booking[], payments: Payment[], allBookings: Booking[] = bookings): Record<Currency, StayTotals> {
+  const out: Record<Currency, StayTotals> = {
+    USD: { paid: 0, outstanding: 0, overpaid: 0, unlinked: 0, unlinkedReceipts: [] },
+    JMD: { paid: 0, outstanding: 0, overpaid: 0, unlinked: 0, unlinkedReceipts: [] }
+  };
+  for (const b of bookings) {
+    const m = stayMoney(b, payments);
+    const t = out[b.currency];
+    if (!t) continue;
+    if (b.status !== 'cancelled') t.paid = addMoney(t.paid, m.paid);
+    t.outstanding = addMoney(t.outstanding, m.balance);
+    t.overpaid = addMoney(t.overpaid, m.overpaid);
+  }
+  const known = new Set(allBookings.map(b => b.id));
+  for (const p of payments) {
+    if (p.category !== 'Booking' || p.status !== 'completed' || p.derived) continue;
+    const link = p.bookingId || p.forBookingId;
+    if (link && known.has(link)) continue;
+    const t = out[p.currency];
+    if (!t) continue;
+    t.unlinked = addMoney(t.unlinked, subtractMoney(p.amount, refundedAsOf(p)));
+    t.unlinkedReceipts.push(p);
+  }
+  return out;
 }

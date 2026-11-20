@@ -27,9 +27,12 @@ import { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import { Banknote, CheckCircle2, Circle, Landmark, Printer } from 'lucide-react';
 
-import { Booking, Currency, CURRENCIES, Expense, Payment, SessionUser, Tenancy, Unit, getUnitDisplayName } from '../types';
+import { Booking, Currency, CURRENCIES, Expense, ExpenseFund, MANAGING_COMPANY_NAME, Payment, SessionUser, Tenancy, Unit, getUnitDisplayName } from '../types';
 import { Reconciliation as ReconciliationResult, reconciliation } from '../lib/finance';
-import { BankItem, BankItemKind, bankReconciliation } from '../lib/bankRec';
+import { BankItem, BankItemKind, bankReconciliation, receiptBook } from '../lib/bankRec';
+
+/** The two entities bank separately (Ro, 2026-11-20); a statement is one entity's account. */
+const ACCOUNT_LABEL: Record<ExpenseFund, string> = { strata: 'Corporation (strata)', ispo: MANAGING_COMPANY_NAME };
 import { formatMoney, formatMoneyLong } from '../lib/money';
 import { currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
@@ -73,6 +76,7 @@ export default function ReconciliationTab({
 }: ReconciliationProps) {
   const [month, setMonth] = useRemembered('reconciliation.month', currentMonth);
   const [currency, setCurrency] = useRemembered<Currency>('reconciliation.currency', 'JMD');
+  const [book, setBook] = useRemembered<ExpenseFund>('reconciliation.book', 'strata');
   const [show, setShow] = useState<'unmatched' | 'all'>('unmatched');
   const [statementDate, setStatementDate] = useState(today());
   const [busyId, setBusyId] = useState('');
@@ -80,21 +84,24 @@ export default function ReconciliationTab({
   const [success, setSuccess] = useState('');
   const [printing, setPrinting] = useState(false);
 
-  const canReconcile = session.role === 'ADMINISTRATOR' || !!session.permissions.recordPayments;
+  // Its own permission (Ro, 2026-11-20); absent means granted, as on the server.
+  const canReconcile = session.role === 'ADMINISTRATOR' || session.permissions.reconcileBank !== false;
 
   const from = monthStart(month);
   const to = monthEnd(month);
 
+  // Only this entity's receipts: the other one's money went to another account.
+  const bookPayments = useMemo(() => payments.filter(p => receiptBook(p, expenses) === book), [payments, expenses, book]);
   const result: ReconciliationResult = useMemo(
-    () => reconciliation(payments, currency, from, to),
-    [payments, currency, from, to]
+    () => reconciliation(bookPayments, currency, from, to),
+    [bookPayments, currency, from, to]
   );
 
   // Both directions, one currency: money in (receipts and supplier credits),
   // money out (paid costs, refunds, returned deposits) and the net movement.
   const both = useMemo(
-    () => bankReconciliation({ payments, expenses, tenancies, bookings }, currency, from, to),
-    [payments, expenses, tenancies, bookings, currency, from, to]
+    () => bankReconciliation({ payments, expenses, tenancies, bookings }, currency, from, to, book),
+    [payments, expenses, tenancies, bookings, currency, from, to, book]
   );
   // Everything but the receipts, which keep their own table above.
   const outRows = [...both.moneyOut.items, ...both.moneyIn.items.filter(i => i.kind !== 'receipt')].filter(
@@ -111,7 +118,7 @@ export default function ReconciliationTab({
         await onReconcileOut(item.kind, item.id, { reconciled: false });
         setSuccess(`Un-matched ${item.label}.`);
       } else {
-        await onReconcileOut(item.kind, item.id, { reconciledOn: statementDate, currency });
+        await onReconcileOut(item.kind, item.id, { reconciledOn: statementDate, currency, book });
         setSuccess(`Matched ${item.label} to the statement of ${formatDayLabel(statementDate)}.`);
       }
     } catch (err) {
@@ -138,7 +145,7 @@ export default function ReconciliationTab({
         await onReconcile(p.id, { reconciled: false });
         setSuccess(`${p.receiptNo} un-matched.`);
       } else {
-        await onReconcile(p.id, { reconciledOn: statementDate });
+        await onReconcile(p.id, { reconciledOn: statementDate, currency, book });
         setSuccess(`${p.receiptNo} matched to the statement of ${formatDayLabel(statementDate)}.`);
       }
     } catch (err) {
@@ -241,6 +248,17 @@ export default function ReconciliationTab({
               <input id="rc-month" type="month" value={month} max={currentMonth()} onChange={e => setMonth(e.target.value)} className={monoInputClass} />
             </Field>
           </div>
+          <div className="min-w-[11rem]">
+            <Field label="Bank account of" htmlFor="rc-book" hint="Separate entities, separate accounts.">
+              <select id="rc-book" value={book} onChange={e => setBook(e.target.value as ExpenseFund)} className={inputClass}>
+                {(['strata', 'ispo'] as ExpenseFund[]).map(b => (
+                  <option key={b} value={b}>
+                    {ACCOUNT_LABEL[b]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
           <div className="min-w-[7rem]">
             <Field label="Currency" htmlFor="rc-currency" hint="Never combined.">
               <select id="rc-currency" value={currency} onChange={e => setCurrency(e.target.value as Currency)} className={inputClass}>
@@ -281,7 +299,7 @@ export default function ReconciliationTab({
         {!canReconcile && (
           <div className="mt-3">
             <PermissionNote>
-              Your role cannot mark receipts against a statement. The figures above are still accurate.
+              Your role cannot tick items off against a bank statement. The figures above are still accurate.
             </PermissionNote>
           </div>
         )}
@@ -379,11 +397,11 @@ export default function ReconciliationTab({
 
       {/* ---------------- money out (and supplier credits back in) ---------------- */}
 
-      <h3 className="pt-2 text-sm font-semibold text-slate-900">Money out, and credits back from suppliers</h3>
+      <h3 className="pt-2 text-sm font-semibold text-slate-900">Money out, deposits held, and credits back from suppliers</h3>
       {outRows.length === 0 ? (
         <EmptyState
           title={`No ${show === 'unmatched' ? 'unmatched ' : ''}${currency} payments out in ${formatMonthLabel(month)}`}
-          hint="Paid costs, refunds and returned deposits appear here. Pending and voided costs never do."
+          hint="Paid costs, refunds, deposits received and returned, and supplier credits appear here. Pending and voided costs never do."
           icon={<Landmark className="h-6 w-6" />}
         />
       ) : (
@@ -449,7 +467,7 @@ export default function ReconciliationTab({
           subtitle={`${formatMonthLabel(month)} · ${currency}`}
           onClose={() => setPrinting(false)}
         >
-          <ReconciliationSheet result={result} month={month} generatedBy={session.name} unitLabel={unitLabel} />
+          <ReconciliationSheet result={result} month={month} account={ACCOUNT_LABEL[book]} generatedBy={session.name} unitLabel={unitLabel} />
         </PrintPortal>
       )}
     </div>
@@ -467,10 +485,12 @@ function ReconciliationSheet({
   result,
   month,
   generatedBy,
-  unitLabel
+  unitLabel,
+  account
 }: {
   result: ReconciliationResult;
   month: string;
+  account: string;
   generatedBy: string;
   unitLabel: (p: Payment) => string;
 }) {
@@ -478,7 +498,7 @@ function ReconciliationSheet({
     <>
       <PrintLetterhead
         documentTitle="Bank Reconciliation"
-        meta={`${formatMonthLabel(month)} · ${result.currency}`}
+        meta={`${account} · ${formatMonthLabel(month)} · ${result.currency}`}
         generatedBy={generatedBy}
       />
 

@@ -693,7 +693,7 @@ export function CollectionRateChart({ rows, currency }: { rows: MonthRow[]; curr
   );
 }
 
-/** Villas let, month by month, as a share of the register. */
+/** Villas let, month by month, as a share of the villas ISPO lets. */
 export function OccupancyChart({ series }: { series: { month: string; occupied: number; total: number; rate: number | null }[] }) {
   if (series.length === 0 || series.every(s => s.rate === null)) return null;
 
@@ -708,7 +708,7 @@ export function OccupancyChart({ series }: { series: { month: string; occupied: 
   return (
     <ChartFrame
       title="Rented villas by month"
-      subtitle="Villas rented out, under tenancy, or with a guest in residence, on the last day of each month."
+      subtitle="Of the villas ISPO lets, those under tenancy or with a guest in residence on the last day of each month. Proprietors’ villas and villas off the market are not counted."
     >
       <svg
         viewBox={`0 0 ${width} ${height}`}
@@ -735,7 +735,7 @@ export function OccupancyChart({ series }: { series: { month: string; occupied: 
           return (
             <g key={row.month}>
               <rect x={x} y={height - pad.bottom - h} width={barW} height={Math.max(0, h)} fill="#2a78d6" rx="2">
-                <title>{`${formatMonthLabel(row.month)}, ${row.occupied} of ${row.total} villas (${rate}%)`}</title>
+                <title>{`${formatMonthLabel(row.month)}, ${row.occupied} of ${row.total} villas ISPO lets (${rate}%)`}</title>
               </rect>
               <text
                 x={x + barW / 2}

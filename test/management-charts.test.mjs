@@ -314,6 +314,12 @@ export default async function run({ projectRoot }) {
     const series = mod.occupancySeries(twoVillas, [tenancy({ startedOn: '2026-01-01' })], [], ['2026-01', '2026-02'], AS_OF);
     T.check('the series samples one month per entry', series.length === 2, `${series.length} entries`);
     T.check('and reports occupancy as a share of the whole register', series[0].occupied === 1 && series[0].total === 2 && series[0].rate === 50, JSON.stringify(series[0]));
+    // The pool is the villas ISPO lets: a proprietor's villa is outside it, even with a tenancy recorded on it.
+    const withProprietor = [...twoVillas, villa({ id: 'unit-3', number: '3', status: 'owner-occupied' })];
+    const pooled = mod.occupancySeries(withProprietor, [tenancy({ startedOn: '2026-01-01' }), tenancy({ unitId: 'unit-3', startedOn: '2026-01-01' })], [], ['2026-01'], AS_OF);
+    T.check("a proprietor's villa is neither a letting nor a missed one in the series", pooled[0].occupied === 1 && pooled[0].total === 2 && pooled[0].rate === 50, JSON.stringify(pooled[0]));
+    const day = mod.occupancyOn(withProprietor, [tenancy({ startedOn: '2026-01-01' })], [], '2026-01-31');
+    T.check('and the day figure uses the same pool as the series', day.lettable === pooled[0].total && day.occupied === pooled[0].occupied, JSON.stringify(day));
 
     // A month end past the reporting date would otherwise read as an empty month.
     const capped = mod.occupancySeries(twoVillas, [tenancy({ startedOn: '2026-01-01' })], [], ['2026-03'], '2026-03-15');

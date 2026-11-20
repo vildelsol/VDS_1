@@ -49,6 +49,7 @@ import {
   withUtilityRecoveries
 } from '../lib/finance';
 import { formatMoney, round2, sumMoney } from '../lib/money';
+import { CONTEXT, NOTABLE, Observation, SUMMARY, URGENT, ispoLevyPosition, levyNote, observationsFor, rankObservations } from '../lib/observations';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import {
   addDays,
@@ -84,7 +85,7 @@ interface ReportsProps {
   session: SessionUser;
 }
 
-type Preset = 'thisMonth' | 'lastMonth' | 'last3' | 'last6' | 'last12' | 'ytd' | 'custom';
+export type Preset = 'thisMonth' | 'lastMonth' | 'last3' | 'last6' | 'last12' | 'ytd' | 'custom';
 
 const PRESETS: { key: Preset; label: string }[] = [
   { key: 'thisMonth', label: 'This month' },
@@ -96,7 +97,20 @@ const PRESETS: { key: Preset; label: string }[] = [
   { key: 'custom', label: 'Custom range' }
 ];
 
-function rangeForPreset(preset: Preset, custom: { from: string; to: string }): { from: string; to: string } {
+/*
+ * A report ends no later than today. "This month" ran to the 30th on the 20th, so
+ * every figure taken at `to` (ageing, receivable, who to chase) counted ten days
+ * that had not happened: B7 "60 days" overdue against the Dashboard's 50, a bill
+ * due on the 25th "5 days overdue", rent not yet due listed as owed (hunt,
+ * 2026-11-19). Clamped here, so every label reads the date actually used.
+ */
+export function rangeForPreset(preset: Preset, custom: { from: string; to: string }): { from: string; to: string } {
+  const r = presetRange(preset, custom);
+  const day = today();
+  return r.to > day && r.from <= day ? { from: r.from, to: day } : r;
+}
+
+function presetRange(preset: Preset, custom: { from: string; to: string }): { from: string; to: string } {
   const now = currentMonth();
   switch (preset) {
     case 'thisMonth':
@@ -258,13 +272,21 @@ export default function Reports({
         )
       );
 
+      const settlement = settledOfBilled(bookCharges, payments, currency, from, to);
       return {
         currency,
         collected,
         billed,
         spent,
         net: sumMoney([collected.total, -spent]),
-        rate: settledOfBilled(bookCharges, payments, currency, from, to).rate,
+        rate: settlement.rate,
+        settled: settlement.settled,
+        /*
+         * ISPO's levy billed against paid, for the note under "Expenses paid".
+         * Ro expected 9 x J$20,000 = J$180,000 where the note said J$160,000
+         * paid; the note now states both and names the villa in between.
+         */
+        levyNote: book === 'ispo' ? levyNote(ispoLevyPosition({ units, tenancies, charges, payments: allPayments, currency, from, to })) : '',
         openingReceivable,
         closingReceivable,
         paidOver,
@@ -272,7 +294,7 @@ export default function Reports({
         utilities: utilityRecoveries(allPayments, allExpenses, currency, from, to, book)
       };
     });
-  }, [payments, bookCharges, bookCategories, expenses, netted, allPayments, allExpenses, book, units, from, to, invalidRange]);
+  }, [payments, bookCharges, bookCategories, expenses, netted, allPayments, allExpenses, charges, tenancies, book, units, from, to, invalidRange]);
 
   /* ---------------- monthly series for charts ---------------- */
 
@@ -315,48 +337,40 @@ export default function Reports({
   /* ---------------- factual observations ---------------- */
 
   /**
-   * These are arithmetic statements about the data in the selected range.
-   * The previous version asserted causes it had no way to know ("driven by
-   * short-term booking velocity"), which is not something a report should say.
+   * Decision-ready observations (Ro, 2026-11-19): every gap names the villa,
+   * the person or the bill behind it, with amounts that sum to the headline,
+   * since when, and the next action. Computed in `src/lib/observations.ts`,
+   * where a test can reach it; only the period's framing figures stay here.
+   * Facts derived from the ledger only — no causes are inferred.
    */
-  const observations = useMemo(() => {
+  const observations = useMemo<Observation[]>(() => {
     if (invalidRange) return [];
-
-    /**
-     * Ranked, not merely listed.
-     *
-     * These were previously emitted in the order the code happened to compute
-     * them, which put "3 accounts exceed 60 days" in the same undifferentiated
-     * list as "16 of 16 villas are occupied". Both are true; only one needs
-     * acting on this week. Lower rank sorts first, and ties keep the order they
-     * were computed in so a currency's figures stay together.
-     */
-    const URGENT = 0; // money at risk, or a position that has worsened
-    const NOTABLE = 1; // the period's headline figures
-    const CONTEXT = 2; // standing facts that frame the rest
-
-    const entries: { text: string; rank: number }[] = [];
-    const say = (rank: number, text: string) => entries.push({ rank, text });
-
-    /*
-     * Which accounts the book being read actually holds. "Billed in rent and
-     * maintenance" was true of the combined view and false of either single one:
-     * the corporation bills no rent and ISPO bills no maintenance.
-     */
-    const billedAccounts = bookCategories.map(cat => cat.toLowerCase()).join(' and ');
+    const entries: Observation[] = [];
+    const say = (rank: number, text: string, currency?: Currency, atRisk?: number) => entries.push({ rank, text, currency, atRisk });
 
     for (const entry of summary) {
-      if (entry.billed.total === 0 && entry.collected.total === 0 && entry.spent === 0) continue;
       const c = entry.currency;
 
-      if (entry.billed.total > 0) {
-        // Anything short of full collection is money outstanding, not a statistic.
-        say(
-          entry.rate !== null && entry.rate < 100 ? URGENT : NOTABLE,
-          `${c}: ${formatMoney(entry.billed.total, c)} was billed in ${billedAccounts}; ` +
-            `${formatMoney(sumMoney([entry.collected.rent, entry.collected.maintenance]), c)} was received against it ` +
-            `(${entry.rate ?? 0}% of the amount billed in this period).`
-        );
+      /*
+       * Asked of every currency, not only one with money moving: a month whose
+       * only USD activity is an Airbnb stay with no value entered has nothing
+       * billed or received, and that is exactly the stay to name.
+       */
+      entries.push(
+        ...observationsFor(
+          { units, tenancies, bookings, charges, payments: allPayments, expenses: allExpenses, utilities, currency: c, from, to, book },
+          {
+            billed: entry.billed.total,
+            settled: entry.settled,
+            closingReceivable: entry.closingReceivable,
+            paidOver: book === 'ispo' ? entry.paidOver : undefined,
+            expensesOutstanding: sumMoney(entry.breakdown.map(b => b.outstanding))
+          }
+        )
+      );
+
+      if (entry.billed.total === 0 && entry.collected.total === 0 && entry.spent === 0 && entry.closingReceivable === 0 && entry.openingReceivable === 0) {
+        continue;
       }
 
       const movement = round2(entry.closingReceivable - entry.openingReceivable);
@@ -366,13 +380,15 @@ export default function Reports({
           movement > 0 ? URGENT : NOTABLE,
           `${c}: receivables ${movement > 0 ? 'rose' : movement < 0 ? 'fell' : 'were unchanged'} from ` +
             `${formatMoney(entry.openingReceivable, c)} at the start of the period to ${formatMoney(entry.closingReceivable, c)} at the end` +
-            (movement === 0 ? '.' : `, ${movement > 0 ? 'an increase' : 'a decrease'} of ${formatMoney(Math.abs(movement), c)}.`)
+            (movement === 0 ? '.' : `, ${movement > 0 ? 'an increase' : 'a decrease'} of ${formatMoney(Math.abs(movement), c)}.`),
+          c,
+          Math.max(0, movement)
         );
       }
 
       if (entry.breakdown.length > 0) {
         const top = entry.breakdown[0];
-        say(NOTABLE, `${c}: the largest expense category was ${top.category} at ${formatMoney(top.amount, c)} (${top.share}% of ${c} outflows).`);
+        say(NOTABLE, `${c}: the largest expense category was ${top.category} at ${formatMoney(top.amount, c)} (${top.share}% of ${c} outflows).`, c);
       }
 
       /*
@@ -388,7 +404,8 @@ export default function Reports({
         say(
           NOTABLE,
           `${c}: ${formatMoney(unbilled, c)} of what was received is not raised as a charge, so it appears in nothing that is billed: ` +
-            `${parts.join(', ')}. "Billed" counts rent and maintenance only, which is why it can read lower than "Received".`
+            `${parts.join(', ')}. "Billed" counts rent and maintenance only, which is why it can read lower than "Received".`,
+          c
         );
       }
 
@@ -399,22 +416,11 @@ export default function Reports({
           // Spending more than came in is a fact that belongs at the top.
           entry.net < 0 ? URGENT : NOTABLE,
           `${c}: ${formatMoney(entry.collected.total, c)} received against ${formatMoney(entry.spent, c)} paid out, ` +
-            `a net cash movement of ${formatMoney(entry.net, c)}.`
+            `a net cash movement of ${formatMoney(entry.net, c)}.`,
+          c,
+          entry.net < 0 ? -entry.net : 0
         );
       }
-    }
-
-    // Arrears ageing, stated as counts.
-    const aged = units
-      .flatMap(u => bookCategories.map(cat => accountBalance(u, cat, bookCharges, payments, to, units)))
-      .filter(a => a.balance > 0);
-    if (aged.length > 0) {
-      const over60 = aged.filter(a => a.oldestUnpaidDays > 60).length;
-      const over30 = aged.filter(a => a.oldestUnpaidDays > 30).length;
-      say(
-        URGENT,
-        `${aged.length} account(s) carried a balance at ${formatDayLabel(to)}: ${over30} more than 30 days old, of which ${over60} exceed 60 days.`
-      );
     }
 
     // Short-term occupancy, computed from nights actually sold.
@@ -442,11 +448,6 @@ export default function Reports({
       );
     }
 
-    const unpaidUtilities = utilities.filter(u => u.status === 'unpaid').length;
-    if (book !== 'ispo' && unpaidUtilities > 0) {
-      say(URGENT, `${unpaidUtilities} utility bill(s) remain unsettled at the report date.`);
-    }
-
     /*
      * Who was in a villa on the report date, not how the villas are set up to be
      * let. This counted `unit.status`, so a villa merely offered on Airbnb was
@@ -457,18 +458,15 @@ export default function Reports({
       const occ = occupancyOn(units, tenancies, bookings, to);
       say(
         CONTEXT,
-        `${occ.occupied} of ${occ.total - occ.unavailable} lettable villas had somebody in them on the report date ` +
-          `(a tenancy, a guest in residence, or the owner's own home); ${occ.available} stood empty and available` +
-          `${occ.unavailable > 0 ? `, and ${occ.unavailable} were off the market` : ''}.`
+        `${occ.occupied} of the ${occ.lettable} villas ISPO lets had a tenant or a guest in them on the report date; ` +
+          `${occ.available} stood empty and available` +
+          `${occ.unavailable > 0 ? `, and ${occ.unavailable} were off the market` : ''}. ` +
+          `${occ.ownerOccupied > 0 ? `The ${occ.ownerOccupied} proprietors' villas are not ISPO's to let and are not counted.` : ''}`.trim()
       );
     }
 
-    // A stable sort: equal ranks keep the order they were computed in.
-    return entries
-      .map((entry, index) => ({ ...entry, index }))
-      .sort((a, b) => a.rank - b.rank || a.index - b.index)
-      .map(entry => entry.text);
-  }, [summary, units, bookCharges, bookCategories, book, payments, bookings, utilities, from, to, invalidRange]);
+    return rankObservations(entries);
+  }, [summary, units, tenancies, charges, allPayments, allExpenses, book, bookings, utilities, from, to, invalidRange]);
 
   /* ---------------- CSV ---------------- */
 
@@ -915,6 +913,7 @@ export default function Reports({
                         entry.paidOver > 0
                           ? `Includes ${formatMoney(entry.paidOver, entry.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on the villas it lets. It is read from the contribution receipts, there is no bill for it in the cost register.`
                           : '',
+                        entry.levyNote,
                         entry.utilities.recovered !== 0
                           ? `Utilities ${formatMoney(entry.utilities.netUtilityCost, entry.currency)} net: ${formatMoney(entry.utilities.utilityCost, entry.currency)} paid less ${formatMoney(entry.utilities.recovered, entry.currency)} recovered from villas (a pass-through, not income).`
                           : ''
@@ -979,19 +978,12 @@ export default function Reports({
           <section className="space-y-3 rounded-2xl border border-slate-100 bg-white p-6 shadow-xs">
             <h3 className="font-display text-sm font-semibold text-slate-900">Observations</h3>
             <p className="text-[11px] text-slate-500">
-              Arithmetic statements about the data in this range. No causes are inferred.
+              Facts derived from the ledger for this range, most money at risk first. Each gap names the villa, the person or the bill, since when, and what to do. No causes are inferred.
             </p>
             {observations.length === 0 ? (
               <EmptyState title="No activity recorded in this range" />
             ) : (
-              <ul className="space-y-2">
-                {observations.map((text, i) => (
-                  <li key={i} className="flex items-start gap-2 rounded-xl bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
-                    <span className="mt-0.5 text-slate-400">{i + 1}.</span>
-                    <span>{text}</span>
-                  </li>
-                ))}
-              </ul>
+              <ObservationList observations={observations} />
             )}
           </section>
 
@@ -1089,6 +1081,32 @@ export default function Reports({
 }
 
 /* ------------------------------------------------------------------ */
+
+/** The on-screen observations: a short headline, with the villas, people and bills behind it indented under it. */
+export function ObservationList({ observations }: { observations: Observation[] }) {
+  const tone = (rank: number) => (rank === SUMMARY ? 'text-violet-700' : rank === URGENT ? 'text-rose-600' : rank === NOTABLE ? 'text-amber-600' : 'text-slate-400');
+  const label = (rank: number) => (rank === SUMMARY ? 'Where the money is' : rank === URGENT ? 'Urgent' : rank === NOTABLE ? 'Notable' : 'Context');
+  return (
+    <ol className="space-y-2">
+      {observations.map((o, i) => (
+        <li key={i} className="rounded-xl bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+          <div className="flex items-start gap-2">
+            <span className="mt-0.5 text-slate-400">{i + 1}.</span>
+            <span className={`mt-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider ${tone(o.rank)}`}>{label(o.rank)}</span>
+            <span>{o.text}</span>
+          </div>
+          {o.details && o.details.length > 0 && (
+            <ul className="mt-1.5 space-y-1 border-l border-slate-200 pl-3 ml-5 text-[11px] text-slate-600">
+              {o.details.map((d, j) => (
+                <li key={j}>{d}</li>
+              ))}
+            </ul>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
 
 function StatementRow({
   label,
@@ -1281,6 +1299,10 @@ function buildSummaryType() {
     paidOver: number;
     net: number;
     rate: number | null;
+    /** The part of the period's billing settled by its end (`settledOfBilled`). */
+    settled: number;
+    /** ISPO's levy billed against paid, ISPO's book only; '' otherwise. */
+    levyNote: string;
     openingReceivable: number;
     closingReceivable: number;
     breakdown: ReturnType<typeof expenseBreakdown>;
@@ -1310,7 +1332,7 @@ function StatementDocument({
   expenses: Expense[];
   summary: Summary;
   series: Record<string, number | string>[];
-  observations: string[];
+  observations: Observation[];
   /** The book every figure on this page was read on. Named on the page. */
   book: ReportBook;
   categories: ChargeCategory[];
@@ -1381,6 +1403,7 @@ function StatementDocument({
                 <dd className="font-mono">{value}</dd>
               </div>
             ))}
+            {entry.levyNote && <p className="border-t border-slate-300 pt-1 text-[10px] leading-snug">{entry.levyNote}</p>}
           </dl>
         ))}
       </section>
@@ -1604,8 +1627,17 @@ function StatementDocument({
         <section className="mb-6 break-inside-avoid">
           <h3 className="mb-2 border-b border-slate-400 pb-1 text-xs font-bold uppercase tracking-wider">Observations</h3>
           <ol className="list-decimal space-y-1 pl-5 text-[11px] leading-relaxed">
-            {observations.map((text, i) => (
-              <li key={i}>{text}</li>
+            {observations.map((o, i) => (
+              <li key={i}>
+                {o.text}
+                {o.details && o.details.length > 0 && (
+                  <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                    {o.details.map((d, j) => (
+                      <li key={j}>{d}</li>
+                    ))}
+                  </ul>
+                )}
+              </li>
             ))}
           </ol>
         </section>

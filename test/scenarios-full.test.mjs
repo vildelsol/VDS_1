@@ -431,11 +431,12 @@ export default async function run({ port, projectRoot }) {
         const e = await c.post('/api/expenses', { category: pick(rand, ['Maintenance', 'Security', 'Supplies', 'Contractors']), description: 'ad hoc cost', amount: money(rand, 500, 40000), currency: pick(rand, ['JMD', 'USD']), date: dayIn(month, 1 + Math.floor(rand() * 27)), vendor: 'Vendor' });
         const id = e.body?.expense?.id;
         if (!id) return;
-        await c.put(`/api/expenses/${id}`, { amount: money(rand, 500, 40000) });
+        await c.put(`/api/expenses/${id}`, { amount: money(rand, 500, 40000), reason: 'fuzz correction' });
         if (rand() > 0.7) {
           await c.put(`/api/expenses/${id}`, {
             category: pick(rand, ['Maintenance', 'Security', 'Supplies', 'Contractors']),
-            date: dayIn(month, 1 + Math.floor(rand() * 27))
+            date: dayIn(month, 1 + Math.floor(rand() * 27)),
+            reason: 'fuzz correction'
           });
         }
       },

@@ -656,14 +656,14 @@ export default async function run({ port, projectRoot }) {
           if (!b) {
             skipped++;
           } else if (rand() < 0.25) {
-            const res = await c.put(`/api/bookings/${id}`, { status: 'cancelled', amount: b.amount, depositPaid: b.depositPaid });
+            const res = await c.put(`/api/bookings/${id}`, { editReason: 'Test correction', status: 'cancelled', amount: b.amount, depositPaid: b.depositPaid });
             if (ok(res)) {
               performed++;
               did.bookingCancel++;
             } else refused++;
           } else {
             const amount = money(rand, 200, 4000);
-            const res = await c.put(`/api/bookings/${id}`, {
+            const res = await c.put(`/api/bookings/${id}`, { editReason: 'Test correction',
               amount,
               depositPaid: rand() < 0.15 ? 0 : Math.round(amount * (0.2 + rand() * 0.8) * 100) / 100,
               guestName: b.guestName

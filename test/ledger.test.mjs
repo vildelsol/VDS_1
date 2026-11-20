@@ -109,7 +109,7 @@ export default async function run({ port, projectRoot }) {
     db = (await c.get('/api/db')).body;
     const dep1 = db.payments.find(p => p.bookingId === bId);
     await c.post(`/api/payments/${dep1.id}/reverse`, { reversalReason: 'deposit was never received' });
-    await c.put(`/api/bookings/${bId}`, { depositPaid: 300, amount: 1000 });
+    await c.put(`/api/bookings/${bId}`, { editReason: 'Test correction', depositPaid: 300, amount: 1000 });
     db = (await c.get('/api/db')).body;
     const deps = db.payments.filter(p => p.bookingId === bId);
     const old = deps.find(p => p.id === dep1.id);
@@ -129,7 +129,7 @@ export default async function run({ port, projectRoot }) {
     T.check('exactly one live deposit receipt exists', deps.filter(p => p.status !== 'reversed').length === 1);
 
     // --- settled-record rules ---
-    T.check('a voided receipt cannot be edited', (await c.put(`/api/payments/${dep1.id}`, { amount: 999 })).status === 400);
+    T.check('a voided receipt cannot be edited', (await c.put(`/api/payments/${dep1.id}`, { reason: 'corrected in test', amount: 999 })).status === 400);
     T.check('a receipt cannot be voided twice', (await c.post(`/api/payments/${dep1.id}/reverse`, { reversalReason: 'double void attempt' })).status === 400);
 
     // --- reprints are counted and named as copies ---

@@ -422,6 +422,8 @@ export default function Units({
           units={units}
           charges={charges}
           payments={payments}
+          bookings={bookings}
+          utilities={utilities}
           account={payTarget}
           onClose={() => setPayTarget(null)}
           onSubmit={async payload => {

@@ -5,13 +5,14 @@
 
 import React, { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
-import { AppSettings, Booking, Currency, PAYMENT_METHODS, PaymentMethod, SessionUser, Unit, getUnitDisplayName } from '../types';
+import { AppSettings, Booking, Currency, PAYMENT_METHODS, Payment, PaymentMethod, SessionUser, Unit, getUnitDisplayName } from '../types';
 import { BookingClash, bookingCoversNight, bookingOverlaps, bookingsForUnit, bookingsOverlap } from '../lib/finance';
 import { formatMoney, formatMoneyLong, round2 } from '../lib/money';
-import { dayOfTimestamp, addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, today } from '../lib/dates';
+import { dayOfTimestamp, addDays, addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, nightsBetween, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
+import { filterReservations, stayOverlapsDays } from '../lib/bookingFilter';
 import { buildStayReceiptEmail, openMailDraft } from '../lib/email';
-import { STAY_PHASE_LABEL, StayPhase, guestGreetingName, isClosedDates, platformReservation, receiptStanding, stayPhase } from '../lib/stays';
+import { STAY_PHASE_LABEL, StayPhase, guestGreetingName, isClosedDates, platformReservation, receiptStanding, stayMoney, stayPhase } from '../lib/stays';
 import PrintPortal, { PrintLetterhead, PrintSignatures } from './PrintPortal';
 import {
   Badge,
@@ -34,6 +35,8 @@ import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Lock, Mail, Plus,
 interface BookingsProps {
   units: Unit[];
   bookings: Booking[];
+  /** The receipts. What a stay has been paid is read from these (`stayMoney`), never from the reservation. */
+  payments?: Payment[];
   settings: AppSettings;
   session: SessionUser;
   onAddBooking: (payload: Record<string, unknown>) => Promise<Booking>;
@@ -57,6 +60,7 @@ interface SyncOutcome {
 export default function Bookings({
   units,
   bookings,
+  payments = [],
   settings,
   session,
   onAddBooking,
@@ -69,12 +73,13 @@ export default function Bookings({
   const [month, setMonth] = useRemembered('bookings.month', currentMonth);
   const [adding, setAdding] = useState<{ unitId?: string; checkIn?: string } | null>(null);
   const [editing, setEditing] = useState<Booking | null>(null);
-  const [printing, setPrinting] = useState<{ from: string; to: string } | null>(null);
+  const [printing, setPrinting] = useState<{ from: string; to: string; unitId: string } | null>(null);
   const [receiptBooking, setReceiptBooking] = useState<Booking | null>(null);
   const [depositBooking, setDepositBooking] = useState<Booking | null>(null);
   const [showPrintOptions, setShowPrintOptions] = useState(false);
   const [printFrom, setPrintFrom] = useState(monthStart(currentMonth()));
   const [printTo, setPrintTo] = useState(monthEnd(currentMonth()));
+  const [printUnitId, setPrintUnitId] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [syncing, setSyncing] = useState(false);
@@ -82,6 +87,13 @@ export default function Bookings({
   const perms = session.permissions;
   const canAdd = !!perms.addBookings;
   const canEdit = !!perms.editBookings;
+  /*
+   * A completed stay is a settled record (Ro, 2026-11-19): only a role allowed
+   * to modify settled ledger records may open it for editing. The server refuses
+   * the same edit, so this only spares the person a form they cannot save.
+   */
+  const canEditStay = (b: Booking) => canEdit && (stayPhase(b, today()) !== 'completed' || !!perms.modifySettledRecords);
+  const COMPLETED_LOCKED = 'This stay is completed, so it is a settled record. Ask a Manager or an Administrator to change it.';
   const canHoldDeposit = !!perms.recordPayments;
   const canSettleDeposit = !!perms.reversePayments;
 
@@ -224,14 +236,39 @@ export default function Bookings({
    * booking has already been completed there's no way to tell."*
    */
   const [listFilter, setListFilter] = useRemembered<'all' | StayPhase>('bookings.listFilter', 'all');
+  /*
+   * Month and villa, so the list does not grow for ever. Ro, 2026-11-19. The
+   * month is the scheduler's own `month`, so the two views always agree on which
+   * month is open; "All months" is a separate switch the list alone obeys. A stay
+   * is in a month when a night of it is (`stayOverlapsMonth`): the departure day
+   * is not a night, so a stay leaving on 1 November is not a November stay.
+   */
+  const [listAllMonths, setListAllMonths] = useRemembered<boolean>('bookings.listAllMonths', false);
+  const [rememberedUnitId, setListUnitId] = useRemembered('bookings.listUnitId', '');
+  // A remembered villa that is no longer on this screen must not hide everything.
+  const listUnitId = shortLetUnits.some(u => u.id === rememberedUnitId) ? rememberedUnitId : '';
+  const listUnit = shortLetUnits.find(u => u.id === listUnitId);
   const todayKey = today();
   const listRows = useMemo(
     () =>
-      bookings
+      filterReservations(bookings, { month: listAllMonths ? null : month, unitId: listUnitId })
         .filter(b => listFilter === 'all' || stayPhase(b, todayKey) === listFilter)
         .sort((a, b) => b.checkIn.localeCompare(a.checkIn)),
-    [bookings, listFilter, todayKey]
+    [bookings, listFilter, todayKey, listAllMonths, month, listUnitId]
   );
+  const listFilterDescription = [
+    listAllMonths ? 'all months' : formatMonthLabel(month),
+    listUnit ? getUnitDisplayName(listUnit.number) : 'all villas',
+    listFilter === 'all' ? '' : STAY_PHASE_LABEL[listFilter].toLowerCase()
+  ]
+    .filter(Boolean)
+    .join(', ');
+  const showListAllMonths = view === 'list' && listAllMonths;
+  const stepMonth = (delta: number) => {
+    // Stepping from "All months" goes back to browsing a single month.
+    if (showListAllMonths) setListAllMonths(false);
+    setMonth(addMonths(month, delta));
+  };
 
   return (
     <div className="space-y-6">
@@ -344,15 +381,22 @@ export default function Bookings({
 
           <div className="flex flex-col items-start justify-between gap-3 pt-4 sm:flex-row sm:items-center">
             <div className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-1.5">
-              <button type="button" onClick={() => setMonth(addMonths(month, -1))} className="rounded-lg p-1 text-slate-600 hover:bg-slate-200" aria-label="Previous month">
+              <button type="button" onClick={() => stepMonth(-1)} className="rounded-lg p-1 text-slate-600 hover:bg-slate-200" aria-label="Previous month">
                 <ChevronLeft className="h-4 w-4" />
               </button>
-              <span className="w-32 text-center font-mono text-xs font-bold text-slate-700">{formatMonthLabel(month)}</span>
-              <button type="button" onClick={() => setMonth(addMonths(month, 1))} className="rounded-lg p-1 text-slate-600 hover:bg-slate-200" aria-label="Next month">
+              <span className="w-32 text-center font-mono text-xs font-bold text-slate-700">{showListAllMonths ? 'All months' : formatMonthLabel(month)}</span>
+              <button type="button" onClick={() => stepMonth(1)} className="rounded-lg p-1 text-slate-600 hover:bg-slate-200" aria-label="Next month">
                 <ChevronRight className="h-4 w-4" />
               </button>
-              {month !== currentMonth() && (
-                <button type="button" onClick={() => setMonth(currentMonth())} className="ml-1 text-[10px] font-medium text-teal-700 underline">
+              {(month !== currentMonth() || showListAllMonths) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMonth(currentMonth());
+                    if (showListAllMonths) setListAllMonths(false);
+                  }}
+                  className="ml-1 text-[10px] font-medium text-teal-700 underline"
+                >
                   Today
                 </button>
               )}
@@ -365,7 +409,20 @@ export default function Bookings({
                   {syncing ? 'Syncing…' : 'Sync calendars'}
                 </SecondaryButton>
               )}
-              <SecondaryButton onClick={() => setShowPrintOptions(v => !v)} className="flex items-center gap-1.5">
+              <SecondaryButton
+                onClick={() => {
+                  if (!showPrintOptions) {
+                    // Open on what the screen is showing; every field can still be changed.
+                    if (view === 'calendar' || !listAllMonths) {
+                      setPrintFrom(monthStart(month));
+                      setPrintTo(monthEnd(month));
+                    }
+                    setPrintUnitId(view === 'list' ? listUnitId : '');
+                  }
+                  setShowPrintOptions(v => !v);
+                }}
+                className="flex items-center gap-1.5"
+              >
                 <Printer className="h-4 w-4" /> Print report
               </SecondaryButton>
               {canAdd ? (
@@ -381,7 +438,17 @@ export default function Bookings({
           {showPrintOptions && (
             <div className="mt-4 space-y-3 rounded-xl border border-amber-100 bg-amber-50/40 p-4">
               <h4 className="text-xs font-bold uppercase tracking-wide text-amber-900">Print reservations for a date range</h4>
-              <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-4">
+                <Field label="Villa" htmlFor="pr-unit">
+                  <select id="pr-unit" value={printUnitId} onChange={e => setPrintUnitId(e.target.value)} className={inputClass}>
+                    <option value="">All villas</option>
+                    {shortLetUnits.map(u => (
+                      <option key={u.id} value={u.id}>
+                        {getUnitDisplayName(u.number)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
                 <Field label="From" htmlFor="pr-from">
                   <input id="pr-from" type="date" value={printFrom} onChange={e => setPrintFrom(e.target.value)} className={monoInputClass} />
                 </Field>
@@ -395,7 +462,7 @@ export default function Bookings({
                       setError('The end of the print range must fall on or after the start.');
                       return;
                     }
-                    setPrinting({ from: printFrom, to: printTo });
+                    setPrinting({ from: printFrom, to: printTo, unitId: printUnitId });
                     setShowPrintOptions(false);
                   }}
                 >
@@ -403,7 +470,9 @@ export default function Bookings({
                 </SubmitButton>
               </div>
               <p className="text-[11px] text-amber-800">
-                Any stay that overlaps the range is included, whether or not it starts inside it.
+                Any stay with a night inside the range is included, whether or not it starts inside it. The departure
+                day is not a night, so a stay leaving on the first day of the range is not included. The printout states
+                the villa and period it covers.
               </p>
             </div>
           )}
@@ -465,8 +534,8 @@ export default function Bookings({
                             }
                             onClick={() => {
                               if (booking) {
-                                if (canEdit) setEditing(booking);
-                                else setError('Your role is not permitted to modify reservations.');
+                                if (canEditStay(booking)) setEditing(booking);
+                                else setError(canEdit ? COMPLETED_LOCKED : 'Your role is not permitted to modify reservations.');
                                 return;
                               }
                               if (blocked) {
@@ -524,19 +593,59 @@ export default function Bookings({
         </section>
       ) : (
         <section className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xs">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 p-4">
-            <span className="font-mono text-xs text-slate-500">{listRows.length} reservation(s)</span>
-            <select value={listFilter} onChange={e => setListFilter(e.target.value as typeof listFilter)} className="rounded-lg border border-slate-200 p-1.5 text-xs">
-              <option value="all">All stays</option>
-              <option value="upcoming">{STAY_PHASE_LABEL.upcoming}</option>
-              <option value="in-stay">{STAY_PHASE_LABEL['in-stay']}</option>
-              <option value="completed">{STAY_PHASE_LABEL.completed}</option>
-              <option value="cancelled">{STAY_PHASE_LABEL.cancelled}</option>
-            </select>
+          <div className="flex flex-col gap-2 border-b border-slate-100 bg-slate-50 p-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <p className="text-xs text-slate-500" data-testid="list-count">
+              Showing <span className="font-mono font-semibold text-slate-700">{listRows.length}</span> of{' '}
+              <span className="font-mono">{bookings.length}</span> reservation{bookings.length === 1 ? '' : 's'}
+              <span className="text-slate-400"> · {listFilterDescription}</span>
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="Month"
+                value={listAllMonths ? 'all' : 'month'}
+                onChange={e => setListAllMonths(e.target.value === 'all')}
+                className="rounded-lg border border-slate-200 p-1.5 text-xs"
+              >
+                <option value="month">{formatMonthLabel(month)}</option>
+                <option value="all">All months</option>
+              </select>
+              <select
+                aria-label="Villa"
+                value={listUnitId}
+                onChange={e => setListUnitId(e.target.value)}
+                className="rounded-lg border border-slate-200 p-1.5 text-xs"
+              >
+                <option value="">All villas</option>
+                {shortLetUnits.map(u => (
+                  <option key={u.id} value={u.id}>
+                    {getUnitDisplayName(u.number)}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Stay status"
+                value={listFilter}
+                onChange={e => setListFilter(e.target.value as typeof listFilter)}
+                className="rounded-lg border border-slate-200 p-1.5 text-xs"
+              >
+                <option value="all">All stays</option>
+                <option value="upcoming">{STAY_PHASE_LABEL.upcoming}</option>
+                <option value="in-stay">{STAY_PHASE_LABEL['in-stay']}</option>
+                <option value="completed">{STAY_PHASE_LABEL.completed}</option>
+                <option value="cancelled">{STAY_PHASE_LABEL.cancelled}</option>
+              </select>
+            </div>
           </div>
           {listRows.length === 0 ? (
             <div className="p-6">
-              <EmptyState title="No reservations match this filter" />
+              <EmptyState
+                title="No reservations match these filters"
+                hint={
+                  bookings.length === 0
+                    ? 'No reservations have been recorded yet.'
+                    : `${bookings.length} reservation${bookings.length === 1 ? ' is' : 's are'} on record, none for ${listFilterDescription}. Choose another month, "All months" or "All villas" to see them.`
+                }
+              />
             </div>
           ) : (
             <TableScroller>
@@ -549,7 +658,7 @@ export default function Bookings({
                     <th scope="col" className="p-3 text-right">Nights</th>
                     <th scope="col" className="p-3">Channel</th>
                     <th scope="col" className="p-3 text-right">Stay value</th>
-                    <th scope="col" className="p-3 text-right">Deposit</th>
+                    <th scope="col" className="p-3 text-right">Paid</th>
                     <th scope="col" className="p-3 text-right">Balance</th>
                     <th scope="col" className="p-3">Status</th>
                     <th scope="col" className="p-3">Damage held</th>
@@ -560,13 +669,15 @@ export default function Bookings({
                   {listRows.map(b => {
                     const phase = stayPhase(b, todayKey);
                     const closed = isClosedDates(b);
-                    const standing = receiptStanding(b);
+                    const money = stayMoney(b, payments);
+                    const standing = receiptStanding({ amount: b.amount, balanceDue: money.balance, complimentary: b.complimentary });
                     const platform = b.externalUid ? platformReservation(b.notes) : {};
                     return (
                     <tr
                       key={b.id}
-                      onClick={() => (canEdit ? setEditing(b) : undefined)}
-                      className={`${canEdit ? 'cursor-pointer' : ''} transition-colors hover:bg-slate-50/60 ${
+                      onClick={() => (canEditStay(b) ? setEditing(b) : canEdit ? setError(COMPLETED_LOCKED) : undefined)}
+                      title={canEdit && !canEditStay(b) ? COMPLETED_LOCKED : undefined}
+                      className={`${canEditStay(b) ? 'cursor-pointer' : ''} transition-colors hover:bg-slate-50/60 ${
                         phase === 'cancelled' ? 'text-slate-400' : phase === 'completed' ? 'bg-slate-50/70 text-slate-500' : ''
                       }`}
                     >
@@ -616,6 +727,10 @@ export default function Bookings({
                         <td colSpan={3} className="p-3 text-right text-[11px] text-slate-400">
                           No stay to charge
                         </td>
+                      ) : standing === 'complimentary' ? (
+                        <td colSpan={3} className="p-3 text-right text-[11px] font-medium text-violet-700" title={b.complimentaryReason}>
+                          Complimentary{b.complimentaryReason ? `: ${b.complimentaryReason}` : ''}
+                        </td>
                       ) : standing === 'no-value' ? (
                         <td colSpan={3} className="p-3 text-right text-[11px] font-medium text-amber-700">
                           Stay value not entered
@@ -623,8 +738,8 @@ export default function Bookings({
                       ) : (
                         <>
                           <td className="p-3 text-right font-mono">{formatMoney(b.amount, b.currency)}</td>
-                          <td className="p-3 text-right font-mono text-emerald-600">{formatMoney(b.depositPaid, b.currency)}</td>
-                          <td className="p-3 text-right font-mono font-semibold text-amber-600">{formatMoney(b.balanceDue, b.currency)}</td>
+                          <td className="p-3 text-right font-mono text-emerald-600">{formatMoney(money.paid, b.currency)}</td>
+                          <td className="p-3 text-right font-mono font-semibold text-amber-600">{formatMoney(money.balance, b.currency)}</td>
                         </>
                       )}
                       <td className="p-3">
@@ -726,8 +841,10 @@ export default function Bookings({
       {printing && (
         <ReservationsReport
           bookings={bookings}
+          payments={payments}
           from={printing.from}
           to={printing.to}
+          unit={shortLetUnits.find(u => u.id === printing.unitId)}
           generatedBy={session.name}
           onClose={() => setPrinting(null)}
         />
@@ -736,6 +853,7 @@ export default function Bookings({
       {receiptBooking && (
         <GuestStayReceipt
           booking={receiptBooking}
+          payments={payments}
           unit={units.find(u => u.id === receiptBooking.unitId)}
           generatedBy={session.name}
           onClose={() => setReceiptBooking(null)}
@@ -754,32 +872,39 @@ export default function Bookings({
  */
 export function GuestStayReceipt({
   booking,
+  payments = [],
   unit,
   generatedBy,
   onClose
 }: {
   booking: Booking;
+  payments?: Payment[];
   unit: Unit | undefined;
   generatedBy: string;
   onClose: () => void;
 }) {
   const villa = unit ? getUnitDisplayName(unit.number) : `Unit ${booking.unitNumber}`;
   const nights = nightsBetween(booking.checkIn, booking.checkOut);
+  // What the guest has paid, from the receipts and net of refunds — never the
+  // reservation's own deposit field (see `stayMoney`).
+  const money = stayMoney(booking, payments);
   // "Paid in full" only when there was something to pay. An imported stay with
   // no value entered has had nothing paid — see `receiptStanding`.
-  const standing = receiptStanding(booking);
+  const standing = receiptStanding({ amount: booking.amount, balanceDue: money.balance, complimentary: booking.complimentary, status: booking.status, overpaid: money.overpaid });
   const paidInFull = standing === 'paid';
+  // Overpaid has been received in full too: a receipt, never "due on arrival".
+  const received = paidInFull || standing === 'overpaid';
 
   return (
     <PrintPortal
-      title={`Guest ${paidInFull ? 'receipt' : 'confirmation'}: ${guestGreetingName(booking) === 'Guest' ? villa : guestGreetingName(booking)}`}
+      title={`Guest ${received ? 'receipt' : 'confirmation'}: ${guestGreetingName(booking) === 'Guest' ? villa : guestGreetingName(booking)}`}
       subtitle={`${villa} · ${formatDayLabel(booking.checkIn)} to ${formatDayLabel(booking.checkOut)}`}
       onClose={onClose}
       maxWidthClass="max-w-md"
       actions={
         <button
           type="button"
-          onClick={() => openMailDraft(buildStayReceiptEmail(booking, unit))}
+          onClick={() => openMailDraft(buildStayReceiptEmail(booking, unit, money))}
           disabled={!booking.guestEmail}
           title={booking.guestEmail ? `Draft an email to ${booking.guestEmail}` : 'No guest email on file'}
           className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-50 disabled:opacity-50"
@@ -790,7 +915,7 @@ export function GuestStayReceipt({
       }
     >
       <PrintLetterhead
-        documentTitle={paidInFull ? 'Guest Stay Receipt' : 'Guest Stay Confirmation'}
+        documentTitle={received ? 'Guest Stay Receipt' : 'Guest Stay Confirmation'}
         meta={villa}
         generatedBy={generatedBy}
       />
@@ -815,7 +940,33 @@ export function GuestStayReceipt({
         ))}
       </dl>
 
-      {standing === 'no-value' ? (
+      {standing === 'cancelled' ? (
+        <div className="mt-4 space-y-1.5 rounded-xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs">
+          <div className="flex justify-between">
+            <span className="text-slate-600">Reservation</span>
+            <span className="font-semibold">Cancelled</span>
+          </div>
+          {money.paid > 0 && (
+            <div className="flex justify-between">
+              <span className="text-slate-600">Paid, net of refunds</span>
+              <span className="font-semibold">{formatMoneyLong(money.paid, booking.currency)}</span>
+            </div>
+          )}
+          {money.overpaid > 0 && (
+            <div className="flex justify-between border-t border-slate-300 pt-1.5 text-sm">
+              <span className="font-semibold">Owed back to guest</span>
+              <span className="font-bold text-amber-700">{formatMoneyLong(money.overpaid, booking.currency)}</span>
+            </div>
+          )}
+        </div>
+      ) : standing === 'complimentary' ? (
+        <div className="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs">
+          <div className="flex justify-between">
+            <span className="text-slate-600">Stay total</span>
+            <span className="font-semibold">Complimentary, no charge</span>
+          </div>
+        </div>
+      ) : standing === 'no-value' ? (
         <div className="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs">
           <div className="flex justify-between">
             <span className="text-slate-600">Stay total</span>
@@ -830,20 +981,30 @@ export function GuestStayReceipt({
         </div>
         <div className="flex justify-between">
           <span className="text-slate-600">Deposit / paid</span>
-          <span className="font-semibold text-emerald-700">{formatMoneyLong(booking.depositPaid, booking.currency)}</span>
+          <span className="font-semibold text-emerald-700">{formatMoneyLong(money.paid, booking.currency)}</span>
         </div>
         <div className="flex justify-between border-t border-slate-300 pt-1.5 text-sm">
-          <span className="font-semibold">{paidInFull ? 'Balance' : 'Balance due on arrival'}</span>
-          <span className={`font-bold ${paidInFull ? 'text-emerald-700' : 'text-amber-700'}`}>
-            {formatMoneyLong(booking.balanceDue, booking.currency)}
+          <span className="font-semibold">{received ? 'Balance' : 'Balance due on arrival'}</span>
+          <span className={`font-bold ${received ? 'text-emerald-700' : 'text-amber-700'}`}>
+            {formatMoneyLong(money.balance, booking.currency)}
           </span>
         </div>
+        {standing === 'overpaid' && (
+          <div className="flex justify-between text-sm">
+            <span className="font-semibold">Overpaid, owed back to guest</span>
+            <span className="font-bold text-amber-700">{formatMoneyLong(money.overpaid, booking.currency)}</span>
+          </div>
+        )}
       </div>
       )}
 
       {paidInFull ? (
         <p className="print-emphasis mt-4 rounded-lg border border-emerald-500 bg-emerald-50 py-1.5 text-center text-xs font-bold uppercase tracking-widest text-emerald-800">
           Paid in full
+        </p>
+      ) : standing === 'overpaid' ? (
+        <p className="mt-4 text-center text-[11px] text-slate-500">
+          More than the stay total has been received. The amount overpaid is owed back to the guest. Amounts are in {booking.currency}.
         </p>
       ) : standing === 'balance-due' ? (
         <p className="mt-4 text-center text-[11px] text-slate-500">
@@ -924,7 +1085,17 @@ function BookingForm({
   // Cash unless somebody says otherwise: that is how guests pay here, and the
   // receipt raised from this reservation is the guest's own copy of it.
   const [depositMethod, setDepositMethod] = useState<PaymentMethod>(booking?.depositMethod || 'Cash');
+  const [depositReceivedOn, setDepositReceivedOn] = useState(booking ? booking.depositReceivedOn || '' : today());
   const [notes, setNotes] = useState(booking?.notes || '');
+  // Free on purpose, with a reason; any role that may save a reservation may mark it (Ro, 2026-11-19).
+  const [complimentary, setComplimentary] = useState(!!booking?.complimentary);
+  const [complimentaryReason, setComplimentaryReason] = useState(booking?.complimentaryReason || '');
+  // Every change to a reservation says why; the server refuses one that does not (Ro, 2026-11-19).
+  const [editReason, setEditReason] = useState('');
+  // What happens to a received deposit when the stay is cancelled: asked, never assumed.
+  // Ro, 2026-11-20: a cancelled stay's deposit is refunded; it is voided only
+  // when it was entered by mistake.
+  const [depositOutcome, setDepositOutcome] = useState<'' | 'refund' | 'void'>('refund');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -997,18 +1168,32 @@ function BookingForm({
       setError('The departure date must be after the arrival date.');
       return;
     }
-    if (Number(deposit) > Number(amount)) {
+    if (!complimentary && Number(deposit) > Number(amount)) {
       setError('The deposit cannot exceed the total stay value.');
+      return;
+    }
+    if (complimentary && complimentaryReason.trim().length < 5) {
+      setError('Say why this stay is complimentary (at least 5 characters).');
       return;
     }
     if (clash && status !== 'cancelled') {
       setError(`Those dates clash with ${clash.guestName} (${formatDayLabel(clash.checkIn)} to ${formatDayLabel(clash.checkOut)}).`);
       return;
     }
+    if (cancelling && (booking?.depositPaid || 0) > 0 && !depositOutcome) {
+      setError('Say what happens to the deposit received: refund it, or void it if it was entered by mistake.');
+      return;
+    }
+    if (mode === 'edit' && editReason.trim().length < 5) {
+      setError('Say why this reservation is being changed (at least 5 characters). The reason is kept on the audit trail.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
       await onSubmit({
+        ...(mode === 'edit' ? { editReason: editReason.trim() } : {}),
+        ...(cancelling && depositOutcome ? { depositOutcome } : {}),
         unitId,
         guestName,
         guestEmail,
@@ -1018,10 +1203,13 @@ function BookingForm({
         source,
         status,
         currency,
-        nightlyRate: nightlyRate === '' ? undefined : Number(nightlyRate),
-        amount: Number(amount) || 0,
-        depositPaid: Number(deposit) || 0,
+        complimentary,
+        ...(complimentary ? { complimentaryReason: complimentaryReason.trim() } : {}),
+        nightlyRate: complimentary || nightlyRate === '' ? undefined : Number(nightlyRate),
+        amount: complimentary ? 0 : Number(amount) || 0,
+        depositPaid: complimentary ? 0 : Number(deposit) || 0,
         depositMethod,
+        ...(depositReceivedOn ? { depositReceivedOn } : {}),
         notes
       });
     } catch (err) {
@@ -1120,6 +1308,27 @@ function BookingForm({
           </Field>
         </div>
 
+        <label className="flex items-start gap-2 text-sm text-slate-700" htmlFor="bf-comp">
+          <input id="bf-comp" type="checkbox" checked={complimentary} onChange={e => setComplimentary(e.target.checked)} className="mt-1" />
+          <span>
+            <strong>Complimentary stay</strong>, no charge. The value is J$0 on purpose and no money is taken.
+          </span>
+        </label>
+        {complimentary && (
+          <Field label="Why is this stay complimentary?" htmlFor="bf-comp-reason" required>
+            <input
+              id="bf-comp-reason"
+              type="text"
+              value={complimentaryReason}
+              onChange={e => setComplimentaryReason(e.target.value)}
+              required
+              placeholder="e.g. Wedding party, owner's guests"
+              className={inputClass}
+            />
+          </Field>
+        )}
+
+        {!complimentary && (<>
         <div className="grid grid-cols-3 gap-3">
           <Field label="Nightly rate" htmlFor="bf-rate" hint="Optional. Set it and the total below follows rate × nights.">
             <input
@@ -1186,6 +1395,27 @@ function BookingForm({
           </Field>
         )}
 
+        {/* The day the money was handed over dates its receipt. It used to be the
+            day this form was saved, so a September deposit typed in November was
+            November cash on every report. */}
+        {(Number(deposit) > 0 || (booking?.depositPaid || 0) > 0) && (
+          <Field
+            label="Date the deposit was received"
+            htmlFor="bf-dep-date"
+            hint={depositReceivedOn ? 'The receipt is dated this day. Not in the future, not in a closed month.' : 'Leave empty to keep the date already on the receipt.'}
+          >
+            <input
+              id="bf-dep-date"
+              type="date"
+              value={depositReceivedOn}
+              max={today()}
+              onChange={e => setDepositReceivedOn(e.target.value)}
+              className={monoInputClass}
+            />
+          </Field>
+        )}
+        </>)}
+
         {mode === 'edit' && (
           <Field label="Status" htmlFor="bf-status" required>
             <select
@@ -1205,10 +1435,25 @@ function BookingForm({
           </Field>
         )}
 
-        {cancelling && (Number(deposit) > 0 || (booking?.depositPaid || 0) > 0) && (
+        {cancelling && (booking?.depositPaid || 0) > 0 && (
+          <Field label="The deposit received on this stay" htmlFor="bf-deposit-outcome" required>
+            <select
+              id="bf-deposit-outcome"
+              value={depositOutcome}
+              onChange={e => setDepositOutcome(e.target.value as typeof depositOutcome)}
+              required
+              className={inputClass}
+            >
+              {/* Ro, 2026-11-20: "refund it", and "if entered by mistake void it". */}
+              <option value="refund">Refund it to the guest (recorded as a refund on the receipt)</option>
+              <option value="void">Void the receipt: the deposit was entered by mistake</option>
+            </select>
+          </Field>
+        )}
+        {cancelling && depositOutcome === 'void' && (
           <InfoNote tone="amber">
-            Cancelling voids the deposit receipt for this reservation. The receipt stays in the ledger marked VOID, with
-            the reason recorded, it is not deleted.
+            Voiding says the money never arrived. The receipt stays in the ledger marked VOID, with the reason recorded,
+            it is not deleted.
           </InfoNote>
         )}
 
@@ -1217,6 +1462,19 @@ function BookingForm({
         <Field label="Notes" htmlFor="bf-notes">
           <textarea id="bf-notes" rows={2} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} />
         </Field>
+        {mode === 'edit' && (
+          <Field label="Reason for this change" htmlFor="bf-edit-reason" required>
+            <textarea
+              id="bf-edit-reason"
+              rows={2}
+              value={editReason}
+              onChange={e => setEditReason(e.target.value)}
+              required
+              placeholder="e.g. Guest extended by one night; price agreed by phone"
+              className={inputClass}
+            />
+          </Field>
+        )}
       </form>
     </Modal>
   );
@@ -1456,46 +1714,76 @@ function DamageDepositModal({
 
 /* ------------------------------------------------------------------ */
 
-function ReservationsReport({
+export function ReservationsReport({
   bookings,
+  payments = [],
   from,
   to,
+  unit,
   generatedBy,
   onClose
 }: {
   bookings: Booking[];
+  /** Paid and balance are read from these (`stayMoney`), never from the reservation. */
+  payments?: Payment[];
   from: string;
   to: string;
+  /** One villa, or undefined for every villa. The printout says which. */
+  unit?: Unit;
   generatedBy: string;
   onClose: () => void;
 }) {
-  // Include any stay that overlaps the range, not only those starting inside it.
+  // Any stay with a night in the range, not only those starting inside it. The
+  // same rule as the on-screen list (`stayOverlapsDays`), so the two agree.
   const rows = bookings
-    .filter(b => b.checkIn <= to && b.checkOut >= from)
+    .filter(b => (!unit || b.unitId === unit.id) && stayOverlapsDays(b, from, to))
     .sort((a, b) => a.checkIn.localeCompare(b.checkIn) || a.unitNumber.localeCompare(b.unitNumber));
 
-  const totals = rows.reduce<Record<Currency, { value: number; deposit: number; balance: number; nights: number }>>(
+  const villaLabel = unit ? getUnitDisplayName(unit.number) : 'All villas';
+  /*
+   * Totals count what the period actually holds (hunt, 2026-11-20): closed dates
+   * are no guest and never "sold"; only the nights inside the period count; a
+   * complimentary night is given, not sold; and a stay spanning the period's edge
+   * contributes its value prorated by the nights inside it, labelled as such.
+   * Paid and balance stay whole-stay figures, because receipts are per stay.
+   */
+  const periodEnd = addDays(to, 1);
+  const nightsInPeriod = (b: Booking) =>
+    Math.max(0, nightsBetween(b.checkIn > from ? b.checkIn : from, b.checkOut < periodEnd ? b.checkOut : periodEnd));
+  const totals = rows.reduce<Record<Currency, { value: number; fullValue: number; spanning: number; deposit: number; balance: number; nights: number; compNights: number }>>(
     (acc, b) => {
-      if (b.status === 'cancelled') return acc;
-      acc[b.currency].value = round2(acc[b.currency].value + b.amount);
-      acc[b.currency].deposit = round2(acc[b.currency].deposit + b.depositPaid);
-      acc[b.currency].balance = round2(acc[b.currency].balance + b.balanceDue);
-      acc[b.currency].nights += nightsBetween(b.checkIn, b.checkOut);
+      if (b.status === 'cancelled' || isClosedDates(b)) return acc;
+      const inPeriod = nightsInPeriod(b);
+      if (b.complimentary) {
+        acc[b.currency].compNights += inPeriod;
+        return acc;
+      }
+      const whole = nightsBetween(b.checkIn, b.checkOut);
+      if (inPeriod < whole) acc[b.currency].spanning += 1;
+      acc[b.currency].value = round2(acc[b.currency].value + (whole > 0 ? (b.amount * inPeriod) / whole : 0));
+      acc[b.currency].fullValue = round2(acc[b.currency].fullValue + b.amount);
+      const money = stayMoney(b, payments);
+      acc[b.currency].deposit = round2(acc[b.currency].deposit + money.paid);
+      acc[b.currency].balance = round2(acc[b.currency].balance + money.balance);
+      acc[b.currency].nights += inPeriod;
       return acc;
     },
-    { USD: { value: 0, deposit: 0, balance: 0, nights: 0 }, JMD: { value: 0, deposit: 0, balance: 0, nights: 0 } }
+    {
+      USD: { value: 0, fullValue: 0, spanning: 0, deposit: 0, balance: 0, nights: 0, compNights: 0 },
+      JMD: { value: 0, fullValue: 0, spanning: 0, deposit: 0, balance: 0, nights: 0, compNights: 0 }
+    }
   );
 
   return (
-    <PrintPortal title="Reservations report" subtitle={`${formatDayLabel(from)} to ${formatDayLabel(to)}`} onClose={onClose} maxWidthClass="max-w-5xl">
+    <PrintPortal title="Reservations report" subtitle={`${formatDayLabel(from)} to ${formatDayLabel(to)} · ${villaLabel}`} onClose={onClose} maxWidthClass="max-w-5xl">
       <PrintLetterhead
         documentTitle="Guest Reservations Report"
-        meta={`Period ${formatDayLabel(from)} to ${formatDayLabel(to)}`}
+        meta={`Period ${formatDayLabel(from)} to ${formatDayLabel(to)} · ${villaLabel}`}
         generatedBy={generatedBy}
       />
 
       {rows.length === 0 ? (
-        <p className="text-xs italic text-slate-500">No reservations overlap this period.</p>
+        <p className="text-xs italic text-slate-500">No reservations have a night in this period{unit ? ` at ${villaLabel}` : ''}.</p>
       ) : (
         <>
           <TableScroller>
@@ -1510,7 +1798,7 @@ function ReservationsReport({
                   <th className="p-2">Channel</th>
                   <th className="p-2">Status</th>
                   <th className="p-2 text-right">Stay value</th>
-                  <th className="p-2 text-right">Deposit</th>
+                  <th className="p-2 text-right">Paid</th>
                   <th className="p-2 text-right">Balance</th>
                 </tr>
               </thead>
@@ -1528,8 +1816,8 @@ function ReservationsReport({
                     <td className="p-2">{b.source}</td>
                     <td className="p-2 uppercase">{b.status}</td>
                     <td className="p-2 text-right font-semibold">{formatMoney(b.amount, b.currency)}</td>
-                    <td className="p-2 text-right">{formatMoney(b.depositPaid, b.currency)}</td>
-                    <td className="p-2 text-right font-semibold">{formatMoney(b.balanceDue, b.currency)}</td>
+                    <td className="p-2 text-right">{formatMoney(stayMoney(b, payments).paid, b.currency)}</td>
+                    <td className="p-2 text-right font-semibold">{formatMoney(stayMoney(b, payments).balance, b.currency)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1538,24 +1826,36 @@ function ReservationsReport({
 
           <section className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
             {(['USD', 'JMD'] as Currency[])
-              .filter(c => totals[c].value > 0 || totals[c].deposit > 0)
+              .filter(c => totals[c].value > 0 || totals[c].deposit > 0 || totals[c].compNights > 0)
               .map(c => (
                 <dl key={c} className="space-y-1 rounded-xl border border-slate-300 p-3 text-xs">
-                  <p className="mb-1 font-mono text-[9px] font-bold uppercase text-slate-500">{c} totals (excludes cancelled)</p>
+                  <p className="mb-1 font-mono text-[9px] font-bold uppercase text-slate-500">{c} totals (excludes cancelled and closed dates)</p>
                   <div className="flex justify-between gap-3">
-                    <dt>Nights sold</dt>
+                    <dt>Nights sold in the period</dt>
                     <dd className="font-mono font-semibold">{totals[c].nights}</dd>
                   </div>
+                  {totals[c].compNights > 0 && (
+                    <div className="flex justify-between gap-3">
+                      <dt>Complimentary nights in the period (not sold)</dt>
+                      <dd className="font-mono font-semibold">{totals[c].compNights}</dd>
+                    </div>
+                  )}
                   <div className="flex justify-between gap-3">
-                    <dt>Stay value</dt>
+                    <dt>{totals[c].spanning > 0 ? `Stay value for nights in the period (${totals[c].spanning} stay(s) spanning the period prorated by night)` : 'Stay value'}</dt>
                     <dd className="font-mono font-semibold">{formatMoney(totals[c].value, c)}</dd>
                   </div>
+                  {totals[c].spanning > 0 && (
+                    <div className="flex justify-between gap-3">
+                      <dt>Full value of these stays</dt>
+                      <dd className="font-mono font-semibold">{formatMoney(totals[c].fullValue, c)}</dd>
+                    </div>
+                  )}
                   <div className="flex justify-between gap-3">
-                    <dt>Deposits received</dt>
+                    <dt>Paid on these stays, net of refunds</dt>
                     <dd className="font-mono font-semibold">{formatMoney(totals[c].deposit, c)}</dd>
                   </div>
                   <div className="flex justify-between gap-3 border-t border-slate-300 pt-1 font-bold">
-                    <dt>Balance outstanding</dt>
+                    <dt>Balance outstanding on these stays</dt>
                     <dd className="font-mono">{formatMoney(totals[c].balance, c)}</dd>
                   </div>
                 </dl>

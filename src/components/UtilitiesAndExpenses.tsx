@@ -26,7 +26,7 @@ import {
   invoiceDateOf,
   getUnitDisplayName
 } from '../types';
-import { UTILITY_RECOVERY_NOTE, utilitiesForUnit, utilityRecoveries } from '../lib/finance';
+import { UTILITY_RECOVERY_NOTE, fundForCost, utilitiesForUnit, utilityRecoveries } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { dayOfTimestamp, addMonths, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
@@ -1108,8 +1108,18 @@ function ExpenseForm({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(expense?.paymentMethod || 'Bank Transfer');
   const [reference, setReference] = useState(expense?.reference || '');
   const [notes, setNotes] = useState(expense?.notes || '');
+  // Correcting a cost already paid needs a reason, kept in the audit trail.
+  const [correctionReason, setCorrectionReason] = useState('');
+  const correctingPaid = expense?.status === 'paid';
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /*
+   * A utility on one of ISPO's villas is ISPO's cost (Ro, 2026-11-19). The
+   * server applies the same rule, so the choice shown is the choice saved.
+   */
+  const allocatedUnit = units.find(u => u.id === allocation);
+  const effectiveFund = fundForCost(category, allocatedUnit, fund);
+  const fundForced = effectiveFund !== fund;
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1131,9 +1141,10 @@ function ExpenseForm({
         status,
         datePaid: status === 'paid' ? datePaid : undefined,
         paymentMethod,
-        fund,
+        fund: effectiveFund,
         reference,
-        notes
+        notes,
+        ...(correctingPaid && correctionReason.trim() ? { reason: correctionReason.trim() } : {})
       });
     } catch (err) {
       setError(errorMessage(err, 'Could not save the expense.'));
@@ -1187,7 +1198,12 @@ function ExpenseForm({
           </Field>
         </div>
 
-        <FundChoice value={fund} onChange={setFund} disabled={locked} idPrefix="ef-fund" />
+        <FundChoice value={effectiveFund} onChange={setFund} disabled={locked || fundForced} idPrefix="ef-fund" />
+        {fundForced && (
+          <p className="-mt-2 text-xs text-slate-500">
+            A utility on one of {MANAGING_COMPANY_NAME}&rsquo;s villas is paid from rental income, so this is on {MANAGING_COMPANY_NAME}&rsquo;s book.
+          </p>
+        )}
 
         <Field label="Vendor or payee" htmlFor="ef-vendor" required>
           <input id="ef-vendor" type="text" list="vds-vendors" value={vendor} onChange={e => setVendor(e.target.value)} required className={inputClass} />
@@ -1284,6 +1300,12 @@ function ExpenseForm({
         <Field label="Notes" htmlFor="ef-notes">
           <textarea id="ef-notes" rows={2} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} />
         </Field>
+
+        {correctingPaid && (
+          <Field label="Reason for correcting a paid cost" htmlFor="ef-reason" hint="Needed when the amount, date, status or book of a paid cost changes. At least 5 characters, kept in the audit trail.">
+            <input id="ef-reason" type="text" value={correctionReason} maxLength={500} onChange={e => setCorrectionReason(e.target.value)} className={inputClass} />
+          </Field>
+        )}
       </form>
     </Modal>
   );

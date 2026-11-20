@@ -264,7 +264,8 @@ export default async function run({ port, projectRoot }) {
         const start = 1 + (i % 18);
         const b = await c.post('/api/bookings', { unitId, guestName: `Cancelling guest ${i}`, checkIn: dayIn(month, start), checkOut: dayIn(month, start + 2), amount: money(rand, 300, 2000), depositPaid: money(rand, 100, 300), currency: 'USD', source: 'Direct' });
         const id = b.body?.booking?.id;
-        if (id) await c.put(`/api/bookings/${id}`, { status: 'cancelled' });
+        // A cancel with a received deposit names what happens to it (hunt, 2026-11-20); this scenario voids it.
+        if (id) await c.put(`/api/bookings/${id}`, { editReason: 'Test correction', status: 'cancelled', depositOutcome: 'void' });
       },
 
       // Overlapping stays: the second must be refused.

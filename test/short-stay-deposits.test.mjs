@@ -144,8 +144,8 @@ export default async function run({ port, projectRoot }) {
      * Rule 2 — never twice for the same reservation
      * ================================================================ */
 
-    await c.put(`/api/bookings/${bookingId}`, { depositPaid: 500, amount: 1000 });
-    await c.put(`/api/bookings/${bookingId}`, { guestName: 'Guest One Renamed', amount: 1000, depositPaid: 500 });
+    await c.put(`/api/bookings/${bookingId}`, { editReason: 'Test correction', depositPaid: 500, amount: 1000 });
+    await c.put(`/api/bookings/${bookingId}`, { editReason: 'Test correction', guestName: 'Guest One Renamed', amount: 1000, depositPaid: 500 });
     db = (await c.get('/api/db')).body;
     const forBooking = db.payments.filter(p => p.bookingId === bookingId && p.status !== 'reversed');
 
@@ -188,7 +188,7 @@ export default async function run({ port, projectRoot }) {
       `${older?.status} / ${older?.receiptNo}`
     );
 
-    await c.put(`/api/bookings/${bookingId}`, { amount: 1000, depositPaid: 500 });
+    await c.put(`/api/bookings/${bookingId}`, { editReason: 'Test correction', amount: 1000, depositPaid: 500 });
     db = (await c.get('/api/db')).body;
     const brought = db.payments.filter(p => p.bookingId === bookingId && p.status !== 'reversed');
 
@@ -328,7 +328,7 @@ export default async function run({ port, projectRoot }) {
         `holds ${booking.depositPaid}, receipt ${live.amount} less ${live.refundedAmount}`
       );
 
-      const rewrite = await c.put(`/api/bookings/${stayId}`, { amount: 1000, depositPaid: 900, guestName: 'Guest Two' });
+      const rewrite = await c.put(`/api/bookings/${stayId}`, { editReason: 'Test correction', amount: 1000, depositPaid: 900, guestName: 'Guest Two' });
       T.check('re-typing the deposit on a refunded reservation is refused', rewrite.status === 400, String(rewrite.status));
       T.check(
         'and refused with a code, so a screen can say which record to make instead',
@@ -355,7 +355,7 @@ export default async function run({ port, projectRoot }) {
         `${live.amount} - ${live.refundedAmount} vs ${booking.depositPaid}`
       );
 
-      const harmless = await c.put(`/api/bookings/${stayId}`, { amount: 1000, depositPaid: 350, guestName: 'Guest Two Renamed' });
+      const harmless = await c.put(`/api/bookings/${stayId}`, { editReason: 'Test correction', amount: 1000, depositPaid: 350, guestName: 'Guest Two Renamed' });
       T.check(
         'an edit that leaves the deposit alone is still allowed, so the guard blocks only the thing that is wrong',
         harmless.status === 200,
@@ -456,7 +456,7 @@ export default async function run({ port, projectRoot }) {
     const cardReceipt = db.payments.find(p => p.bookingId === cardBookingId);
     T.check('and the receipt carries that method, not a default', cardReceipt?.method === 'Credit Card', String(cardReceipt?.method));
 
-    const corrected = await c.put(`/api/bookings/${cardBookingId}`, { amount: 800, depositPaid: 300, depositMethod: 'Cash' });
+    const corrected = await c.put(`/api/bookings/${cardBookingId}`, { editReason: 'Test correction', amount: 800, depositPaid: 300, depositMethod: 'Cash' });
     T.check('the method can be corrected on the reservation', corrected.status === 200, String(corrected.body?.error));
     db = (await c.get('/api/db')).body;
     const correctedReceipts = db.payments.filter(p => p.bookingId === cardBookingId && p.status !== 'reversed');

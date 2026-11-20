@@ -570,7 +570,9 @@ export default async function run({ projectRoot }) {
       T.check('and calls itself a confirmation, not a receipt', importedReceipt.includes('GUEST STAY CONFIRMATION'));
       T.check('it greets a guest, not "External guest"', importedReceipt.includes('DEAR GUEST,') && !importedReceipt.includes('EXTERNAL GUEST,'));
 
-      const settledReceipt = receipt(renderToStaticMarkup(React.createElement(GuestStayReceipt, { booking: settled, unit, generatedBy: 'Desk', onClose: () => {} })));
+      // Paid is read from the receipts (`stayMoney`), so the settled stay carries its deposit receipt.
+      const settledPayments = [{ id: 'r-s4', bookingId: 's4', category: 'Booking', status: 'completed', amount: 500, currency: 'USD', unitId: 'b6', date: '2026-09-01' }];
+      const settledReceipt = receipt(renderToStaticMarkup(React.createElement(GuestStayReceipt, { booking: settled, payments: settledPayments, unit, generatedBy: 'Desk', onClose: () => {} })));
       T.check('a stay genuinely settled still prints PAID IN FULL', settledReceipt.includes('PAID IN FULL') && settledReceipt.includes('GUEST STAY RECEIPT'));
       const owingReceipt = receipt(renderToStaticMarkup(React.createElement(GuestStayReceipt, { booking: direct, unit, generatedBy: 'Desk', onClose: () => {} })));
       T.check('and a stay with a balance says it is payable on arrival', owingReceipt.includes('PAYABLE ON ARRIVAL') && !owingReceipt.includes('PAID IN FULL'));

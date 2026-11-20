@@ -541,7 +541,8 @@ export default async function run({ port, projectRoot }) {
           ...target,
           ...(target.unitId ? { unitId: target.unitId } : { unitNumber: target.unitNumber }),
           fund: pick(rand, FUNDS),
-          amount: money(rand, 500, 120000)
+          amount: money(rand, 500, 120000),
+          reason: 'fuzz correction'
         });
         if (ok(res)) performed++;
         else refused++;

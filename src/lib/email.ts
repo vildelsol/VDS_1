@@ -16,9 +16,9 @@
  */
 
 import { Booking, Payment, Unit, getUnitDisplayName } from '../types';
-import { formatMoneyLong } from './money';
+import { formatMoneyLong, round2 } from './money';
 import { formatDayLabel, nightsBetween } from './dates';
-import { guestGreetingName, receiptStanding } from './stays';
+import { StayMoney, guestGreetingName, receiptStanding, stayMoney } from './stays';
 
 export interface MailDraft {
   to: string;
@@ -86,17 +86,31 @@ export function buildReceiptEmail(payment: Payment, unit: Unit | undefined, reci
   };
 }
 
-export function buildStayReceiptEmail(booking: Booking, unit: Unit | undefined): MailDraft {
+/**
+ * `paid` is the stay's money read from its receipts (`stayMoney`), the same
+ * figure the printed guest receipt shows. Without it, nothing is taken as paid.
+ */
+export function buildStayReceiptEmail(booking: Booking, unit: Unit | undefined, paid: Pick<StayMoney, 'paid' | 'balance'> & Partial<Pick<StayMoney, 'overpaid'>> = stayMoney(booking, [])): MailDraft {
   const villa = unit ? getUnitDisplayName(unit.number) : `Unit ${booking.unitNumber}`;
   const nights = nightsBetween(booking.checkIn, booking.checkOut);
-  const standing = receiptStanding(booking);
+  const standing = receiptStanding({ amount: booking.amount, balanceDue: paid.balance, complimentary: booking.complimentary, status: booking.status, overpaid: paid.overpaid });
+  const owedBack = round2(paid.overpaid || 0);
   const money =
-    standing === 'no-value'
+    standing === 'cancelled'
+      ? [
+          'Status       : this reservation has been cancelled',
+          ...(paid.paid > 0 ? [`Paid         : ${formatMoneyLong(paid.paid, booking.currency)}`] : []),
+          ...(owedBack > 0 ? [`Owed back to you : ${formatMoneyLong(owedBack, booking.currency)}`] : [])
+        ]
+      : standing === 'complimentary'
+      ? ['Stay total   : complimentary, no charge']
+      : standing === 'no-value'
       ? ['Stay total   : not yet confirmed']
       : [
           `Stay total   : ${formatMoneyLong(booking.amount, booking.currency)}`,
-          `Deposit paid : ${formatMoneyLong(booking.depositPaid, booking.currency)}`,
-          `Balance due  : ${formatMoneyLong(booking.balanceDue, booking.currency)}${booking.balanceDue > 0 ? ' (payable on arrival)' : ''}`
+          `Paid         : ${formatMoneyLong(paid.paid, booking.currency)}`,
+          `Balance due  : ${formatMoneyLong(paid.balance, booking.currency)}${paid.balance > 0 ? ' (payable on arrival)' : ''}`,
+          ...(owedBack > 0 ? [`Overpaid     : ${formatMoneyLong(owedBack, booking.currency)} more than the stay total was received; it is owed back to you`] : [])
         ];
   const lines = [
     `Dear ${guestGreetingName(booking)},`,

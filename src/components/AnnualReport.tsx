@@ -276,7 +276,8 @@ export default function AnnualReport({
     // Nothing can be reported for a year before recording began, so those years are not offered.
     const now = new Date().getFullYear();
     const first = settings.booksBeginOn ? Number(settings.booksBeginOn.slice(0, 4)) : now - 5;
-    return Array.from({ length: Math.max(1, now + 1 - first + 1) }, (_, i) => now + 1 - i);
+    // Up to this year only: a year not yet begun has no records to report.
+    return Array.from({ length: Math.max(1, now - first + 1) }, (_, i) => now - i);
   }, [settings.booksBeginOn]);
 
   // A year remembered from before recording began would sit outside the list.
@@ -538,12 +539,18 @@ function PositionPanel({ report }: { report: AnnualOwnersReport }) {
   return (
     <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <Stat label={`${report.reportYear} expenditure`} value={formatMoney(report.expenditure, report.currency)} detail={`${pctLabel(report.expenditureChangePct)} on ${report.reportYear - 1}`} />
-      <Stat label="Cost per villa, monthly" value={formatMoney(report.perUnitMonthly, report.currency)} detail={`across ${report.contributingUnits} contributing villa${report.contributingUnits === 1 ? '' : 's'}`} />
+      <Stat
+        label="Cost per villa, monthly"
+        value={formatMoney(report.perUnitMonthly, report.currency)}
+        detail={`across ${report.contributingUnits} contributing villa${report.contributingUnits === 1 ? '' : 's'}${report.monthsRecorded > 0 && report.monthsRecorded < 12 ? `, over the ${report.monthsRecorded} month${report.monthsRecorded === 1 ? '' : 's'} on the books` : ''}`}
+      />
       <Stat label="Contribution billed" value={formatMoney(report.feeBilled, report.currency)} detail="per villa, per month" />
       <Stat
-        label={short ? 'Shortfall absorbed' : 'Surplus'}
+        label={short ? 'Shortfall absorbed (assessed less spent)' : 'Surplus (assessed less spent)'}
         value={formatMoney(Math.abs(report.annualCommunityPosition), report.currency)}
-        detail={`${formatMoney(Math.abs(report.monthlyPositionPerUnit), report.currency)} per villa per month`}
+        // Assessed, not cash. Every other screen states cash, so the cash figure
+        // is given beside it and the difference is the arrears (hunt, 2026-11-19).
+        detail={`${formatMoney(Math.abs(report.monthlyPositionPerUnit), report.currency)} per villa per month · on cash received, ${formatMoney(report.received - report.expenditure, report.currency)}`}
         tone={short ? 'negative' : 'positive'}
       />
     </section>
@@ -674,9 +681,13 @@ function PrintedReport({
             value={`${formatMoney(Math.abs(report.monthlyPositionPerUnit), report.currency)} ${short ? 'deficit' : 'surplus'}`}
           />
           <FigureRow
-            label="Annual community position"
+            label="Annual community position (contributions assessed less spent)"
             value={`${formatMoney(Math.abs(report.annualCommunityPosition), report.currency)} ${short ? 'absorbed' : 'surplus'}`}
             strong
+          />
+          <FigureRow
+            label="On cash received (contributions received less spent)"
+            value={formatMoney(report.received - report.expenditure, report.currency)}
           />
         </tbody>
       </table>

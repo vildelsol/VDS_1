@@ -124,7 +124,7 @@ export default async function run({ port, projectRoot }) {
     await admin.post(R('expense', ed.id), { reconciledOn: '2026-10-07' });
     const same = await admin.put(`/api/expenses/${ed.id}`, { description: 'wording only' });
     T.check('an edit that leaves the money alone keeps the tick (positive control)', same.status === 200 && !!same.body?.expense?.bankMatch, code(same));
-    const moved = await admin.put(`/api/expenses/${ed.id}`, { amount: 950 });
+    const moved = await admin.put(`/api/expenses/${ed.id}`, { amount: 950, reason: 'invoice re-read' });
     T.check('changing the amount of a matched cost drops the tick', moved.status === 200 && !moved.body?.expense?.bankMatch, JSON.stringify(moved.body?.expense?.bankMatch));
 
     /* ---------------- one line, one item, across every kind ---------------- */
@@ -173,10 +173,12 @@ export default async function run({ port, projectRoot }) {
       db.tenancies.filter(t => (t.depositCurrency || t.currency) === 'JMD' && t.depositReturnedAmount > 0 && inOct(t.depositReturnedOn)).reduce((s, t) => s + C(t.depositReturnedAmount), 0);
     const ledgerIn =
       db.payments.filter(p => p.status === 'completed' && !p.derived && p.currency === 'JMD' && inOct(p.date)).reduce((s, p) => s + C(p.amount), 0) +
-      db.expenses.filter(e => e.status === 'paid' && e.currency === 'JMD' && e.amount < 0 && inOct(e.datePaid || e.date)).reduce((s, e) => s - C(e.amount), 0);
+      db.expenses.filter(e => e.status === 'paid' && e.currency === 'JMD' && e.amount < 0 && inOct(e.datePaid || e.date)).reduce((s, e) => s - C(e.amount), 0) +
+      // Deposits received are money in (hunt, 2026-11-19): held, not income, but they reached the bank.
+      db.tenancies.filter(t => (t.depositCurrency || t.currency) === 'JMD' && t.depositAmount > 0 && inOct(t.depositReceivedOn)).reduce((s, t) => s + C(t.depositAmount), 0);
     T.check('money out equals paid costs + refunds + returned deposits from the raw ledger', C(br.moneyOut.total) === ledgerOut, `${C(br.moneyOut.total)} vs ${ledgerOut}`);
     T.check('money out is 12,000 + 950 + 2,000 + 45,000 here (no pending, no void, no USD)', C(br.moneyOut.total) === C(12000 + 950 + 2000 + 45000), `${br.moneyOut.total}`);
-    T.check('money in equals completed receipts gross + supplier credits', C(br.moneyIn.total) === ledgerIn, `${C(br.moneyIn.total)} vs ${ledgerIn}`);
+    T.check('money in equals completed receipts gross + supplier credits + deposits received', C(br.moneyIn.total) === ledgerIn, `${C(br.moneyIn.total)} vs ${ledgerIn}`);
     const receiptsOnly = fin.mod.reconciliation(db.payments, 'JMD', '2026-10-01', '2026-10-31');
     T.check('the receipts within money in are exactly the existing receipt reconciliation', C(br.moneyIn.items.filter(i => i.kind === 'receipt').reduce((s, i) => s + i.amount, 0)) === C(receiptsOnly.total), `${receiptsOnly.total}`);
     for (const [name, s] of [['in', br.moneyIn], ['out', br.moneyOut]]) {

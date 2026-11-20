@@ -32,7 +32,7 @@
 
 import type { Database } from './db';
 import { createHash } from 'crypto';
-import { accountBalance, chargeCurrency, creditHeldForOthers, isOwnAccount, netPaidAsOf, ownAccountUnitIds, settledFromRent } from '../src/lib/finance';
+import { accountBalance, chargeCurrency, creditHeldForOthers, isContributionCountedFromReceipts, isOwnAccount, netPaidAsOf, ownAccountAsAt, settledFromRent } from '../src/lib/finance';
 import { hasLevySchedule, isWellFormedFeeChange, levyForMonth, levySchedule } from '../src/lib/feeSchedule';
 import { AUDIT_CAP, AUDIT_KEY_FILE, verifyAuditChain } from './auditChain';
 import { bankItems } from '../src/lib/bankRec';
@@ -193,6 +193,20 @@ export function checkIntegrity(db: Database): IntegrityReport {
         ...bookings
           .filter(b => !!b.damageDepositReturnBankMatch && !(b.damageDepositReturnedOn && (b.damageDepositReturnedAmount || 0) > 0))
           .map(b => `damage deposit return ${b.guestName} (${b.id})`)
+      ]
+    );
+
+    add(
+      'warning',
+      'bank-match-without-deposit-in',
+      'A deposit is ticked as found arriving in the bank, but the books record no deposit received for it.',
+      [
+        ...tenancies
+          .filter(t => !!t.depositBankMatch && !(t.depositReceivedOn && (t.depositAmount || 0) > 0))
+          .map(t => `deposit from ${t.tenantName} (${t.id})`),
+        ...bookings
+          .filter(b => !!b.damageDepositBankMatch && !(b.damageDepositReceivedOn && (b.damageDepositAmount || 0) > 0))
+          .map(b => `damage deposit from ${b.guestName} (${b.id})`)
       ]
     );
 
@@ -434,24 +448,19 @@ export function checkIntegrity(db: Database): IntegrityReport {
      * worse than it is.
      *
      * Not refused at entry, because a genuine ISPO cost against one of its own
-     * villas (a plumber, a locksmith) is a real and ordinary thing. This finds
-     * the specific shape that is never right: a Maintenance-category ISPO cost
-     * allocated to a villa VDS lets on its own account.
+     * villas (a plumber, a locksmith, a repair filed under Maintenance) is a
+     * real and ordinary thing. This finds exactly the rows the statements leave
+     * out, through the one shared rule `isContributionCountedFromReceipts`, so
+     * the self-check can never tell staff to void a real bill (it did, for a
+     * J$9,000 repair, until 2026-11-19).
      */
-    const ownAccountVillas = ownAccountUnitIds(units);
+    const ownAccountVillas = ownAccountAsAt(units);
     add(
       'warning',
       'contribution-entered-as-a-cost',
       'A maintenance contribution on a villa VDS lets looks to have been entered in the expense register as well as receipted. It would be counted twice on the ISPO statement.',
       expenses
-        .filter(
-          e =>
-            e.status !== 'void' &&
-            e.fund === 'ispo' &&
-            e.category === 'Maintenance' &&
-            !!e.unitId &&
-            ownAccountVillas.has(e.unitId)
-        )
+        .filter(e => e.status !== 'void' && isContributionCountedFromReceipts(e, ownAccountVillas, units))
         .map(e => `${e.id} (${e.unitNumber}, ${e.currency} ${e.amount})`)
     );
 
@@ -484,6 +493,22 @@ export function checkIntegrity(db: Database): IntegrityReport {
       'meter-ran-backwards',
       'A meter reading is lower than the one before it.',
       utilities.filter(u => u.currentReading < u.previousReading).map(u => `${u.id} (${u.previousReading} → ${u.currentReading})`)
+    );
+
+    /*
+     * A settled utility bill and the receipt that settled it say the same figure.
+     * A receipt corrected after the fact left a J$12,000 bill paid by J$8,000
+     * (QA, 2026-11-20); the edit is refused now, and this names any that exist.
+     */
+    add(
+      'warning',
+      'utility-bill-differs-from-its-receipt',
+      'A utility bill is marked paid but the receipt that settled it, net of any refund, is for a different amount or currency. Reverse the receipt and settle the bill again.',
+      utilities
+        .filter(u => u.status === 'paid')
+        .map(u => ({ u, p: payments.find(p => p.utilityId === u.id && p.status === 'completed') }))
+        .filter(({ u, p }) => !!p && (p.currency !== u.currency || cents(p.amount) - cents(p.refundedAmount || 0) !== cents(u.amountCharged)))
+        .map(({ u, p }) => `${u.id} (${u.unitNumber} ${u.billingPeriod}: bill ${u.currency} ${u.amountCharged}, receipt ${p!.currency} ${(cents(p!.amount) - cents(p!.refundedAmount || 0)) / 100})`)
     );
 
     /* ---------------- the register ---------------- */
@@ -785,7 +810,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
     /* ---------------- a closed period must not move ---------------- */
 
     if (db.settings?.closedThrough) {
-      const now = ledgerFingerprint(db, db.settings.closedThrough);
+      const now = currentFingerprintFor(db, db.settings.closedThrough, db.settings.closeFingerprint || '');
       if (db.settings.closeFingerprint && now !== db.settings.closeFingerprint) {
         add(
           'serious',
@@ -902,6 +927,59 @@ export function describeIntegrity(report: IntegrityReport): string {
  */
 export function ledgerFingerprint(db: Database, throughMonth: string): string {
   const endOfMonth = `${throughMonth}-31`;
+  const rows = legacyLedgerRows(db, throughMonth);
+  /*
+   * Costs, utility bills and deposits, added 2026-11-20: until then a closed
+   * month's expenses could be backdated, edited, voided or recalled and nothing
+   * noticed. Cash basis, as every statement reads them: a cost counts from the
+   * day it was paid, and its status is read as at the close, so paying or taking
+   * back a still-unpaid September bill in October leaves September alone, while
+   * taking back a cost paid in September does not.
+   */
+  for (const e of db.expenses || []) {
+    const moneyDay = e.datePaid || e.date || '';
+    if (moneyDay.slice(0, 7) > throughMonth) continue;
+    const wasPaid = e.status === 'paid' || (e.status === 'void' && e.voidedFromPaid === true);
+    if (!wasPaid) continue;
+    rows.push(`E|${e.id}|${e.category}|${e.currency}|${moneyDay}|${e.status}|${cents(e.amount)}|${e.fund || 'strata'}|${e.unitId || ''}`);
+  }
+  for (const u of db.utilities || []) {
+    if ((u.billingPeriod || '').slice(0, 7) > throughMonth) continue;
+    // Paid as at the close only if its receipt was received by then.
+    const settled = (db.payments || []).some(p => p.utilityId === u.id && p.status === 'completed' && (p.date || '') <= endOfMonth);
+    rows.push(`U|${u.id}|${u.unitId}|${u.billingPeriod}|${u.currency}|${cents(u.amountCharged)}|${settled ? 'paid' : 'unpaid'}`);
+  }
+  for (const t of db.tenancies || []) {
+    if (t.depositReceivedOn && t.depositReceivedOn <= endOfMonth) rows.push(`DI|${t.id}|${t.depositReceivedOn}|${t.depositCurrency || t.currency}|${cents(t.depositAmount || 0)}`);
+    if (t.depositReturnedOn && t.depositReturnedOn <= endOfMonth) rows.push(`DO|${t.id}|${t.depositReturnedOn}|${t.depositCurrency || t.currency}|${cents(t.depositReturnedAmount || 0)}|${cents(t.depositWithheldAmount || 0)}`);
+  }
+  for (const b of db.bookings || []) {
+    if (b.damageDepositReceivedOn && b.damageDepositReceivedOn <= endOfMonth) rows.push(`BI|${b.id}|${b.damageDepositReceivedOn}|${b.damageDepositCurrency || b.currency}|${cents(b.damageDepositAmount || 0)}`);
+    if (b.damageDepositReturnedOn && b.damageDepositReturnedOn <= endOfMonth) rows.push(`BO|${b.id}|${b.damageDepositReturnedOn}|${b.damageDepositCurrency || b.currency}|${cents(b.damageDepositReturnedAmount || 0)}`);
+  }
+  rows.sort();
+  return FINGERPRINT_V2 + createHash('sha256').update(rows.join('\n')).digest('hex');
+}
+
+/**
+ * The fingerprint as written before 2026-11-20 (receipts and charges only). A
+ * month closed under it is still checked against it, so an upgrade raises no
+ * false alarm; `migrate` re-seals it in the current form once it verifies.
+ */
+export const FINGERPRINT_V2 = 'v2:';
+export function legacyLedgerFingerprint(db: Database, throughMonth: string): string {
+  const rows = legacyLedgerRows(db, throughMonth);
+  rows.sort();
+  return createHash('sha256').update(rows.join('\n')).digest('hex');
+}
+
+/** The fingerprint a stored seal has to be compared with, by the form it was written in. */
+export function currentFingerprintFor(db: Database, throughMonth: string, stored: string): string {
+  return stored.startsWith(FINGERPRINT_V2) ? ledgerFingerprint(db, throughMonth) : legacyLedgerFingerprint(db, throughMonth);
+}
+
+function legacyLedgerRows(db: Database, throughMonth: string): string[] {
+  const endOfMonth = `${throughMonth}-31`;
   const rows: string[] = [];
   for (const p of db.payments || []) {
     if ((p.date || '').slice(0, 7) > throughMonth) continue;
@@ -911,8 +989,7 @@ export function ledgerFingerprint(db: Database, throughMonth: string): string {
     if ((c.periodMonth || '').slice(0, 7) > throughMonth) continue;
     rows.push(`C|${c.id}|${c.category}|${c.currency}|${c.periodMonth}|${c.status}|${cents(c.amount)}|${c.unitId}`);
   }
-  rows.sort();
-  return createHash('sha256').update(rows.join('\n')).digest('hex');
+  return rows;
 }
 
 /**

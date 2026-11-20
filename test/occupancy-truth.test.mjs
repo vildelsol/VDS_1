@@ -109,8 +109,8 @@ export default async function run({ port, projectRoot }) {
 
     T.check(
       'a villa offered on Airbnb with nobody in it is not occupied',
-      occ.occupied === 2,
-      `${occ.occupied} occupied — expected the tenanted villa and the owner-occupied one, and neither of the empty short-lets`
+      occ.occupied === 1,
+      `${occ.occupied} occupied — expected the tenanted villa only: neither the empty short-lets nor the proprietor's villa`
     );
     /*
      * The register seeds all sixteen villas that physically exist, so the ten
@@ -118,16 +118,23 @@ export default async function run({ port, projectRoot }) {
      * short-lets plus ten untouched villas.
      */
     T.check('it is available, because it can take a guest tonight', occ.available === 13, `${occ.available} available`);
+    /*
+     * Ro, 2026-11-19: owner-occupied is third-party OWNERSHIP, not occupancy. A
+     * proprietor's villa may stand empty and is not ISPO's to let, so it is
+     * neither occupied nor available, and sits outside the rate. This replaced
+     * the earlier rule that counted it as occupied.
+     */
     T.check(
-      'the villa the owner lives in counts as occupied, though it files no tenancy and no booking',
-      occ.occupied === 2 && db.units.filter(u => u.status === 'owner-occupied').length === 1,
+      "a proprietor's villa is not counted as occupied: ownership is not occupancy",
+      occ.occupied === 1 && occ.ownerOccupied === 1 && db.units.filter(u => u.status === 'owner-occupied').length === 1,
       JSON.stringify(occ)
     );
+    T.check("nor as available, because it is not ISPO's to let", occ.lettable === 14 && occ.available === 13, JSON.stringify(occ));
     T.check('a villa off the market is neither occupied nor available', occ.unavailable === 1, `${occ.unavailable} unavailable`);
     T.check(
       'and it is left out of the rate, because a villa that cannot be let is not a letting being missed',
-      occ.rate === Math.round((2 / 15) * 100),
-      `${occ.rate}% against ${occ.occupied} of ${occ.total - occ.unavailable}`
+      occ.rate === Math.round((1 / 14) * 100),
+      `${occ.rate}% against ${occ.occupied} of ${occ.lettable}`
     );
     T.check(
       'so the headline is not 100% on a property that is mostly empty',
@@ -142,7 +149,7 @@ export default async function run({ port, projectRoot }) {
     const byStatus = db.units.filter(isOccupied).length;
     T.check(
       'the letting-mode count and the occupancy count are different questions, and differ here',
-      byStatus === 5 && occ.occupied === 2,
+      byStatus === 5 && occ.occupied === 1,
       `status says ${byStatus}, residency says ${occ.occupied}`
     );
 
@@ -166,12 +173,12 @@ export default async function run({ port, projectRoot }) {
 
     T.check(
       'a guest in residence makes the villa occupied for the nights they are there',
-      occupancyOn(db.units, db.tenancies, db.bookings, TODAY).occupied === 3,
+      occupancyOn(db.units, db.tenancies, db.bookings, TODAY).occupied === 2,
       String(occupancyOn(db.units, db.tenancies, db.bookings, TODAY).occupied)
     );
     T.check(
       'and it is available again the day they check out',
-      occupancyOn(db.units, db.tenancies, db.bookings, '2026-09-05').occupied === 2,
+      occupancyOn(db.units, db.tenancies, db.bookings, '2026-09-05').occupied === 1,
       String(occupancyOn(db.units, db.tenancies, db.bookings, '2026-09-05').occupied)
     );
     T.check(
@@ -191,7 +198,7 @@ export default async function run({ port, projectRoot }) {
         });
         const after = (await c.get('/api/db')).body;
         return occupancyOn(after.units, after.tenancies, after.bookings, TODAY).occupied;
-      })()) === 3,
+      })()) === 2,
       'a blocked villa was counted as occupied'
     );
 

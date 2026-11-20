@@ -57,7 +57,7 @@ export default async function run({ port, projectRoot }) {
     T.check('a stay can be booked without one', plain.status === 200, String(plain.body?.error || ''));
     T.check('and nothing is held on it', plain.body?.booking?.damageDepositAmount === undefined);
 
-    const checkedOut = await c.put(`/api/bookings/${plain.body.booking.id}`, { status: 'checked-out' });
+    const checkedOut = await c.put(`/api/bookings/${plain.body.booking.id}`, { editReason: 'Test correction', status: 'checked-out' });
     T.check('the guest checks out with no deposit and nothing objects', checkedOut.status === 200, String(checkedOut.body?.error || ''));
 
     const settleNone = await c.post(`/api/bookings/${plain.body.booking.id}/damage-deposit/settle`, { withheldAmount: 0 });
@@ -161,7 +161,7 @@ export default async function run({ port, projectRoot }) {
     const editId = stillHeld.body.booking.id;
     await c.post(`/api/bookings/${editId}/damage-deposit`, { amount: 250, currency: 'USD', receivedOn: '2026-06-01' });
 
-    const edited = await c.put(`/api/bookings/${editId}`, { amount: 1500, guestName: 'Edited Guest', status: 'checked-in' });
+    const edited = await c.put(`/api/bookings/${editId}`, { editReason: 'Test correction', amount: 1500, guestName: 'Edited Guest', status: 'checked-in' });
     T.check('the reservation can still be edited', edited.status === 200, String(edited.body?.error || ''));
     T.check(
       'and editing it does not lose the deposit being held',
