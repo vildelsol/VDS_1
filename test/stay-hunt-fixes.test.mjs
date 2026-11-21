@@ -84,8 +84,11 @@ export default async function run({ port, projectRoot }) {
     port,
     adminPassword: 'Hunt-1234!',
     projectRoot,
-    // Quoted: the project folder has spaces in its path ("River Oaks"), which split an unquoted --require.
-    env: { NODE_OPTIONS: `--require "${path.join(projectRoot, 'test', 'feed-stub.cjs')}"`, VDS_TEST_FEED_DIR: feedDir }
+    // Quoted, because the project folder has spaces in its path ("River Oaks"),
+    // which split an unquoted --require. Forward slashes, because NODE_OPTIONS
+    // treats a backslash inside quotes as an escape: on Windows CI
+    // D:\a\VDS_1\test\feed-stub.cjs became D:aVDS_1test... (v1.16.21 build).
+    env: { NODE_OPTIONS: `--require "${path.join(projectRoot, 'test', 'feed-stub.cjs').replace(/\\/g, '/')}"`, VDS_TEST_FEED_DIR: feedDir }
   });
   const setup = [];
   const must = (what, r) => {
