@@ -78,6 +78,8 @@ export default async function run({ port, projectRoot }) {
     const clean = fs.readFileSync(dbFile, 'utf8');
     const restart = async mutate => {
       await live.stop();
+      // These cases swap db.json by hand; the head anchor (second security pass) is tested in security-hardening-2, not here.
+      fs.rmSync(path.join(dir, 'audit-head.json'), { force: true });
       mutate();
       live = await startServer({ port, adminPassword: 'x', projectRoot, dataDir: dir });
       const c = makeClient(live.baseUrl);

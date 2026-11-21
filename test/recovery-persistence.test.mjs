@@ -92,6 +92,7 @@ export default async function run({ port, projectRoot }) {
     delete old.users; delete old.sessions; delete old.settings.rolePermissions; delete old.settings.backupMarkerId;
     for (const t of ['payments', 'expenses', 'utilities', 'charges']) for (const r of old[t] || []) { delete r.unitId; }
     old.auditLogs = [];
+    fs.rmSync(path.join(dataDir, 'audit-head.json'), { force: true }); // an older db.json put in place by hand (a pre-upgrade file has no head anchor)
     fs.writeFileSync(dbPath, JSON.stringify(old));
     srv = await startServer({ port, adminPassword: 'Pers-1234!', projectRoot, dataDir });
     const m = makeClient(srv.baseUrl);

@@ -74,6 +74,17 @@ export function parseMoneyInput(value: unknown): number | null {
 }
 
 /**
+ * True when a figure carries a fraction of a cent: more than two decimal places, ignoring trailing zeros.
+ * parseMoneyInput rounds such a figure; a caller that must not change what was typed uses this to refuse it.
+ */
+export function hasExtraDecimals(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value) && Math.abs(value * 100 - Math.round(value * 100)) > 1e-4;
+  if (typeof value !== 'string') return false;
+  const m = /\.(\d+)\s*(?:USD|JMD)?\s*$/i.exec(value.trim());
+  return !!m && /[1-9]/.test(m[1].slice(2));
+}
+
+/**
  * The currency a typed amount names, if it names one: "J$5,000" or "5000 JMD" is
  * Jamaican, "US$300" or "USD 300" American. A bare "$" names neither. The parser
  * above strips the marker, so the record's own currency has to be checked against

@@ -247,7 +247,7 @@ export default async function run({ port, projectRoot }) {
     );
     const octDep = (await db()).payments.find(p => p.bookingId === octStay.id);
     const viaReceipt = await c.put(`/api/payments/${octDep.id}`, { reason: 'corrected in test', date: '2026-09-30' });
-    T.check('nor moved into one through the receipt (the closed-period guard)', viaReceipt.status === 409 && /Money dated in or before 2026-09, a month that has been closed, no longer matches what was closed/.test(viaReceipt.body?.error || ''), JSON.stringify(viaReceipt.body));
+    T.check('nor moved into one through the receipt (the closed-period guard)', viaReceipt.status === 409 && /(Money dated in or before 2026-09, a month that has been closed, no longer matches what was closed|would change money dated in or before 2026-09, a month that has been closed)/.test(viaReceipt.body?.error || ''), JSON.stringify(viaReceipt.body));
     d = await db();
     T.check('nothing moved', d.payments.find(p => p.bookingId === aId)?.date === '2026-09-05' && d.payments.find(p => p.id === octDep.id)?.date === '2026-10-01');
   } finally {

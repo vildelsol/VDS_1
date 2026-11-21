@@ -98,7 +98,8 @@ export default async function run({ port, projectRoot }) {
 
     // ---- the restore itself, with a body over the ordinary 1 MB limit ----
     const big = { ...snapshot, padding: 'x'.repeat(1_500_000) };
-    const done = await c.post('/api/backup/restore', { source: 'snapshot', snapshot: big, confirm: 'RESTORE' });
+    // The padding changes the file after it was signed, so (second security pass) restoring it takes the explicit confirmation and a reason.
+    const done = await c.post('/api/backup/restore', { source: 'snapshot', snapshot: big, confirm: 'RESTORE', confirmUnsigned: true, reason: 'test: padded snapshot over 1 MB' });
     T.check('the restore succeeds (and a snapshot over 1 MB is accepted)', done.status === 200 && done.body?.success === true, `${done.status} ${JSON.stringify(done.body).slice(0, 300)}`);
     const after = (await c.get('/api/db')).body;
     T.check('the later payment is gone', after.payments.length === paymentsAtSnapshot, `${after.payments.length} vs ${paymentsAtSnapshot}`);

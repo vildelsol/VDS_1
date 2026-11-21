@@ -14,7 +14,7 @@ export const allowUnknownRoutes = true;
 /** Permission each gated route demands (read off server.ts; an empty string means the handler checks none). */
 const REQUIRES = {
   'GET /api/auth/throttles': 'manage_users', 'POST /api/auth/throttles/clear': 'manage_users',
-  'POST /api/users': 'manage_users', 'PUT /api/users/:id': 'manage_users', 'POST /api/users/:id/reset-password': 'manage_users',
+  'POST /api/users': 'manage_users', 'PUT /api/users/:id': 'manage_users', 'POST /api/users/:id/reset-password': 'manage_users', 'POST /api/users/:id/sign-out-everywhere': 'manage_users',
   'POST /api/periods/close': 'modify_settled', 'POST /api/periods/reopen': 'modify_settled',
   'GET /api/backup/status': 'take_backups', 'GET /api/backup/drives': 'manage_settings', 'POST /api/backup/check-folder': 'manage_settings',
   'POST /api/backup/run': 'take_backups', 'GET /api/backup/download': 'take_backups', 'POST /api/backup/restore': 'admin_only',
@@ -40,7 +40,7 @@ const REQUIRES = {
 };
 const PUBLIC = new Set(['GET /api/health', 'POST /api/auth/login', 'POST /api/auth/logout']);
 /** Reachable by every signed-in role on purpose or by omission; reported, not failed, by the role loop. */
-const ALL_ROLES_NO_GATE = new Set(['POST /api/payments/:id/mark-printed', 'POST /api/unit-activities', 'GET /api/integrity', 'GET /api/db', 'GET /api/auth/me', 'POST /api/auth/change-password']);
+const ALL_ROLES_NO_GATE = new Set(['POST /api/payments/:id/mark-printed', 'POST /api/unit-activities', 'GET /api/integrity', 'GET /api/db', 'GET /api/auth/me', 'POST /api/auth/change-password', 'POST /api/auth/logout-everywhere']);
 
 function parseRoutes(projectRoot) {
   const src = fs.readFileSync(path.join(projectRoot, 'server.ts'), 'utf8');
@@ -107,7 +107,8 @@ export default async function run({ port, projectRoot }) {
     const reachable = [];
     for (const r of routes) {
       const k = `${r.method} ${r.path}`;
-      if (PUBLIC.has(k) || k === 'POST /api/auth/change-password' || k === 'POST /api/auth/logout') continue;
+      // logout-everywhere ends the caller's own session, so calling it in this sweep would sign the probe out (new route, second security pass).
+      if (PUBLIC.has(k) || k === 'POST /api/auth/change-password' || k === 'POST /api/auth/logout' || k === 'POST /api/auth/logout-everywhere') continue;
       const res = await env.junior.call(r.method, concrete(r.path, k), r.method === 'GET' ? undefined : {});
       if (r.method !== 'GET' && res.status !== 403) reachable.push(`${k} -> ${res.status}`);
       if (REQUIRES[k] && res.status !== 403) ro.push(`${k} -> ${res.status}`);

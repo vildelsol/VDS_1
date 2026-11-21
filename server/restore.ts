@@ -69,6 +69,136 @@ export class RestoreRefused extends Error {}
 
 type Raw = Record<string, unknown>;
 
+/* ------------------------------------------------------------------ *
+ * Row-by-row validation. A file that is well-formed JSON with the right tables can still hold a date that is an
+ * object, an amount that is text, a currency that is not ours or a record with no id. Restoring replaces the books,
+ * so every row of every table is checked BEFORE anything is replaced and the refusal lists what is wrong.
+ * ------------------------------------------------------------------ */
+
+interface Schema {
+  /** Present and a non-empty text. */
+  strings?: string[];
+  /** Present and a real calendar day (YYYY-MM-DD). */
+  days?: string[];
+  /** A real calendar day if there is a value at all (empty, null and absent are fine). */
+  optDays?: string[];
+  months?: string[];
+  optMonths?: string[];
+  /** Present and a finite number. */
+  nums?: string[];
+  /** A finite number if there is a value at all. */
+  optNums?: string[];
+  currencies?: string[];
+  optCurrencies?: string[];
+  enums?: Record<string, string[]>;
+}
+
+const SCHEMAS: Record<string, Schema> = {
+  units: { strings: ['id', 'number'], optNums: ['monthlyRent', 'monthlyMaintenance', 'entitlement'], optCurrencies: ['currency', 'maintCurrency'] },
+  ownerships: { strings: ['id', 'unitId'], optDays: ['startedOn', 'endedOn'] },
+  tenancies: {
+    strings: ['id', 'unitId'],
+    optNums: ['monthlyRent', 'depositAmount', 'depositReturnedAmount', 'depositWithheldAmount', 'writeOffAmount'],
+    optCurrencies: ['currency', 'depositCurrency', 'writeOffCurrency'],
+    optDays: ['leaseEndsOn', 'endedOn', 'depositReceivedOn', 'depositReturnedOn', 'advanceRentAppliedOn']
+  },
+  bookings: {
+    strings: ['id', 'unitId'],
+    days: ['checkIn', 'checkOut'],
+    optNums: ['amount', 'nightlyRate', 'depositPaid', 'balanceDue', 'damageDepositAmount', 'damageDepositReturnedAmount', 'damageDepositWithheldAmount'],
+    optCurrencies: ['currency', 'damageDepositCurrency'],
+    optDays: ['depositReceivedOn', 'damageDepositReceivedOn', 'damageDepositReturnedOn']
+  },
+  charges: { strings: ['id', 'unitId'], months: ['periodMonth'], days: ['dueDate'], nums: ['amount'], optNums: ['rentPortion', 'maintenancePortion'], currencies: ['currency'], optMonths: ['paysForMonth'] },
+  payments: {
+    strings: ['id', 'unitId'],
+    days: ['date'],
+    nums: ['amount'],
+    optNums: ['refundedAmount', 'printCount'],
+    currencies: ['currency'],
+    optDays: ['refundedOn', 'reconciledOn', 'reversalDate'],
+    enums: { status: ['completed', 'pending', 'reversed'] }
+  },
+  utilities: { strings: ['id', 'unitId'], optNums: ['previousReading', 'currentReading', 'consumption', 'amountCharged', 'amountBeforeRefund'], optCurrencies: ['currency'], optMonths: ['billingPeriod'] },
+  expenses: { strings: ['id'], days: ['date'], nums: ['amount'], currencies: ['currency'], optDays: ['invoiceDate', 'dueDate', 'datePaid'], enums: { status: ['paid', 'pending', 'void'] } },
+  recurringExpenses: { strings: ['id'], nums: ['amount'], currencies: ['currency'], optNums: ['dueDay'] },
+  annualReports: { optNums: ['year', 'proposedFee'], optCurrencies: ['currency'] },
+  unitActivities: { strings: ['id'], optNums: ['costAmount'], optCurrencies: ['costCurrency'], optDays: ['completedOn'] }
+};
+
+/** A real calendar day, written out: not a date that merely looks like one ("2026-13-99"). */
+function realDay(v: unknown): boolean {
+  if (typeof v !== 'string') return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) return false;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (y < 1900 || y > 2200 || mo < 1 || mo > 12 || d < 1) return false;
+  return d <= new Date(Date.UTC(y, mo, 0)).getUTCDate();
+}
+const realMonth = (v: unknown): boolean => typeof v === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(v);
+const isCurrency = (v: unknown): boolean => v === 'JMD' || v === 'USD';
+const isFiniteNumber = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v);
+const hasValue = (v: unknown): boolean => v !== undefined && v !== null && v !== '';
+
+/** Everything wrong with the rows of a file, in plain words (at most `limit` of them). */
+export function restoreRowProblems(file: Raw, limit = 25): string[] {
+  const problems: string[] = [];
+  const add = (table: string, i: number, row: Raw, what: string) => {
+    if (problems.length < limit) problems.push(`${table} record ${i + 1}${row.id ? ` (${String(row.id).slice(0, 40)})` : ''}: ${what}`);
+  };
+  for (const [table, schema] of Object.entries(SCHEMAS)) {
+    const rows = file[table];
+    if (!Array.isArray(rows)) continue;
+    rows.forEach((raw, i) => {
+      const row = raw as Raw;
+      for (const f of schema.strings || []) if (typeof row[f] !== 'string' || !String(row[f]).trim()) add(table, i, row, `"${f}" is missing or is not text`);
+      for (const f of schema.days || []) if (!realDay(row[f])) add(table, i, row, `"${f}" is not a valid date (${JSON.stringify(row[f])?.slice(0, 40)})`);
+      for (const f of schema.optDays || []) if (hasValue(row[f]) && !realDay(row[f])) add(table, i, row, `"${f}" is not a valid date (${JSON.stringify(row[f])?.slice(0, 40)})`);
+      for (const f of schema.months || []) if (!realMonth(row[f])) add(table, i, row, `"${f}" is not a valid month (${JSON.stringify(row[f])?.slice(0, 40)})`);
+      for (const f of schema.optMonths || []) if (hasValue(row[f]) && !realMonth(row[f])) add(table, i, row, `"${f}" is not a valid month (${JSON.stringify(row[f])?.slice(0, 40)})`);
+      for (const f of schema.nums || []) if (!isFiniteNumber(row[f])) add(table, i, row, `"${f}" is not a number (${JSON.stringify(row[f])?.slice(0, 40)})`);
+      for (const f of schema.optNums || []) if (hasValue(row[f]) && !isFiniteNumber(row[f])) add(table, i, row, `"${f}" is not a number (${JSON.stringify(row[f])?.slice(0, 40)})`);
+      for (const f of schema.currencies || []) if (!isCurrency(row[f])) add(table, i, row, `"${f}" is not JMD or USD (${JSON.stringify(row[f])?.slice(0, 40)})`);
+      for (const f of schema.optCurrencies || []) if (hasValue(row[f]) && !isCurrency(row[f])) add(table, i, row, `"${f}" is not JMD or USD (${JSON.stringify(row[f])?.slice(0, 40)})`);
+      for (const [f, allowed] of Object.entries(schema.enums || {})) if (!allowed.includes(String(row[f]))) add(table, i, row, `"${f}" is not one of ${allowed.join(', ')} (${JSON.stringify(row[f])?.slice(0, 40)})`);
+    });
+  }
+  return problems;
+}
+
+type Totals = Record<'JMD' | 'USD', { count: number; total: number }>;
+export interface MoneyTotals {
+  /** Completed receipts, net of what was refunded. */
+  receipts: Totals;
+  /** Charges still open. */
+  openCharges: Totals;
+  /** Costs marked paid. */
+  paidExpenses: Totals;
+}
+
+/**
+ * The money in a set of records, by currency: what the restore screen shows beside the figures for the records now,
+ * so a file that holds far more or less than the books do is obvious before anyone confirms.
+ */
+export function moneyTotals(src: { payments?: unknown; charges?: unknown; expenses?: unknown }): MoneyTotals {
+  const blank = (): Totals => ({ JMD: { count: 0, total: 0 }, USD: { count: 0, total: 0 } });
+  const out: MoneyTotals = { receipts: blank(), openCharges: blank(), paidExpenses: blank() };
+  const add = (t: Totals, cur: unknown, cents: number) => {
+    if (cur !== 'JMD' && cur !== 'USD') return;
+    t[cur].count += 1;
+    t[cur].total += cents;
+  };
+  const c = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 100) : 0);
+  const rows = (v: unknown): Raw[] => (Array.isArray(v) ? (v as Raw[]).filter(r => r && typeof r === 'object') : []);
+  for (const p of rows(src.payments)) if (p.status === 'completed') add(out.receipts, p.currency, c(p.amount) - c(p.refundedAmount));
+  for (const ch of rows(src.charges)) if (ch.status === 'open') add(out.openCharges, ch.currency, c(ch.amount));
+  for (const e of rows(src.expenses)) if (e.status === 'paid') add(out.paidExpenses, e.currency, c(e.amount));
+  for (const t of [out.receipts, out.openCharges, out.paidExpenses]) for (const cur of ['JMD', 'USD'] as const) t[cur].total = t[cur].total / 100;
+  return out;
+}
+
 /** Refuse anything that is not recognisably a Villaggio Del Sol records file. */
 export function checkRestoreFile(raw: unknown, currentSchemaVersion: number): Raw {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -110,6 +240,11 @@ export function checkRestoreFile(raw: unknown, currentSchemaVersion: number): Ra
     if (receiptSeen.has(no)) throw new RestoreRefused(`That file is damaged: receipt number ${no} appears on two payments. Nothing was changed.`);
     receiptSeen.add(no);
   }
+  // Every row of every table, typed: dates, amounts, currencies, ids. A forged or damaged file is refused with a list.
+  const problems = restoreRowProblems(file);
+  if (problems.length > 0) {
+    throw new RestoreRefused(`That file is damaged or has been tampered with: ${problems.length >= 25 ? 'at least ' : ''}${problems.length} record(s) are not valid. Nothing was changed. ${problems.join('; ')}`);
+  }
   if ((file.units as unknown[]).length === 0) {
     throw new RestoreRefused('That file has no villas in it, so restoring it would wipe the property. Nothing was changed.');
   }
@@ -144,13 +279,25 @@ export function summariseRestore(file: Raw, current: Database, madeAtFallback: s
   const settingsThatWillChange = differing.filter(k => isEmptySetting(live[k]));
   return {
     willBeRemoved: { payments: missing('payments'), charges: missing('charges'), expenses: missing('expenses') },
-    settingsKeptAsTheyAre: [...PROTECTED_SETTINGS],
+    settingsKeptAsTheyAre: PROTECTED_SETTINGS.filter(k => k !== 'closedThrough'),
     settingsThatWillChange,
     madeAt: typeof file.exportedAt === 'string' ? file.exportedAt : madeAtFallback,
     schemaVersion: Number.isFinite(Number(file.schemaVersion)) ? Number(file.schemaVersion) : 0,
     counts,
     staffNotRecreated
   };
+}
+
+/**
+ * Would restoring this file take the books back to an earlier close than the live one?
+ * Returns the two closes when it would (the live one is later than the file's, or the
+ * file has none), otherwise null.
+ */
+export function closedMonthsRolledBack(live: Database, file: Raw): { live: string; file: string } | null {
+  const liveClosed = typeof live.settings?.closedThrough === 'string' ? live.settings.closedThrough : '';
+  const fs = file.settings as Raw | undefined;
+  const fileClosed = typeof fs?.closedThrough === 'string' ? String(fs.closedThrough) : '';
+  return liveClosed && liveClosed > fileClosed ? { live: liveClosed, file: fileClosed } : null;
 }
 
 /** The highest receipt number in the restored payments, so the next one cannot collide. */
@@ -173,8 +320,8 @@ export function applyRestore(working: Database, file: Raw): void {
   const liveCounter = working.counters;
   const liveSettings = working.settings as unknown as Record<string, unknown>;
   const keptSettings: Record<string, unknown> = {};
-  for (const k of PROTECTED_SETTINGS) if (k in liveSettings) keptSettings[k] = liveSettings[k];
-  const liveClosed = typeof liveSettings.closedThrough === 'string' ? liveSettings.closedThrough : '';
+  // The closed period is NOT kept: the restored database adopts the file's own seal (below).
+  for (const k of PROTECTED_SETTINGS) if (k !== 'closedThrough' && k in liveSettings) keptSettings[k] = liveSettings[k];
 
   for (const key of RESTORED_TABLES) {
     // The audit trail is the history of what happened, including the work a restore rolls back;
@@ -196,9 +343,20 @@ export function applyRestore(working: Database, file: Raw): void {
   }
   // Policy settings are not restored; a closed period never reopens.
   Object.assign(working.settings as unknown as Record<string, unknown>, keptSettings);
-  const fileClosed = typeof (file.settings as Raw | undefined)?.closedThrough === 'string' ? String((file.settings as Raw).closedThrough) : '';
-  const closed = liveClosed > fileClosed ? liveClosed : fileClosed;
-  if (closed) (working.settings as unknown as Record<string, unknown>).closedThrough = closed;
+  /*
+   * The restored database adopts the file's own sealed state, closedThrough AND its fingerprint, as a
+   * pair: keeping the live close over older records left sealed months editable (the stored fingerprint
+   * no longer matched, and the write guard then treated the known fault as nothing new). A restore that
+   * would roll the close back is refused before it gets here unless the request confirms it
+   * (closedMonthsRolledBack).
+   */
+  const wsettings = working.settings as unknown as Record<string, unknown>;
+  const fileSettings = (file.settings && typeof file.settings === 'object' ? file.settings : {}) as Raw;
+  const fileClosed = typeof fileSettings.closedThrough === 'string' ? fileSettings.closedThrough : '';
+  if (fileClosed) wsettings.closedThrough = fileClosed;
+  else delete wsettings.closedThrough;
+  if (fileClosed && typeof fileSettings.closeFingerprint === 'string' && fileSettings.closeFingerprint) wsettings.closeFingerprint = fileSettings.closeFingerprint;
+  else delete wsettings.closeFingerprint;
   // Restored settings must not carry the backup folder of the machine that made them.
   if (keep.backupDir === undefined) delete working.settings.backupDir;
   if (keep.backupMarkerId === undefined) delete working.settings.backupMarkerId;

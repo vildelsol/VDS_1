@@ -19,7 +19,12 @@ import path from 'path';
 import fs from 'fs';
 import { createHash } from 'crypto';
 import { LoginThrottle } from './server/loginThrottle';
+import { RateLimiter, envLimit } from './server/rateLimit';
 import { execFileSync, spawn } from 'child_process';
+import http from 'http';
+import https from 'https';
+import net from 'net';
+import { httpsRedirectUrl, obtainTls, renewTlsDaily, TlsMaterial } from './server/tls';
 import {
   Booking,
   Charge,
@@ -58,7 +63,8 @@ import {
 } from './src/types';
 import { bankItems, itemOnBankLine } from './src/lib/bankRec';
 import { ADMIN_GRANTED_PERMISSIONS, MANAGING_COMPANY_NAME, PERMISSION_LABELS } from './src/types';
-import { currencyMarker, formatMoneyLong, parseMoneyInput, round2 } from './src/lib/money';
+import { currencyMarker, formatMoneyLong, hasExtraDecimals, parseMoneyInput, round2 } from './src/lib/money';
+import { cleanText, nameKey } from './src/lib/text';
 import { dayOfTimestamp, formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
 import { stayMoney, stayPhase } from './src/lib/stays';
 import { accountBalance, bookingsOverlap, fundForCost, isOwnAccount, recoveryFundFor, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
@@ -91,8 +97,9 @@ import {
   startBackupSchedule,
   transaction
 } from './server/db';
-import { checkIntegrity, describeIntegrity, ledgerFingerprint } from './server/integrity';
-import { applyRestore, checkRestoreFile, RestoreRefused, summariseRestore } from './server/restore';
+import { checkIntegrity, currentFingerprintFor, describeIntegrity, ledgerFingerprint } from './server/integrity';
+import { applyRestore, checkRestoreFile, closedMonthsRolledBack, moneyTotals, RestoreRefused, summariseRestore } from './server/restore';
+import { checkSnapshotSignature, signSnapshot } from './server/auditChain';
 import {
   ACTION_DENIED_MESSAGE,
   AuthedRequest,
@@ -106,7 +113,12 @@ import {
   hashPassword,
   isRequestSecure,
   passwordComplaint,
+  MAX_PASSWORD_LENGTH,
   readSessionToken,
+  readDeviceCookie,
+  knownDeviceKey,
+  rememberDevice,
+  setDeviceCookie,
   requireAuth,
   resetAdministratorPassword,
   renewSession,
@@ -120,7 +132,7 @@ import {
   burnPasswordCheck,
   burnPasswordCheckAsync
 } from './server/auth';
-import { assertFetchableFeedUrl, classifyEvent, feedDateChange, fetchICal, parseICal, planWithdrawals } from './server/ical';
+import { assertFetchableFeedUrl, classifyEvent, feedDateChange, fetchICal, parseICalChecked, planWithdrawals } from './server/ical';
 
 // One server per data folder: a second copy would overwrite the first one's receipts.
 try {
@@ -144,14 +156,18 @@ app.disable('x-powered-by');
 
 /*
  * Response hygiene. The API carries money and personal data, so it is never cached; no page may be framed
- * by another site; and the browser must not guess types. (A full script-src policy is left out on purpose:
- * it would need every inline script and font the app uses audited first.)
+ * by another site; and the browser must not guess types. Scripts may only come from this origin (production).
  */
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'");
+  // script-src 'self': the built page loads only its own bundles (no inline script, no eval; checked against dist/).
+  // Not in development, where Vite injects an inline preamble for hot reload.
+  res.setHeader(
+    'Content-Security-Policy',
+    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" + (IS_PROD ? "; script-src 'self'" : '')
+  );
   if (req.path.startsWith('/api')) res.setHeader('Cache-Control', 'no-store');
   next();
 });
@@ -262,11 +278,40 @@ const IDEMPOTENCY_TTL_MS = 6 * 60 * 60 * 1000;
 const IDEMPOTENCY_MAX_BODY = 64 * 1024;
 const idempotencyInFlight = new Set<string>();
 const IDEMPOTENCY_FILE = path.join(DATA_DIR, 'idempotency.json');
+/**
+ * New keys are appended here, one line each, BEFORE the reply leaves. The snapshot file above used to be rewritten
+ * whole on every successful write, so a junior sending unique keys made every save slower (9 ms at none, 100 ms at
+ * 4,000 keys). An append costs the same however many keys there are; the snapshot is rewritten only when the log
+ * has grown (IDEMPOTENCY_COMPACT_EVERY), at shutdown, and after a restore. Same durability: the key is on disk
+ * before the client is told it was saved.
+ */
+const IDEMPOTENCY_LOG = path.join(DATA_DIR, 'idempotency.log');
+const IDEMPOTENCY_COMPACT_EVERY = 500;
+/** Most keys held (oldest evicted first). A key older than this many newer ones is long past any sensible retry. */
+const IDEMPOTENCY_MAX_ENTRIES = envLimit('VDS_IDEMPOTENCY_MAX', 2000);
+let idempotencyAppended = 0;
 
 function pruneIdempotency() {
   const cutoff = Date.now() - IDEMPOTENCY_TTL_MS;
   for (const [key, entry] of idempotencyCache) {
     if (entry.at < cutoff) idempotencyCache.delete(key);
+  }
+  // A Map iterates oldest-first, so the surplus to drop is the front of it.
+  let surplus = idempotencyCache.size - IDEMPOTENCY_MAX_ENTRIES;
+  for (const key of idempotencyCache.keys()) {
+    if (surplus-- <= 0) break;
+    idempotencyCache.delete(key);
+  }
+}
+
+/** Make one new key durable: a single appended line, not a rewrite of every key. */
+function journalIdempotency(key: string, entry: IdempotentEntry) {
+  try {
+    if (JSON.stringify(entry.body).length > IDEMPOTENCY_MAX_BODY) return;
+    fs.appendFileSync(IDEMPOTENCY_LOG, JSON.stringify([key, entry]) + '\n');
+    if (++idempotencyAppended >= IDEMPOTENCY_COMPACT_EVERY) flushIdempotencyNow();
+  } catch {
+    // Never let bookkeeping stop a payment. Worst case the key is remembered in memory only.
   }
 }
 
@@ -279,6 +324,9 @@ function flushIdempotency() {
     const tmp = `${IDEMPOTENCY_FILE}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(rows));
     fs.renameSync(tmp, IDEMPOTENCY_FILE);
+    // The snapshot now holds everything the log did.
+    fs.rmSync(IDEMPOTENCY_LOG, { force: true });
+    idempotencyAppended = 0;
   } catch {
     // Never let bookkeeping stop a payment. Worst case the key is remembered in memory only.
   }
@@ -291,8 +339,19 @@ export function flushIdempotencyNow() {
 try {
   if (fs.existsSync(IDEMPOTENCY_FILE)) {
     for (const [k, e] of JSON.parse(fs.readFileSync(IDEMPOTENCY_FILE, 'utf-8')) as [string, IdempotentEntry][]) idempotencyCache.set(k, e);
-    pruneIdempotency();
   }
+  if (fs.existsSync(IDEMPOTENCY_LOG)) {
+    for (const line of fs.readFileSync(IDEMPOTENCY_LOG, 'utf-8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const [k, e] = JSON.parse(line) as [string, IdempotentEntry];
+        idempotencyCache.set(k, e);
+      } catch {
+        // A line cut off by a crash mid-append: the key it carried was never acknowledged to anyone.
+      }
+    }
+  }
+  pruneIdempotency();
 } catch {
   // An unreadable file just means no remembered keys.
 }
@@ -343,11 +402,12 @@ function idempotency(req: AuthedRequest, res: express.Response, next: express.Ne
   const originalJson = res.json.bind(res);
   res.json = (body: unknown) => {
     if (res.statusCode >= 200 && res.statusCode < 300) {
-      idempotencyCache.set(key, { status: res.statusCode, body, at: Date.now(), fingerprint });
-      if (idempotencyCache.size > 5000) pruneIdempotency();
-      // Written BEFORE the reply leaves, not 250 ms later: a client that was told "saved" and then
+      const entry = { status: res.statusCode, body, at: Date.now(), fingerprint };
+      idempotencyCache.set(key, entry);
+      if (idempotencyCache.size > IDEMPOTENCY_MAX_ENTRIES) pruneIdempotency();
+      // Made durable BEFORE the reply leaves, not 250 ms later: a client that was told "saved" and then
       // retries after a crash would otherwise get a second receipt.
-      flushIdempotencyNow();
+      journalIdempotency(key, entry);
     }
     idempotencyInFlight.delete(key);
     return originalJson(body);
@@ -413,7 +473,7 @@ function refuseClosedMonth(db: Database, day: string | undefined, what: string):
  */
 const CORRECTION_REASON_REQUIRED = 'correction-reason-required';
 function requireCorrectionReason(body: Record<string, unknown> | undefined, what: string): string {
-  const reason = typeof body?.reason === 'string' ? body.reason.trim().slice(0, 500) : '';
+  const reason = reasonText(body?.reason, 'The reason');
   if (reason.length < 5) {
     throw new ApiError(400, `Correcting ${what} needs a reason of at least 5 characters, sent as reason.`, CORRECTION_REASON_REQUIRED);
   }
@@ -430,6 +490,15 @@ function nextMonthStart(month: string): string {
 function expenseMoneyDay(e: Pick<Expense, 'status' | 'date' | 'datePaid' | 'voidedFromPaid'>): string | undefined {
   if (e.status === 'paid' || (e.status === 'void' && e.voidedFromPaid === true)) return e.datePaid || e.date;
   return undefined;
+}
+
+/**
+ * The day an UNPAID cost belongs to: the day the monthly report lists it as owed
+ * (due date, else cost date). A pending cost dated in a closed month changed the
+ * "unpaid at month end" memo of a statement already issued (QA 2026-11-21).
+ */
+function pendingCostDay(e: Pick<Expense, 'status' | 'date' | 'dueDate'>): string | undefined {
+  return e.status === 'pending' ? e.dueDate || e.date : undefined;
 }
 
 function requirePermission(req: AuthedRequest, action: GatedAction) {
@@ -482,19 +551,36 @@ function handler(fn: (req: AuthedRequest, res: express.Response) => Promise<unkn
 }
 
 function requireString(value: unknown, field: string, max = 500): string {
-  const v = String(value ?? '').trim();
+  if (value !== undefined && value !== null && typeof value !== 'string') bad(`${field} must be text.`);
+  const v = cleanText(typeof value === 'string' ? value : '');
   if (!v) bad(`${field} is required.`);
   if (v.length > max) bad(`${field} must be ${max} characters or fewer.`);
   return v;
 }
 
-function optionalString(value: unknown, max = 2000): string {
-  const v = String(value ?? '').trim();
-  return v.length > max ? v.slice(0, max) : v;
+/**
+ * Optional text. Over its maximum it is refused, never cut short: a note that loses its end looks saved. A multi-line
+ * note keeps its newlines and tabs; everything else is one line. Invisible and control characters are always removed.
+ */
+function optionalString(value: unknown, max = 2000, field = 'This text', multiline = false): string {
+  if (value !== undefined && value !== null && typeof value !== 'string') bad(`${field} must be text.`);
+  const v = cleanText(typeof value === 'string' ? value : '', multiline);
+  if (v.length > max) bad(`${field} must be ${max} characters or fewer.`);
+  return v;
+}
+
+/** A free-text reason is capped (500) so the audit trail cannot be bloated; a note is capped at 2000 where it is read. */
+const REASON_MAX = 500;
+function reasonText(value: unknown, field: string): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') bad(`${field} must be text.`);
+  const v = cleanText(value);
+  if (v.length > REASON_MAX) bad(`${field} must be ${REASON_MAX} characters or fewer.`);
+  return v;
 }
 
 function requireEnum<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
-  const v = String(value ?? '') as T;
+  const v = (typeof value === 'string' ? value : '') as T;
   if (!allowed.includes(v)) bad(`${field} must be one of: ${allowed.join(', ')}.`);
   return v;
 }
@@ -532,8 +618,43 @@ const UNREADABLE_AMOUNT = 'is not a figure I can read. Enter it plainly, such as
  * bill; it is a row somebody half-filled in, and it would sit in the register
  * reconciling to nothing.
  */
-function requireSignedAmount(value: unknown, field: string): number {
+function readMoney(value: unknown, field: string): number | null {
   const amount = parseMoneyInput(value);
+  // A fraction of a cent is refused, not rounded: 100.005 stored as 100.01 is a figure nobody typed.
+  if (amount !== null && hasExtraDecimals(value)) bad(`${field} has more than two decimal places. Enter whole cents, such as 50000.25.`);
+  return amount;
+}
+
+/**
+ * A plain figure by the same grammar as money (not Number(), which reads "0x10", "1e3", [5] and true), or NaN.
+ * For entitlement, due days and the exchange rate. A fraction of a cent is unreadable here too.
+ */
+function strictNumber(value: unknown): number {
+  if (hasExtraDecimals(value)) return NaN;
+  return parseMoneyInput(value) ?? NaN;
+}
+
+/** A meter reading: a plain figure, never negative. Present but unreadable is refused, never read as zero. */
+function readMeter(value: unknown, field: string): number {
+  const n = strictNumber(value);
+  if (!Number.isFinite(n)) bad(`${field} is not a figure I can read. Enter the meter figure plainly, such as 1250 or 1250.5.`);
+  if (n < 0) bad(`${field} cannot be negative.`);
+  return n;
+}
+
+/**
+ * Money going OUT is never assumed. A missing figure used to mean "the whole receipt" or "the whole deposit", so a
+ * form that lost a field refunded everything. The screens always send the figure; this refuses a request that does not.
+ */
+function explicitAmount(value: unknown, field: string): unknown {
+  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+    bad(`${field} is required. State the figure; it is never assumed to be the whole amount.`);
+  }
+  return value;
+}
+
+function requireSignedAmount(value: unknown, field: string): number {
+  const amount = readMoney(value, field);
   if (amount === null) bad(`${field} ${UNREADABLE_AMOUNT}`);
   if (amount === 0) {
     bad(`${field} cannot be zero. Enter what was charged, or a negative figure for a credit.`);
@@ -543,7 +664,7 @@ function requireSignedAmount(value: unknown, field: string): number {
 }
 
 function requirePositiveAmount(value: unknown, field: string): number {
-  const amount = parseMoneyInput(value);
+  const amount = readMoney(value, field);
   if (amount === null) bad(`${field} ${UNREADABLE_AMOUNT}`);
   if (!(amount > 0)) bad(`${field} must be greater than zero.`);
   if (amount > 1_000_000_000) bad(`${field} is implausibly large. Please check the figure.`);
@@ -555,8 +676,8 @@ function requirePositiveAmount(value: unknown, field: string): number {
  * must look like a single address, because it ends up in mailto: links where '?bcc=' or '&subject=' would add headers.
  */
 function emailField(next: unknown, existing: unknown, field: string): string {
-  const raw = optionalString(next ?? existing, 200);
-  if (raw === optionalString(existing, 200)) return raw;
+  const raw = optionalString(next ?? existing, 200, field);
+  if (raw === optionalString(existing, 200, field)) return raw;
   if (!raw) return '';
   if (!/^[^\s@?&=;,<>"'#%]+@[^\s@?&=;,<>"'#%]+\.[^\s@?&=;,<>"'#%]+$/.test(raw)) bad(`${field} is not a single e-mail address.`);
   return raw;
@@ -573,16 +694,22 @@ function emailField(next: unknown, existing: unknown, field: string): string {
  */
 function optionalAmount(value: unknown, field: string, fallback: number): number {
   if (value === undefined || value === null || value === '') return round2(fallback);
-  const amount = parseMoneyInput(value);
+  const amount = readMoney(value, field);
   if (amount === null) bad(`${field} ${UNREADABLE_AMOUNT}`);
   if (amount < 0) bad(`${field} cannot be negative.`);
   if (amount > 1_000_000_000) bad(`${field} is implausibly large. Please check the figure.`);
   return amount;
 }
 
+/** A month as typed, if it was typed as text: ["2026-10"] used to be read through String() and pass as 2026-10. */
+function monthText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function requireDay(value: unknown, field: string): string {
-  const v = String(value ?? '').trim();
-  if (!isValidDay(v)) bad(`${field} must be a valid date (YYYY-MM-DD).`);
+  // A date is text: ["2026-07-01"] used to be read through String() and pass.
+  const v = typeof value === 'string' ? value.trim() : '';
+  if (!isValidDay(v)) bad(`${field} must be a valid date (YYYY-MM-DD) between 2000 and 2100.`);
   return v;
 }
 
@@ -744,12 +871,35 @@ const THROTTLE_WINDOW_MS = 15 * 60 * 1000;
  * There is deliberately no per-username bucket: that one let anybody lock a real
  * user out of their account from anywhere on the network.
  */
-const loginThrottle = new LoginThrottle();
+const loginThrottle = new LoginThrottle(Date.now, { ipCap: envLimit('VDS_LOGIN_IP_CAP', 10), globalCap: envLimit('VDS_LOGIN_GLOBAL_CAP', 300) });
 
-function throttledError(retryAfterMs: number): ApiError {
+function throttledError(retryAfterMs: number, scope: 'device' | 'pair' | 'address' | 'global' = 'pair'): ApiError {
   const secs = Math.max(1, Math.ceil(retryAfterMs / 1000));
   const wait = secs >= 90 ? `${Math.ceil(secs / 60)} minutes` : `${secs} seconds`;
-  return new ApiError(429, `Too many failed sign-in attempts from this computer. Wait ${wait} and try again, or ask an Administrator to clear it.`, 'sign-in-throttled');
+  const who = scope === 'global' ? 'the system' : scope === 'address' ? 'this network address' : 'this computer';
+  return new ApiError(429, `Too many failed sign-in attempts from ${who}. Wait ${wait} and try again, or ask an Administrator to clear it.`, 'sign-in-throttled');
+}
+
+/**
+ * Request-rate limits, far above anything a person at a desk does and meant only to stop a script (see
+ * server/rateLimit.ts). Writes are counted per signed-in account and per address; sign-in attempts per address.
+ * Environment variables VDS_RATE_* change them (the test suite raises them for its heaviest simulations).
+ */
+const RATE_WINDOW_MS = 60 * 1000;
+const writesPerUser = new RateLimiter(envLimit('VDS_RATE_WRITES_PER_USER_MIN', 1200), RATE_WINDOW_MS);
+const writesPerAddress = new RateLimiter(envLimit('VDS_RATE_WRITES_PER_ADDRESS_MIN', 2400), RATE_WINDOW_MS);
+/*
+ * Ro, 2026-11-21: "300 is too much per minute. drop to 10 for failed sign ins." FAILED sign-ins are limited to 10 a
+ * minute per address (on top of the 15-minute caps in server/loginThrottle.ts). Successful sign-ins are not counted
+ * there, so an office signing several people in is never refused; all attempts together are capped at 60 a minute
+ * per address, which no person reaches.
+ */
+const loginsPerAddress = new RateLimiter(envLimit('VDS_RATE_LOGINS_PER_ADDRESS_MIN', 60), RATE_WINDOW_MS);
+const failedLoginsPerAddress = new RateLimiter(envLimit('VDS_RATE_FAILED_LOGINS_PER_ADDRESS_MIN', 10), RATE_WINDOW_MS);
+
+function rateLimited(res: express.Response, retryAfterMs: number) {
+  res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+  return res.status(429).json({ error: 'Too many requests too quickly. Wait a moment and try again.', code: 'rate-limited' });
 }
 
 /** Refuse while this (address, username) pair is blocked; the first refusal of a block is audit-logged. */
@@ -822,50 +972,83 @@ function noteFailedLogin(ip: string, username: string, kind: 'refused' | 'locked
   });
 }
 
+app.use('/api/auth/login', (req, res, next) => {
+  if (req.method !== 'POST') return next();
+  const failed = failedLoginsPerAddress.isBlocked(req.ip || 'unknown');
+  if (!failed.ok) return rateLimited(res, failed.retryAfterMs);
+  const r = loginsPerAddress.hit(req.ip || 'unknown');
+  return r.ok ? next() : rateLimited(res, r.retryAfterMs);
+});
+
 app.post(
   '/api/auth/login',
   handler(async (req, res) => {
     if (typeof req.body?.username !== 'string' || typeof req.body?.password !== 'string') bad('Username and password are required.');
     // Capped before it is throttled, counted or written to the audit trail by anyone who has not signed in.
     const username = req.body.username.trim().toLowerCase().slice(0, 120);
-    const password = String(req.body.password).slice(0, 1000);
+    // Longer than any password can be set to: refused as an ordinary failed sign-in, never cut short and compared.
+    const tooLong = req.body.password.length > MAX_PASSWORD_LENGTH;
+    const password = req.body.password.slice(0, MAX_PASSWORD_LENGTH);
     if (!username || !password) bad('Username and password are required.');
     const ip = req.ip || 'unknown';
-    // The first refusal of each block is recorded (inside throttleLogin): it is the
-    // difference between somebody fumbling their own password and somebody working
-    // through a list.
-    throttleLogin(ip, username, res);
-    const firstOfRun = loginThrottle.failuresFor(ip, username) === 0;
 
-    // The password work happens OFF the event loop (see verifyPasswordAsync), before the write begins, so a flood of
-    // sign-in attempts queues on the thread pool instead of freezing every other request. Same work either way for a
-    // missing account, so the clock still does not reveal which usernames exist.
     const candidate = getDb().users.find(u => u.username.toLowerCase() === username);
-    let verified = false;
-    if (!candidate || !candidate.active) await burnPasswordCheckAsync(password);
-    else verified = await verifyPasswordAsync(password, candidate.passwordHash, candidate.passwordSalt);
+    // A browser that has signed in as THIS user before is counted in its own bucket, which nobody else can spend
+    // from or block; every other browser shares the stricter per-address buckets (server/loginThrottle.ts).
+    const deviceCookie = readDeviceCookie(req);
+    const deviceKey = candidate ? knownDeviceKey(getDb(), candidate.id, deviceCookie) : null;
 
-    const result = await transaction(db => {
-      if (!verified || !candidate) return null;
-      const user = db.users.find(u => u.id === candidate.id);
-      // The account may have been deactivated or its password changed while the check ran.
-      if (!user || !user.active || user.passwordHash !== candidate.passwordHash) return null;
-      const session = createSession(db, user);
-      user.lastLoginAt = new Date().toISOString();
-      addAudit(db, user.name, user.role, 'Signed in', 'Session', user.username, '', '');
-      return { token: session.token, user: toSessionUser(db, user) };
-    });
+    // The attempt is accounted for NOW, before the (asynchronous) password check, and handed back if the password is
+    // right. Counting only after the check let a burst of simultaneous guesses all pass it.
+    const reservation = loginThrottle.reserve(ip, username, deviceKey);
+    if (!reservation.allowed) {
+      if (reservation.firstRefusal) noteFailedLogin(ip, username, 'locked-out', reservation.retryAfterMs);
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil(reservation.retryAfterMs / 1000))));
+      throw throttledError(reservation.retryAfterMs, reservation.scope);
+    }
+
+    let result: Awaited<ReturnType<typeof signIn>> = null;
+    try {
+      // The password work happens OFF the event loop (see verifyPasswordAsync), before the write begins, so a flood of
+      // sign-in attempts queues on the thread pool instead of freezing every other request. Same work either way for a
+      // missing account, so the clock still does not reveal which usernames exist.
+      let verified = false;
+      if (!candidate || !candidate.active || tooLong) await burnPasswordCheckAsync(password);
+      else verified = await verifyPasswordAsync(password, candidate.passwordHash, candidate.passwordSalt);
+      result = await signIn(verified, candidate, deviceCookie);
+    } catch (err) {
+      // Not a wrong password, not a right one: the guess stays counted (it cannot be told apart from one).
+      reservation.settle(false);
+      throw err;
+    }
 
     if (!result) {
-      loginThrottle.fail(ip, username);
-      if (firstOfRun) noteFailedLogin(ip, username, 'refused');
+      reservation.settle(false);
+      failedLoginsPerAddress.hit(ip);
+      if (reservation.firstOfRun) noteFailedLogin(ip, username, 'refused');
       throw new ApiError(401, 'Incorrect username or password.');
     }
-    loginThrottle.succeed(ip, username);
+    reservation.settle(true);
     setSessionCookie(res, result.token, isRequestSecure(req));
+    if (result.newDeviceId) setDeviceCookie(res, result.newDeviceId, isRequestSecure(req));
     res.json({ user: result.user });
   })
 );
+
+async function signIn(verified: boolean, candidate: StoredUserLike | undefined, deviceCookie: string | undefined) {
+  return transaction(db => {
+    if (!verified || !candidate) return null;
+    const user = db.users.find(u => u.id === candidate.id);
+    // The account may have been deactivated or its password changed while the check ran.
+    if (!user || !user.active || user.passwordHash !== candidate.passwordHash) return null;
+    const session = createSession(db, user);
+    user.lastLoginAt = new Date().toISOString();
+    const newDeviceId = rememberDevice(db, user.id, deviceCookie);
+    addAudit(db, user.name, user.role, 'Signed in', 'Session', user.username, '', '');
+    return { token: session.token, user: toSessionUser(db, user), newDeviceId };
+  });
+}
+type StoredUserLike = Database['users'][number];
 
 app.post(
   '/api/auth/logout',
@@ -918,15 +1101,15 @@ app.use('/api/backup/restore', express.json({ limit: '60mb' }));
  * happy to accept work from an account still on its handed-over password, so
  * anyone who knew it could record payments as that member of staff.
  *
- * Reads stay open so the app can render, and so does signing out. Everything that
- * writes is refused until the password has actually been changed.
+ * Such a session may change its password and sign out, and nothing else: not even a read. It used to be allowed
+ * every read ("so the app can render"), which handed all the money data and the audit trail to anyone holding
+ * the password an administrator had issued. The screen for choosing a new password calls only the two routes
+ * below (and /api/auth/me, which sits before this guard), and loads the records after the change.
  */
 const PASSWORD_CHANGE_ALLOWED = new Set(['/auth/change-password', '/auth/logout']);
 
 app.use('/api', (req: AuthedRequest, res, next) => {
   if (!req.auth?.user.mustChangePassword) return next();
-  // Reads stay open so the app can render, except the one that hands over the whole set of records.
-  if (!MUTATING.has(req.method) && !/^\/backup\/(download|snapshot)/.test(req.path)) return next();
   if (PASSWORD_CHANGE_ALLOWED.has(req.path)) return next();
   return res.status(403).json({
     error: 'Choose a new password before recording anything. Your account is still on the password it was issued with.',
@@ -934,13 +1117,25 @@ app.use('/api', (req: AuthedRequest, res, next) => {
   });
 });
 
+// Writes are limited per account and per address (see RateLimiter above). Before the idempotency replay on purpose:
+// a replayed answer is still a request.
+app.use('/api', (req: AuthedRequest, res, next) => {
+  if (!MUTATING.has(req.method)) return next();
+  const byUser = writesPerUser.hit(req.auth?.user.id ?? 'anonymous');
+  if (!byUser.ok) return rateLimited(res, byUser.retryAfterMs);
+  const byAddress = writesPerAddress.hit(req.ip || 'unknown');
+  if (!byAddress.ok) return rateLimited(res, byAddress.retryAfterMs);
+  next();
+});
+
 app.use('/api', idempotency);
 
 app.post(
   '/api/auth/change-password',
   handler(async (req: AuthedRequest, res) => {
-    const currentPassword = String(req.body?.currentPassword ?? '');
-    const newPassword = String(req.body?.newPassword ?? '');
+    if (typeof req.body?.currentPassword !== 'string' || typeof req.body?.newPassword !== 'string') bad('The current and new passwords must be text.');
+    const currentPassword = req.body.currentPassword;
+    const newPassword = req.body.newPassword;
     const complaint = passwordComplaint(newPassword);
     if (complaint) bad(complaint);
     if (currentPassword === newPassword) bad('The new password must be different from the current one.');
@@ -966,6 +1161,27 @@ app.post(
     });
     loginThrottle.succeed(req.ip || 'unknown', `change:${req.auth!.user.id}`);
     res.json({ success: true });
+  })
+);
+
+/**
+ * Sign out everywhere: end every session this account holds, on every machine, including this one. For a password
+ * typed on somebody else's screen, or a cookie that may have been copied. Audited.
+ */
+app.post(
+  '/api/auth/logout-everywhere',
+  handler(async (req: AuthedRequest, res) => {
+    const who = actor(req);
+    const username = req.auth!.user.username;
+    const userId = req.auth!.user.id;
+    const ended = await transaction(db => {
+      const before = db.sessions.filter(sess => sess.userId === userId).length;
+      destroyAllSessionsFor(db, userId);
+      addAudit(db, who.name, who.role, `Signed out everywhere (${before} session${before === 1 ? '' : 's'} ended)`, 'Session', username, '', '');
+      return before;
+    });
+    clearSessionCookie(res);
+    res.json({ success: true, ended });
   })
 );
 
@@ -1000,6 +1216,15 @@ app.post(
   })
 );
 
+/** A feed address with its path and token removed: https://www.airbnb.com/… */
+function maskedFeedUrl(url: string): string {
+  try {
+    return `${new URL(url).origin}/…`;
+  } catch {
+    return '';
+  }
+}
+
 /** Full database snapshot for the signed-in user. Password material never leaves the server. */
 app.get(
   '/api/db',
@@ -1022,19 +1247,29 @@ app.get(
       ownerships: db.ownerships || [],
       auditLogs: db.auditLogs.slice(0, 2000),
       unitActivities: db.unitActivities,
-      settings: db.settings,
-      users: db.users.map(u => ({
-        id: u.id,
-        name: u.name,
-        username: u.username,
-        email: u.email,
-        position: u.position,
-        role: u.role,
-        active: u.active,
-        mustChangePassword: u.mustChangePassword,
-        createdAt: u.createdAt,
-        lastLoginAt: u.lastLoginAt
-      })),
+      // The calendar feed addresses carry a secret token (anyone holding one can read the calendar). Only a role
+      // that manages settings sees them whole; the rest get the host, which is all a screen of theirs ever shows.
+      settings: can(req.auth!, 'manage_settings')
+        ? db.settings
+        : { ...db.settings, icalFeeds: (db.settings.icalFeeds || []).map(f => ({ ...f, url: maskedFeedUrl(f.url) })) },
+      // Staff accounts are managed only by an administrator, and only that screen reads this list. Everyone else
+      // gets names and nothing that could be typed into the sign-in screen (usernames) or used to reach a person.
+      users: db.users.map(u =>
+        req.auth!.user.role === 'ADMINISTRATOR'
+          ? {
+              id: u.id,
+              name: u.name,
+              username: u.username,
+              email: u.email,
+              position: u.position,
+              role: u.role,
+              active: u.active,
+              mustChangePassword: u.mustChangePassword,
+              createdAt: u.createdAt,
+              lastLoginAt: u.lastLoginAt
+            }
+          : { id: u.id, name: u.name, role: u.role, active: u.active }
+      ),
       currentUser: toSessionUser(db, req.auth!.user)
     });
   })
@@ -1052,7 +1287,7 @@ app.post(
     const username = requireString(req.body?.username, 'Username', 40).toLowerCase();
     if (!/^[a-z0-9._-]+$/.test(username)) bad('Username may only contain letters, numbers, dots, dashes and underscores.');
     const role = requireEnum(req.body?.role, ['ADMINISTRATOR', 'MANAGER', 'FINANCE_OFFICER', 'JUNIOR_OFFICER'] as const, 'Role');
-    const password = String(req.body?.password ?? '');
+    const password = req.body?.password as string;
     const complaint = passwordComplaint(password);
     if (complaint) bad(complaint);
 
@@ -1065,8 +1300,8 @@ app.post(
         id: `user-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         name,
         username,
-        email: optionalString(req.body?.email, 200),
-        position: optionalString(req.body?.position, 120) || 'Staff',
+        email: optionalString(req.body?.email, 200, 'Email'),
+        position: optionalString(req.body?.position, 120, 'Position') || 'Staff',
         role,
         active: true,
         mustChangePassword: true,
@@ -1099,12 +1334,13 @@ app.put(
       const before = { name: user.name, role: user.role, active: user.active, position: user.position };
 
       if (req.body?.name !== undefined) user.name = requireString(req.body.name, 'Full name', 120);
-      if (req.body?.email !== undefined) user.email = optionalString(req.body.email, 200);
-      if (req.body?.position !== undefined) user.position = optionalString(req.body.position, 120);
+      if (req.body?.email !== undefined) user.email = optionalString(req.body.email, 200, 'Email');
+      if (req.body?.position !== undefined) user.position = optionalString(req.body.position, 120, 'Position');
       if (req.body?.role !== undefined) {
         user.role = requireEnum(req.body.role, ['ADMINISTRATOR', 'MANAGER', 'FINANCE_OFFICER', 'JUNIOR_OFFICER'] as const, 'Role');
       }
-      if (req.body?.active !== undefined) user.active = !!req.body.active;
+      if (req.body?.active !== undefined && typeof req.body.active !== 'boolean') bad('Active must be true or false.');
+      if (req.body?.active !== undefined) user.active = req.body.active;
 
       // Never allow the last active administrator to be removed or demoted.
       const activeAdmins = db.users.filter(u => u.role === 'ADMINISTRATOR' && u.active);
@@ -1130,7 +1366,7 @@ app.post(
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'manage_users');
     const { id } = req.params;
-    const password = String(req.body?.password ?? '');
+    const password = req.body?.password as string;
     const complaint = passwordComplaint(password);
     if (complaint) bad(complaint);
 
@@ -1142,10 +1378,31 @@ app.post(
       user.passwordSalt = salt;
       user.mustChangePassword = true;
       destroyAllSessionsFor(db, user.id);
+      // The password the browsers were trusted for is gone, so is their standing at the sign-in throttle.
+      db.knownDevices = (db.knownDevices || []).filter(d => d.userId !== user.id);
       const who = actor(req);
       addAudit(db, who.name, who.role, `Reset the password for "${user.username}"`, 'User', user.id, '', 'Password reset; all sessions revoked.');
     });
     res.json({ success: true });
+  })
+);
+
+/** Administrator: end every session of one member of staff (a lost phone, a shared screen, a leaver). Audited. */
+app.post(
+  '/api/users/:id/sign-out-everywhere',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'manage_users');
+    const { id } = req.params;
+    const ended = await transaction(db => {
+      const user = db.users.find(u => u.id === id);
+      if (!user) throw new ApiError(404, 'Staff account not found.');
+      const before = db.sessions.filter(sess => sess.userId === user.id).length;
+      destroyAllSessionsFor(db, user.id);
+      const who = actor(req);
+      addAudit(db, who.name, who.role, `Signed "${user.username}" out everywhere (${before} session${before === 1 ? '' : 's'} ended)`, 'User', user.id, '', '');
+      return before;
+    });
+    res.json({ success: true, ended });
   })
 );
 
@@ -1190,8 +1447,11 @@ app.post(
   '/api/periods/close',
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'modify_settled');
-    const through = String(req.body?.through || '');
-    if (!isValidMonth(through)) bad('Say which month to close through, as YYYY-MM.');
+    const through = monthText(req.body?.through);
+    if (!isValidMonth(through)) bad('Say which month to close through, as YYYY-MM, between 2000-01 and 2100-12.');
+    // Closing through a month before the books begin seals nothing and makes the books look closed.
+    const booksBegin = getDb().settings.booksBeginOn;
+    if (booksBegin && through < booksBegin.slice(0, 7)) bad(`The books begin on ${booksBegin}, so they cannot be closed through ${through}, which is before that.`);
     const thisMonth = today().substring(0, 7);
     if (through >= thisMonth) bad('Only a month that has finished can be closed.');
     const who = actor(req);
@@ -1220,7 +1480,8 @@ app.post(
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'modify_settled');
     const reason = requireString(req.body?.reason, 'A reason for reopening', 500);
-    const to = req.body?.through ? String(req.body.through) : '';
+    if (req.body?.through && typeof req.body.through !== 'string') bad('Say which month to leave closed through, as YYYY-MM, or leave it empty to reopen everything.');
+    const to = req.body?.through ? monthText(req.body.through) : '';
     if (to && !isValidMonth(to)) bad('Say which month to leave closed through, as YYYY-MM, or leave it empty to reopen everything.');
     const who = actor(req);
     const result = await transaction(db => {
@@ -1295,7 +1556,7 @@ app.post(
   handler((req: AuthedRequest, res) => {
     requirePermission(req, 'manage_settings');
     if (req.auth!.user.role !== 'ADMINISTRATOR') throw new ApiError(403, 'Only an administrator can test a backup folder.');
-    const dir = optionalString(req.body?.dir, 400);
+    const dir = optionalString(req.body?.dir, 400, 'Dir');
     assertSafeBackupFolder(dir);
     res.json({ success: true, ...checkBackupTarget(dir) });
   })
@@ -1353,13 +1614,17 @@ app.get(
       users: db.users.map(u => ({ id: u.id, name: u.name, username: u.username, role: u.role, active: u.active }))
     };
     const stamp = today();
+    // Signed with the audit key (kept beside db.json, never in a backup), so a restore can tell this file from one
+    // somebody edited or made up. Unsigned only if the key is absent.
+    const signature = signSnapshot(snapshot);
+    const signed = signature ? { ...snapshot, snapshotSignature: signature } : snapshot;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="villaggio-del-sol-records-${stamp}.json"`);
     const who = actor(req);
     auditInBackground('a records snapshot download', db2 => {
       addAudit(db2, who.name, who.role, 'Downloaded a records snapshot', 'Backup', 'download', '', `Snapshot dated ${stamp}`);
     });
-    res.send(JSON.stringify(snapshot, null, 2));
+    res.send(JSON.stringify(signed, null, 2));
   })
 );
 
@@ -1423,10 +1688,50 @@ app.post(
       payments: now.payments.length,
       expenses: now.expenses.length
     };
-    if (body.dryRun) return res.json({ success: true, dryRun: true, summary, present });
+    /*
+     * Was this file made by this installation, and untouched since? Snapshots and backups are signed with the audit
+     * key. A file that is unsigned (an older backup, a hand-made file, a copy from another machine) or whose
+     * signature does not match (edited after it was made) can still be restored, because the disaster that needs a
+     * restore is also the one that loses the key, but only knowingly: the screen says so, and the restore needs the
+     * confirmation and a reason, both written to the audit trail.
+     */
+    const signature = checkSnapshotSignature(file);
+    const signatureWarning =
+      signature === 'valid'
+        ? null
+        : signature === 'mismatch'
+          ? 'This file carries a signature and it does NOT match its contents: it was changed after it was made. Do not restore it unless you know who changed it and why.'
+          : signature === 'no-key'
+            ? 'This file is signed, but this machine has no audit key to check the signature with, so it cannot be told apart from a doctored copy.'
+            : 'This file is not signed, so it cannot be told apart from one somebody edited or made up (backups made before signing began are unsigned).';
+    const totals = { file: moneyTotals(file), current: moneyTotals(now) };
+    const rollback = closedMonthsRolledBack(now, file);
+    if (body.dryRun) return res.json({ success: true, dryRun: true, summary, present, totals, signature, warnings: signatureWarning ? [signatureWarning] : [], closedMonthsRolledBack: rollback });
 
     if (String(body.confirm ?? '').trim() !== 'RESTORE') {
       bad('Type the word RESTORE to confirm. Nothing was changed.');
+    }
+    const unsignedReason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : '';
+    if (signature !== 'valid') {
+      if (body.confirmUnsigned !== true || unsignedReason.length < 5) {
+        throw new ApiError(400, `${signatureWarning} To restore it anyway, confirm that you accept this and give a reason (at least 5 characters). Nothing was changed.`, 'restore-unsigned-needs-confirmation');
+      }
+    }
+
+    // A restore adopts the file's own seal. If the live books are closed LATER than the file, that would
+    // reopen sealed months: refused unless the request says so on purpose, with a reason that is audited.
+    let rollbackReason = '';
+    if (rollback) {
+      if (body.confirmRollbackClosedMonths !== true) {
+        throw new ApiError(
+          409,
+          `The books are closed through ${rollback.live}, but this backup ${rollback.file ? `was closed only through ${rollback.file}` : 'has no closed months'}. ` +
+            'Restoring it would reopen closed months and change money in statements already issued. Nothing was changed. ' +
+            'To go ahead anyway, confirm that closed months may be rolled back (confirmRollbackClosedMonths) and give a reason.',
+          'restore-reopens-closed-months'
+        );
+      }
+      rollbackReason = requireString(body.rollbackReason, 'A reason for rolling back closed months', 500);
     }
 
     const who = actor(req);
@@ -1434,6 +1739,28 @@ app.post(
       (db, safetyCopy) => {
         applyRestore(db, file);
         migrate(db);
+        // The seal must describe the restored records. The file's own seal is kept when it still matches
+        // them; one the file never had, or that does not match its own records, is recomputed (and said so).
+        let sealNote = '';
+        if (db.settings.closedThrough) {
+          const stored = db.settings.closeFingerprint || '';
+          if (!stored || currentFingerprintFor(db, db.settings.closedThrough, stored) !== stored) {
+            db.settings.closeFingerprint = ledgerFingerprint(db, db.settings.closedThrough);
+            sealNote = stored ? ' The close seal in the backup did not match its own records and was recomputed.' : ' The backup carried no close seal; one was made.';
+          }
+        }
+        if (rollback) {
+          addAudit(
+            db,
+            who.name,
+            who.role,
+            `Restore rolled the closed months back from ${rollback.live} to ${rollback.file || 'none'}: ${rollbackReason}`,
+            'Period',
+            rollback.live,
+            rollback.live,
+            rollback.file || 'open'
+          );
+        }
         addAudit(
           db,
           who.name,
@@ -1443,7 +1770,8 @@ app.post(
           'restore',
           `${present.charges} charges, ${present.payments} payments before`,
           `${source}, dated ${summary.madeAt}; ${summary.counts.charges} charges, ${summary.counts.payments} payments after. ` +
-            `A copy of the earlier records was kept at ${safetyCopy}.`
+            `A copy of the earlier records was kept at ${safetyCopy}.${sealNote}` +
+            (signature === 'valid' ? ' The file\'s signature was valid.' : ` The file was NOT verified (${signature}); restored on the administrator's confirmation. Reason: ${unsignedReason}`)
         );
         return safetyCopy;
       },
@@ -1460,6 +1788,7 @@ app.post(
       success: true,
       summary,
       safetyCopy,
+      signature,
       integrity: { ok: report.findings.length === 0, findings: report.findings.slice(0, 20).map(f => ({ code: f.code, severity: f.severity, message: f.message })) }
     });
   })
@@ -1479,8 +1808,8 @@ app.post(
     const settings = await transaction(db => {
       const before = JSON.parse(JSON.stringify(db.settings));
 
-      if (strataPlanNumber !== undefined) db.settings.strataPlanNumber = optionalString(strataPlanNumber, 40);
-      if (trn !== undefined) db.settings.trn = optionalString(trn, 40);
+      if (strataPlanNumber !== undefined) db.settings.strataPlanNumber = optionalString(strataPlanNumber, 40, 'Strata plan number');
+      if (trn !== undefined) db.settings.trn = optionalString(trn, 40, 'TRN');
 
       // Stored as "hide" so an older database, which has no such field, keeps
       // showing the card rather than silently losing it.
@@ -1500,7 +1829,7 @@ app.post(
        * way back.
        */
       if (booksBeginOn !== undefined) {
-        const value = optionalString(booksBeginOn, 10);
+        const value = optionalString(booksBeginOn, 10, 'The date the books begin');
         if (value && !isValidDay(value)) bad('The date the books begin must be a valid date (YYYY-MM-DD).');
         db.settings.booksBeginOn = value || undefined;
       }
@@ -1509,6 +1838,11 @@ app.post(
         const next = { ...db.settings.rolePermissions };
         for (const role of ['MANAGER', 'FINANCE_OFFICER', 'JUNIOR_OFFICER'] as const) {
           if (!rolePermissions[role]) continue;
+          if (typeof rolePermissions[role] !== 'object' || Array.isArray(rolePermissions[role])) bad(`The permissions for ${role} must be an object of true or false values.`);
+          // A string "false" is truthy: read through !! it would GRANT the permission. Only a real boolean is a setting.
+          for (const [permission, granted] of Object.entries(rolePermissions[role])) {
+            if (granted !== undefined && typeof granted !== 'boolean') bad(`The permission "${permission}" for ${role} must be true or false.`);
+          }
           const clean: RolePermissions = { ...noPermissions() };
           const existing = db.settings.rolePermissions?.[role];
           const VETO_ROLE_NAME: Record<string, string> = { FINANCE_OFFICER: 'Finance Officer', JUNIOR_OFFICER: 'Junior Officer' };
@@ -1550,18 +1884,20 @@ app.post(
         db.settings.rolePermissions = next;
       }
 
-      if (Array.isArray(vendors)) {
-        db.settings.vendors = vendors.map((v: unknown) => optionalString(v, 120)).filter(Boolean).slice(0, 200);
+      if (vendors !== undefined) {
+        if (!Array.isArray(vendors)) bad('Vendors must be a list.');
+        if (vendors.length > 200) bad('The vendor list is limited to 200 names. Remove some before adding more.');
+        db.settings.vendors = vendors.map((v: unknown) => optionalString(v, 120, 'A vendor name')).filter(Boolean);
       }
 
       if (fxRateJmdPerUsd !== undefined) {
-        const rate = Number(fxRateJmdPerUsd);
+        const rate = strictNumber(fxRateJmdPerUsd);
         // Bounded to a band a real rate could plausibly sit in. "Positive and
         // under a hundred thousand" let 0.0001 through, and the rate is not
         // decoration — it converts every USD figure in the owner statements and
         // the projections, so a slipped decimal quietly restates the accounts.
         if (!Number.isFinite(rate) || rate < 50 || rate > 1000) {
-          bad('The indicative exchange rate must be between 50 and 1000 JMD per USD. Check the figure.');
+          bad('The indicative exchange rate must be a figure with at most two decimals, between 50 and 1000 JMD per USD. Check the figure.');
         }
         db.settings.fxRateJmdPerUsd = round2(rate);
       }
@@ -1577,7 +1913,7 @@ app.post(
         // mean re-typing it every time it comes back. The response reports
         // reachability so the screen can say so, and each daily attempt records
         // its own outcome.
-        db.settings.backupDir = optionalString(backupDir, 400);
+        db.settings.backupDir = optionalString(backupDir, 400, 'The backup folder');
 
         /**
          * Mark the folder so the drive can be found again on another letter.
@@ -1606,7 +1942,7 @@ app.post(
  * Units and tenancies
  * ------------------------------------------------------------------ */
 
-const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+const sameName = (a: string, b: string) => nameKey(a) === nameKey(b);
 
 function activeTenancy(db: Database, unitId: string): Tenancy | undefined {
   return db.tenancies.find(t => t.unitId === unitId && t.status === 'active');
@@ -2252,21 +2588,11 @@ function syncOwnership(
    * lot keep their name and go on ageing under it, which is what Form 13B has to
    * report. The new proprietor is billed from the next posting onwards.
    *
-   * The seller's CREDIT does not pass to the buyer either: it would silently pay the
-   * buyer's contributions. Refuse until it is refunded to the seller.
+   * The seller's CREDIT does not pass to the buyer either. A payment pays only the payer's own levy
+   * (`accountBalance` allocates per owner on a villa with an ownership history), so money the seller paid ahead
+   * stays the seller's, to be settled between them outside the application. Ro, 2026-11-21: sales happen outside
+   * the app and a status change is never blocked over money; that is a matter for the parties, not the office.
    */
-  {
-    const { currency: maintCurrency, credit: sellerCredit } = creditHeldForOthers(db, unit, 'Maintenance', name);
-    if (sellerCredit > 0) {
-      throw new ApiError(
-        400,
-        `Villa ${unit.number} holds ${maintCurrency} ${sellerCredit} of maintenance paid in advance by ${current.ownerName}. ` +
-          `It would be used to pay ${name}'s contributions. Refund it to ${current.ownerName} before recording the sale.`,
-        'former-owner-credit'
-      );
-    }
-  }
-
   const before = { ...current };
   current.status = 'ended';
   current.endedOn = acquiredOn || stamp;
@@ -2712,7 +3038,7 @@ app.put(
         if (endedOn > today()) bad('The move-out date cannot be in the future. Record the move-out on the day the tenant leaves.');
         record.endedOn = endedOn;
         record.status = 'ended';
-        record.endReason = optionalString(body.endReason, 500) || record.endReason || 'Tenancy ended.';
+        record.endReason = optionalString(body.endReason, 500, 'End reason') || record.endReason || 'Tenancy ended.';
         record.closedBy = req.auth!.user.name;
         // Their final month was bought at move-in — do not charge it again.
         const closer = actor(req);
@@ -2743,7 +3069,7 @@ app.put(
         }
       }
       if (body.endReason !== undefined && record.status === 'ended') {
-        record.endReason = optionalString(body.endReason, 500);
+        record.endReason = optionalString(body.endReason, 500, 'End reason');
       }
 
       const who = actor(req);
@@ -2865,10 +3191,12 @@ app.post(
       if (!record) throw new ApiError(404, 'Tenancy record not found.');
       if (!record.depositAmount) throw new ApiError(400, 'No deposit is held for this tenancy.');
       if (record.depositReturnedOn) throw new ApiError(400, 'This deposit has already been reconciled.');
+      // Keeping a tenant's deposit is a decision about money already held: with co-signing on it needs a second person.
+      assertCosigned(db, req, body, `the deposit held for ${record.tenantName} is settled`);
 
       const before = { ...record };
       const withheld = optionalAmount(body.withheldAmount, 'The amount withheld', 0);
-      const returned = optionalAmount(body.returnedAmount, 'The amount returned', round2(record.depositAmount - withheld));
+      const returned = optionalAmount(explicitAmount(body.returnedAmount, 'The amount returned'), 'The amount returned', 0);
       const settledOn = requireDay(body.settledOn || today(), 'Date settled');
       if (settledOn > today()) bad('A deposit cannot be settled in the future.');
 
@@ -2878,7 +3206,7 @@ app.post(
             `That is ${record.depositCurrency} ${round2(withheld + returned)}.`
         );
       }
-      const reason = optionalString(body.withheldReason, 1000);
+      const reason = optionalString(body.withheldReason, REASON_MAX, 'Withheld reason');
       if (withheld > 0 && reason.length < 5) {
         bad('Give a reason for the amount withheld. It is kept permanently and is what justifies the deduction.');
       }
@@ -2912,7 +3240,7 @@ app.post(
     requirePermission(req, 'reverse_payment');
     const { id } = req.params;
     const body = req.body || {};
-    const reason = requireString(body.reason, 'A reason for the eviction', 800);
+    const reason = requireString(body.reason, 'A reason for the eviction', REASON_MAX);
     if (reason.length < 5) bad('Give a reason of at least 5 characters. It is stored permanently.');
     const effectiveDate = requireDay(body.effectiveDate || today(), 'Effective date');
     if (effectiveDate > today()) bad('The effective date cannot be in the future.');
@@ -2924,6 +3252,8 @@ app.post(
       if (record.startedOn && effectiveDate < record.startedOn) {
         bad('The eviction date cannot fall before the move-in date.');
       }
+      // An eviction writes off unpaid rent and can apply the deposit: with co-signing on, a second person approves it.
+      assertCosigned(db, req, body, `${record.tenantName} is evicted and the unpaid rent written off`);
       const before = { ...record };
       const who = actor(req);
 
@@ -3002,6 +3332,11 @@ app.put(
       const original = db.units[idx];
 
       const number = requireString(body.number ?? original.number, 'Villa number', 40);
+      // 'General' and 'Office' are the property's own locations on an expense. A villa wearing either label would make
+      // a cost sent as unitNumber 'General' ambiguous: the villa's, or the property's?
+      if (number !== original.number && PROPERTY_LOCATIONS.some(loc => loc.toLowerCase() === number.replace(/\s+/g, '').toLowerCase())) {
+        throw new ApiError(400, `"${number}" is the name of a property location on expenses, so a villa cannot be labelled that. Choose another label.`, 'reserved-villa-label');
+      }
       if (db.units.some(u => u.id !== id && u.number.toLowerCase() === number.toLowerCase())) {
         throw new ApiError(400, `Another villa is already labelled "${number}". Unit labels must be unique.`);
       }
@@ -3066,7 +3401,7 @@ app.put(
        * They are voided with the reason recorded, and the month is re-posted or
        * the balance re-raised by hand in the new currency.
        */
-      const currencyChangeIntent = optionalString(body.currencyChangeIntent, 40);
+      const currencyChangeIntent = optionalString(body.currencyChangeIntent, 40, 'Currency change intent');
       const redenominated: { category: ChargeCategory; from: Currency; to: Currency }[] = [];
       if (chargeCurrency(original, 'Rent') !== chargeCurrency({ ...original, currency, maintCurrency }, 'Rent')) {
         redenominated.push({ category: 'Rent', from: chargeCurrency(original, 'Rent'), to: currency });
@@ -3221,10 +3556,10 @@ app.put(
        */
       const readEntitlement = (): number | undefined => {
         if (body.entitlement === undefined) return original.entitlement;
-        const raw = String(body.entitlement).trim();
-        if (raw === '') return undefined;
-        const value = Number(raw);
-        if (!Number.isFinite(value) || value <= 0) bad('Unit entitlement must be a number greater than zero, or left blank.');
+        if ((typeof body.entitlement === 'string' && body.entitlement.trim() === '')) return undefined;
+        // Checked as it will be stored: "0.001" is not a share, and used to round to a stored 0.
+        const value = strictNumber(body.entitlement);
+        if (!Number.isFinite(value) || round2(value) <= 0) bad('Unit entitlement must be a number greater than zero, or left blank.');
         if (value > 1_000_000) bad('Unit entitlement is implausibly large. Please check the figure against the strata plan.');
         return round2(value);
       };
@@ -3239,7 +3574,7 @@ app.put(
        */
       const clampDay = (v: unknown, fallback: number, field: string) => {
         if (v === undefined || v === null || v === '') return fallback;
-        const n = Number(v);
+        const n = strictNumber(v);
         if (!Number.isInteger(n) || n < 1 || n > 31) bad(`${field} must be a whole day of the month, from 1 to 31.`);
         return n;
       };
@@ -3247,7 +3582,7 @@ app.put(
       // Meter id is administrator-only, mirroring the disabled field in the UI —
       // the client control alone was not an enforcement point.
       const meterNumber =
-        req.auth!.user.role === 'ADMINISTRATOR' ? optionalString(body.meterNumber ?? original.meterNumber, 60) : original.meterNumber;
+        req.auth!.user.role === 'ADMINISTRATOR' ? optionalString(body.meterNumber ?? original.meterNumber, 60, 'Meter number') : original.meterNumber;
 
       const keepsTenant = status === 'long-term';
       const updatedUnit: Unit = {
@@ -3255,15 +3590,15 @@ app.put(
         number,
         ownerName: requireString(body.ownerName ?? original.ownerName, 'Owner name', 120),
         ownerEmail: emailField(body.ownerEmail, original.ownerEmail, 'The owner e-mail'),
-        ownerPhone: optionalString(body.ownerPhone ?? original.ownerPhone, 60),
-        tenantName: keepsTenant ? optionalString(body.tenantName ?? original.tenantName, 120) : '',
+        ownerPhone: optionalString(body.ownerPhone ?? original.ownerPhone, 60, 'Owner phone'),
+        tenantName: keepsTenant ? optionalString(body.tenantName ?? original.tenantName, 120, 'Tenant name') : '',
         tenantEmail: keepsTenant ? emailField(body.tenantEmail, original.tenantEmail, 'The tenant e-mail') : '',
-        tenantPhone: keepsTenant ? optionalString(body.tenantPhone ?? original.tenantPhone, 60) : '',
+        tenantPhone: keepsTenant ? optionalString(body.tenantPhone ?? original.tenantPhone, 60, 'Tenant phone') : '',
         status,
         monthlyRent,
         monthlyMaintenance,
         entitlement: readEntitlement(),
-        strataLotNumber: optionalString(body.strataLotNumber ?? original.strataLotNumber, 40),
+        strataLotNumber: optionalString(body.strataLotNumber ?? original.strataLotNumber, 40, 'Strata lot number'),
         /*
          * Retired 2026-11-13, and deliberately NOT writable any more.
          *
@@ -3277,16 +3612,25 @@ app.put(
         currency,
         maintCurrency,
         meterNumber,
-        notes: optionalString(body.notes ?? original.notes, 4000),
+        notes: optionalString(body.notes ?? original.notes, 4000, 'Notes', true),
         rentDueDay: clampDay(body.rentDueDay, original.rentDueDay || 1, 'The rent due day'),
         maintDueDay: clampDay(body.maintDueDay, original.maintDueDay || 1, 'The maintenance due day'),
-        ownerEmergencyName: optionalString(body.ownerEmergencyName ?? original.ownerEmergencyName, 120),
-        ownerEmergencyPhone: optionalString(body.ownerEmergencyPhone ?? original.ownerEmergencyPhone, 60),
+        ownerEmergencyName: optionalString(body.ownerEmergencyName ?? original.ownerEmergencyName, 120, 'Owner emergency name'),
+        ownerEmergencyPhone: optionalString(body.ownerEmergencyPhone ?? original.ownerEmergencyPhone, 60, 'Owner emergency phone'),
         ownerEmergencyEmail: emailField(body.ownerEmergencyEmail, original.ownerEmergencyEmail, 'The owner emergency e-mail'),
-        tenantEmergencyName: keepsTenant ? optionalString(body.tenantEmergencyName ?? original.tenantEmergencyName, 120) : '',
-        tenantEmergencyPhone: keepsTenant ? optionalString(body.tenantEmergencyPhone ?? original.tenantEmergencyPhone, 60) : '',
+        tenantEmergencyName: keepsTenant ? optionalString(body.tenantEmergencyName ?? original.tenantEmergencyName, 120, 'Tenant emergency name') : '',
+        tenantEmergencyPhone: keepsTenant ? optionalString(body.tenantEmergencyPhone ?? original.tenantEmergencyPhone, 60, 'Tenant emergency phone') : '',
         tenantEmergencyEmail: keepsTenant ? emailField(body.tenantEmergencyEmail, original.tenantEmergencyEmail, 'The tenant emergency e-mail') : ''
       };
+
+      // A let villa with a tenant and no rent bills nothing, every month, with nobody told (post-month skips it).
+      if (status === 'long-term' && updatedUnit.tenantName && !(round2(monthlyRent) > 0)) {
+        throw new ApiError(
+          400,
+          `${getUnitDisplayName(number)} is let to ${updatedUnit.tenantName} but has no monthly rent. Enter the rent, or take the tenant off the villa, so that it can be billed.`,
+          'rent-required'
+        );
+      }
 
       db.units[idx] = updatedUnit;
 
@@ -3462,11 +3806,11 @@ function refuseIfMonthsSettled(db: Database, unit: Unit, from: string, before: n
 
 /** Read and validate one dated change from a request body against a villa. */
 function readFeeChange(unit: Unit, body: Record<string, unknown>): FeeChange {
-  const effectiveFrom = String(body.effectiveFrom ?? '').trim();
+  const effectiveFrom = monthText(body.effectiveFrom);
   if (!isValidMonth(effectiveFrom)) {
     throw new ApiError(400, 'The month a levy change takes effect must be given as YYYY-MM, for example 2027-01.', FEE_CODES.monthFormat);
   }
-  const amount = parseMoneyInput(body.amount);
+  const amount = hasExtraDecimals(body.amount) ? null : parseMoneyInput(body.amount);
   if (amount === null || !(amount > 0) || amount > FEE_MAX) {
     throw new ApiError(400, 'A levy change must be an amount greater than zero.', FEE_CODES.amountInvalid);
   }
@@ -3575,7 +3919,7 @@ app.post(
     const body = req.body || {};
     const currency = requireCurrency(body.currency, 'Levy currency');
     const wanted = Array.isArray(body.unitIds) ? new Set(body.unitIds.map(String)) : null;
-    const effectiveFrom = String(body.effectiveFrom ?? '').trim();
+    const effectiveFrom = monthText(body.effectiveFrom);
     if (!isValidMonth(effectiveFrom)) {
       throw new ApiError(400, 'The month a levy change takes effect must be given as YYYY-MM, for example 2027-01.', FEE_CODES.monthFormat);
     }
@@ -3741,7 +4085,7 @@ app.post(
   '/api/charges/post-month',
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'post_charges');
-    const monthString = String(req.body?.monthString ?? '').trim();
+    const monthString = monthText(req.body?.monthString);
     if (!isValidMonth(monthString)) bad('Billing month is required in YYYY-MM format.');
     if (monthString > today().substring(0, 7)) bad('You cannot post charges for a future month.');
 
@@ -4131,7 +4475,7 @@ app.post(
       if (monthOf(dueDate) > monthOf(today())) {
         bad('A charge cannot be dated in a future month. Raise it when its month arrives.');
       }
-      const description = optionalString(body.description, 300);
+      const description = optionalString(body.description, 300, 'Description');
 
       // The account is billed in one currency; a charge in the other would sit on
       // the balance without ever being settleable by a payment against it.
@@ -4614,7 +4958,7 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
    * Refused rather than quietly zeroed, so nobody believes a price was kept.
    */
   const complimentary = body.complimentary === undefined ? !!existing?.complimentary : body.complimentary === true;
-  const complimentaryReason = complimentary ? optionalString(body.complimentaryReason ?? existing?.complimentaryReason, 300).trim() : '';
+  const complimentaryReason = complimentary ? optionalString(body.complimentaryReason ?? existing?.complimentaryReason, 300, 'Complimentary reason').trim() : '';
   if (complimentary && complimentaryReason.length < 5) bad(COMP_REASON_REQUIRED);
   if (complimentary && (amount > 0 || depositPaid > 0)) bad(COMP_TAKES_NO_MONEY);
   const nightlyRateRaw = body.nightlyRate ?? existing?.nightlyRate;
@@ -4637,10 +4981,10 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
     complimentaryReason: complimentary ? complimentaryReason : undefined,
     guestName: requireString(body.guestName ?? existing?.guestName, 'Guest name', 120),
     guestEmail: emailField(body.guestEmail, existing?.guestEmail, 'The guest e-mail'),
-    guestPhone: optionalString(body.guestPhone ?? existing?.guestPhone, 60),
+    guestPhone: optionalString(body.guestPhone ?? existing?.guestPhone, 60, 'Guest phone'),
     source: requireEnum(body.source ?? existing?.source ?? 'Direct', ['Direct', 'Airbnb', 'Booking.com', 'Blocked', 'Unavailable'] as const, 'Booking source'),
     status: requireEnum(body.status ?? existing?.status ?? 'confirmed', ['confirmed', 'checked-in', 'checked-out', 'cancelled'] as const, 'Booking status'),
-    notes: optionalString(body.notes ?? existing?.notes, 2000)
+    notes: optionalString(body.notes ?? existing?.notes, 2000, 'Notes', true)
   };
 }
 
@@ -4774,7 +5118,7 @@ app.put(
         throw new ApiError(403, COMPLETED_STAY_LOCKED, 'completed-stay-locked');
       }
       // Every change to a reservation says why, and the reason goes on the audit trail (Ro, 2026-11-19).
-      const editReason = typeof body.editReason === 'string' ? body.editReason.trim().slice(0, 500) : '';
+      const editReason = reasonText(body.editReason, 'The reason for the change');
       if (editReason.length < 5) {
         throw new ApiError(400, EDIT_REASON_REQUIRED, 'edit-reason-required');
       }
@@ -4911,12 +5255,13 @@ app.post(
       if (!record) throw new ApiError(404, 'Reservation not found.');
       if (!record.damageDepositAmount) throw new ApiError(400, 'No damage deposit is held against this reservation.');
       if (record.damageDepositReturnedOn) throw new ApiError(400, 'This damage deposit has already been reconciled.');
+      assertCosigned(db, req, body, `the damage deposit held for ${record.guestName} is settled`);
 
       const before = { ...record };
       const held = record.damageDepositAmount;
       const currency = record.damageDepositCurrency ?? record.currency;
       const withheld = optionalAmount(body.withheldAmount, 'The amount withheld', 0);
-      const returned = optionalAmount(body.returnedAmount, 'The amount returned', round2(held - withheld));
+      const returned = optionalAmount(explicitAmount(body.returnedAmount, 'The amount returned'), 'The amount returned', 0);
       const settledOn = requireDay(body.settledOn || today(), 'Date settled');
       if (settledOn > today()) bad('A damage deposit cannot be settled in the future.');
 
@@ -4926,7 +5271,7 @@ app.post(
             `That is ${currency} ${round2(withheld + returned)}.`
         );
       }
-      const reason = optionalString(body.withheldReason, 1000);
+      const reason = optionalString(body.withheldReason, REASON_MAX, 'Withheld reason');
       if (withheld > 0 && reason.length < 5) {
         bad('Give a reason for the amount withheld. It is kept permanently and is what justifies the deduction.');
       }
@@ -4999,7 +5344,7 @@ function useMoneyOverride(db: Database, req: AuthedRequest, body: any, flag: str
   if (!req.auth || !can(req.auth, 'override_money_guard')) {
     throw new ApiError(403, `${ACTION_DENIED_MESSAGE.override_money_guard} (${what})`, OVERRIDE_NOT_PERMITTED);
   }
-  const reason = typeof body?.overrideReason === 'string' ? body.overrideReason.trim().slice(0, 500) : '';
+  const reason = reasonText(body?.overrideReason, 'The override reason');
   if (reason.length < 4) {
     throw new ApiError(400, `Overriding this check (${what}) needs a reason, sent as overrideReason.`, OVERRIDE_REASON_REQUIRED);
   }
@@ -5124,7 +5469,7 @@ const DEPOSIT_ALREADY_REFUNDED = 'deposit-receipt-already-refunded';
  */
 function ledgerPayments(db: Database, excludePaymentId?: string): Payment[] {
   const stored = excludePaymentId ? db.payments.filter(p => p.id !== excludePaymentId) : db.payments;
-  return [...stored, ...settledFromRent(db.charges, stored)];
+  return [...stored, ...settledFromRent(db.charges, stored, undefined, db.ownerships || [])];
 }
 
 function assertAccountStillOwes(
@@ -5146,7 +5491,7 @@ function assertAccountStillOwes(
   // user is looking at can never disagree. The entry being confirmed is excluded
   // so it is not weighed against itself.
   const payments = ledgerPayments(db, excludePaymentId);
-  const account = accountBalance(unit, category, db.charges, payments, undefined, db.units);
+  const account = accountBalance(unit, category, db.charges, payments, undefined, db.units, db.ownerships || []);
 
   // Nothing has ever been billed here, so this is not a debt paid twice — it is
   // money arriving on an account that owes nothing, which the check above already
@@ -5351,8 +5696,8 @@ app.post(
         currency,
         date,
         method,
-        reference: optionalString(body.reference, 120),
-        notes: optionalString(body.notes, 2000),
+        reference: optionalString(body.reference, 120, 'Reference'),
+        notes: optionalString(body.notes, 2000, 'Notes', true),
         staffMember: who.name,
         createdAt: new Date().toISOString(),
         status: receivedNow ? 'completed' : 'pending',
@@ -5460,8 +5805,8 @@ app.put(
         currency: requireCurrency(body.currency ?? original.currency),
         date: requireDay(body.date ?? original.date, 'Payment date'),
         method: requireEnum(body.method ?? original.method, PAYMENT_METHODS, 'Payment method'),
-        reference: optionalString(body.reference ?? original.reference, 120),
-        notes: optionalString(body.notes ?? original.notes, 2000)
+        reference: optionalString(body.reference ?? original.reference, 120, 'Reference'),
+        notes: optionalString(body.notes ?? original.notes, 2000, 'Notes', true)
       };
       if (updated.date > today()) bad('A payment cannot be dated in the future.');
       assertMarkerMatches(body.amount, updated.currency, 'The payment amount');
@@ -5743,7 +6088,7 @@ app.post(
       if (body.method !== undefined) {
         target.method = requireEnum(body.method, PAYMENT_METHODS, 'Payment method') as PaymentMethod;
       }
-      if (body.reference !== undefined) target.reference = optionalString(body.reference, 120);
+      if (body.reference !== undefined) target.reference = optionalString(body.reference, 120, 'Reference');
 
       // A utility recovery's book is decided now, from the villa, and kept.
       if (target.category === 'Utility') target.recoveryFund = recoveryFundFor(db.units.find(u => u.id === target.unitId), target.date);
@@ -5780,7 +6125,7 @@ app.post(
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'reverse_payment');
     const { id } = req.params;
-    const reversalReason = String(req.body?.reversalReason ?? '').trim();
+    const reversalReason = reasonText(req.body?.reversalReason, 'The reversal reason');
     if (reversalReason.length < 5) bad('A reversal reason of at least 5 characters is required.');
 
     const payment = await transaction(db => {
@@ -5922,7 +6267,7 @@ app.post(
       }
       assertCosigned(db, req, body, `receipt ${target.receiptNo} is refunded`);
 
-      const amount = requirePositiveAmount(body.amount ?? target.amount, 'Refund amount');
+      const amount = requirePositiveAmount(explicitAmount(body.amount, 'Refund amount'), 'Refund amount');
       if (amount > target.amount) {
         throw new ApiError(
           400,
@@ -5941,7 +6286,7 @@ app.post(
       if (target.category === 'Rent' || target.category === 'Maintenance') {
         const refundUnit = db.units.find(u => u.id === target.unitId);
         if (refundUnit && target.currency === chargeCurrency(refundUnit, target.category as ChargeCategory)) {
-          const account = accountBalance(refundUnit, target.category as ChargeCategory, db.charges, ledgerPayments(db), undefined, db.units);
+          const account = accountBalance(refundUnit, target.category as ChargeCategory, db.charges, ledgerPayments(db), undefined, db.units, db.ownerships || []);
           let unspent = Math.max(0, round2(-account.balance));
           /*
            * A levy receipt the rent had already covered is surplus in full.
@@ -5964,7 +6309,8 @@ app.post(
             db.charges,
             ledgerPayments(db, target.id),
             undefined,
-            db.units
+            db.units,
+            db.ownerships || []
           );
           if (withoutThis.charged > 0 && withoutThis.balance <= 0) {
             unspent = Math.max(unspent, round2(target.amount - (target.refundedAmount || 0)));
@@ -6136,13 +6482,13 @@ app.post(
       // means one of them is not on the statement at all. Confirming a second item
       // against one line is an override of a money check like any other: permission,
       // a reason, an audit line (audit, 2026-11-18; money out added Ro, 2026-11-18).
-      const reference = optionalString(body.reference, 120);
+      const reference = optionalString(body.reference, 120, 'Reference');
       assertBankLineFree(db, req, body, reference, `receipt:${target.id}`, `receipt ${target.receiptNo}`);
 
       target.reconciledOn = reconciledOn;
       target.reconciledBy = who.name;
       target.reconciledAt = new Date().toISOString();
-      target.reconciledReference = optionalString(body.reference, 120);
+      target.reconciledReference = optionalString(body.reference, 120, 'Reference');
       addAudit(
         db,
         who.name,
@@ -6375,7 +6721,7 @@ function moneyOutReconcileRoute(kind: MoneyOutKind) {
         throw new ApiError(400, `The statement date cannot be before the money moved (${target.date}).`, BANK_DATE_BEFORE_ITEM);
       }
 
-      const reference = optionalString(body.reference, 120);
+      const reference = optionalString(body.reference, 120, 'Reference');
       assertBankLineFree(db, req, body, reference, `${kind}:${target.entityId}`, target.label);
 
       const match: BankMatch = { on: reconciledOn, by: who.name, at: new Date().toISOString() };
@@ -6439,6 +6785,15 @@ app.post('/api/tenancies/:id/deposit-received/reconcile', moneyOutReconcileRoute
 app.post('/api/bookings/:id/damage-deposit-received/reconcile', moneyOutReconcileRoute('damage-deposit-received'));
 app.post('/api/bookings/:id/damage-deposit/reconcile', moneyOutReconcileRoute('damage-deposit-return'));
 
+/**
+ * A reprint is audited once per receipt per REPRINT_AUDIT_EVERY_MS, not once per click. Every reprint used to write
+ * an audit line, so a junior (who only needs permission to record payments) could print one receipt in a loop and
+ * push every genuine entry off the audit trail (1,500 calls added 1,500 entries). The copy count on the receipt
+ * itself still goes up every time, and the next audited line says which copy it was.
+ */
+const REPRINT_AUDIT_EVERY_MS = 10 * 60 * 1000;
+const reprintAuditedAt = new Map<string, number>();
+
 /** Record that a receipt was rendered, so reprints are marked as such. */
 app.post(
   '/api/payments/:id/mark-printed',
@@ -6455,8 +6810,14 @@ app.post(
       if (payment.status !== 'completed') throw new ApiError(409, 'Only a confirmed receipt can be printed.');
       payment.printCount = (payment.printCount || 0) + 1;
       if (payment.printCount > 1) {
-        const who = actor(req);
-        addAudit(db, who.name, who.role, `Reprinted receipt ${payment.receiptNo} (copy #${payment.printCount})`, 'Payment', id, '', `printCount=${payment.printCount}`);
+        const last = reprintAuditedAt.get(id) ?? 0;
+        if (Date.now() - last >= REPRINT_AUDIT_EVERY_MS) {
+          const who = actor(req);
+          addAudit(db, who.name, who.role, `Reprinted receipt ${payment.receiptNo} (copy #${payment.printCount})`, 'Payment', id, '', `printCount=${payment.printCount}`);
+          reprintAuditedAt.set(id, Date.now());
+          // Bounded: the oldest entries go first.
+          if (reprintAuditedAt.size > 5000) reprintAuditedAt.delete(reprintAuditedAt.keys().next().value as string);
+        }
       }
       return payment.printCount;
     });
@@ -6476,7 +6837,7 @@ app.post(
 
     const reading = await transaction(db => {
       const unit = resolveUnit(db, body);
-      const billingPeriod = String(body.billingPeriod ?? '').trim();
+      const billingPeriod = monthText(body.billingPeriod);
       if (!isValidMonth(billingPeriod)) bad('Billing period is required in YYYY-MM format.');
       if (billingPeriod > today().substring(0, 7)) bad('A utility bill cannot be entered for a future month.');
       refuseClosedMonth(db, `${billingPeriod}-01`, `The utility bill for ${billingPeriod}`);
@@ -6486,9 +6847,9 @@ app.post(
         throw new ApiError(400, `A reading for ${unit.number} covering ${billingPeriod} already exists. Edit that reading instead of adding a second one.`);
       }
 
-      const previousReading = round2(Math.max(0, Number(body.previousReading) || 0));
-      const currentReading = round2(Number(body.currentReading));
-      if (!Number.isFinite(currentReading)) bad('The current meter reading is required.');
+      const previousReading = body.previousReading === undefined ? 0 : readMeter(body.previousReading, 'The previous meter reading');
+      if (body.currentReading === undefined) bad('The current meter reading is required.');
+      const currentReading = readMeter(body.currentReading, 'The current meter reading');
       if (currentReading > 1_000_000_000 || previousReading > 1_000_000_000) bad('A meter reading that large is not a real reading. Please check the figure.');
       if (currentReading < previousReading) {
         bad('The current reading is lower than the previous reading. Check the figures, or record a meter replacement in the notes.');
@@ -6502,7 +6863,7 @@ app.post(
         id: `ut-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         unitId: unit.id,
         unitNumber: unit.number,
-        meterNumber: unit.meterNumber || optionalString(body.meterNumber, 60),
+        meterNumber: unit.meterNumber || optionalString(body.meterNumber, 60, 'Meter number'),
         billingPeriod,
         previousReading,
         currentReading,
@@ -6536,8 +6897,8 @@ app.put(
         throw new ApiError(403, 'This utility bill is settled. Modifying settled records requires additional permission.');
       }
 
-      const previousReading = round2(Math.max(0, Number(body.previousReading ?? original.previousReading) || 0));
-      const currentReading = round2(Number(body.currentReading ?? original.currentReading));
+      const previousReading = body.previousReading === undefined ? round2(original.previousReading || 0) : readMeter(body.previousReading, 'The previous meter reading');
+      const currentReading = body.currentReading === undefined ? round2(original.currentReading) : readMeter(body.currentReading, 'The current meter reading');
       if (!Number.isFinite(currentReading)) bad('The current meter reading is required.');
       if (currentReading > 1_000_000_000 || previousReading > 1_000_000_000) bad('A meter reading that large is not a real reading. Please check the figure.');
       if (currentReading < previousReading) bad('The current reading cannot be lower than the previous reading.');
@@ -6628,7 +6989,7 @@ app.post(
         // Issued at confirmation, not here — see the confirm route. Taking a
         // number now burned one on an entry that had received nothing.
         receiptNo: '',
-        payerName: optionalString(body.payerName, 120) || unit?.ownerName || 'Resident',
+        payerName: optionalString(body.payerName, 120, 'Payer name') || unit?.ownerName || 'Resident',
         unitId: utility.unitId,
         unitNumber: utility.unitNumber,
         category: 'Utility',
@@ -6636,9 +6997,9 @@ app.post(
         currency: utility.currency,
         date,
         method,
-        reference: optionalString(body.reference, 120) || `UTIL-${utility.billingPeriod}`,
+        reference: optionalString(body.reference, 120, 'Reference') || `UTIL-${utility.billingPeriod}`,
         notes:
-          optionalString(body.notes, 2000) ||
+          optionalString(body.notes, 2000, 'Notes', true) ||
           `Utility settlement for ${utility.billingPeriod}, ${utility.consumption} units on meter ${utility.meterNumber}.`,
         staffMember: who.name,
         status: 'pending',
@@ -6710,7 +7071,7 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
   return {
     category: requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'),
     vendor: requireString(body.vendor ?? existing?.vendor, 'Vendor or payee', 160),
-    description: optionalString(body.description ?? existing?.description, 1000),
+    description: optionalString(body.description ?? existing?.description, 1000, 'Description'),
     unitId: unit?.id ?? '',
     unitNumber: location,
     // Signed: a credit from a supplier is a cost of less than nothing. See
@@ -6724,8 +7085,8 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
     paymentMethod: requireEnum(body.paymentMethod ?? existing?.paymentMethod ?? 'Bank Transfer', PAYMENT_METHODS, 'Payment method') as PaymentMethod,
     status,
     fund: fundForCost(requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'), unit, fund),
-    reference: optionalString(body.reference ?? existing?.reference, 120),
-    notes: optionalString(body.notes ?? existing?.notes, 2000)
+    reference: optionalString(body.reference ?? existing?.reference, 120, 'Reference'),
+    notes: optionalString(body.notes ?? existing?.notes, 2000, 'Notes', true)
   };
 }
 
@@ -6736,6 +7097,7 @@ app.post(
     const expense = await transaction(db => {
       const fields = readExpenseFields(db, req.body || {});
       refuseClosedMonth(db, expenseMoneyDay(fields), 'This cost');
+      refuseClosedMonth(db, pendingCostDay(fields), 'This unpaid cost');
       const who = actor(req);
       const created: Expense = { id: `ex-${Date.now()}-${Math.floor(Math.random() * 1000)}`, ...fields };
       db.expenses.push(created);
@@ -6772,6 +7134,11 @@ app.put(
       // Both ends of the edit: a closed month's cost cannot change, and no cost can be moved into one.
       refuseClosedMonth(db, expenseMoneyDay(original), 'This cost');
       refuseClosedMonth(db, expenseMoneyDay(updated), 'The corrected cost');
+      // An unpaid cost in a closed month cannot be edited or moved into one; paying it (it leaves the unpaid list) is allowed.
+      if (updated.status === 'pending') {
+        refuseClosedMonth(db, pendingCostDay(original), 'This unpaid cost');
+        refuseClosedMonth(db, pendingCostDay(updated), 'The corrected unpaid cost');
+      }
       /*
        * Un-paying a paid cost, or changing what left the account, is the same claim
        * as taking it back in part: it needs the void's second approver and a reason.
@@ -6872,6 +7239,7 @@ app.post(
       if (!found) throw new ApiError(404, 'Expense not found.');
       if (found.status === 'void') throw new ApiError(400, 'That cost has already been taken back.');
       refuseClosedMonth(db, expenseMoneyDay(found), 'This cost');
+      refuseClosedMonth(db, pendingCostDay(found), 'This unpaid cost');
       // A cost already paid is a record of money out; taking it back needs the same second approver as voiding a receipt.
       if (found.status === 'paid') assertCosigned(db, req, body, `expense ${id} is taken back`);
 
@@ -6922,7 +7290,7 @@ app.post(
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'modify_settled');
     const body = req.body || {};
-    const monthString = String(body.monthString ?? '').trim();
+    const monthString = monthText(body.monthString);
     if (!isValidMonth(monthString)) bad('Billing month is required in YYYY-MM format.');
     const reason = requireVoidReason(body);
     if (body.expenseIds !== undefined && !Array.isArray(body.expenseIds)) {
@@ -7003,7 +7371,7 @@ function readRecurringFields(db: Database, body: Record<string, unknown>, existi
   const isUnspecified = !body.unitId && !rawLocation;
   const unit = isNamedLocation || isUnspecified ? undefined : resolveUnit(db, body);
 
-  const dueDayRaw = Number(body.dueDay ?? existing?.dueDay ?? 1);
+  const dueDayRaw = strictNumber(body.dueDay ?? existing?.dueDay ?? 1);
   // Capped at 28 so every month has the day. A template due on the 31st would
   // silently move for four months of the year, which reads as a data error.
   if (!Number.isInteger(dueDayRaw) || dueDayRaw < 1 || dueDayRaw > 28) {
@@ -7013,7 +7381,7 @@ function readRecurringFields(db: Database, body: Record<string, unknown>, existi
   return {
     category: requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'),
     vendor: requireString(body.vendor ?? existing?.vendor, 'Vendor or payee', 160),
-    description: optionalString(body.description ?? existing?.description, 1000),
+    description: optionalString(body.description ?? existing?.description, 1000, 'Description'),
     unitId: unit?.id ?? '',
     unitNumber: unit ? unit.number : isNamedLocation ? rawLocation : 'General',
     // Signed, for the same reason the register is: a standing credit is a real
@@ -7031,8 +7399,8 @@ function readRecurringFields(db: Database, body: Record<string, unknown>, existi
       unit,
       requireEnum(body.fund ?? existing?.fund ?? 'strata', EXPENSE_FUNDS, 'Which pot pays for this') as ExpenseFund
     ),
-    active: body.active === undefined ? (existing?.active ?? true) : body.active === true,
-    notes: optionalString(body.notes ?? existing?.notes, 2000)
+    active: body.active === undefined ? (existing?.active ?? true) : (typeof body.active === 'boolean' ? body.active : bad('Active must be true or false.')),
+    notes: optionalString(body.notes ?? existing?.notes, 2000, 'Notes', true)
   };
 }
 
@@ -7174,23 +7542,26 @@ app.delete(
  * ------------------------------------------------------------------ */
 
 function readAnnualReportFields(body: Record<string, unknown>, existing?: AnnualReport) {
-  const yearRaw = Number(body.year ?? existing?.year);
+  const yearRaw = strictNumber(body.year ?? existing?.year);
   if (!Number.isInteger(yearRaw) || yearRaw < 2000 || yearRaw > 2200) {
     bad('Report year must be a whole year between 2000 and 2200.');
   }
 
-  // Narrative: a fixed set of known sections. An unknown key is dropped rather
-  // than stored, so the document cannot grow fields nothing renders.
+  // Narrative: a fixed set of known sections; an unknown key is refused so the document cannot grow fields nothing renders.
   const narrative: Record<string, string> = { ...(existing?.narrative || {}) };
   const incoming = body.narrative;
   if (incoming !== undefined) {
     if (typeof incoming !== 'object' || incoming === null || Array.isArray(incoming)) {
       bad('Narrative must be a set of named sections.');
     }
+    // An unknown section is refused, not dropped: a typo would otherwise be "saved" and never appear in the report.
+    const knownSections = ANNUAL_REPORT_SECTIONS.map(section => section.key as string);
+    const unknownSection = Object.keys(incoming as object).find(key => !knownSections.includes(key));
+    if (unknownSection !== undefined) bad(`"${unknownSection}" is not a section of the annual report.`);
     for (const section of ANNUAL_REPORT_SECTIONS) {
       const value = (incoming as Record<string, unknown>)[section.key];
       if (value === undefined) continue;
-      narrative[section.key] = optionalString(value, 20000);
+      narrative[section.key] = optionalString(value, 20000, 'The narrative', true);
     }
   }
 
@@ -7203,6 +7574,8 @@ function readAnnualReportFields(body: Record<string, unknown>, existing?: Annual
     if (typeof budgetIn !== 'object' || budgetIn === null || Array.isArray(budgetIn)) {
       bad('The budget must be a set of categories and amounts.');
     }
+    const unknownCategory = Object.keys(budgetIn as object).find(key => !(EXPENSE_CATEGORIES as readonly string[]).includes(key));
+    if (unknownCategory !== undefined) bad(`"${unknownCategory}" is not an expense category, so no budget can be kept for it.`);
     for (const category of EXPENSE_CATEGORIES) {
       const value = (budgetIn as Record<string, unknown>)[category];
       if (value === undefined) continue;
@@ -7290,7 +7663,7 @@ app.post(
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'record_expense');
     const body = req.body || {};
-    const monthString = String(body.monthString ?? '').trim();
+    const monthString = monthText(body.monthString);
     if (!isValidMonth(monthString)) bad('Billing month is required in YYYY-MM format.');
     if (monthString > today().substring(0, 7)) bad('You cannot post costs for a future month.');
     if (body.items !== undefined && !Array.isArray(body.items)) bad('The list of costs to post is not in the expected form.');
@@ -7329,7 +7702,7 @@ app.post(
           ? {
               category: template.category,
               vendor: template.vendor,
-              description: optionalString(item.description ?? template.description, 1000),
+              description: optionalString(item.description ?? template.description, 1000, 'Description'),
               unitId: template.unitId,
               unitNumber: template.unitNumber,
               // The month's figure, which is where Ro met the refusal: the
@@ -7343,7 +7716,7 @@ app.post(
               // an electricity figure at month end is not deciding whose money
               // pays for it; that was decided when the cost was set up.
               fund: fundOf(template),
-              notes: optionalString(item.notes ?? template.notes, 2000)
+              notes: optionalString(item.notes ?? template.notes, 2000, 'Notes', true)
             }
           : (() => {
               const one = readRecurringFields(db, item);
@@ -7360,7 +7733,7 @@ app.post(
                 e.status !== 'void' &&
                 !e.recurringId &&
                 fundOf(e) === fields.fund &&
-                e.vendor.toLowerCase() === fields.vendor.toLowerCase() &&
+                nameKey(e.vendor) === nameKey(fields.vendor) &&
                 e.category === fields.category &&
                 e.unitNumber === fields.unitNumber &&
                 e.currency === fields.currency &&
@@ -7459,7 +7832,7 @@ app.post(
         // Only a maintenance request is work to be tracked; everything else is a
         // record of something that already happened.
         ...(body.activityType === 'Maintenance Request'
-          ? { workStatus: 'Reported' as WorkStatus, assignedTo: optionalString(body.assignedTo, 160) }
+          ? { workStatus: 'Reported' as WorkStatus, assignedTo: optionalString(body.assignedTo, 160, 'Assigned to') }
           : {})
       };
       db.unitActivities.unshift(created);
@@ -7502,8 +7875,8 @@ app.put(
       if (body.workStatus !== undefined) {
         activity.workStatus = requireEnum(body.workStatus, WORK_STATUSES, 'Work status') as WorkStatus;
       }
-      if (body.assignedTo !== undefined) activity.assignedTo = optionalString(body.assignedTo, 160);
-      if (body.outcome !== undefined) activity.outcome = optionalString(body.outcome, 2000);
+      if (body.assignedTo !== undefined) activity.assignedTo = optionalString(body.assignedTo, 160, 'Assigned to');
+      if (body.outcome !== undefined) activity.outcome = optionalString(body.outcome, 2000, 'Outcome', true);
       if (body.notes !== undefined) activity.notes = requireString(body.notes, 'Activity notes', 4000);
 
       // The expense this job raised, unless it has since been voided: a voided
@@ -7662,7 +8035,8 @@ app.delete(
       if (idx === -1) throw new ApiError(404, 'Feed not found.');
       const [removed] = db.settings.icalFeeds.splice(idx, 1);
       const who = actor(req);
-      addAudit(db, who.name, who.role, `Removed the calendar feed for ${removed.unitNumber}`, 'ICalFeed', id, removed, '');
+      // The address carries a secret token and the audit trail is read by every role: only where it pointed is kept.
+      addAudit(db, who.name, who.role, `Removed the calendar feed for ${removed.unitNumber}`, 'ICalFeed', id, { ...removed, url: maskedFeedUrl(removed.url) }, '');
     });
     res.json({ success: true });
   })
@@ -7678,6 +8052,8 @@ interface SyncOutcome {
   cancelled: number;
   unchanged: number;
   conflicts: string[];
+  /** Events in the feed that were not stored, with the reason for each. */
+  skipped: string[];
   error?: string;
 }
 
@@ -7701,6 +8077,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
       cancelled: 0,
       unchanged: 0,
       conflicts: [],
+      skipped: [],
       error: fetched.error
     };
     await transaction(db => {
@@ -7715,7 +8092,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
     return outcome;
   }
 
-  const events = parseICal(fetched.text);
+  const { events, skipped, skippedUids, truncated } = parseICalChecked(fetched.text);
 
   return transaction(db => {
     const live = db.settings.icalFeeds.find(f => f.id === feedId)!;
@@ -7845,11 +8222,14 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
     const seen = new Set(events.filter(e => !e.cancelled).map(e => e.uid));
     // Already raised above: not raised a second time as a withdrawal.
     for (const uid of heldBack) seen.add(uid);
+    // Listed but not stored (bad dates and the like): reported above, and not mistaken for a withdrawn stay.
+    for (const uid of skippedUids) seen.add(uid);
     // Money attached by the deposit receipt or by any receipt paid toward the stay.
     const paidBookingIds = new Set(
       db.payments.filter(p => (p.bookingId || p.forBookingId) && p.status !== 'reversed').map(p => (p.bookingId || p.forBookingId) as string)
     );
-    const plan = planWithdrawals(db.bookings, paidBookingIds, seen, live.id, unit.id, live.source, today());
+    // A feed cut short at the event limit says nothing about the stays after the cut: none is called withdrawn.
+    const plan = truncated ? { cancelIds: [] as string[], conflicts: [] as string[] } : planWithdrawals(db.bookings, paidBookingIds, seen, live.id, unit.id, live.source, today());
     for (const message of plan.conflicts) conflicts.push(message);
     for (const id of plan.cancelIds) {
       const booking = db.bookings.find(b => b.id === id);
@@ -7862,7 +8242,7 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
 
     live.lastSyncAt = new Date().toISOString();
     live.lastStatus = 'ok';
-    live.lastResult = `${imported} imported, ${updated} updated, ${cancelled} cancelled, ${unchanged} unchanged, ${conflicts.length} conflict(s).`;
+    live.lastResult = `${imported} imported, ${updated} updated, ${cancelled} cancelled, ${unchanged} unchanged, ${conflicts.length} conflict(s)${skipped.length ? `, ${skipped.length} not stored (see the sync result)` : ''}.`;
 
     addAudit(db, staffName, role, `Synchronised the ${live.source} calendar for ${unit.number}`, 'ICalFeed', feedId, '', live.lastResult);
 
@@ -7875,7 +8255,8 @@ async function syncFeed(feedId: string, staffName: string, role: UserRole): Prom
       updated,
       cancelled,
       unchanged,
-      conflicts
+      conflicts,
+      skipped
     };
   });
 }
@@ -7903,6 +8284,25 @@ app.post(
  * ------------------------------------------------------------------ */
 
 app.use('/api', (req, res) => res.status(404).json({ error: `Unknown API route: ${req.method} ${req.path}` }));
+
+/**
+ * A request body that is not valid JSON, or is too large, is refused with the same JSON shape as every other refusal.
+ * Express's own answer is an HTML page, which the screen cannot read.
+ */
+app.use('/api', (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(err);
+  if (err?.type === 'entity.too.large' || err?.status === 413) {
+    return res.status(413).json({ error: 'That request is too large to be accepted. Nothing was saved.', code: 'body-too-large' });
+  }
+  if (err?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({ error: 'The request was not valid JSON, so nothing was read or saved.', code: 'bad-json' });
+  }
+  if (err?.type === 'charset.unsupported' || err?.type === 'encoding.unsupported' || err?.type === 'request.aborted' || err?.type === 'request.size.invalid') {
+    return res.status(400).json({ error: 'The request could not be read. Nothing was saved.', code: 'bad-request' });
+  }
+  console.error('[vds] unhandled error:', err);
+  return res.status(500).json({ error: 'An unexpected server error occurred. Nothing was saved.' });
+});
 
 /**
  * Single Executable Application (SEA) support.
@@ -8126,14 +8526,57 @@ async function startServer() {
     const distPath = path.join(process.cwd(), 'dist');
     // Nothing but the client shell is served. The compiled server, its source map and any database or backup
     // file that ends up under here are never handed out.
-    app.use((req, res, next) => (/^\/(server\.cjs(\.map)?|idempotency\.json|db[-.][^/]*\.json)$/i.test(req.path) ? res.status(404).end() : next()));
+    app.use((req, res, next) => (/^\/(server\.cjs(\.map)?|idempotency\.(json|log)|audit-[^/]*|db[-.][^/]*\.json)$/i.test(req.path) ? res.status(404).end() : next()));
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  const server = app.listen(PORT, '0.0.0.0', () => {
+  /*
+   * One port, both protocols (server/tls.ts). The first byte of each connection decides: a TLS handshake goes to the
+   * HTTPS server, anything else to plain HTTP, which redirects to HTTPS once a certificate is held and otherwise
+   * serves the application exactly as before. The certificate is fetched after the port is open, so start-up is
+   * never held up by it, and renewed daily without a restart.
+   */
+  let tls: TlsMaterial | null = null;
+  const httpsServer = https.createServer({}, app);
+  const plainServer = http.createServer((req, res) => {
+    const target = httpsRedirectUrl(req.headers.host, req.url, PORT, tls);
+    if (target) {
+      res.writeHead(308, { Location: target, 'Cache-Control': 'no-store' });
+      res.end();
+      return;
+    }
+    app(req, res);
+  });
+  const useTls = (material: TlsMaterial) => {
+    try {
+      httpsServer.setSecureContext({ cert: material.cert, key: material.key });
+      const first = !tls;
+      tls = material;
+      if (first) console.log(`  HTTPS on: https://${material.host || 'localhost'}:${PORT} (${material.source} certificate); plain-HTTP addresses redirect there.`);
+    } catch (err) {
+      console.log(`HTTPS: the certificate could not be used (${(err as Error).message}); staying on plain HTTP.`);
+    }
+  };
+  const server = net.createServer(socket => {
+    // A connection that never sends a byte is closed rather than held open forever.
+    socket.setTimeout(30000, () => socket.destroy());
+    socket.once('data', first => {
+      socket.setTimeout(0);
+      socket.pause();
+      socket.unshift(first);
+      (tls && first[0] === 0x16 ? httpsServer : plainServer).emit('connection', socket);
+      process.nextTick(() => socket.resume());
+    });
+    socket.on('error', () => socket.destroy());
+  });
+  server.listen(PORT, '0.0.0.0', () => {
+    void obtainTls(DATA_DIR, msg => console.log(msg)).then(material => {
+      if (material) useTls(material);
+      renewTlsDaily(DATA_DIR, useTls, msg => console.log(msg));
+    });
     // Both of these answer a question that has been asked the hard way. The
     // version, because the sidebar reads from a cache that can be a release
     // behind. The folder, because the records live in the *working directory*

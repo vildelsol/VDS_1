@@ -100,34 +100,97 @@ function toDay(value: string, tzOffsetMinutes: number): string | null {
   ).padStart(2, '0')}`;
 }
 
+/*
+ * Limits on what a feed may make us store. A calendar feed is somebody else's file: it can be hostile, or just wrong,
+ * and what it says is written into the reservations. A bad event is skipped and reported, never stored.
+ */
+export const MAX_FEED_BYTES = 5 * 1024 * 1024;
+export const MAX_FEED_EVENTS = 5000;
+export const MAX_STAY_DAYS = 366;
+export const MAX_SUMMARY_CHARS = 200;
+export const MAX_DESCRIPTION_CHARS = 2000;
+const MAX_UID_CHARS = 200;
+
+/** A real calendar day in a sane range. "2026-13-99", "0000-01-01" and NaN-NaN-NaN are not. */
+function strictDay(day: string | null | undefined): day is string {
+  const m = typeof day === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(day) : null;
+  if (!m) return false;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (y < 1990 || y > 2100 || mo < 1 || mo > 12 || d < 1) return false;
+  return d <= new Date(Date.UTC(y, mo, 0)).getUTCDate();
+}
+
+const daysBetween = (a: string, b: string): number => Math.round((Date.UTC(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10)) - Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10))) / 86400000);
+
 export function parseICal(text: string, tzOffsetMinutes = -5 * 60): ICalEvent[] {
+  return parseICalChecked(text, tzOffsetMinutes).events;
+}
+
+/** The events that passed every check, and one line for each that did not (and for any limit that was hit). */
+export function parseICalChecked(text: string, tzOffsetMinutes = -5 * 60): { events: ICalEvent[]; skipped: string[]; skippedUids: string[]; truncated: boolean } {
   const lines = unfold(text);
   const events: ICalEvent[] = [];
-  let current: (Partial<ICalEvent> & { durationDays?: number }) | null = null;
+  const skipped: string[] = [];
+  // The UIDs of events that were listed but not stored: a stay the feed still lists is not a stay it has withdrawn.
+  const skippedUids: string[] = [];
+  let capped = false;
+  let current: (Partial<ICalEvent> & { durationDays?: number; bad?: string[] }) | null = null;
+  const reject = (c: { uid?: string; bad?: string[] }, why: string) => {
+    if (c.uid) skippedUids.push(c.uid);
+    if (skipped.length < 50) skipped.push(`${c.uid ? `Event ${c.uid.slice(0, 60)}` : 'An event with no UID'} was skipped: ${why}.`);
+  };
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed === 'BEGIN:VEVENT') {
+      if (events.length >= MAX_FEED_EVENTS) {
+        if (!capped) skipped.push(`The feed lists more than ${MAX_FEED_EVENTS} events. Only the first ${MAX_FEED_EVENTS} were read.`);
+        capped = true;
+        break;
+      }
       current = {};
       continue;
     }
     if (trimmed === 'END:VEVENT') {
+      if (!current) continue;
       // DTEND is optional when DURATION is given; the two describe the same stay.
-      if (current && current.start && !current.end && current.durationDays) {
+      if (current.start && !current.end && current.durationDays) {
         const derived = addDaysToDay(current.start, current.durationDays);
         if (derived) current.end = derived;
       }
-      if (current && current.uid && current.start && current.end) {
-        events.push({
-          uid: current.uid,
-          start: current.start,
-          end: current.end,
-          summary: current.summary || '',
-          description: current.description || '',
-          cancelled: !!current.cancelled
-        });
-      }
+      const c = current;
       current = null;
+      if (c.bad && c.bad.length > 0) {
+        reject(c, c.bad.join('; '));
+        continue;
+      }
+      if (!c.uid || !c.start || !c.end) {
+        // An event with no dates at all is a note, not a stay; one with a start and no end is a feed we cannot read.
+        if (c.start || c.end) reject(c, 'it has no UID, start or end');
+        continue;
+      }
+      if (!strictDay(c.start) || !strictDay(c.end)) {
+        reject(c, `its dates (${c.start} to ${c.end}) are not real calendar days`);
+        continue;
+      }
+      if (c.end <= c.start) {
+        reject(c, `it ends (${c.end}) on or before it starts (${c.start})`);
+        continue;
+      }
+      if (daysBetween(c.start, c.end) > MAX_STAY_DAYS) {
+        reject(c, `it spans more than ${MAX_STAY_DAYS} days (${c.start} to ${c.end})`);
+        continue;
+      }
+      events.push({
+        uid: c.uid,
+        start: c.start,
+        end: c.end,
+        summary: (c.summary || '').slice(0, MAX_SUMMARY_CHARS),
+        description: (c.description || '').slice(0, MAX_DESCRIPTION_CHARS),
+        cancelled: !!c.cancelled
+      });
       continue;
     }
     if (!current) continue;
@@ -140,16 +203,19 @@ export function parseICal(text: string, tzOffsetMinutes = -5 * 60): ICalEvent[] 
 
     switch (name) {
       case 'UID':
-        current.uid = value.trim();
+        if (value.trim().length > MAX_UID_CHARS) (current.bad ||= []).push(`its UID is longer than ${MAX_UID_CHARS} characters`);
+        else current.uid = value.trim();
         break;
       case 'DTSTART': {
         const day = toDay(value, tzOffsetMinutes);
-        if (day) current.start = day;
+        if (strictDay(day)) current.start = day;
+        else (current.bad ||= []).push(`DTSTART "${value.trim().slice(0, 30)}" is not a real date`);
         break;
       }
       case 'DTEND': {
         const day = toDay(value, tzOffsetMinutes);
-        if (day) current.end = day;
+        if (strictDay(day)) current.end = day;
+        else (current.bad ||= []).push(`DTEND "${value.trim().slice(0, 30)}" is not a real date`);
         break;
       }
       case 'SUMMARY':
@@ -160,7 +226,9 @@ export function parseICal(text: string, tzOffsetMinutes = -5 * 60): ICalEvent[] 
         break;
       case 'DURATION': {
         const days = durationInDays(value);
-        if (days) current.durationDays = days;
+        // Bounded: P99999999999D used to become a checkout day of NaN-NaN-NaN.
+        if (days && days > 0 && days <= MAX_STAY_DAYS) current.durationDays = days;
+        else (current.bad ||= []).push(`DURATION "${value.trim().slice(0, 30)}" is not a stay of 1 to ${MAX_STAY_DAYS} days`);
         break;
       }
       case 'STATUS':
@@ -172,7 +240,7 @@ export function parseICal(text: string, tzOffsetMinutes = -5 * 60): ICalEvent[] 
     }
   }
 
-  return events;
+  return { events, skipped, skippedUids, truncated: capped };
 }
 
 /**
@@ -420,6 +488,36 @@ export async function assertFetchableFeedUrl(url: string): Promise<void> {
 const MAX_REDIRECTS = 5;
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
+/**
+ * The response body as text, or null if it is larger than `max` bytes. Reads as a stream and stops at the limit,
+ * so a 2 GB answer is never held in memory (a 34 MB feed used to stall the whole server for half a second).
+ */
+export async function readBodyCapped(res: Response, max: number): Promise<string | null> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > max) {
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  if (!res.body) {
+    const whole = await res.text();
+    return whole.length > max ? null : whole;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
 /** Fetch a feed with a hard timeout so a hanging host cannot wedge the request. */
 export async function fetchICal(url: string, timeoutMs = 15000): Promise<FetchResult> {
   let current: URL;
@@ -461,7 +559,8 @@ export async function fetchICal(url: string, timeoutMs = 15000): Promise<FetchRe
       if (!res.ok) {
         return { ok: false, error: `Feed responded with HTTP ${res.status} ${res.statusText}.` };
       }
-      const text = await res.text();
+      const text = await readBodyCapped(res, MAX_FEED_BYTES);
+      if (text === null) return { ok: false, error: `The calendar feed is larger than ${MAX_FEED_BYTES / (1024 * 1024)} MB, so it was not read.` };
       if (!text.includes('BEGIN:VCALENDAR')) {
         return { ok: false, error: 'The URL did not return an iCalendar document.' };
       }

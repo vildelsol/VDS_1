@@ -100,6 +100,7 @@ export default async function run({ port, projectRoot }) {
     fs.rmSync(dbPath, { force: true });
 
     /* ---- 5. recovery path: put the newest backup in place by hand, as the error message says ---- */
+    fs.rmSync(path.join(dataDir, 'audit-head.json'), { force: true }); // putting an older db.json back by hand: the head anchor (second security pass) is deleted to accept it, as the integrity message says
     fs.writeFileSync(dbPath, goodBackupText); // what the user does with the last good backup, as the startup error instructs
     srv = await startServer({ port, adminPassword: 'Recov-1234!', projectRoot, dataDir });
     admin = makeClient(srv.baseUrl);

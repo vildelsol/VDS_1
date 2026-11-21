@@ -40,6 +40,12 @@ export interface QueuedAction {
   /** What this is, in words a person would recognise on a progress list. */
   label: string;
   queuedAt: number;
+  /**
+   * Who entered it. A queued action is replayed with whoever's session is open when the server comes back, so an
+   * action carried over from one person to the next would be recorded under the second person's name. It is only
+   * ever shown or sent to the user it belongs to, and is dropped when a different user signs in.
+   */
+  userId?: string | null;
   /** Attempts made so far, for reporting something that will not go through. */
   attempts: number;
   lastError?: string;
@@ -66,8 +72,25 @@ function writeAll(actions: QueuedAction[]) {
   }
 }
 
+/** The signed-in user the queue is for; null while nobody is signed in (then nothing is shown or replayed). */
+let owner: string | null = null;
+
+/**
+ * Bind the queue to the signed-in user. Actions that belong to anybody else (or to nobody: queued before this
+ * existed) are discarded when a user signs in, so they can never be replayed under the wrong name. A session that
+ * merely expired keeps its own queue: the same person signing back in finds it waiting.
+ */
+export function setQueueOwner(userId: string | null) {
+  owner = userId;
+  if (userId) {
+    const all = readAll();
+    const mine = all.filter(a => a.userId === userId);
+    if (mine.length !== all.length) writeAll(mine);
+  }
+}
+
 export function pendingActions(): QueuedAction[] {
-  return readAll();
+  return readAll().filter(a => !!owner && a.userId === owner);
 }
 
 /**
@@ -103,6 +126,7 @@ export function describeAction(method: string, path: string): string {
 export function enqueue(action: Omit<QueuedAction, 'id' | 'queuedAt' | 'attempts'>): QueuedAction {
   const entry: QueuedAction = {
     ...action,
+    userId: owner,
     id: `q-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     queuedAt: Date.now(),
     attempts: 0
@@ -121,5 +145,7 @@ export function markAttempt(id: string, error?: string) {
   );
 }
 
-/** Drop everything. Only for an operator who has accepted the loss. */
-
+/** Drop everything: on an explicit sign-out, so nothing entered by one person outlives their session. */
+export function clearQueue() {
+  writeAll([]);
+}

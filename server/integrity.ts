@@ -34,8 +34,9 @@ import type { Database } from './db';
 import { createHash } from 'crypto';
 import { accountBalance, chargeCurrency, creditHeldForOthers, isContributionCountedFromReceipts, isOwnAccount, netPaidAsOf, ownAccountAsAt, settledFromRent } from '../src/lib/finance';
 import { hasLevySchedule, isWellFormedFeeChange, levyForMonth, levySchedule } from '../src/lib/feeSchedule';
-import { AUDIT_CAP, AUDIT_KEY_FILE, verifyAuditChain } from './auditChain';
+import { AUDIT_CAP, AUDIT_KEY_FILE, auditRotationFailure, loadAuditKey, verifyAnchorAndArchive, verifyAuditChain } from './auditChain';
 import { bankItems } from '../src/lib/bankRec';
+import { nameKey, referenceKey } from '../src/lib/text';
 
 export type IntegritySeverity =
   /** The books contradict themselves. Money is misstated somewhere. */
@@ -260,13 +261,21 @@ export function checkIntegrity(db: Database): IntegrityReport {
      * an emergency. Nothing here deletes or rotates anything — that is a decision
      * about where the history should live, and a person makes it.
      */
+    /*
+     * Since the second security pass the oldest entries are MOVED to audit-archive.jsonl (kept, backed up and
+     * verified below) rather than dropped, so a full trail is ordinary and says nothing. It is a serious finding
+     * only when that move has failed: then nothing is removed, the trail keeps growing past its ceiling, and the
+     * archive has to be fixed before history is at risk.
+     */
     const auditCap = AUDIT_CAP;
     const auditCount = (db.auditLogs || []).length;
-    if (auditCount >= auditCap * 0.9) {
+    const rotationFailure = auditRotationFailure();
+    if (rotationFailure && auditCount >= auditCap * 0.9) {
       add(
-        'warning',
+        'serious',
         'audit-trail-near-capacity',
-        `The audit trail holds ${auditCount} entries and is trimmed at ${auditCap}, oldest first. Export and archive it before the earliest entries are dropped.`,
+        `The audit trail holds ${auditCount} entries (its ceiling is ${auditCap}) and the oldest could not be moved to the archive file: ${rotationFailure}. ` +
+          'Nothing has been removed, but the trail will keep growing until the data folder can be written to.',
         [`${auditCount} of ${auditCap}`]
       );
     }
@@ -719,7 +728,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
      * not a misstatement: the ledger balance is arithmetically right.
      */
     const creditAfterChange: string[] = [];
-    const lowerName = (v: string) => (v || '').trim().toLowerCase();
+    const lowerName = (v: string) => nameKey(v);
     for (const u of units) {
       for (const category of ['Rent', 'Maintenance'] as const) {
         const stints =
@@ -782,6 +791,39 @@ export function checkIntegrity(db: Database): IntegrityReport {
     }
 
 
+    /* ---------------- money with no audit entry ---------------- */
+
+    {
+      /*
+       * A receipt that reached the books by some route other than the application (a forged or tampered backup,
+       * an edit to db.json) has no audit entry. Only receipts made after the audit key existed are judged,
+       * and only ones newer than the oldest entry still held (older entries may have rotated to the archive),
+       * so legacy, restored-from-before and fixture data raise nothing. A warning, not a block.
+       */
+      const keyState = loadAuditKey();
+      const logs = db.auditLogs || [];
+      if (keyState.ok && logs.length > 0) {
+        const since = keyState.keyedFrom > logs[logs.length - 1].dateTime ? keyState.keyedFrom : logs[logs.length - 1].dateTime;
+        const candidates = payments.filter(p => p.status === 'completed' && !p.derived && typeof p.createdAt === 'string' && p.createdAt >= since);
+        if (candidates.length > 0) {
+          const mentioned = new Set<string>();
+          for (const a of logs) {
+            mentioned.add(String(a.recordId));
+            for (const text of [a.action, a.previousValue, a.newValue]) {
+              if (typeof text !== 'string' || text.length === 0) continue;
+              for (const m of text.match(/REC-\d{4}-\d+|"id":"[^"]+"/g) || []) mentioned.add(m.startsWith('"id"') ? m.slice(6, -1) : m);
+            }
+          }
+          add(
+            'warning',
+            'payment-without-audit-trail',
+            'A receipt is recorded as received but nothing in the audit trail says who recorded it or when. It may have been put into the records by hand or by a doctored backup.',
+            candidates.filter(p => !mentioned.has(p.id) && !(p.receiptNo && mentioned.has(p.receiptNo))).map(p => `${p.receiptNo || p.id} (${p.amount} ${p.currency})`)
+          );
+        }
+      }
+    }
+
     /* ---------------- the audit trail's hash chain ---------------- */
 
     {
@@ -797,6 +839,15 @@ export function checkIntegrity(db: Database): IntegrityReport {
           [AUDIT_KEY_FILE]
         );
       }
+      // The newest seal and count, kept beside the key: what deleting the newest entries or stripping seals cannot hide.
+      const anchored = verifyAnchorAndArchive(db.auditLogs || []);
+      add(
+        'serious',
+        'audit-head-mismatch',
+        'The audit trail does not match its head anchor or its archive: entries were removed from either end, or the archive was altered. ' +
+          'If an older copy of db.json was put back on purpose, delete audit-head.json in the data folder to accept it.',
+        anchored.broken
+      );
       // Not write-blocking: the desk kept working while the key was missing, which is right.
       add(
         'serious',
@@ -828,7 +879,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
       // Every kind of bank movement, in and out: one line settles one item.
       const byRef = new Map<string, string[]>();
       for (const item of bankItems({ payments, expenses, tenancies, bookings })) {
-        const ref = (item.match?.reference || '').trim().toLowerCase();
+        const ref = referenceKey(item.match?.reference);
         if (!ref) continue;
         const name = item.kind === 'receipt' ? payments.find(p => p.id === item.id)?.receiptNo || item.id : item.label;
         byRef.set(ref, [...(byRef.get(ref) || []), name]);
@@ -1047,6 +1098,7 @@ export const WRITE_BLOCKING_CODES = new Set([
   'rent-split-in-unbilled-currency',
   'levy-settled-beyond-what-was-charged',
   'audit-trail-broken',
+  'audit-head-mismatch',
   'closed-period-changed'
 ]);
 

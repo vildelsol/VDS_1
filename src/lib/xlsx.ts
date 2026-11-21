@@ -259,7 +259,8 @@ function escapeXml(value: string): string {
     .replace(/'/g, '&apos;')
     // Excel refuses a file containing control characters, and pasted data does
     // sometimes carry them.
-    .replace(/[ --]/g, '');
+    // Also the characters XML 1.0 cannot hold at all: U+FFFE, U+FFFF, and a surrogate that has no partner.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
 }
 
 function columnName(index: number): string {
@@ -285,6 +286,9 @@ function columnName(index: number): string {
 function dateSerial(value: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   if (!match) return null;
+  // Date.UTC reads the years 0 to 99 as 1900 to 1999, so a year 0001 would land in the sheet as 1901; and Excel's
+  // invented 29 February 1900 puts every earlier serial a day out. Text is the safe failure.
+  if (match[0] < '1900-03-01') return null;
   const utc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
   if (!Number.isFinite(utc)) return null;
   return Math.round((utc - Date.UTC(1899, 11, 30)) / 86400000);

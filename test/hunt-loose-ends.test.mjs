@@ -78,7 +78,11 @@ export default async function run({ projectRoot }) {
     T.check('control: a proprietor’s USD levy statement is produced', st.some(s => key(s) === '2 USD'), st.map(key).join(', '));
     const util = [{ id: 'r1', unitId: shortLet.id, unitNumber: '1', billingPeriod: '2026-10', currency: 'USD', amountCharged: 60, utilityType: 'Electricity' }];
     const withUtil = fin.ownerStatements(units, charges, payments, [], util, FROM, TO);
-    T.check('control: a USD utility billed to it does make a USD statement, because the statement shows it', withUtil.some(s => key(s) === '1 USD'), withUtil.map(key).join(', '));
+    // Ro, 2026-11-21: owners pay their own utilities, so a utility never appears on, or creates, an owner statement.
+    T.check('a USD utility billed to it makes no USD statement: utilities are never on owner statements', !withUtil.some(s => key(s) === '1 USD'), withUtil.map(key).join(', '));
+    const repair = [{ id: 'e1', unitId: shortLet.id, unitNumber: '1', category: 'Repairs', description: 'Plumbing at the owner’s request', amount: 60, currency: 'USD', date: '2026-10-07', datePaid: '2026-10-07', status: 'paid', vendor: 'Simulated Plumber' }];
+    const withRepair = fin.ownerStatements(units, charges, payments, repair, [], FROM, TO);
+    T.check('control: a USD repair the corporation did on the villa does make a USD statement, because the statement shows it', withRepair.some(s => key(s) === '1 USD'), withRepair.map(key).join(', '));
 
     /* ---------------- 2. deposits held ---------------- */
     const b10 = unit(10, { status: 'vacant', tenantName: '' });

@@ -151,9 +151,9 @@ export default async function run({ port, projectRoot }) {
     const cleanId = clean.body.booking.id;
     await c.post(`/api/bookings/${cleanId}/damage-deposit`, { amount: 300, currency: 'USD', receivedOn: '2026-05-01' });
 
-    const allBack = await c.post(`/api/bookings/${cleanId}/damage-deposit/settle`, { withheldAmount: 0, settledOn: '2026-05-04' });
+    const allBack = await c.post(`/api/bookings/${cleanId}/damage-deposit/settle`, { withheldAmount: 0, returnedAmount: 300, settledOn: '2026-05-04' });
     T.check('returning all of it needs no reason', allBack.status === 200, String(allBack.body?.error || ''));
-    T.check('and returns the whole amount by default', allBack.body?.booking?.damageDepositReturnedAmount === 300, String(allBack.body?.booking?.damageDepositReturnedAmount));
+    T.check('and returns the whole amount when it is stated (it is never assumed: see input-hardening-2)', allBack.body?.booking?.damageDepositReturnedAmount === 300, String(allBack.body?.booking?.damageDepositReturnedAmount));
 
     /* ---------------- editing the reservation does not lose it ---------------- */
 

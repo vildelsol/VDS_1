@@ -32,6 +32,7 @@
 
 import type { BankMatch, Booking, Currency, Expense, ExpenseFund, Payment, Tenancy } from '../types';
 import { isWithin } from './dates';
+import { referenceKey } from './text';
 import { fundOf } from '../types';
 import { bookOfPaymentCategory, utilityRecoveryBook } from './finance';
 import { round2, sumMoney } from './money';
@@ -162,13 +163,13 @@ export function bankItems({ payments, expenses = [], tenancies = [], bookings = 
  * whichever way the money went.
  */
 export function itemOnBankLine(items: BankItem[], reference: string, exceptKey: string): BankItem | undefined {
-  const ref = reference.trim().toLowerCase();
+  const ref = referenceKey(reference);
   if (!ref) return undefined;
   // Within one entity's account only: the corporation's and ISPO's statements
   // are separate, so the same reference on each is two different lines.
   const self = items.find(i => i.key === exceptKey);
   return items.find(
-    i => i.key !== exceptKey && (!self || i.book === self.book) && !!i.match && (i.match.reference || '').trim().toLowerCase() === ref
+    i => i.key !== exceptKey && (!self || i.book === self.book) && !!i.match && referenceKey(i.match.reference) === ref
   );
 }
 

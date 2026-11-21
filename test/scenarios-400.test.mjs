@@ -283,7 +283,8 @@ function auditReporting(db, fin, asOf) {
      * "Due from <name>" beside a line confirming the money had been received.
      */
     const maintenanceOwed = cents(s.maintenanceBilled) - cents(s.maintenancePaid);
-    const expected = cents(s.utilityCollected) - maintenanceOwed - cents(s.utilityBilled) - cents(s.expenses);
+    // Utilities are never on an owner statement (Ro, 2026-11-21): levy still owing and villa charges only.
+    const expected = -maintenanceOwed - cents(s.expenses);
     if (cents(s.net) !== expected) {
       problems.push(`statement ${s.unit.number} ${s.currency}: net ${cents(s.net)} does not equal ${expected}`);
     }
@@ -1071,9 +1072,9 @@ export default async function run({ port, projectRoot }) {
       'one supply was billed twice'
     );
     T.check(
-      'while the metered charge itself did reach the owner',
-      finalStatements.some(s => s.utilityBilled > 0),
-      'no statement carried a utility charge, so the mapping proves nothing'
+      'and no statement carries a utility charge: owners settle their own utilities (Ro, 2026-11-21)',
+      finalStatements.every(s => s.utilityBilled === 0 && s.utilityCharges.length === 0),
+      'a utility charge reached an owner statement'
     );
 
     /* ---------------- occupancy is readable across the year ---------------- */

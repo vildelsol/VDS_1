@@ -312,10 +312,12 @@ export default async function run({ port, projectRoot }) {
         const b = await c.post('/api/bookings', { unitId, guestName: `Guest ${i}`, checkIn: dayIn(month, start), checkOut: dayIn(month, start + 2), amount: money(rand, 300, 2500), depositPaid: money(rand, 50, 500), currency: 'USD', source: pick(rand, ['Direct', 'Airbnb', 'Booking.com']) });
         const id = b.body?.booking?.id;
         if (!id) return;
-        const held = await c.post(`/api/bookings/${id}/damage-deposit`, { amount: money(rand, 100, 600), currency: 'USD', receivedOn: dayIn(month, start) });
+        const depositAmount = money(rand, 100, 600);
+        const held = await c.post(`/api/bookings/${id}/damage-deposit`, { amount: depositAmount, currency: 'USD', receivedOn: dayIn(month, start) });
         if (!held.status || held.status !== 200) return;
         if (rand() > 0.4) {
-          await c.post(`/api/bookings/${id}/damage-deposit/settle`, { withheldAmount: rand() > 0.6 ? money(rand, 10, 80) : 0, withheldReason: 'checked on departure' });
+          const withheld = rand() > 0.6 ? money(rand, 10, 80) : 0;
+          await c.post(`/api/bookings/${id}/damage-deposit/settle`, { withheldAmount: withheld, returnedAmount: Math.round((depositAmount - withheld) * 100) / 100, withheldReason: 'checked on departure' });
         }
       },
 
@@ -328,7 +330,7 @@ export default async function run({ port, projectRoot }) {
         const held = money(rand, 40000, 200000);
         const taken = await c.post(`/api/tenancies/${t.id}/deposit`, { amount: held, currency: 'JMD', method: 'Bank Transfer' });
         if (taken.status !== 200) return;
-        if (rand() > 0.5) await c.post(`/api/tenancies/${t.id}/deposit/settle`, { withheldAmount: Math.round(held * 0.2 * 100) / 100, reason: 'cleaning and a broken blind' });
+        if (rand() > 0.5) await c.post(`/api/tenancies/${t.id}/deposit/settle`, { withheldAmount: Math.round(held * 0.2 * 100) / 100, returnedAmount: Math.round((held - Math.round(held * 0.2 * 100) / 100) * 100) / 100, reason: 'cleaning and a broken blind' });
       },
 
       // Lease terms recorded and renewed.

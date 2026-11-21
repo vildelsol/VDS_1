@@ -274,7 +274,8 @@ export default async function run({ port, projectRoot }) {
      * 2026-11-18) it nets the corporation's utility cost, exactly as the strata
      * Operating Statement nets it, so costs fall by the J$6,000 recovered.
      */
-    T.check('a utility recovery from an owner is not income: it nets utilities, as on the Operating Statement', after.contributionsReceived === 40000 && after.costsPaid === 36800, String(after.costsPaid));
+    /* Changed 2026-11-21 (owner's rule): a villa's utility recovery is that owner's own cost, so it is not netted from the common costs (36,800 -> 42,800 gross); still not income. */
+    T.check('a utility recovery from an owner is not income and is not netted from the common costs', after.contributionsReceived === 40000 && after.costsPaid === 42800, String(after.costsPaid));
     T.check(
       'the arrears count is over contributions only, never rent',
       after.lotsInArrears === 1,

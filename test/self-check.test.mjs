@@ -136,15 +136,13 @@ export default async function run({ port, projectRoot }) {
       const db = healthyDb();
       db.auditLogs = Array.from({ length: 18500 }, (_, i) => ({ id: `a-${i}`, action: 'x', dateTime: '2026-01-01T00:00:00.000Z' }));
       const r = checkIntegrity(db);
+      // Changed in the second security pass: old entries now rotate to audit-archive.jsonl instead of being dropped,
+      // so a trail near its ceiling is ordinary and raises nothing. The finding is SERIOUS only when rotation has
+      // failed (asserted in security-hardening-2, where the archive can be made unwritable).
       T.check(
-        'it warns before the audit trail starts dropping its oldest entries',
-        codesFrom(r).includes('audit-trail-near-capacity'),
+        'a trail near its ceiling raises no finding while rotation works (old entries move to the archive)',
+        !codesFrom(r).includes('audit-trail-near-capacity'),
         JSON.stringify(codesFrom(r))
-      );
-      T.check(
-        'and that is a warning, not a misstatement of money',
-        r.findings.find(f => f.code === 'audit-trail-near-capacity')?.severity === 'warning',
-        'wrong severity'
       );
     }
     {

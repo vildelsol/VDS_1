@@ -35,6 +35,8 @@ export const title = 'Audit records: every write is audited, attributed and seal
 
 /** Write routes that change no record of the property, with the reason. */
 const NOT_RECORDS = {
+  'POST /api/auth/logout-everywhere': 'audited ("Signed out everywhere"); exercised and asserted in security-hardening-2 because it ends the session',
+  'POST /api/users/:id/sign-out-everywhere': 'audited ("Signed ... out everywhere"); exercised and asserted in security-hardening-2',
   'POST /api/backup/check-folder': 'writes and deletes a probe file in a folder; no record changes',
   'POST /api/auth/logout': 'covered: audited, but exercised separately because it ends the session',
   'POST /api/backup/restore': 'covered by security-audit-backup and audit-records-settings (restore keeps the trail)'

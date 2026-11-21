@@ -181,12 +181,13 @@ export default async function run({ port, projectRoot }) {
     T.check('posting those months closes the gap', monthsSince.every(m => billedAfter.has(m)), [...billedAfter].join(','));
 
     // --- a villa with no rent set is never given a two-month charge ---
-    await c.put('/api/units/unit-2', villa({ number: '2', monthlyRent: 0, tenantName: 'Rent Free', ownerName: 'Owner Two' }));
+    // Since input-hardening-2 a let villa with a tenant and no rent cannot be saved at all, so this state can no
+    // longer be made: the save is refused, no tenancy opens, and nothing is billed.
+    const rentFree = await c.put('/api/units/unit-2', villa({ number: '2', monthlyRent: 0, tenantName: 'Rent Free', ownerName: 'Owner Two' }));
+    T.check('a villa let at no rent is refused on save', rentFree.status === 400 && rentFree.body?.code === 'rent-required', `${rentFree.status}`);
     db = (await c.get('/api/db')).body;
-    const ten2 = db.tenancies.find(t => t.unitId === 'unit-2' && t.status === 'active');
-    await c.put(`/api/tenancies/${ten2.id}`, { startedOn: '2026-03-01' });
-    db = (await c.get('/api/db')).body;
-    T.check('a villa with no rent set is billed nothing', openRent(db, 'unit-2').length === 0, `${openRent(db, 'unit-2').length} charges`);
+    T.check('so no tenancy opens for it', !db.tenancies.some(t => t.unitId === 'unit-2' && t.status === 'active'));
+    T.check('and a villa with no rent set is billed nothing', openRent(db, 'unit-2').length === 0, `${openRent(db, 'unit-2').length} charges`);
   } finally {
     await srv.stop();
   }

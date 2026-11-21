@@ -334,7 +334,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
       if (!res.ok) {
         const serverMessage =
           payload && typeof payload === 'object' && 'error' in payload ? String((payload as { error: unknown }).error) : '';
-        const message = serverMessage || `Request failed (HTTP ${res.status}).`;
+        const message = serverMessage || (res.status === 413 ? 'That is too much to send in one go. Nothing was saved.' : `Request failed (HTTP ${res.status}).`);
         const code =
           payload && typeof payload === 'object' && 'code' in payload ? String((payload as { code: unknown }).code) : undefined;
         if (res.status === 401 && onUnauthenticated) onUnauthenticated();

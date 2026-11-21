@@ -13,7 +13,7 @@ interface AuditProps {
 }
 
 /** The integrity codes that are about the audit trail itself. */
-export const AUDIT_CHAIN_CODES = ['audit-trail-broken', 'audit-key-missing', 'audit-sealed-without-key', 'audit-trail-near-capacity', 'integrity-check-failed'];
+export const AUDIT_CHAIN_CODES = ['audit-trail-broken', 'audit-head-mismatch', 'audit-key-missing', 'audit-sealed-without-key', 'audit-trail-near-capacity', 'integrity-check-failed'];
 
 /**
  * Whether the trail on this screen can be believed.

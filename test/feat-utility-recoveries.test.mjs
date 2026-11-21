@@ -192,11 +192,20 @@ export default async function run({ projectRoot }) {
       /* ---------- Annual Report ---------- */
       const ar = F.annualOwnersReport(units, charges, payments, expenses, cur, 2026, {});
       const opYear = F.operatingStatement(payments, expenses, units, cur, '2026-01-01', '2026-12-31', { book: 'strata' });
-      T.check(`${cur} Annual Report: expenditure equals the strata Operating Statement for the year (utility net)`, C(ar.expenditure) === C(opYear.totalExpenditure), `${ar.expenditure} vs ${opYear.totalExpenditure}`);
+      /*
+       * Changed 2026-11-21 (owner's rule): the Annual Report presents COMMON costs, so a utility bill tied to a villa and
+       * the recoveries of utility from villas are that villa owner's own cost and are left out of it. It still ties to the
+       * strata Operating Statement (the corporation's cash record) less exactly those rows.
+       */
+      const yearVillaUtility = F.strataExpenses(F.withUtilityRecoveries(expenses, payments))
+        .filter(e => F.isVillaUtilityCost(e) && e.status === 'paid' && e.currency === cur && (e.datePaid || e.date) >= '2026-01-01' && (e.datePaid || e.date) <= '2026-12-31')
+        .reduce((a, e) => a + C(e.amount), 0);
+      T.check(`${cur} Annual Report: expenditure equals the strata Operating Statement for the year less villa utilities and their recoveries`, C(ar.expenditure) === C(opYear.totalExpenditure) - yearVillaUtility, `${ar.expenditure} vs ${opYear.totalExpenditure} - ${yearVillaUtility}`);
     }
     // September's 2,500 recovery refunded in October nets to nothing over the year.
     const arJ = F.annualOwnersReport(units, charges, payments, expenses, 'JMD', 2026, {});
-    T.check('JMD Annual Report: 80,000 paid less 12,000 recovered = 68,000', C(arJ.expenditure) === C(68000), `${arJ.expenditure}`);
+    // Changed 2026-11-21: recoveries from villas are the villa owners' own side (not netted from common costs), so the Annual Report reads the gross 80,000.
+    T.check('JMD Annual Report: 80,000 of common costs; the 12,000 recovered from villas is not netted from them', C(arJ.expenditure) === C(80000), `${arJ.expenditure}`);
 
     /* ---------- Owners Statements: a utility receipt never counts as levy paid ---------- */
     const st = F.ownerStatements(units, charges, payments, expenses, [], FROM, TO).find(s => s.unit.id === 'u-a2' && s.currency === 'JMD');

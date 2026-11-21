@@ -44,22 +44,25 @@ export default async function run({ port, projectRoot }) {
     T.check('dry run tells the administrator the present records are larger than the file (what would be lost)', dry.status === 200 && dry.body?.present?.payments > dry.body?.summary?.counts?.payments, JSON.stringify({ present: dry.body?.present, counts: dry.body?.summary?.counts }));
     T.check('dry run warns that a closed period / permissions will be rolled back', JSON.stringify(dry.body).match(/closed|permission/i) !== null, 'no such warning in the dry-run response');
 
-    const res = await admin.post('/api/backup/restore', { source: 'backup', file: f, location: 'local', confirm: 'RESTORE' });
-    T.check('older backup restores', res.status === 200, JSON.stringify(res.body).slice(0, 200));
+    // A restore may no longer reopen sealed months by accident: live is closed through 2026-09, the old file has no close.
+    const refused = await admin.post('/api/backup/restore', { source: 'backup', file: f, location: 'local', confirm: 'RESTORE' });
+    T.check('restoring a backup that would reopen closed months is refused unless confirmed (409 restore-reopens-closed-months)', refused.status === 409 && refused.body?.code === 'restore-reopens-closed-months', `${refused.status} ${refused.body?.code}`);
+    T.check('and the refusal changed nothing: still closed through 2026-09', (await admin.get('/api/db')).body.settings.closedThrough === '2026-09');
+    const res = await admin.post('/api/backup/restore', { source: 'backup', file: f, location: 'local', confirm: 'RESTORE', confirmRollbackClosedMonths: true, rollbackReason: 'test: deliberate roll back of closed months' });
+    T.check('older backup restores once the roll back of closed months is confirmed with a reason', res.status === 200, JSON.stringify(res.body).slice(0, 200));
     const now = (await admin.get('/api/db')).body;
-    T.check('the books stay closed through 2026-09 after a restore (a closed month cannot be reopened by going back in time)', now.settings.closedThrough === '2026-09', `closedThrough=${now.settings.closedThrough}`);
+    T.check('the restored database adopts the file\'s own seal: the backup had no closed month, so none is closed (not a stale close over records that no longer match)', !now.settings.closedThrough && !now.settings.closeFingerprint, `closedThrough=${now.settings.closedThrough}`);
     T.check('the role permission matrix is not rolled back by a records restore (staff permissions are account policy)', now.settings.rolePermissions?.JUNIOR_OFFICER?.recordPayments === false, `recordPayments=${now.settings.rolePermissions?.JUNIOR_OFFICER?.recordPayments}`);
     T.check('the two-person approval rule is not switched off by a restore', now.settings.requireCosign === true, `requireCosign=${now.settings.requireCosign}`);
     T.check('voided receipt from after the old backup is gone with the rest of that period (expected: records go back in time)', now.payments.length === 0, String(now.payments.length));
-    T.check('restore response itself reports the closed-month contradiction it just created (positive control)', res.body?.integrity?.ok === false && res.body.integrity.findings.some(x => x.code === 'closed-period-changed'), JSON.stringify(res.body?.integrity).slice(0, 200));
+    T.check('the restore leaves no contradiction behind: the seal and the records agree (it used to report closed-period-changed)', res.body?.integrity?.findings?.every(x => x.code !== 'closed-period-changed') === true, JSON.stringify(res.body?.integrity).slice(0, 200));
 
     // Phase 2: a backup that records a SHORTER closed period than the live books.
-    await admin.post('/api/backup/run', {});
     const closed2 = await admin.post('/api/periods/close', { through: '2026-10', confirmWithFaults: true });
-    T.check('setup: closed further, through 2026-10', closed2.status === 200 && (await admin.get('/api/db')).body.settings.closedThrough === '2026-10', String(closed2.status));
+    T.check('setup: closed again, through 2026-10', closed2.status === 200 && (await admin.get('/api/db')).body.settings.closedThrough === '2026-10', String(closed2.status));
     const res2 = await admin.post('/api/backup/restore', { source: 'backup', file: f, location: 'local', confirm: 'RESTORE' });
     const after2 = (await admin.get('/api/db')).body;
-    T.check('restoring a backup that closed fewer months does not silently reopen 2026-10', res2.status !== 200 || after2.settings.closedThrough === '2026-10', `closedThrough=${after2.settings.closedThrough}`);
+    T.check('restoring a backup that closed fewer months does not silently reopen 2026-10', res2.status === 409 && after2.settings.closedThrough === '2026-10', `${res2.status} closedThrough=${after2.settings.closedThrough}`);
   } finally {
     await srv.stop();
     fs.rmSync(dataDir, { recursive: true, force: true });

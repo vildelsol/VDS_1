@@ -4,7 +4,7 @@
  */
 
 import { AppSettings, Booking, Charge, Expense, Payment, Tenancy, Unit, UtilityReading } from '../types';
-import { bookingOverlaps, delinquentAccounts, leasesNeedingAttention, tenanciesMissingMoveInDate, unbilledOccupancy } from './finance';
+import { bookingOverlaps, delinquentAccounts, leasesNeedingAttention, letVillasWithNoRent, tenanciesMissingMoveInDate, unbilledOccupancy } from './finance';
 import { billingBacklog } from './billingCalendar';
 import { today } from './dates';
 
@@ -44,6 +44,7 @@ export function hubOpenItemCount(data: {
     unbilledOccupancy(units, tenancies, charges, asOf, settings?.booksBeginOn, settings?.closedThrough).length +
     levyGroups.size +
     tenanciesMissingMoveInDate(units, tenancies).length +
+    letVillasWithNoRent(units).length +
     delinquentAccounts(units, charges, payments, asOf).length +
     utilities.filter(u => u.status === 'unpaid').length +
     expenses.filter(e => e.status === 'pending').length

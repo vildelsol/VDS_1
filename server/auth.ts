@@ -35,6 +35,17 @@ const SESSION_COOKIE = 'vds_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 /**
+ * The longest a session can live, counted from sign-in, however often it is renewed.
+ *
+ * Renewal used to have no ceiling, so a stolen cookie stayed good for as long as somebody kept using it (a
+ * heartbeat is enough). Longer than the idle window above, so an open screen still survives a working day and
+ * the evening after it; shorter than for ever. VDS_SESSION_MAX_HOURS changes it.
+ */
+export const SESSION_MAX_AGE_MS = (Number(process.env.VDS_SESSION_MAX_HOURS) > 0 ? Number(process.env.VDS_SESSION_MAX_HOURS) : 16) * 60 * 60 * 1000;
+/** Sessions one account may hold at once; signing in again past this ends the oldest. */
+export const MAX_SESSIONS_PER_USER = 20;
+
+/**
  * Renewals are written at most this often per session.
  *
  * A renewal has to reach db.json, or an HP restarting overnight would bring back
@@ -110,13 +121,41 @@ export function burnPasswordCheck(password: string): void {
   }
 }
 
-/** At least 10 characters with some variety. Returns null when acceptable. */
-export function passwordComplaint(password: string): string | null {
-  const value = String(password || '');
+/**
+ * Passwords everybody tries first, and this property's own names. Compared with every digit, symbol and case
+ * stripped (after undoing the usual substitutions), so "Password123!", "P@ssw0rd!" and "Welcome1!" are all caught
+ * while a long passphrase that merely contains a word is not.
+ */
+const COMMON_PASSWORD_WORDS = new Set([
+  'password', 'passwort', 'welcome', 'admin', 'administrator', 'letmein', 'qwerty', 'qwertyuiop', 'changeme', 'secret',
+  'iloveyou', 'monkey', 'dragon', 'sunshine', 'football', 'baseball', 'master', 'login', 'test', 'testing', 'guest', 'user',
+  'default', 'temp', 'temporary', 'summer', 'winter', 'spring', 'autumn', 'hello', 'abc', 'abcdef', 'abcdefgh', 'trustno',
+  'villaggio', 'villaggiodelsol', 'delsol', 'villaggiodel', 'sol', 'riveroaks', 'oaks', 'ochorios', 'ocho', 'rios', 'jamaica',
+  'strata', 'vds', 'vdsadmin', 'newpassword'
+]);
+
+/** At least 10 characters with some variety, and not a password everybody tries. Returns null when acceptable. */
+export const MAX_PASSWORD_LENGTH = 200;
+
+export function passwordComplaint(password: unknown): string | null {
+  // A non-string (an object, a number) used to be read through String() and became "[object Object]".
+  if (typeof password !== 'string') return 'Password must be text.';
+  const value = password;
+  if (value.length > MAX_PASSWORD_LENGTH) return `Password must be ${MAX_PASSWORD_LENGTH} characters or fewer.`;
   if (value.length < 10) return 'Password must be at least 10 characters long.';
   const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter(re => re.test(value)).length;
   if (classes < 3) {
     return 'Password must combine at least three of: lower case, upper case, numbers, symbols.';
+  }
+  // Letters only, after undoing a substitution (@ for a, 0 for o...) wherever it sits between two letters: a digit
+  // on the end ("Password123!") is just stripped, it is not read as a letter.
+  const SUBS: Record<string, string> = { '@': 'a', $: 's', '0': 'o', '3': 'e', '4': 'a', '5': 's', '7': 't' };
+  const letters = value
+    .toLowerCase()
+    .replace(/(?<=[a-z])[@$03457](?=[a-z])/g, ch => SUBS[ch] ?? ch)
+    .replace(/[^a-z]/g, '');
+  if (COMMON_PASSWORD_WORDS.has(letters)) {
+    return 'That password is one of the first anybody would try. Choose something else, such as three unrelated words.';
   }
   return null;
 }
@@ -152,11 +191,18 @@ export function createSession(db: Database, user: StoredUser): Session {
     token: hashToken(rawToken),
     userId: user.id,
     createdAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
+    expiresAt: new Date(now + Math.min(SESSION_TTL_MS, SESSION_MAX_AGE_MS)).toISOString(),
     lastSeenAt: new Date(now).toISOString()
   };
-  db.sessions = db.sessions.filter(s => new Date(s.expiresAt).getTime() > now);
+  // Expired sessions, and any past the absolute lifetime, were never pruned: 3,000 sign-ins left 3,000 sessions.
+  db.sessions = db.sessions.filter(s => new Date(s.expiresAt).getTime() > now && now - new Date(s.createdAt).getTime() < SESSION_MAX_AGE_MS);
   db.sessions.push(session);
+  // One account cannot hold an unbounded number: the oldest of its sessions end.
+  const mine = db.sessions.filter(s => s.userId === user.id);
+  if (mine.length > MAX_SESSIONS_PER_USER) {
+    const drop = new Set(mine.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, mine.length - MAX_SESSIONS_PER_USER).map(s => s.token));
+    db.sessions = db.sessions.filter(s => !drop.has(s.token));
+  }
   // The caller gets the real token to put in the cookie; the stored copy carries only its hash.
   return { ...session, token: rawToken };
 }
@@ -169,20 +215,71 @@ export function destroyAllSessionsFor(db: Database, userId: string) {
   db.sessions = db.sessions.filter(s => s.userId !== userId);
 }
 
-export function setSessionCookie(res: Response, token: string, secure: boolean) {
+export function setSessionCookie(res: Response, token: string, secure: boolean, maxAgeMs: number = SESSION_TTL_MS) {
   const attrs = [
     `${SESSION_COOKIE}=${token}`,
     'HttpOnly',
     'SameSite=Strict',
     'Path=/',
-    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
+    `Max-Age=${Math.max(0, Math.floor(maxAgeMs / 1000))}`
   ];
   if (secure) attrs.push('Secure');
-  res.setHeader('Set-Cookie', attrs.join('; '));
+  res.append('Set-Cookie', attrs.join('; '));
 }
 
 export function clearSessionCookie(res: Response) {
-  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+  res.append('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+}
+
+/* ------------------------------------------------------------------ *
+ * Known devices: a random id in an HttpOnly cookie, issued at a successful sign-in and kept server-side only as a
+ * hash, tied to the account it was issued for. The sign-in throttle gives such a browser a bucket of its own.
+ * ------------------------------------------------------------------ */
+
+export const DEVICE_COOKIE = 'vds_device';
+const DEVICE_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+const MAX_DEVICES_PER_USER = 8;
+
+export function readDeviceCookie(req: Request): string | undefined {
+  const v = parseCookies(req.headers.cookie)[DEVICE_COOKIE];
+  return v && /^[0-9a-f]{64}$/.test(v) ? v : undefined;
+}
+
+/** The hash of the device cookie, if it was issued to THIS user and has not lapsed; otherwise null. */
+export function knownDeviceKey(db: Database, userId: string, rawId: string | undefined): string | null {
+  if (!rawId) return null;
+  const id = hashToken(rawId);
+  const cutoff = Date.now() - DEVICE_TTL_MS;
+  const d = (db.knownDevices || []).find(x => x.id === id && x.userId === userId && new Date(x.lastSeenAt).getTime() > cutoff);
+  return d ? id : null;
+}
+
+/**
+ * Inside the sign-in transaction: refresh this browser's record, or make one. Returns the raw id to put in the
+ * cookie when a new one was made, otherwise undefined.
+ */
+export function rememberDevice(db: Database, userId: string, rawId: string | undefined): string | undefined {
+  const now = new Date().toISOString();
+  const list = (db.knownDevices = (db.knownDevices || []).filter(x => new Date(x.lastSeenAt).getTime() > Date.now() - DEVICE_TTL_MS));
+  const known = rawId ? list.find(x => x.id === hashToken(rawId) && x.userId === userId) : undefined;
+  if (known) {
+    known.lastSeenAt = now;
+    return undefined;
+  }
+  const fresh = crypto.randomBytes(32).toString('hex');
+  list.push({ id: hashToken(fresh), userId, createdAt: now, lastSeenAt: now });
+  const mine = list.filter(x => x.userId === userId);
+  if (mine.length > MAX_DEVICES_PER_USER) {
+    const drop = new Set(mine.sort((a, b) => a.lastSeenAt.localeCompare(b.lastSeenAt)).slice(0, mine.length - MAX_DEVICES_PER_USER).map(x => x.id));
+    db.knownDevices = list.filter(x => !drop.has(x.id));
+  }
+  return fresh;
+}
+
+export function setDeviceCookie(res: Response, rawId: string, secure: boolean) {
+  const attrs = [`${DEVICE_COOKIE}=${rawId}`, 'HttpOnly', 'SameSite=Strict', 'Path=/', `Max-Age=${Math.floor(DEVICE_TTL_MS / 1000)}`];
+  if (secure) attrs.push('Secure');
+  res.append('Set-Cookie', attrs.join('; '));
 }
 
 /**
@@ -237,7 +334,7 @@ export function resolveAuth(db: Database, req: Request): AuthedRequest['auth'] |
   if (!token) return undefined;
   const session = db.sessions.find(s => s.token === hashToken(token));
   if (!session) return undefined;
-  if (new Date(session.expiresAt).getTime() <= Date.now()) {
+  if (new Date(session.expiresAt).getTime() <= Date.now() || Date.now() - new Date(session.createdAt).getTime() >= SESSION_MAX_AGE_MS) {
     destroySession(db, token);
     return undefined;
   }
@@ -361,6 +458,9 @@ export const ACTION_DENIED_MESSAGE: Record<GatedAction, string> = {
 
 /** Whether this session has been used long enough since its last renewal to renew again. */
 export function sessionRenewalDue(session: Session, now: number): boolean {
+  const absoluteEnd = new Date(session.createdAt).getTime() + SESSION_MAX_AGE_MS;
+  // Already running to its absolute end: renewing changes nothing, so nothing is written.
+  if (new Date(session.expiresAt).getTime() >= absoluteEnd) return false;
   return new Date(session.expiresAt).getTime() - now <= SESSION_TTL_MS - SESSION_RENEW_EVERY_MS;
 }
 
@@ -377,11 +477,13 @@ export function sessionRenewalDue(session: Session, now: number): boolean {
 export function renewSession(req: Request, res: Response, session: Session): void {
   const now = Date.now();
   if (!sessionRenewalDue(session, now)) return;
-  const expiresAt = new Date(now + SESSION_TTL_MS).toISOString();
+  // Never past the absolute lifetime, whatever the renewals say.
+  const expiryMs = Math.min(now + SESSION_TTL_MS, new Date(session.createdAt).getTime() + SESSION_MAX_AGE_MS);
+  const expiresAt = new Date(expiryMs).toISOString();
   session.expiresAt = expiresAt;
   // The cookie carries the real token the browser already holds; the stored session only has its hash.
   const rawToken = readSessionToken(req);
-  if (rawToken) setSessionCookie(res, rawToken, isRequestSecure(req));
+  if (rawToken) setSessionCookie(res, rawToken, isRequestSecure(req), expiryMs - now);
   transaction(db => {
     /*
      * In the ordinary case the line below changes nothing: the live session was

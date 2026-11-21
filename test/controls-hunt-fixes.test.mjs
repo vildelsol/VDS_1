@@ -107,7 +107,7 @@ export default async function run({ port, projectRoot }) {
     const r1 = await c.post('/api/expenses', exp({ amount: 77777, vendor: 'Backdated Co' }));
     T.check('1. a cost dated in closed September is refused with period-closed', refused(r1), `${r1.status} ${JSON.stringify(r1.body)}`);
     const rPend = await c.post('/api/expenses', exp({ status: 'pending', datePaid: undefined, amount: 22, vendor: 'Pending Backdated', date: '2026-09-02' }));
-    T.check('1. control: an unpaid bill dated in September is not money out, so it is accepted', rPend.status === 200, `${rPend.status} ${JSON.stringify(rPend.body)}`);
+    T.check('1. an unpaid bill dated in closed September is refused like a paid one (it changes the issued statement\'s unpaid memo; ecosystem hunt 2)', refused(rPend), `${rPend.status} ${JSON.stringify(rPend.body)}`);
     const r1ok = await c.post('/api/expenses', exp({ amount: 3300, vendor: 'October Co', date: '2026-10-02', datePaid: '2026-10-02' }));
     T.check('1. control: a cost dated in open October is accepted', r1ok.status === 200, `${r1ok.status} ${JSON.stringify(r1ok.body)}`);
     const r2 = await c.put(`/api/expenses/${e1id}`, { amount: 1 });
@@ -133,7 +133,7 @@ export default async function run({ port, projectRoot }) {
     const rrOnly = await c.post('/api/expenses/recall-month', { monthString: '2026-09', reason: 'run posted in error', includeSettled: true });
     T.check('1. recall-month with paid rows in closed September is refused with period-closed', refused(rrOnly), `${rrOnly.status} ${JSON.stringify(rrOnly.body)}`);
     const rvPend = await c.post(`/api/expenses/${pendId}/void`, { reason: 'entered twice' });
-    T.check('1. an unpaid September bill can still be taken back (no money moved)', rvPend.status === 200, `${rvPend.status} ${JSON.stringify(rvPend.body)}`);
+    T.check('1. taking back an unpaid September bill is refused too (it would change the issued unpaid memo; ecosystem hunt 2)', refused(rvPend), `${rvPend.status} ${JSON.stringify(rvPend.body)}`);
     T.check('1. none of the refused calls disturbed the closed month', !(await codes()).includes('closed-period-changed'));
 
     /* the generic guard: the fingerprint now covers costs, bills and deposits */

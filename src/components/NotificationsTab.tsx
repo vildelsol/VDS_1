@@ -20,7 +20,7 @@ import {
   Tenancy,
   AppSettings
 } from '../types';
-import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, maintenanceFundedFromRent, tenanciesMissingMoveInDate, scheduledCharges, unbilledOccupancy } from '../lib/finance';
+import { AccountBalance, accountBalance, bookingOverlaps, delinquentAccounts, leasesNeedingAttention, letVillasWithNoRent, maintenanceFundedFromRent, tenanciesMissingMoveInDate, scheduledCharges, unbilledOccupancy } from '../lib/finance';
 import { billingBacklog } from '../lib/billingCalendar';
 import { round2 } from '../lib/money';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
@@ -285,6 +285,20 @@ export default function NotificationsTab({
       ageDays: 0
     }));
 
+    // A villa let to a tenant at no rent is never billed: posting the month skips it without a word.
+    const noRentItems = letVillasWithNoRent(units).map<Item>(unit => ({
+      id: `norent-${unit.id}`,
+      type: 'unbilled',
+      title: `Let villa with no rent, ${getUnitDisplayName(unit.number)}`,
+      description:
+        `${unit.tenantName} is on record as the tenant, but the monthly rent is ${unit.monthlyRent || 0}, so nothing is billed for this villa ` +
+        'and the month is posted without it. Enter the rent on the villa page, or take the tenant off if it is not let.',
+      amount: 0,
+      currency: unit.currency,
+      severity: 'high',
+      ageDays: 0
+    }));
+
     // Leases running out. A fixed term that lapses unnoticed rolls the tenant
     // onto month-to-month terms nobody chose, at the old rent — so this has to be
     // visible before the date, not after it.
@@ -352,7 +366,7 @@ export default function NotificationsTab({
       isBooking: true
     }));
 
-    return [...overlapItems, ...leaseItems, ...unbilledItems, ...unbilledLevyItems, ...missingMoveIn, ...accounts, ...utilityItems, ...expenseItems, ...scheduledItems].sort(
+    return [...overlapItems, ...leaseItems, ...unbilledItems, ...unbilledLevyItems, ...missingMoveIn, ...noRentItems, ...accounts, ...utilityItems, ...expenseItems, ...scheduledItems].sort(
       (a, b) => b.ageDays - a.ageDays
     );
     // `settings` carries the books-begin date and the closed period, and both

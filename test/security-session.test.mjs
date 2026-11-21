@@ -147,7 +147,8 @@ export default async function run({ port, projectRoot }) {
     known('(finding probe) the legitimate owner is not locked out by an attacker\'s failed guesses', legit.status === 200, `legit login during attack: ${legit.status}`);
     const sprayCodes = [];
     for (let i = 0; i < 30; i++) sprayCodes.push((await rawLogin(base, `spray${i}`, 'Winter2026!!')).status);
-    T.check('(info) password spraying across distinct usernames from one IP is not throttled per IP', sprayCodes.every(s => s === 401), `statuses ${[...new Set(sprayCodes)].join(',')}`);
+    // Flipped in the second security pass: unknown devices now share a per-address cap (30 failed attempts per 15 minutes) across usernames.
+    T.check('password spraying across distinct usernames from one IP is throttled per IP', sprayCodes.includes(429), `statuses ${[...new Set(sprayCodes)].join(',')}`);
     const unameTiming = [];
     for (const u of ['admin', 'no-such-user-zz']) { const t = Date.now(); await rawLogin(base, u, 'Wrong-pass-1!A'); unameTiming.push(Date.now() - t); }
     console.log('  info login timing ms (existing admin vs missing user):', unameTiming.join(' vs '));

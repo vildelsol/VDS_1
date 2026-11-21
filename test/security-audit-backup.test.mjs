@@ -57,16 +57,21 @@ export default async function run({ port, projectRoot }) {
 
     /* ---- file-level tamper detection (server stopped, db.json edited, server restarted) ---- */
     const snapshotFile = fs.readFileSync(dbFile, 'utf8');
+    // The head anchor (audit-head.json, second security pass) belongs with the db.json it was written for: each tamper below
+    // starts from the pair as it stood, or the anchor from an earlier iteration would flag every later one.
+    const anchorFile = path.join(dir, 'audit-head.json');
+    const snapshotAnchor = fs.existsSync(anchorFile) ? fs.readFileSync(anchorFile, 'utf8') : null;
     await live.stop();
     const tamper = async (label, mutate, { expectDetected, why, known }) => {
       const j = JSON.parse(snapshotFile);
       mutate(j);
       fs.writeFileSync(dbFile, JSON.stringify(j, null, 2));
+      if (snapshotAnchor) fs.writeFileSync(anchorFile, snapshotAnchor);
       live = await startServer({ port, adminPassword: 'x', projectRoot, dataDir: dir });
       const c = makeClient(live.baseUrl);
       const login = await c.post('/api/auth/login', { username: 'admin', password: ADMIN_PW }, { captureCookie: true });
       const rep = login.status === 200 ? (await c.get('/api/integrity')).body : { findings: [] };
-      const flagged = (rep.findings || []).some(f => f.code === 'audit-trail-broken');
+      const flagged = (rep.findings || []).some(f => f.code === 'audit-trail-broken' || f.code === 'audit-head-mismatch');
       // `known`: a limit of an UNKEYED hash chain (anyone who can edit the file can recompute it). Reported, not failing.
       if (known) console.log(`  known-risk (needs a key kept off this machine): ${label} — ${flagged ? 'detected' : 'NOT detected'}`);
       else T.check(label, expectDetected ? flagged : flagged, why || (flagged ? 'flagged' : 'NOT flagged by /api/integrity'));
@@ -75,13 +80,14 @@ export default async function run({ port, projectRoot }) {
     await tamper('control: editing the text of an old audit entry is detected', j => { j.auditLogs[j.auditLogs.length - 3].action = 'Created nothing at all'; }, { expectDetected: true });
     await tamper('deleting a middle audit entry is detected', j => { j.auditLogs.splice(4, 1); }, { expectDetected: true });
     await tamper('inserting a forged entry with a made-up seal is detected', j => { j.auditLogs.splice(3, 0, { ...j.auditLogs[3], id: 'audit-forged', action: 'forged', seal: 'f'.repeat(64) }); }, { expectDetected: true });
-    await tamper('deleting the NEWEST 4 entries (e.g. the evidence of the last action) is detected', j => { j.auditLogs.splice(0, 4); }, { known: true, expectDetected: true });
-    await tamper('stripping seal and prevSeal from every entry and rewriting one is detected', j => { for (const e of j.auditLogs) { delete e.seal; delete e.prevSeal; } j.auditLogs[5].action = 'rewritten history'; }, { known: true, expectDetected: true });
-    await tamper('rewriting an entry AND recomputing the whole chain (unkeyed SHA-256, algorithm is in the source) is detected', j => { j.auditLogs[5].action = 'rewritten history'; rechain(j.auditLogs); }, { known: true, expectDetected: true });
-    await tamper('wiping the entire trail is detected', j => { j.auditLogs = []; }, { known: true, expectDetected: true });
+    await tamper('deleting the NEWEST 4 entries (e.g. the evidence of the last action) is detected', j => { j.auditLogs.splice(0, 4); }, { expectDetected: true, why: 'the head anchor (audit-head.json) remembers the newest seal' });
+    await tamper('stripping seal and prevSeal from every entry and rewriting one is detected', j => { for (const e of j.auditLogs) { delete e.seal; delete e.prevSeal; } j.auditLogs[5].action = 'rewritten history'; }, { expectDetected: true, why: 'enforced since the second security pass (head anchor, keyed seals)' });
+    await tamper('rewriting an entry AND recomputing the whole chain (unkeyed SHA-256, algorithm is in the source) is detected', j => { j.auditLogs[5].action = 'rewritten history'; rechain(j.auditLogs); }, { expectDetected: true, why: 'enforced since the second security pass (head anchor, keyed seals)' });
+    await tamper('wiping the entire trail is detected', j => { j.auditLogs = []; }, { expectDetected: true, why: 'enforced since the second security pass (head anchor, keyed seals)' });
 
     /* ---- restore: tampered snapshot, traversal ---- */
     fs.writeFileSync(dbFile, snapshotFile);
+    if (snapshotAnchor) fs.writeFileSync(anchorFile, snapshotAnchor);
     live = await startServer({ port, adminPassword: 'x', projectRoot, dataDir: dir });
     const a2 = makeClient(live.baseUrl);
     await a2.post('/api/auth/login', { username: 'admin', password: ADMIN_PW }, { captureCookie: true });
@@ -92,7 +98,10 @@ export default async function run({ port, projectRoot }) {
     const forgedSnap = JSON.parse(JSON.stringify(snap));
     forgedSnap.auditLogs[forgedSnap.auditLogs.length - 3].action = 'tampered inside the snapshot';
     const dry = await a2.post('/api/backup/restore', { source: 'snapshot', snapshot: forgedSnap, dryRun: true });
-    const done = await a2.post('/api/backup/restore', { source: 'snapshot', snapshot: forgedSnap, confirm: 'RESTORE' });
+    // Second security pass: an edited snapshot no longer matches its signature, so restoring it takes an explicit confirmation and a reason.
+    const refusedEdited = await a2.post('/api/backup/restore', { source: 'snapshot', snapshot: forgedSnap, confirm: 'RESTORE' });
+    T.check('an edited snapshot is refused until the administrator confirms it knowingly', refusedEdited.status === 400 && refusedEdited.body?.code === 'restore-unsigned-needs-confirmation', `${refusedEdited.status} ${refusedEdited.body?.code}`);
+    const done = await a2.post('/api/backup/restore', { source: 'snapshot', snapshot: forgedSnap, confirm: 'RESTORE', confirmUnsigned: true, reason: 'test: restoring an edited snapshot on purpose' });
     // 2026-11-17: a restore never imports audit entries (the live trail is history and is kept), so a tampered one in the file cannot get in.
     T.check('restoring a snapshot whose audit entry was edited does NOT import the edited entry', done.status === 200 && !(await a2.get('/api/db')).body.auditLogs.some(e => e.action === 'tampered inside the snapshot'));
     const afterRestore = (await a2.get('/api/db')).body.auditLogs;

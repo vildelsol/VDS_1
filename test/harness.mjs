@@ -47,6 +47,18 @@ export async function startServer({ port, adminPassword, projectRoot, dataDir: r
       // charge; the module that tests automatic billing turns it on explicitly
       // through `env`.
       VDS_AUTO_POST: 'off',
+      // The write-rate limits (server.ts, 1,200 a minute per account) sit above any desk but below the 5,000-operation
+      // simulations, which fire thousands of writes a minute from one account. Raised for test servers; security-hardening-2
+      // sets low limits through `env` to prove the guard.
+      VDS_RATE_WRITES_PER_USER_MIN: '10000000',
+      VDS_RATE_WRITES_PER_ADDRESS_MIN: '10000000',
+      // Sign-in limits (10 failed a minute, 60 attempts a minute per address) would trip suites that sign many
+      // accounts in and out from 127.0.0.1. Raised here; security-hardening-2 boots with them unset ('') to prove the defaults.
+      // A developer machine running Tailscale would otherwise give test servers a real certificate and turn every
+      // plain-HTTP request into a redirect (server/tls.ts). https-seamless switches it on through `env`.
+      VDS_HTTPS: 'off',
+      VDS_RATE_LOGINS_PER_ADDRESS_MIN: '10000000',
+      VDS_RATE_FAILED_LOGINS_PER_ADDRESS_MIN: '10000000',
       ...(extraEnv || {})
     },
     stdio: ['ignore', 'pipe', 'pipe']

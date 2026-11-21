@@ -247,7 +247,8 @@ function auditReporting(db, fin, asOf) {
     }
     // 2026-11-16: what is owed for a period is taken from the account (receipts applied
     // oldest-first up to the period end), not from receipts dated inside the period.
-    const expected = cents(s.utilityCollected) - cents(s.maintenanceOwed) - cents(s.utilityBilled) - cents(s.expenses);
+    // Utilities are never on an owner statement (Ro, 2026-11-21): levy still owing and villa charges only.
+    const expected = -cents(s.maintenanceOwed) - cents(s.expenses);
     if (cents(s.net) !== expected) {
       problems.push(`statement ${s.unit.number} ${s.currency}: net ${cents(s.net)} does not equal ${expected}`);
     }

@@ -11,7 +11,11 @@ export const title = 'Authentication & sessions';
 
 export default async function run({ port, projectRoot }) {
   const ADMIN = 'AuthTest-1234!';
-  const srv = await startServer({ port, adminPassword: ADMIN, projectRoot });
+  // This suite deliberately fires hundreds of failed sign-ins from one address (the flood and spoofing checks). The
+  // per-address cap for devices the server has never seen (30 failed attempts per 15 minutes, see server/loginThrottle.ts)
+  // is raised here so the LATER sections (a deactivated account's sign-in, logout) still reach password checking and
+  // are judged on what they test. The cap itself is tested in security-hardening-2.
+  const srv = await startServer({ port, adminPassword: ADMIN, projectRoot, env: { VDS_LOGIN_IP_CAP: '100000', VDS_LOGIN_GLOBAL_CAP: '100000' } });
   const T = reporter(title);
   try {
     const c = makeClient(srv.baseUrl);
@@ -40,7 +44,10 @@ export default async function run({ port, projectRoot }) {
       preWrite.status === 403 && preWrite.body?.code === 'PASSWORD_CHANGE_REQUIRED',
       `${preWrite.status} ${preWrite.body?.code || ''}`
     );
-    T.check('reads still work so the app can render', (await c.get('/api/db')).status === 200);
+    // Changed in the second security pass: a session still on its issued password may change it and sign out, and
+    // nothing else, not even a read (it used to be allowed every read, which handed over all the records).
+    T.check('a session on an issued password cannot read the records either', (await c.get('/api/db')).status === 403 && (await c.get('/api/integrity')).status === 403);
+    T.check('but it can still ask who it is, so the app can show the change-password screen', (await c.get('/api/auth/me')).status === 200);
     const changed = await c.post('/api/auth/change-password', { currentPassword: ADMIN, newPassword: 'AuthNew-9876!' });
     T.check('changing the password is allowed and clears the block', changed.status === 200);
     T.check('writes work once the password has been changed', (await c.put('/api/units/unit-1', { number: '1', ownerName: 'Real Owner', status: 'vacant', currency: 'JMD', maintCurrency: 'JMD' })).status === 200);
@@ -133,7 +140,7 @@ export default async function run({ port, projectRoot }) {
     await c.post('/api/users', { name: 'Temp Staff', username: 'temp', role: 'JUNIOR_OFFICER', password: 'TempPass-11!' });
     const other = makeClient(srv.baseUrl);
     await other.post('/api/auth/login', { username: 'temp', password: 'TempPass-11!' }, { captureCookie: true });
-    T.check('the deactivation target can read while active', (await other.get('/api/db')).status === 200);
+    T.check('the deactivation target is signed in while active', (await other.get('/api/auth/me')).status === 200);
     const tempId = (await c.get('/api/db')).body.users.find(u => u.username === 'temp').id;
     await c.put(`/api/users/${tempId}`, { active: false });
     T.check('deactivating a user invalidates their live session at once', (await other.get('/api/db')).status === 401);

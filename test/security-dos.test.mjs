@@ -15,7 +15,8 @@ export default async function run({ port, projectRoot }) {
     const statuses = await Promise.all(flood);
     console.log(`  info health latency idle ${idle} ms; during 150 concurrent logins (100 KB passwords, distinct usernames): ${during.join(', ')} ms; statuses ${[...new Set(statuses)].join(',')}`);
     T.check('server is not starved by an unauthenticated flood: /api/health answers within 1 s during 150 concurrent distinct-user sign-ins', Math.max(...during) < 1000, `worst ${Math.max(...during)} ms (idle ${idle} ms); no per-IP cap exists across distinct usernames`);
-    T.check('flood was not rate-limited per IP (all attempts reached password verification)', statuses.every(s => s === 401), [...new Set(statuses)].join(','));
+    // Flipped in the second security pass: the per-address cap (30 failed attempts per 15 minutes from devices the server has never seen) now answers the rest with 429 without running scrypt.
+    T.check('the flood is rate-limited per IP once the address passes its cap (429), the first attempts are still answered 401', statuses.includes(429) && statuses.includes(401) && statuses.filter(s => s === 401).length <= 31, [...new Set(statuses)].join(',') + ` (${statuses.filter(s => s === 401).length} reached password verification)`);
   } finally { await srv.stop(); }
   return T.done();
 }

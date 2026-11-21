@@ -21,7 +21,9 @@ import type { AuditLog } from '../src/types';
  * pinned in two places that can go stale on either side. One definition, both
  * readers.
  */
-export const AUDIT_CAP = 20000;
+export const AUDIT_CAP = Number(process.env.VDS_AUDIT_CAP) > 0 ? Number(process.env.VDS_AUDIT_CAP) : 20000;
+/** How many of the oldest entries move to the archive file at once when the trail passes AUDIT_CAP. */
+export const AUDIT_ROTATE_BATCH = Math.max(1, Math.min(1000, Math.floor(AUDIT_CAP / 10)));
 
 function entryPayload(e: AuditLog): string {
   return JSON.stringify([e.prevSeal || '', e.id, e.user, e.role, e.dateTime, e.action, e.recordType, e.recordId, e.previousValue, e.newValue, e.approvedBy || '']);
@@ -182,6 +184,8 @@ export function verifyAuditChain(logs: AuditLog[]): ChainCheck {
     const older = logs[i + 1];
     if (!e.seal) {
       if (seenSealed) broken.push(`${e.id} (added outside the audit trail's chain)`);
+      // Seals stripped from the newest entries leave nothing older to notice them by.
+      else if (key.ok && e.dateTime >= key.keyedFrom) broken.push(`${e.id} (dated after keyed sealing began, but it has no seal)`);
       continue;
     }
     seenSealed = true;
@@ -217,4 +221,250 @@ export function verifyAuditChain(logs: AuditLog[]): ChainCheck {
   const result: ChainCheck = { broken, sealedWithoutKey };
   if (!key.ok && seenKeyed) result.keyProblem = key.problem;
   return result;
+}
+
+/* ------------------------------------------------------------------ *
+ * The head anchor, the archive and signed snapshots (security hardening 2).
+ *
+ * The chain above proves that the entries still present were not edited, and that
+ * nothing was removed from the MIDDLE. It cannot see the two attacks that leave a
+ * consistent chain behind: deleting the newest entries, and stripping the seals.
+ * So the newest seal and the entry count are also kept in `audit-head.json`,
+ * beside the key and itself sealed with it, and rewritten whenever db.json is.
+ * ------------------------------------------------------------------ */
+
+export const AUDIT_HEAD_FILE = 'audit-head.json';
+export const AUDIT_ARCHIVE_FILE = 'audit-archive.jsonl';
+const dataDirOf = () => process.env.VDS_DATA_DIR || process.cwd();
+export const auditHeadPath = (): string => path.join(dataDirOf(), AUDIT_HEAD_FILE);
+export const auditArchivePath = (): string => path.join(dataDirOf(), AUDIT_ARCHIVE_FILE);
+
+interface HeadAnchor {
+  version: 1;
+  /** Seal of the newest audit entry when the file was last written. */
+  headSeal: string;
+  /** Entries held in db.json at that moment (the head included). */
+  count: number;
+  /** Entries moved to the archive file over the life of the trail. */
+  archived: number;
+  mac: string;
+}
+type AnchorRead = { state: 'absent' } | { state: 'invalid' } | { state: 'ok'; anchor: HeadAnchor };
+
+const anchorMac = (a: Pick<HeadAnchor, 'headSeal' | 'count' | 'archived'>, key: Buffer): string =>
+  createHmac('sha256', key).update('anchor\u0000' + JSON.stringify([a.headSeal, a.count, a.archived])).digest('hex');
+
+function readAnchor(key: Buffer): AnchorRead {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(auditHeadPath(), 'utf8');
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { state: 'absent' } : { state: 'invalid' };
+  }
+  try {
+    const a = JSON.parse(raw) as HeadAnchor;
+    if (!a || typeof a.headSeal !== 'string' || !Number.isFinite(a.count) || !Number.isFinite(a.archived) || typeof a.mac !== 'string') return { state: 'invalid' };
+    if (!sameHex(anchorMac(a, key), a.mac)) return { state: 'invalid' };
+    return { state: 'ok', anchor: a };
+  } catch {
+    return { state: 'invalid' };
+  }
+}
+
+/** Entries just moved to the archive by the commit in progress; folded into the anchor when it is written. */
+let pendingRotated = 0;
+export function setPendingRotated(n: number): void {
+  pendingRotated = n;
+}
+
+/**
+ * Record the trail's head. Called by every write of db.json. It only ever moves the anchor FORWARD along the
+ * chain it already holds: if the live trail no longer contains the anchored seal (newest entries deleted, or the
+ * trail replaced) the anchor is left alone, so tampering cannot be laundered by the next ordinary write.
+ */
+export function commitAuditAnchor(logs: AuditLog[]): void {
+  try {
+    const key = loadAuditKey();
+    if (!key.ok) return;
+    const head = logs[0];
+    if (!head || !head.seal) return;
+    const cur = readAnchor(key.key);
+    if (cur.state === 'invalid') return;
+    let archived = 0;
+    if (cur.state === 'ok') {
+      if (cur.anchor.headSeal !== head.seal && !logs.some(e => e.seal === cur.anchor.headSeal)) return;
+      archived = cur.anchor.archived;
+    }
+    archived += pendingRotated;
+    pendingRotated = 0;
+    const body = { headSeal: head.seal as string, count: logs.length, archived };
+    const rec: HeadAnchor = { version: 1, ...body, mac: anchorMac(body, key.key) };
+    const file = auditHeadPath();
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(rec) + '\n', { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    console.error('[vds] could not update the audit head anchor:', (err as Error).message);
+  }
+}
+
+/* ---------------- the archive ---------------- */
+
+/** Entries newest-first (the same order as db.auditLogs), plus how many lines the file holds. */
+function readArchiveFile(): { entries: AuditLog[]; lines: number; unreadable: boolean } {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(auditArchivePath(), 'utf8');
+  } catch (err) {
+    return { entries: [], lines: 0, unreadable: (err as NodeJS.ErrnoException).code !== 'ENOENT' };
+  }
+  const out: AuditLog[] = [];
+  let unreadable = false;
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as AuditLog);
+    } catch {
+      unreadable = true;
+    }
+  }
+  return { entries: out.reverse(), lines: out.length, unreadable };
+}
+
+/** Append entries (given oldest-first) to the archive, fsynced. Entries already in it are skipped. Throws on failure. */
+export function appendToAuditArchive(oldestFirst: AuditLog[]): void {
+  const known = new Set(readArchiveFile().entries.map(e => e.seal));
+  const fresh = oldestFirst.filter(e => !known.has(e.seal));
+  if (fresh.length === 0) return;
+  const fd = fs.openSync(auditArchivePath(), 'a', 0o600);
+  try {
+    fs.writeSync(fd, fresh.map(e => JSON.stringify(e)).join('\n') + '\n');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+let archiveCache: { file: string; size: number; mtimeMs: number; value: ReturnType<typeof readArchiveFile> & { broken: string[] } } | null = null;
+function archiveStatus() {
+  const file = auditArchivePath();
+  let st: fs.Stats | null = null;
+  try {
+    st = fs.statSync(file);
+  } catch {
+    st = null;
+  }
+  if (!st) return { entries: [] as AuditLog[], lines: 0, unreadable: false, broken: [] as string[] };
+  if (archiveCache && archiveCache.file === file && archiveCache.size === st.size && archiveCache.mtimeMs === st.mtimeMs) return archiveCache.value;
+  const read = readArchiveFile();
+  const value = { ...read, broken: verifyAuditChain(read.entries).broken };
+  archiveCache = { file, size: st.size, mtimeMs: st.mtimeMs, value };
+  return value;
+}
+
+/**
+ * Everything wrong with the head anchor and the archive, as record lists for the integrity report.
+ * `logs` is newest-first. Reads two small files and, only when the archive changed, the archive itself.
+ */
+export function verifyAnchorAndArchive(logs: AuditLog[]): { broken: string[] } {
+  const broken: string[] = [];
+  const key = loadAuditKey();
+  if (!key.ok) return { broken };
+  const cur = readAnchor(key.key);
+  const archive = archiveStatus();
+  if (cur.state === 'invalid') broken.push(`${AUDIT_HEAD_FILE} (the head anchor was altered or is damaged)`);
+  if (cur.state === 'ok') {
+    const a = cur.anchor;
+    const i = logs.findIndex(e => e.seal === a.headSeal);
+    if (i === -1) {
+      broken.push(`newest entries (the last entry recorded, sealed ${a.headSeal.slice(0, 12)}, is no longer in the trail: newer entries were removed or the trail was replaced)`);
+    } else {
+      const live = logs.length - i;
+      if (live < a.count && archive.lines < a.archived + (a.count - live)) {
+        broken.push(`oldest entries (${a.count - live} fewer entries are held than were recorded, and the archive does not account for them)`);
+      }
+    }
+    if (a.archived > 0 && archive.lines < a.archived) broken.push(`${AUDIT_ARCHIVE_FILE} (holds ${archive.lines} entries, ${a.archived} were archived)`);
+  }
+  for (const b of archive.broken) broken.push(`${AUDIT_ARCHIVE_FILE}: ${b}`);
+  if (archive.unreadable) broken.push(`${AUDIT_ARCHIVE_FILE} (a line in it cannot be read)`);
+  if (archive.lines > 0 && logs.length > 0) {
+    const oldest = logs[logs.length - 1];
+    if (oldest.prevSeal && !archive.entries.some(e => e.seal === oldest.prevSeal)) {
+      broken.push(`${AUDIT_ARCHIVE_FILE} (does not connect to the oldest entry still in the trail)`);
+    }
+  }
+  return { broken };
+}
+
+/** Copy the archive into a backup folder (it only ever grows, so the latest copy is always a superset). */
+export function copyAuditArchiveTo(dir: string): void {
+  const src = auditArchivePath();
+  if (!fs.existsSync(src)) return;
+  const dest = path.join(dir, AUDIT_ARCHIVE_FILE);
+  try {
+    if (fs.existsSync(dest) && fs.statSync(dest).size === fs.statSync(src).size) return;
+  } catch {
+    /* copy anyway */
+  }
+  const tmp = `${dest}.partial`;
+  fs.copyFileSync(src, tmp);
+  fs.renameSync(tmp, dest);
+  try {
+    fs.chmodSync(dest, 0o600);
+  } catch {
+    /* Windows */
+  }
+}
+
+/* ---------------- signed snapshots ---------------- */
+
+export type SnapshotSignature = 'valid' | 'unsigned' | 'mismatch' | 'no-key';
+
+function snapshotMac(obj: Record<string, unknown>, key: Buffer): string {
+  const rest: Record<string, unknown> = { ...obj };
+  delete rest.snapshotSignature;
+  return createHmac('sha256', key).update('snapshot\u0000' + JSON.stringify(rest)).digest('hex');
+}
+
+/** HMAC of a snapshot or backup with the audit key, or null when there is no key to sign with. */
+export function signSnapshot(obj: Record<string, unknown>): string | null {
+  const key = loadAuditKey();
+  return key.ok ? snapshotMac(obj, key.key) : null;
+}
+
+export function checkSnapshotSignature(obj: Record<string, unknown>): SnapshotSignature {
+  const sig = obj.snapshotSignature;
+  if (typeof sig !== 'string' || !sig) return 'unsigned';
+  const key = loadAuditKey();
+  if (!key.ok) return 'no-key';
+  return sameHex(snapshotMac(obj, key.key), sig) ? 'valid' : 'mismatch';
+}
+
+/** Set when moving old entries to the archive failed; cleared by the next rotation that succeeds. */
+let rotationFailure: string | null = null;
+export const auditRotationFailure = (): string | null => rotationFailure;
+export const setAuditRotationFailure = (message: string | null): void => {
+  rotationFailure = message;
+};
+
+/**
+ * When the trail has passed AUDIT_CAP, move its oldest entries to the archive file instead of dropping them.
+ * `logs` is newest-first and is trimmed in place ONLY after the archive write succeeded; on failure nothing is
+ * removed, the failure is recorded, and the integrity check reports it as serious.
+ */
+export function rotateAuditLogs(logs: AuditLog[]): number {
+  if (logs.length <= AUDIT_CAP) return 0;
+  const keep = Math.max(1, AUDIT_CAP - AUDIT_ROTATE_BATCH);
+  const moving = logs.slice(keep).reverse(); // oldest first
+  try {
+    appendToAuditArchive(moving);
+  } catch (err) {
+    rotationFailure = (err as Error).message || 'the archive file could not be written';
+    console.error('[vds] the audit trail could not be archived; nothing was removed:', rotationFailure);
+    return 0;
+  }
+  rotationFailure = null;
+  logs.length = keep;
+  return moving.length;
 }

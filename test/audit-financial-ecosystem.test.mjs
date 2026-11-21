@@ -205,11 +205,16 @@ export default async function run({ port, projectRoot }) {
       const ar = F.annualOwnersReport(units, charges, settled, expenses, cur, 2026, { booksBeginOn: db.settings.booksBeginOn });
       const levy2026 = charges.filter(x => x.category === 'Maintenance' && x.status === 'open' && x.currency === cur && (x.periodMonth || x.dueDate || '').startsWith('2026')).reduce((a, x) => a + C(x.amount), 0);
       // Net of the corporation's utility recoveries (pass-through, Ro 2026-11-18); the gross register sum was the old definition.
-      const strataSpent = F.strataExpenses(F.withUtilityRecoveries(expenses, settled)).filter(e => e.status === 'paid' && e.currency === cur && within(e.datePaid || e.date, '2026-01-01', '2026-12-31')).reduce((a, e) => a + C(e.amount), 0);
+      // Changed 2026-11-21 (owner's rule): the Annual Report presents common costs, so a villa-tied utility bill and the
+      // recoveries from villas are the villa owner's own cost and are left out; the gross common bills stand.
+      const strataSpent = F.strataExpenses(expenses.filter(e => !F.isVillaUtilityCost(e))).filter(e => e.status === 'paid' && e.currency === cur && within(e.datePaid || e.date, '2026-01-01', '2026-12-31')).reduce((a, e) => a + C(e.amount), 0);
       T.check(`${cur}: Annual Report contributions are the year's own levy charges`, C(ar.contributionsAnnual) === levy2026, `${C(ar.contributionsAnnual)} vs ${levy2026}`);
       T.check(`${cur}: Annual Report expenditure is the corporation's paid costs only`, C(ar.expenditure) === strataSpent, `${C(ar.expenditure)} vs ${strataSpent}`);
       const opStrata = F.operatingStatement(settled, expenses, units, cur, '2026-01-01', '2026-12-31', { book: 'strata' });
-      T.check(`${cur}: Annual Report expenditure equals the strata Operating Statement for the year`, C(ar.expenditure) === C(opStrata.totalExpenditure), `${C(ar.expenditure)} vs ${C(opStrata.totalExpenditure)}`);
+      const villaUtilityRows = F.strataExpenses(F.withUtilityRecoveries(expenses, settled))
+        .filter(e => F.isVillaUtilityCost(e) && e.status === 'paid' && e.currency === cur && within(e.datePaid || e.date, '2026-01-01', '2026-12-31'))
+        .reduce((a, e) => a + C(e.amount), 0);
+      T.check(`${cur}: Annual Report expenditure equals the strata Operating Statement for the year less villa utilities and their recoveries`, C(ar.expenditure) === C(opStrata.totalExpenditure) - villaUtilityRows, `${C(ar.expenditure)} vs ${C(opStrata.totalExpenditure)} - ${villaUtilityRows}`);
       const statementsYear = F.ownerStatements(units, charges, settled, expenses, utilities, '2026-01-01', '2026-12-31');
       const receivedByStatements = statementsYear.filter(s => s.currency === cur).reduce((a, s) => a + C(s.maintenancePaid), 0);
       T.check(`${cur}: Annual Report "received" equals the owner statements' levy paid, added up`, C(ar.received) === receivedByStatements, `${C(ar.received)} vs ${receivedByStatements}`);

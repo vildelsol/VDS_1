@@ -172,12 +172,20 @@ export function formatDayLabel(day: string): string {
   return `${d.getDate()} ${MONTH_NAMES[d.getMonth()].substring(0, 3)} ${d.getFullYear()}`;
 }
 
+/**
+ * The earliest and latest day any record may carry. A year 0001 receipt drops out of every period report and
+ * exports to Excel as 1901; 9999 is never a real booking. The bounds are well outside any real property record.
+ */
+export const EARLIEST_DAY = '2000-01-01';
+export const LATEST_DAY = '2100-12-31';
+
 export function isValidDay(day: string): boolean {
-  return calendarParts(day) !== null;
+  return calendarParts(day) !== null && day >= EARLIEST_DAY && day <= LATEST_DAY;
 }
 
 export function isValidMonth(month: string): boolean {
-  return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(month || ''));
+  const m = String(month || '');
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(m) && m >= EARLIEST_DAY.slice(0, 7) && m <= LATEST_DAY.slice(0, 7);
 }
 
 /** Clamp a due-day-of-month (1-31) to a month that may be shorter. */

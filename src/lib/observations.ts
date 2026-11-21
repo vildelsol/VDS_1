@@ -48,7 +48,8 @@ import {
   netReceivedInPeriod,
   occupiedUnitIdsOn,
   outOfPocketShortfall,
-  paymentsInBook
+  paymentsInBook,
+  unpaidOwedAt
 } from './finance';
 import { formatMoney, round2, sumMoney } from './money';
 import { stayMoney } from './stays';
@@ -194,10 +195,10 @@ export function accountsOwing(input: ObservationInput): AccountOwing[] {
     for (const a of accounts) {
       if (a.balance <= 0 || a.unpaidCharges.length === 0) continue;
       // Every unpaid charge after the first is wholly unpaid; the first carries
-      // whatever is left of the receipts, so the amounts sum to the balance.
-      const rest = sumMoney(a.unpaidCharges.slice(1).map(c => c.amount));
+      // whatever is left of the receipts, so the amounts sum to the balance
+      // (on a villa that changed hands, each proprietor's part-paid charge carries its own remainder).
       a.unpaidCharges.forEach((charge, i) => {
-        const owed = i === 0 ? round2(a.balance - rest) : charge.amount;
+        const owed = unpaidOwedAt(a, i);
         if (owed <= 0) return;
         unpaid.push({ charge, unpaid: owed, ...payerFor(charge, unit, tenancies) });
       });
@@ -326,19 +327,17 @@ export function ispoLevyPosition(input: Pick<ObservationInput, 'units' | 'tenanc
     );
     if (inPeriod.length === 0) continue;
     const billed = sumMoney(inPeriod.map(c => c.amount));
-    const rest = sumMoney(maint.unpaidCharges.slice(1).map(c => c.amount));
     const unpaidBy = new Map<string, number>();
     maint.unpaidCharges.forEach((c, i) => {
       if (!isWithin(c.dueDate, from, to)) return;
-      const owed = i === 0 ? round2(maint.balance - rest) : c.amount;
+      const owed = unpaidOwedAt(maint, i);
       if (owed > 0) unpaidBy.set(c.periodMonth, sumMoney([unpaidBy.get(c.periodMonth) || 0, owed]));
     });
     const unpaid = sumMoney([...unpaidBy.values()]);
 
     const rentAccount = accountBalance(unit, 'Rent', charges, payments, to, units);
-    const rentRest = sumMoney(rentAccount.unpaidCharges.slice(1).map(c => c.amount));
     const rentUnpaid = new Map<string, number>();
-    rentAccount.unpaidCharges.forEach((c, i) => rentUnpaid.set(c.id, i === 0 ? round2(rentAccount.balance - rentRest) : c.amount));
+    rentAccount.unpaidCharges.forEach((c, i) => rentUnpaid.set(c.id, unpaidOwedAt(rentAccount, i)));
 
     const months = [...unpaidBy.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([month, owed]) => {
       const rent = charges.find(

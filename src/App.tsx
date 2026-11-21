@@ -15,6 +15,7 @@ import {
   AnnualReport as AnnualReportRecord,
   SessionUser,
   Tenancy,
+  Ownership,
   Unit,
   UnitActivity,
   User,
@@ -50,7 +51,8 @@ import {
   subscribeConnection,
   subscribeSync
 } from './lib/api';
-import { settledFromRent } from './lib/finance';
+import { clearQueue, pendingActions, setQueueOwner } from './lib/queue';
+import { settledFromRent, setOwnershipRegistry } from './lib/finance';
 import { hubOpenItemCount } from './lib/notifications';
 import { today } from './lib/dates';
 import { clearSnapshot, loadSnapshot, saveSnapshot } from './lib/snapshot';
@@ -132,6 +134,7 @@ interface DbSnapshot {
   recurringExpenses: RecurringExpense[];
   annualReports: AnnualReportRecord[];
   tenancies: Tenancy[];
+  ownerships: Ownership[];
   auditLogs: AuditLog[];
   unitActivities: UnitActivity[];
   settings: AppSettings;
@@ -149,6 +152,7 @@ const EMPTY: Omit<DbSnapshot, 'settings' | 'currentUser'> = {
   recurringExpenses: [],
   annualReports: [],
   tenancies: [],
+  ownerships: [],
   auditLogs: [],
   unitActivities: [],
   users: []
@@ -182,6 +186,10 @@ export default function App() {
   // Anything entered while the server was away is sent as soon as it is back,
   // including work queued before this page was even loaded.
   useEffect(() => subscribeSync(setSync), []);
+  // The queue of unsent entries belongs to whoever is signed in; anyone else's is discarded (src/lib/queue.ts).
+  useEffect(() => {
+    setQueueOwner(session?.id ?? null);
+  }, [session?.id]);
   useEffect(() => {
     startQueueWatcher();
   }, []);
@@ -276,6 +284,8 @@ export default function App() {
 
   /** Spread one /api/db payload into the shape the screens consume. */
   const applySnapshot = useCallback((snapshot: DbSnapshot) => {
+    // The ledger allocates a villa's levy payments per proprietor from these records.
+    setOwnershipRegistry(snapshot.ownerships);
     setData({
       units: snapshot.units || [],
       bookings: snapshot.bookings || [],
@@ -286,6 +296,7 @@ export default function App() {
       recurringExpenses: snapshot.recurringExpenses || [],
       annualReports: snapshot.annualReports || [],
       tenancies: snapshot.tenancies || [],
+      ownerships: snapshot.ownerships || [],
       auditLogs: snapshot.auditLogs || [],
       unitActivities: snapshot.unitActivities || [],
       users: snapshot.users || []
@@ -337,11 +348,15 @@ export default function App() {
   }, [session?.id, session?.mustChangePassword]);
 
   const handleLogout = useCallback(async () => {
+    // Entries still waiting for the server are discarded with the session (they belong to this person only).
+    const waiting = pendingActions().length;
+    if (waiting > 0 && !window.confirm(`${waiting} ${waiting === 1 ? 'entry has' : 'entries have'} not reached the server yet. Signing out will discard ${waiting === 1 ? 'it' : 'them'}. Sign out anyway?`)) return;
     try {
       await api.post('/api/auth/logout');
     } catch {
       /* signing out locally regardless */
     }
+    clearQueue();
     setSession(null);
     setData(EMPTY);
     setSettings(null);
@@ -413,7 +428,7 @@ export default function App() {
    * villas (see `settledFromRent`). Everything that adds up money reads this;
    * the bank reconciliation reads the stored receipts only.
    */
-  const settledPayments = useMemo(() => [...data.payments, ...settledFromRent(data.charges, data.payments)], [data.payments, data.charges]);
+  const settledPayments = useMemo(() => [...data.payments, ...settledFromRent(data.charges, data.payments, undefined, data.ownerships)], [data.payments, data.charges, data.ownerships]);
 
   const outstandingCount = useMemo(() => {
     if (!session) return 0;
@@ -864,6 +879,7 @@ export default function App() {
             payments={settledPayments}
             expenses={data.expenses}
             utilities={data.utilities}
+            ownerships={data.ownerships}
             settings={settings}
             session={session}
           />

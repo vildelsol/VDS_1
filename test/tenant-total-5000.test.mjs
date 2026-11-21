@@ -128,7 +128,9 @@ export default async function run({ port, projectRoot }) {
         const strandsRent = r.status === 400 && r.body?.code === 'former-tenant-owes' && over.status === 'owner-occupied' && before.status !== 'owner-occupied';
         // 2026-11-16: a new tenancy is also refused while a former tenant's advance credit sits on the villa.
         const holdsCredit = r.status === 400 && r.body?.code === 'former-tenant-credit';
-        ok('a valid register edit is accepted (or refused only because rent is still owed on a villa going owner-occupied, or a former tenant holds credit)', r.status === 200 || strandsRent || holdsCredit, `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
+        // input-hardening-2: a villa let to a tenant at no rent is refused on save.
+        const noRent = r.status === 400 && r.body?.code === 'rent-required' && over.status === 'long-term' && over.monthlyRent === 0;
+        ok('a valid register edit is accepted (or refused only because rent is still owed on a villa going owner-occupied, a former tenant holds credit, or a let villa was given no rent)', r.status === 200 || strandsRent || holdsCredit || noRent, `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
         db = await getDb();
         const after = db.units.find(u => u.id === id);
         if (r.status === 200) {

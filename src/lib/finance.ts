@@ -29,6 +29,7 @@ import {
   Expense,
   ExpenseCategory,
   Booking,
+  Ownership,
   PROPERTY_LOCATIONS,
   ExpenseFund,
   MANAGING_COMPANY_NAME,
@@ -36,6 +37,7 @@ import {
   getUnitDisplayName
 } from '../types';
 import { round2, sumMoney, addMoney, subtractMoney, formatMoney } from './money';
+import { nameKey } from './text';
 import { hasLevySchedule, levyForMonth } from './feeSchedule';
 
 /* ------------------------------------------------------------------ *
@@ -805,6 +807,16 @@ export function tenanciesMissingMoveInDate(units: Unit[], tenancies: Tenancy[]):
   return out.sort((a, b) => a.unit.number.localeCompare(b.unit.number, undefined, { numeric: true }));
 }
 
+/**
+ * Villas on file as let to a named tenant at no rent. Posting the month skips them without a word, so nothing is ever
+ * billed. The server now refuses to save one; this lists those that were saved before it did.
+ */
+export function letVillasWithNoRent(units: Unit[]): Unit[] {
+  return units
+    .filter(u => u.status === 'long-term' && !!(u.tenantName || '').trim() && !(round2(u.monthlyRent || 0) > 0))
+    .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }));
+}
+
 export function maintenanceReceiptsToMove(
   units: Unit[],
   charges: Charge[],
@@ -1070,8 +1082,9 @@ export function consolidateEverything(
  * on a let villa. A separate maintenance receipt on such a villa and month is the
  * same obligation paid twice.
  */
-export function settledFromRent(charges: Charge[], payments: Payment[], asOf: string = today()): Payment[] {
+export function settledFromRent(charges: Charge[], payments: Payment[], asOf: string = today(), ownerships?: Ownership[]): Payment[] {
   const out: Payment[] = [];
+  const usedIds = new Set<string>();
   const cents = (n: number) => Math.round((Number(n) || 0) * 100);
   const keys = new Set<string>();
   for (const c of charges) {
@@ -1090,11 +1103,25 @@ export function settledFromRent(charges: Charge[], payments: Payment[], asOf: st
      * balance in this system uses.
      */
     const owedByMonth = new Map<string, number>();
-    let cash = payments.filter(p => settled(p) && p.category === 'Maintenance').reduce((a, p) => a + cents(netPaidAsOf(p)), 0);
+    /*
+     * A villa that changed hands: the cash a proprietor paid settles THEIR levy only (see
+     * `allocateByOwner`), so each month's levy draws on the pool of the proprietor in force on its due
+     * date. With no change of hands there is one pool, exactly as before.
+     */
+    const records = ownershipRecordsFor({ id: unitId }, ownerships ?? ownershipRegistry);
+    const poolOfCharge = (c: Charge) => (records.length ? ownerRecordOn(records, c.dueDate).id : '');
+    const cashPool = new Map<string, number>();
+    for (const p of payments) {
+      if (!(settled(p) && p.category === 'Maintenance')) continue;
+      const k = records.length ? paymentOwner(records, p).id : '';
+      cashPool.set(k, (cashPool.get(k) || 0) + cents(netPaidAsOf(p)));
+    }
     for (const c of maintCharges) {
       const amount = cents(c.amount);
+      const k = poolOfCharge(c);
+      const cash = cashPool.get(k) || 0;
       const covered = Math.min(cash, amount);
-      cash -= covered;
+      cashPool.set(k, cash - covered);
       owedByMonth.set(c.periodMonth, (owedByMonth.get(c.periodMonth) || 0) + (amount - covered));
     }
 
@@ -1158,7 +1185,8 @@ export function settledFromRent(charges: Charge[], payments: Payment[], asOf: st
       }
       // Credit per date: never before the rent arrived, never before the levy it
       // settles fell due, never after today (no future-dated money).
-      const creditByDate = new Map<string, number>();
+      // On a villa that changed hands a credit also stays with the proprietor whose levy it settles.
+      const creditByDate = new Map<string, { date: string; credit: number; due: string }>();
       for (const month of touched) {
         const owed = owedByMonth.get(month) || 0;
         const already = emittedByMonth.get(month) || 0;
@@ -1169,14 +1197,22 @@ export function settledFromRent(charges: Charge[], payments: Payment[], asOf: st
           const due = levyDueByMonth.get(month) || '';
           let date = due > receipt.date ? due : receipt.date;
           if (date > asOf) date = asOf > receipt.date ? asOf : receipt.date;
-          creditByDate.set(date, (creditByDate.get(date) || 0) + want);
+          const key = records.length ? `${date}|${ownerRecordOn(records, due || date).id}` : date;
+          const slot = creditByDate.get(key) || { date, credit: 0, due: due || date };
+          slot.credit += want;
+          creditByDate.set(key, slot);
         }
       }
-      for (const [date, credit] of creditByDate) {
+      for (const { date, credit, due } of creditByDate.values()) {
+        const baseId = date === receipt.date ? `from-rent-${receipt.id}` : `from-rent-${receipt.id}@${date}`;
+        // Two proprietors' levies settled on one day by one receipt need distinct ids.
+        const id = usedIds.has(baseId) ? `${baseId}~${records.length ? ownerRecordOn(records, due).id : due}` : baseId;
+        usedIds.add(id);
         out.push({
-          id: date === receipt.date ? `from-rent-${receipt.id}` : `from-rent-${receipt.id}@${date}`,
+          id,
           receiptNo: '',
           payerName: 'Settled from rent',
+          ...(records.length ? { settlesDueDate: due } : {}),
           unitId,
           unitNumber: receipt.unitNumber,
           category: 'Maintenance',
@@ -1277,6 +1313,17 @@ export interface AccountBalance {
   /** Age in days of the oldest charge still not covered. 0 when nothing is due. */
   oldestUnpaidDays: number;
   /**
+   * Only on a Maintenance account of a villa that CHANGED HANDS (two or more ownership
+   * records): how each proprietor's own levy stands. A payment settles the payer's own
+   * charges only (see `allocateByOwner`), so `balance` is the sum of what the proprietors
+   * each still owe, never netted against another proprietor's credit.
+   */
+  byOwner?: OwnerShare[];
+  /** With `byOwner`: how much of each charge (by id) the receipts attributed to its owner cover. */
+  coverage?: Record<string, number>;
+  /** With `byOwner`: what is still owed on each unpaid charge (by id); the amounts sum to `balance`. */
+  owedByCharge?: Record<string, number>;
+  /**
    * Completed payments recorded against this account in the *other* currency.
    * These are deliberately not netted into the balance — they are surfaced so
    * staff can correct the record rather than have the money silently vanish.
@@ -1308,7 +1355,8 @@ export function accountBalance(
   charges: Charge[],
   payments: Payment[],
   asOf?: string,
-  allUnits?: Unit[]
+  allUnits?: Unit[],
+  ownerships?: Ownership[]
 ): AccountBalance {
   const currency = chargeCurrency(unit, category);
 
@@ -1330,18 +1378,48 @@ export function accountBalance(
   const charged = sumMoney(unitCharges.map(c => c.amount));
   // Net of anything handed back. A refunded rent payment puts the tenant back
   // into arrears, which is the whole point: the property no longer has the money.
-  const paid = sumMoney(matching.map(p => netPaidAsOf(p, asOf)));
-  const balance = subtractMoney(charged, paid);
+  let paid = sumMoney(matching.map(p => netPaidAsOf(p, asOf)));
+  let balance = subtractMoney(charged, paid);
 
   // Apply payments to charges oldest-first to age the debt.
   let credit = paid;
-  const unpaidCharges: Charge[] = [];
-  for (const charge of unitCharges) {
-    if (credit >= charge.amount) {
-      credit = round2(credit - charge.amount);
-    } else {
-      unpaidCharges.push(charge);
-      credit = 0;
+  let unpaidCharges: Charge[] = [];
+  /*
+   * A villa that changed hands: a payment settles the payer's OWN levy only, so the
+   * allocation is made per proprietor (see `allocateByOwner`). A villa with no change of
+   * hands takes the loop below, unchanged.
+   */
+  const records = category === 'Maintenance' ? ownershipRecordsFor(unit, ownerships ?? ownershipRegistry) : [];
+  let byOwner: OwnerShare[] | undefined;
+  let coverage: Record<string, number> | undefined;
+  let owedByCharge: Record<string, number> | undefined;
+  if (records.length > 0) {
+    byOwner = allocateByOwner(
+      unitCharges,
+      matching.map(p => ({ payment: p, amount: netPaidAsOf(p, asOf) })),
+      records
+    );
+    const owedTotal = sumMoney(byOwner.map(s => s.owed));
+    const creditTotal = sumMoney(byOwner.map(s => s.credit));
+    // Credit is held for its own payer and is never netted against another proprietor's debt.
+    balance = owedTotal > 0 ? owedTotal : creditTotal > 0 ? round2(-creditTotal) : 0;
+    paid = subtractMoney(charged, balance);
+    coverage = {};
+    owedByCharge = {};
+    for (const s of byOwner) Object.assign(coverage, s.coverage);
+    unpaidCharges = unitCharges
+      .filter(c => round2(c.amount - (coverage![c.id] || 0)) > 0)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id));
+    for (const c of unpaidCharges) owedByCharge[c.id] = round2(c.amount - (coverage[c.id] || 0));
+    credit = 0;
+  } else {
+    for (const charge of unitCharges) {
+      if (credit >= charge.amount) {
+        credit = round2(credit - charge.amount);
+      } else {
+        unpaidCharges.push(charge);
+        credit = 0;
+      }
     }
   }
 
@@ -1385,8 +1463,25 @@ export function accountBalance(
     unpaidCharges,
     oldestUnpaidDays,
     mismatchedCurrencyPayments: mismatched,
-    mismatchedCurrencyCharges: mismatchedCharges
+    mismatchedCurrencyCharges: mismatchedCharges,
+    ...(byOwner ? { byOwner, coverage, owedByCharge } : {})
   };
+}
+
+/**
+ * What is still owed on the unpaid charge at `index` of `account.unpaidCharges`.
+ *
+ * On an ordinary account every unpaid charge after the first is wholly unpaid and the first
+ * carries whatever is left of the receipts. On a villa that changed hands each proprietor's
+ * part-paid charge carries its own remainder, so the figure is read from `owedByCharge`.
+ */
+export function unpaidOwedAt(account: AccountBalance, index: number): number {
+  const charge = account.unpaidCharges[index];
+  if (!charge) return 0;
+  if (account.owedByCharge) return account.owedByCharge[charge.id] ?? charge.amount;
+  if (index > 0) return charge.amount;
+  const rest = sumMoney(account.unpaidCharges.slice(1).map(c => c.amount));
+  return round2(account.balance - rest);
 }
 
 /** Human label for an account status, so every screen words it identically. */
@@ -1986,8 +2081,16 @@ export function settledOfBilled(
 ): { billed: number; settled: number; rent: number; maintenance: number; rate: number | null } {
   const cutoff = asOf;
   const accounts = new Map<string, { charges: Charge[]; paid: number }>();
-  const slot = (unitId: string, category: string) => {
-    const key = pooled ? unitId : `${unitId}|${category}`;
+  // A villa that changed hands is settled per proprietor (see `allocateByOwner`): the levy is their own.
+  const recordsOf = new Map<string, Ownership[]>();
+  const records = (unitId: string) => {
+    let r = recordsOf.get(unitId);
+    if (!r) recordsOf.set(unitId, (r = ownershipRecordsFor({ id: unitId }, ownershipRegistry)));
+    return r;
+  };
+  const splitsByOwner = (unitId: string, category: string) => (pooled || category === 'Maintenance') && records(unitId).length > 0;
+  const slot = (unitId: string, category: string, owner = '') => {
+    const key = (pooled ? unitId : `${unitId}|${category}`) + (owner ? `|${owner}` : '');
     let a = accounts.get(key);
     if (!a) accounts.set(key, (a = { charges: [], paid: 0 }));
     return a;
@@ -1996,12 +2099,13 @@ export function settledOfBilled(
     if (c.status !== 'open' || c.currency !== currency || c.dueDate > cutoff) continue;
     if (c.category !== 'Rent' && c.category !== 'Maintenance') continue;
     if (only && c.category !== only) continue;
-    slot(c.unitId, c.category).charges.push(c);
+    slot(c.unitId, c.category, splitsByOwner(c.unitId, c.category) ? ownerRecordOn(records(c.unitId), c.dueDate).id : '').charges.push(c);
   }
   for (const p of payments) {
     if (p.status !== 'completed' || p.currency !== currency || p.date > cutoff) continue;
     if (p.category !== 'Rent' && p.category !== 'Maintenance') continue;
-    const a = accounts.get(pooled ? p.unitId : `${p.unitId}|${p.category}`);
+    const owner = splitsByOwner(p.unitId, p.category) ? paymentOwner(records(p.unitId), p).id : '';
+    const a = accounts.get((pooled ? p.unitId : `${p.unitId}|${p.category}`) + (owner ? `|${owner}` : ''));
     if (a) a.paid = round2(a.paid + netPaidAsOf(p, cutoff));
   }
   let rent = 0;
@@ -2046,7 +2150,7 @@ export function creditHeldForOthers(
   const currency = chargeCurrency(unit, category);
   const account = accountBalance(unit, category, charges, payments, undefined, units);
   if (account.balance >= 0) return { currency, credit: 0 };
-  const same = (a: string, b: string) => !!b.trim() && a.trim().toLowerCase() === b.trim().toLowerCase();
+  const same = (a: string, b: string) => !!nameKey(b) && nameKey(a) === nameKey(b);
   const fromHolder = payments
     .filter(p => p.unitId === unit.id && p.category === category && p.status === 'completed' && p.currency === currency && same(p.payerName || '', holderName) && (!sinceEnded || p.date > sinceEnded))
     .reduce((a, p) => round2(a + netPaidAsOf(p)), 0);
@@ -2789,7 +2893,9 @@ export function ownerStatement(
   utilities: UtilityReading[],
   currency: Currency,
   from: string,
-  to: string
+  to: string,
+  /** What this proprietor still owes on the contribution account (dated ownership); default is the whole villa's. */
+  outstandingOverride?: number
 ): OwnerStatement {
   const inPeriod = <T,>(rows: T[], dateOf: (row: T) => string) => rows.filter(r => isWithin(dateOf(r), from, to));
 
@@ -2840,11 +2946,15 @@ export function ownerStatement(
    * once as the charge and once as the payment — and nets to nothing, which is
    * the arithmetic an owner can actually follow.
    */
-  const utilityCharges = inPeriod(
-    utilitiesForUnit(utilities, unit, units).filter(u => u.currency === currency && u.amountCharged > 0),
-    u => monthEnd(u.billingPeriod)
-  ).sort((a, b) => a.billingPeriod.localeCompare(b.billingPeriod));
-  const utilityBilled = sumMoney(utilityCharges.map(u => u.amountCharged));
+  /*
+   * Ro, 2026-11-21: an owner statement records the maintenance levy, when it was paid, and repairs the corporation
+   * or ISPO did on the villa at the owner's request. Owners take care of their own utility bills, so utilities are
+   * never on it: no utility charge, and no utility receipt in its arithmetic. The fields stay, at nothing, so every
+   * reader of a statement keeps working. (`utilities` is no longer read here.)
+   */
+  void utilities;
+  const utilityCharges: UtilityReading[] = [];
+  const utilityBilled = 0;
 
   /*
    * Costs recharged to the villa — with the supplier's utility invoice excluded.
@@ -2884,7 +2994,7 @@ export function ownerStatement(
   // What they still owe the corporation, as at the end of the period — all time,
   // not just this period, because that is the figure an owner needs to see.
   const maintAccount = accountBalance(unit, 'Maintenance', charges, payments, to, units);
-  const maintenanceOutstanding = maintAccount.currency === currency ? maintAccount.balance : 0;
+  const maintenanceOutstanding = outstandingOverride !== undefined ? outstandingOverride : maintAccount.currency === currency ? maintAccount.balance : 0;
 
   /*
    * The contribution still owed for this period, not the whole contribution.
@@ -2910,9 +3020,20 @@ export function ownerStatement(
     let owedInPeriod = 0;
     const accountCharges = chargesForUnit(charges, unit, units)
       .filter(c => c.category === 'Maintenance' && c.status === 'open' && c.currency === currency && c.dueDate <= to);
-    const credit = allocateOldestFirst(accountCharges, maintAccount.paid, (c, covered) => {
-      if (isWithin(c.dueDate, from, to)) owedInPeriod = round2(owedInPeriod + (c.amount - covered));
-    });
+    // A villa that changed hands: each charge is covered by its own proprietor's receipts, and the credit left
+    // is the one held by the proprietor in force at the period end.
+    const ownerRecords = maintAccount.byOwner?.map(share => share.owner);
+    const credit = ownerRecords
+      ? (() => {
+          for (const c of accountCharges) {
+            if (isWithin(c.dueDate, from, to)) owedInPeriod = round2(owedInPeriod + (c.amount - (maintAccount.coverage?.[c.id] || 0)));
+          }
+          const inForce = ownerRecordOn(ownerRecords, to);
+          return maintAccount.byOwner!.find(share => share.owner === inForce)?.credit || 0;
+        })()
+      : allocateOldestFirst(accountCharges, maintAccount.paid, (c, covered) => {
+          if (isWithin(c.dueDate, from, to)) owedInPeriod = round2(owedInPeriod + (c.amount - covered));
+        });
     // Money left over after every charge up to the period end is a CREDIT held for this
     // villa. It stays visible as a negative amount owing (the statement then reads "in
     // credit"), exactly as an overpayment inside the period always did.
@@ -2934,20 +3055,35 @@ export function ownerStatement(
   if (maintAccount.currency === currency) {
     const dayBefore = addDays(from, -1);
     const atStart = accountBalance(unit, 'Maintenance', charges, payments, dayBefore, units);
-    maintenancePaidInAdvance = Math.min(Math.max(0, round2(-atStart.balance)), Math.max(0, maintenanceBilled));
     const earlier = chargesForUnit(charges, unit, units).filter(
       c => c.category === 'Maintenance' && c.status === 'open' && c.currency === currency && c.dueDate < from
     );
-    const owedOnEarlier = (paid: number) => {
-      let owed = 0;
-      allocateOldestFirst(earlier, paid, (c, covered) => {
-        owed = round2(owed + (c.amount - covered));
-      });
-      return owed;
-    };
-    const before = owedOnEarlier(atStart.currency === currency ? atStart.paid : 0);
-    const after = owedOnEarlier(maintAccount.paid);
-    maintenanceAppliedToEarlier = Math.max(0, round2(before - after));
+    if (maintAccount.byOwner && atStart.byOwner) {
+      // The statement is the proprietor's of the period start: their own credit and their own earlier charges.
+      const ownerRecords = maintAccount.byOwner.map(share => share.owner);
+      const mine = ownerRecordOn(ownerRecords, from);
+      const creditAtStart = atStart.byOwner.find(share => share.owner.id === mine.id)?.credit || 0;
+      maintenancePaidInAdvance = Math.min(Math.max(0, creditAtStart), Math.max(0, maintenanceBilled));
+      const owedOnMine = (account: AccountBalance) =>
+        round2(
+          earlier
+            .filter(c => ownerRecordOn(ownerRecords, c.dueDate).id === mine.id)
+            .reduce((a, c) => a + (c.amount - (account.coverage?.[c.id] || 0)), 0)
+        );
+      maintenanceAppliedToEarlier = Math.max(0, round2(owedOnMine(atStart) - owedOnMine(maintAccount)));
+    } else {
+      maintenancePaidInAdvance = Math.min(Math.max(0, round2(-atStart.balance)), Math.max(0, maintenanceBilled));
+      const owedOnEarlier = (paid: number) => {
+        let owed = 0;
+        allocateOldestFirst(earlier, paid, (c, covered) => {
+          owed = round2(owed + (c.amount - covered));
+        });
+        return owed;
+      };
+      const before = owedOnEarlier(atStart.currency === currency ? atStart.paid : 0);
+      const after = owedOnEarlier(maintAccount.paid);
+      maintenanceAppliedToEarlier = Math.max(0, round2(before - after));
+    }
   }
 
   /*
@@ -2962,7 +3098,7 @@ export function ownerStatement(
    * had paid ISPO rent, and the group balance read J$37,000 owing when J$97,000
    * was. Utility recoveries stay in: they offset the villa's own utility bill.
    */
-  const net = round2(utilityCollected - maintenanceOwedForPeriod - utilityBilled - unitExpenses);
+  const net = round2(-maintenanceOwedForPeriod - unitExpenses);
 
   return {
     unit,
@@ -2996,8 +3132,6 @@ export function ownerStatement(
      * 2026-11-19). Utility money is shown, because the utility bill is.
      */
     active:
-      utilityCollected !== 0 ||
-      refundedIn('Utility') !== 0 ||
       refundedIn('Maintenance') !== 0 ||
       maintenanceBilled !== 0 ||
       maintenancePaid !== 0 ||
@@ -3007,7 +3141,127 @@ export function ownerStatement(
   };
 }
 
-/** Every owner statement worth producing for a period, one per villa per currency. */
+/**
+ * Who owned a villa when. Ownership is dated per villa (`Ownership`): a proprietor holds it from
+ * `startedOn` (blank = not recorded, so from the beginning) up to, not including, the day it was sold on.
+ * Fewer than two records means no change of hands is on file, and the unit's own owner stands.
+ */
+function ownershipRecordsFor(unit: Pick<Unit, 'id'>, ownerships: Ownership[] | undefined): Ownership[] {
+  const own = (ownerships || []).filter(o => o.unitId === unit.id);
+  if (own.length < 2) return [];
+  return [...own].sort((a, b) => (a.startedOn || '').localeCompare(b.startedOn || '') || (a.recordedAt || '').localeCompare(b.recordedAt || ''));
+}
+
+/** The record that owned the villa on a day: the latest one that had begun and not yet ended. */
+function ownerRecordOn(records: Ownership[], day: string): Ownership {
+  let found: Ownership | undefined;
+  for (const o of records) if ((!o.startedOn || o.startedOn <= day) && (!o.endedOn || day < o.endedOn)) found = o;
+  if (found) return found;
+  // Before the first proprietor's recorded start the villa was theirs (nobody earlier is on file).
+  if (records[0].startedOn && day < records[0].startedOn) return records[0];
+  return records[records.length - 1];
+}
+
+/**
+ * The ownership records the ledger reads when a screen does not pass them in. The client sets it
+ * from each /api/db snapshot, so every balance, ageing and arrears figure follows the same rule
+ * without each screen carrying the list; the server passes `db.ownerships` explicitly.
+ */
+let ownershipRegistry: Ownership[] = [];
+export function setOwnershipRegistry(list: Ownership[] | undefined): void {
+  ownershipRegistry = list || [];
+}
+
+/** How one proprietor's own levy stands on a villa's Maintenance account (see `allocateByOwner`). */
+export interface OwnerShare {
+  owner: Ownership;
+  /** Charges falling due in this proprietor's period. */
+  charged: number;
+  /** Receipts attributed to this proprietor (net of refunds). */
+  paid: number;
+  /** Charges of theirs the receipts attributed to them do not cover. */
+  owed: number;
+  /** Their receipts left over after all their charges: credit for their own later charges. */
+  credit: number;
+  /** Charge id to the part of it their receipts cover. */
+  coverage: Record<string, number>;
+}
+
+const sameOwnerName = (a: string, b: string) => !!nameKey(b) && nameKey(a) === nameKey(b);
+
+/**
+ * Whose levy a maintenance receipt pays. The proprietor in force on the day it was paid, unless the payer is
+ * a former proprietor named in the records (a seller paying after the sale), whose receipt stays theirs. A payer
+ * named like nobody on file (an agent, a company) falls to the proprietor of the day.
+ */
+function paymentOwner(records: Ownership[], p: Payment): Ownership {
+  const onDay = ownerRecordOn(records, p.derived && p.settlesDueDate ? p.settlesDueDate : p.date);
+  const payer = p.payerName || '';
+  if (!nameKey(payer) || sameOwnerName(onDay.ownerName, payer)) return onDay;
+  let named: Ownership | undefined;
+  for (const o of records) if ((!o.startedOn || o.startedOn <= p.date) && sameOwnerName(o.ownerName, payer)) named = o;
+  return named || onDay;
+}
+
+/**
+ * The one allocation rule for a villa that changed hands. Each charge belongs to the proprietor in force on
+ * its due date; each receipt is attributed to its payer's own record (`paymentOwner`); then every proprietor's
+ * receipts settle THEIR charges oldest first. A buyer's payment never clears the seller's arrears, a seller
+ * keeps what they already owe, and a surplus is credit for that payer's own later charges only.
+ */
+function allocateByOwner(charges: Charge[], paid: { payment: Payment; amount: number }[], records: Ownership[]): OwnerShare[] {
+  return records.map(owner => {
+    const mine = charges.filter(c => ownerRecordOn(records, c.dueDate) === owner);
+    const cash = round2(
+      paid.filter(x => paymentOwner(records, x.payment) === owner).reduce((a, x) => a + x.amount, 0)
+    );
+    const coverage: Record<string, number> = {};
+    const credit = allocateOldestFirst(mine, cash, (c, covered) => {
+      coverage[c.id] = covered;
+    });
+    const charged = sumMoney(mine.map(c => c.amount));
+    const owed = round2(mine.reduce((a, c) => a + (c.amount - (coverage[c.id] || 0)), 0));
+    return { owner, charged, paid: cash, owed, credit, coverage };
+  });
+}
+
+/**
+ * What one proprietor owes on the maintenance account as at a day: the unpaid part of the contributions
+ * that FELL DUE in their time as owner, on the ledger's own oldest-first allocation. A buyer is never
+ * shown the seller's debt and the seller is never relieved of it (it stays with whoever ran it up).
+ * Credit left over after every charge belongs to the owner at that day.
+ */
+function maintenanceOutstandingFor(
+  unit: Unit,
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  currency: Currency,
+  asOf: string,
+  records: Ownership[],
+  owner: Ownership
+): number {
+  const account = accountBalance(unit, 'Maintenance', charges, payments, asOf, units);
+  if (account.currency !== currency) return 0;
+  const share = account.byOwner?.find(s => s.owner.id === owner.id);
+  // Each proprietor's own levy settled by their own receipts; their credit is theirs and is not netted elsewhere.
+  if (share) return round2(share.owed - share.credit);
+  const open = chargesForUnit(charges, unit, units).filter(
+    c => c.category === 'Maintenance' && c.status === 'open' && c.currency === currency && c.dueDate <= asOf
+  );
+  let mine = 0;
+  const credit = allocateOldestFirst(open, account.paid, (c, covered) => {
+    if (ownerRecordOn(records, c.dueDate) === owner) mine = round2(mine + (c.amount - covered));
+  });
+  if (credit > 0 && ownerRecordOn(records, asOf) === owner) mine = round2(mine - credit);
+  return mine;
+}
+
+/**
+ * Every owner statement worth producing for a period, one per villa per currency, and per proprietor
+ * where the villa changed hands: each statement is addressed to the owner of its own days, carries their
+ * charges, and their arrears stay with them. A former owner who still owes gets a statement for that debt.
+ */
 export function ownerStatements(
   units: Unit[],
   charges: Charge[],
@@ -3015,16 +3269,65 @@ export function ownerStatements(
   expenses: Expense[],
   utilities: UtilityReading[],
   from: string,
-  to: string
+  to: string,
+  ownerships?: Ownership[]
+): OwnerStatement[] {
+  // Every balance read below follows the ownership records this statement run was given.
+  const outerRegistry = ownershipRegistry;
+  if (ownerships) ownershipRegistry = ownerships;
+  try {
+    return ownerStatementsFor(units, charges, payments, expenses, utilities, from, to, ownerships ?? ownershipRegistry);
+  } finally {
+    ownershipRegistry = outerRegistry;
+  }
+}
+
+function ownerStatementsFor(
+  units: Unit[],
+  charges: Charge[],
+  payments: Payment[],
+  expenses: Expense[],
+  utilities: UtilityReading[],
+  from: string,
+  to: string,
+  ownerships: Ownership[]
 ): OwnerStatement[] {
   const out: OwnerStatement[] = [];
   for (const unit of units) {
+    const records = ownershipRecordsFor(unit, ownerships);
     for (const currency of ['JMD', 'USD'] as Currency[]) {
-      const statement = ownerStatement(unit, units, charges, payments, expenses, utilities, currency, from, to);
-      if (statement.active) out.push(statement);
+      if (records.length === 0) {
+        const statement = ownerStatement(unit, units, charges, payments, expenses, utilities, currency, from, to);
+        if (statement.active) out.push(statement);
+        continue;
+      }
+      for (const rec of records) {
+        const start = rec.startedOn || '';
+        const lastDay = rec.endedOn ? addDays(rec.endedOn, -1) : '';
+        const segFrom = start > from ? start : from;
+        const segTo = lastDay && lastDay < to ? lastDay : to;
+        const asOwner = (st: OwnerStatement): OwnerStatement => ({
+          ...st,
+          unit: { ...unit, ownerName: rec.ownerName, ownerEmail: rec.ownerEmail, ownerPhone: rec.ownerPhone }
+        });
+        if (segFrom <= segTo) {
+          const owed = maintenanceOutstandingFor(unit, units, charges, payments, currency, segTo, records, rec);
+          const statement = ownerStatement(unit, units, charges, payments, expenses, utilities, currency, segFrom, segTo, owed);
+          if (statement.active) out.push(asOwner(statement));
+        } else if (lastDay && lastDay < from) {
+          // Gone before the period began, but a debt run up in their time stays theirs.
+          const owed = maintenanceOutstandingFor(unit, units, charges, payments, currency, to, records, rec);
+          if (owed > 0) {
+            const statement = ownerStatement(unit, units, charges, payments, expenses, utilities, currency, from, addDays(from, -1), owed);
+            out.push(asOwner({ ...statement, from, to }));
+          }
+        }
+      }
     }
   }
-  return out.sort((a, b) => a.unit.number.localeCompare(b.unit.number, undefined, { numeric: true }) || a.currency.localeCompare(b.currency));
+  return out.sort(
+    (a, b) => a.unit.number.localeCompare(b.unit.number, undefined, { numeric: true }) || a.currency.localeCompare(b.currency) || a.from.localeCompare(b.from)
+  );
 }
 
 /**
@@ -3257,7 +3560,8 @@ export function ageAccountArrears(
 
   let credit = account.paid;
   for (const charge of open) {
-    const covered = Math.min(credit, charge.amount);
+    // A villa that changed hands: each charge is covered by its own proprietor's receipts only.
+    const covered = account.coverage ? account.coverage[charge.id] || 0 : Math.min(credit, charge.amount);
     credit = round2(credit - covered);
     const residual = round2(charge.amount - covered);
     if (residual > 0) addToBucket(buckets, daysSinceOn(charge.dueDate, asOf), residual);
@@ -3626,7 +3930,8 @@ export function annualOwnersReport(
    * Utility recoveries the corporation took from villas are netted from its
    * utility cost (Ro, 2026-11-18): the proprietors fund the net, not the gross.
    */
-  const expenses = strataExpenses(withUtilityRecoveries(allExpenses, payments));
+  // A utility bill tied to a villa, and its recovery, is that owner's own cost, not a common one (Ro, 2026-11-21).
+  const expenses = strataExpenses(allExpenses.filter(e => !isVillaUtilityCost(e)));
   const budgetByCategory = options?.budgetByCategory || {};
   const yearStart = `${reportYear}-01-01`;
   const yearEnd = `${reportYear}-12-31`;
@@ -3837,7 +4142,19 @@ export function annualOwnersReport(
     // A month outside the books (before they began, or not yet reached) has no
     // contribution to credit and is not "covered" (hunt, 2026-11-19).
     const recorded = m >= recordedRange.first && m <= recordedRange.last;
-    const income = recorded ? monthlyContribution : 0;
+    /*
+     * What was actually billed THAT month, so the column adds up to `contributionsAnnual` and a levy or
+     * register that changed during the year does not restate every month at today's figure (QA 2026-11-21):
+     * the month's own levy charges where the year has any, else each contributing villa's levy for the
+     * month under a dated schedule, else today's fee as before.
+     */
+    const income = leviedInYear.length > 0
+      ? round2(sumMoney(leviedInYear.filter(c => c.periodMonth.slice(0, 7) === month).map(c => c.amount)))
+      : recorded
+        ? scheduled
+          ? registerAssessment(m, m)
+          : monthlyContribution
+        : 0;
     months.push({
       month,
       expenditure: spend,
@@ -4154,6 +4471,16 @@ function isCommonCost(expense: Expense): boolean {
   return where === '' || (PROPERTY_LOCATIONS as readonly string[]).includes(where);
 }
 
+/**
+ * A utility bill tied to a villa, or the recovery of one: that villa owner's OWN cost (Ro, 2026-11-21: "similar to
+ * how all owners pay their own utility bills"), never a common cost of the property. For an ISPO villa it is ISPO's
+ * cost (`fundForCost`). A utility not tied to a villa (common-area electricity, water for the grounds) stays common.
+ * Every document that presents common costs to proprietors leaves these out.
+ */
+export function isVillaUtilityCost(expense: Expense): boolean {
+  return expense.category === 'Utilities' && (isUtilityRecoveryRow(expense) || !isCommonCost(expense));
+}
+
 function toCostLine(expense: Expense, date: string): OperationsCostLine {
   return {
     id: expense.id,
@@ -4198,8 +4525,14 @@ export function operationsStatement(
   const paidInPeriod = inCurrency.filter(e => e.status === 'paid' && isWithin(e.datePaid || e.date, start, end));
   const pendingInPeriod = inCurrency.filter(e => e.status === 'pending' && isWithin(e.dueDate || e.date, start, end));
 
+  /*
+   * A utility bill tied to a villa is that villa owner's own cost, and so is the recovery of it (Ro, 2026-11-21),
+   * so neither is a common cost: the bill is left in the villa memo (it is still money the corporation paid, and
+   * the memo keeps the statement reconcilable to the register) and the recovery rows are left out entirely.
+   * A utility tied to no villa stays in the common costs below.
+   */
   const commonPaid = paidInPeriod.filter(isCommonCost);
-  const rechargedPaid = paidInPeriod.filter(e => !isCommonCost(e));
+  const rechargedPaid = paidInPeriod.filter(e => !isCommonCost(e) && !isUtilityRecoveryRow(e));
 
   const byCategory = new Map<ExpenseCategory, OperationsCostLine[]>();
   for (const expense of commonPaid) {
@@ -5443,7 +5776,7 @@ export interface MonthlyOwnersReport {
   unpaidCount: number;
   /**
    * Of `costsPaid`, the part spent on individual villas rather than the common
-   * property, net of utility recoveries on those villas. **Included** in
+   * property (a utility tied to a villa is that owner's own cost and is not counted). **Included** in
    * `costsPaid`, never subtracted from it: stated so a proprietor can see how
    * much of the month went on villas rather than common areas. No villa is named.
    */
@@ -5466,10 +5799,17 @@ export interface MonthlyOwnersReport {
 export function individualVillasNote(r: Pick<MonthlyOwnersReport, 'currency' | 'onIndividualVillas' | 'onIndividualVillasCount'>): string | null {
   if (r.onIndividualVillasCount <= 0 && r.onIndividualVillas === 0) return null;
   const n = r.onIndividualVillasCount;
+  // A net credit over no items (a supplier credit on a villa job) is said as what it is, never "-J$6,000 across 0 items was spent".
+  if (n <= 0 || r.onIndividualVillas < 0) {
+    return (
+      `${formatMoney(Math.abs(r.onIndividualVillas), r.currency)} ${r.onIndividualVillas < 0 ? 'credited on individual villas is netted in' : 'was spent on individual villas and is included in'} ` +
+      'the costs above. No villa is named on this report. Utility bills tied to a villa are that villa owner\'s own cost and are not in these costs.'
+    );
+  }
   return (
     `Of the costs paid, ${formatMoney(r.onIndividualVillas, r.currency)} across ${n} ${n === 1 ? 'item' : 'items'} was spent on ` +
-    'individual villas rather than the common property, net of any utility recovered from those villas. It is included in the ' +
-    'costs above because the corporation paid it. No villa is named on this report.'
+    'individual villas rather than the common property. It is included in the costs above because the corporation paid it. ' +
+    'No villa is named on this report. Utility bills tied to a villa are that villa owner\'s own cost and are not in these costs.'
   );
 }
 
@@ -5490,11 +5830,17 @@ export function monthlyOwnersReport(
    * per Ro's rule above, so where the corporation also had "Other income" in the
    * month the Operating Statement's surplus is larger by exactly that.
    */
-  const op = operatingStatement(payments, expenses, units, currency, from, to, { book: 'strata' });
+  /*
+   * Common costs only (Ro, 2026-11-21): a utility bill tied to a villa, and the recovery of it, is that villa
+   * owner's own cost and is left out, exactly as the Operations Statement leaves it out. So the costs here are
+   * the strata Operating Statement's less those villa utilities; the two agree wherever there are none.
+   */
+  const commonCosts = expenses.filter(e => !isVillaUtilityCost(e));
+  const op = operatingStatement(payments.filter(p => p.category !== 'Utility'), commonCosts, units, currency, from, to, { book: 'strata' });
   const contributionsReceived = collectedInPeriod(payments, currency, from, to).maintenance;
   const costsPaid = op.totalExpenditure;
 
-  const strataCosts = strataExpenses(withUtilityRecoveries(expenses, payments)).filter(e => e.currency === currency);
+  const strataCosts = strataExpenses(commonCosts).filter(e => e.currency === currency);
   const onVillas = strataCosts.filter(
     e => e.status === 'paid' && isWithin(e.datePaid || e.date, from, to) && !isCommonCost(e)
   );

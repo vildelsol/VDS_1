@@ -99,21 +99,19 @@ export default async function run({ port, projectRoot }) {
 
     /* ---- the seller's credit does not pay the buyer's contributions ---- */
     const ownerBody = (over = {}) => ({ number: '2', ownerName: 'Seller Owner', tenantName: '', status: 'owner-occupied', monthlyRent: 0, monthlyMaintenance: 10000, currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1, ...over });
+    // Ro, 2026-11-21: sales happen outside the app; the status change is never blocked over money. The seller's
+    // credit stays the seller's: a payment pays only the payer's own levy.
     const sale = await c.put('/api/units/unit-2', ownerBody({ ownerName: 'Buyer Owner', ownerChangeIntent: 'sale', ownerAcquiredOn: localToday() }));
-    T.check('a sale while the seller holds maintenance credit is refused', sale.status === 400 && sale.body?.code === 'former-owner-credit', `${sale.status} ${sale.body?.code} ${String(sale.body?.error).slice(0, 100)}`);
-    const ownerReceipt = (await db()).payments.find(p => p.unitId === 'unit-2' && p.category === 'Maintenance' && p.advance);
-    const sellerRefund = await c.post(`/api/payments/${ownerReceipt.id}/refund`, { amount: 30000, reason: 'Villa sold, advance returned to the seller', method: 'Cash' });
-    T.check('the seller can be refunded the unspent 30000', sellerRefund.status === 200, String(sellerRefund.body?.error || ''));
-    const sale2 = await c.put('/api/units/unit-2', ownerBody({ ownerName: 'Buyer Owner', ownerChangeIntent: 'sale', ownerAcquiredOn: localToday() }));
-    T.check('with the credit refunded, the sale goes through', sale2.status === 200, String(sale2.body?.error || '').slice(0, 140));
+    T.check('a sale while the seller holds maintenance credit goes through (not blocked)', sale.status === 200, `${sale.status} ${sale.body?.code} ${String(sale.body?.error).slice(0, 100)}`);
 
     /* ---- credit that already sits on a villa that changed hands is surfaced ---- */
     await makeLongTermUnit(c, 'unit-4', { tenantName: 'Leaving Tenant' });
     await c.post('/api/charges/post-month', { monthString: monthsAhead(0) });
     const adv4 = await receive('unit-4', 'Rent', 200000, { advancePayment: true });
     T.check('setup: unit-4 holds rent credit', adv4.status === 200 && (await balance('unit-4', 'Rent')) < 0, String(adv4.body?.error || ''));
-    const codesBefore = (await c.get('/api/integrity')).body.findings.map(f => f.code);
-    T.check('control: no tenant has left, so no credit-after-change warning yet', !codesBefore.includes('credit-held-on-a-villa-that-changed-hands'), codesBefore.join(','));
+    const before4 = (await c.get('/api/integrity')).body.findings.find(f => f.code === 'credit-held-on-a-villa-that-changed-hands');
+    T.check("the sold villa's leftover seller credit is named for the office to settle", !!before4 && before4.records.some(r => /Villa 2/.test(r)), JSON.stringify(before4 || null).slice(0, 200));
+    T.check('control: unit-4\'s tenant has not left, so unit-4 is not named yet', !before4 || !before4.records.some(r => /Villa 4/.test(r)), JSON.stringify(before4 || null).slice(0, 200));
     const vac = await c.put('/api/units/unit-4', { number: '4', ownerName: 'Owner', tenantName: '', status: 'vacant', monthlyRent: 50000, monthlyMaintenance: 10000, currency: 'JMD', maintCurrency: 'JMD', rentDueDay: 1, maintDueDay: 1, tenantChangeIntent: 'moved-out' });
     T.check('setup: the villa was set vacant and its tenancy ended', vac.status === 200 && (await db()).tenancies.some(t => t.unitId === 'unit-4' && t.status === 'ended'), `${vac.status} ${JSON.stringify(vac.body).slice(0, 160)} ${JSON.stringify((await db()).tenancies.filter(t => t.unitId === 'unit-4').map(t => t.status))}`);
     const found = (await c.get('/api/integrity')).body.findings.find(f => f.code === 'credit-held-on-a-villa-that-changed-hands');

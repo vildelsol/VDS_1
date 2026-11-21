@@ -423,20 +423,16 @@ export default async function run({ port, projectRoot }) {
     const withUtility = (await c.get('/api/db')).body;
     const villa1Utility = statementFor(withUtility, 'unit-1', 'JMD');
 
+    // Ro, 2026-11-21: owners take care of their own utility bills, so utilities are never on an owner statement.
     T.check(
-      'an unpaid meter reading is billed to the owner on their statement',
-      villa1Utility?.utilityBilled === 7500,
+      'a meter reading is never put on the owner statement: owners settle their own utilities',
+      villa1Utility?.utilityBilled === 0 && (villa1Utility?.utilityCharges?.length || 0) === 0,
       `utilityBilled ${villa1Utility?.utilityBilled}`
     );
     T.check(
-      'and is itemised, not merely totalled',
-      villa1Utility?.utilityCharges?.length === 1,
-      `${villa1Utility?.utilityCharges?.length} reading(s) itemised`
-    );
-    T.check(
-      'and it reduces the net by exactly what was billed',
-      villa1Utility?.net === netBeforeReading - 7500,
-      `net moved from ${netBeforeReading} to ${villa1Utility?.net}, expected a fall of 7500`
+      'and it does not move the net',
+      villa1Utility?.net === netBeforeReading,
+      `net moved from ${netBeforeReading} to ${villa1Utility?.net}`
     );
     /*
      * A proprietor's supply is on their own meter in their own name and settled
@@ -467,14 +463,9 @@ export default async function run({ port, projectRoot }) {
     if (settled.body?.payment?.id) await c.post(`/api/payments/${settled.body.payment.id}/confirm`, {});
     const afterSettle = statementFor((await c.get('/api/db')).body, 'unit-1', 'JMD');
     T.check(
-      'settling a reading leaves the charge standing on the period it was billed in',
-      afterSettle?.utilityBilled === 7500,
-      `utilityBilled ${afterSettle?.utilityBilled}`
-    );
-    T.check(
-      'and a payment made after the period does not retroactively change that period',
-      afterSettle?.net === netBeforeReading - 7500,
-      `net ${afterSettle?.net}, expected to stay at ${netBeforeReading - 7500}`
+      'settling a reading does not put it on the statement either',
+      afterSettle?.utilityBilled === 0 && afterSettle?.net === netBeforeReading,
+      `utilityBilled ${afterSettle?.utilityBilled}, net ${afterSettle?.net}`
     );
 
     /* ---------------- one supply is billed once ---------------- */

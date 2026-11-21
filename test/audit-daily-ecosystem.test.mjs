@@ -149,7 +149,7 @@ export default async function run({ port, projectRoot }) {
     const g5 = await bk({ unitId: 'unit-5', guestName: 'Guest Gone', checkIn: addDays(TODAY, 10), checkOut: addDays(TODAY, 12), amount: 20000, depositPaid: 20000 });
     ok('damage deposit held', await c.post(`/api/bookings/${g3.id}/damage-deposit`, { amount: 300, currency: 'USD', receivedOn: TODAY }));
     ok('damage deposit taken', await c.post(`/api/bookings/${g4.id}/damage-deposit`, { amount: 200, currency: 'USD', receivedOn: TODAY }));
-    ok('damage deposit returned', await c.post(`/api/bookings/${g4.id}/damage-deposit/settle`, { withheldAmount: 50, withheldReason: 'Broken lamp', settledOn: TODAY }));
+    ok('damage deposit returned', await c.post(`/api/bookings/${g4.id}/damage-deposit/settle`, { withheldAmount: 50, returnedAmount: 150, withheldReason: 'Broken lamp', settledOn: TODAY }));
     db = (await c.get('/api/db')).body;
     const receiptOf = b => db.payments.find(p => p.bookingId === b.id && p.status !== 'reversed');
     ok('part refund of a stay', await c.post(`/api/payments/${receiptOf(g4).id}/refund`, { amount: 100, reason: 'Late check-in discount', method: 'Cash', refundedOn: TODAY }));

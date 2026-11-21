@@ -28,7 +28,6 @@ import {
   categoriesWithSpend,
   expenseBreakdown,
   expensesInPeriod,
-  strataExpenses,
   occupancySeries,
   occupiedUnitIdsOn,
   UTILITY_RECOVERY_NOTE,
@@ -77,15 +76,15 @@ export default function BoardPack({
   const months = monthsBetween(from, to);
 
   /*
-   * The corporation's costs only.
+   * Every cost on both books, as the Dashboard and Charts count them.
    *
-   * This is the pack a committee votes on, so it carries the body corporate's
-   * expenditure and not ISPO's. Filtered once, here, rather than at each of the
-   * four places below that count spend — the alternative is four chances to
-   * forget, and a pack that disagrees with the operating statement beside it.
+   * Receipts here are both books (see consolidateEverything), so paid out must be both books too: the
+   * pack subtracted only the corporation's costs from receipts of both, and its "net cash movement"
+   * disagreed with the Dashboard for the same month (QA, 2026-11-21). One cost set, used everywhere
+   * below, so the pack agrees with the dashboard and the operating statement beside it.
+   * Utility recoveries are netted from the utility cost, a pass-through (Ro, 2026-11-18).
    */
-  // Utility recoveries netted from the utility cost, a pass-through (Ro, 2026-11-18).
-  const strataCosts = strataExpenses(withUtilityRecoveries(expenses, payments));
+  const allCosts = withUtilityRecoveries(expenses, payments);
   // Money on both books counted once; see consolidateEverything.
   const combined = consolidateEverything(charges, payments, units);
 
@@ -95,7 +94,7 @@ export default function BoardPack({
         const mFrom = monthStart(month) < from ? from : monthStart(month);
         const mTo = monthEnd(month) > to ? to : monthEnd(month);
         const byCategory: Record<string, number> = {};
-        for (const row of expenseBreakdown(strataCosts, currency, mFrom, mTo)) {
+        for (const row of expenseBreakdown(allCosts, currency, mFrom, mTo)) {
           // See the note in Charts.tsx: a category that nets to a credit is
           // still a category, and `> 0` hid it from the pack the board reads.
           if (row.amount !== 0) byCategory[row.category] = row.amount;
@@ -107,19 +106,19 @@ export default function BoardPack({
           received: collectedInMonth.total,
           settledOfBilled: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).settled,
           collectable: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).billed,
-          paidOut: expensesInPeriod(strataCosts, currency, mFrom, mTo),
+          paidOut: expensesInPeriod(allCosts, currency, mFrom, mTo),
           byCategory
         };
       });
 
       const collected = collectedInPeriod(combined.payments, currency, from, to);
       const billed = chargedInPeriod(combined.charges, currency, from, to);
-      const spent = expensesInPeriod(strataCosts, currency, from, to);
+      const spent = expensesInPeriod(allCosts, currency, from, to);
 
       // Same opening/closing receivable construction as the operating statement.
       const receivableAt = (asOf: string) => receivableAsOf(units, charges, payments, asOf, currency);
 
-      const breakdown = categoriesWithSpend(expenseBreakdown(strataCosts, currency, from, to));
+      const breakdown = categoriesWithSpend(expenseBreakdown(allCosts, currency, from, to));
 
       return {
         currency,

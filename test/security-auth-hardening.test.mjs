@@ -41,7 +41,7 @@ export default async function run({ port, projectRoot }) {
   let srv;
   try {
     /* ---------------- 1a. the throttle itself, on a clock the test controls ---------------- */
-    const { LoginThrottle, FREE_FAILURES, BASE_DELAY_MS, MAX_DELAY_MS } = await loadThrottleModule(projectRoot, dir);
+    const { LoginThrottle, FREE_FAILURES, UNKNOWN_FREE_FAILURES, BASE_DELAY_MS, MAX_DELAY_MS } = await loadThrottleModule(projectRoot, dir);
     let now = 1_000_000;
     const th = new LoginThrottle(() => now);
     for (let i = 1; i < FREE_FAILURES; i++) th.fail('10.0.0.5', 'victim');
@@ -79,11 +79,13 @@ export default async function run({ port, projectRoot }) {
 
     const anon = makeClient(srv.baseUrl);
     const tryLogin = pw => anon.post('/api/auth/login', { username: 'junior', password: pw }, { noCookie: true });
-    for (let i = 0; i < FREE_FAILURES - 1; i++) await tryLogin('wrong-' + i);
+    // A browser with no known-device cookie (this client) has the stricter allowance since the second security pass:
+    // UNKNOWN_FREE_FAILURES (3) rather than FREE_FAILURES (5). The pair arithmetic above is unchanged.
+    for (let i = 0; i < UNKNOWN_FREE_FAILURES - 1; i++) await tryLogin('wrong-' + i);
     T.check('control: the right password still works after a few failures', (await tryLogin('JuniorOwn-22!')).status === 200);
-    for (let i = 0; i < FREE_FAILURES - 1; i++) await tryLogin('wrong-again-' + i);
-    T.check('...and that success reset the count (four more failures do not block)', (await tryLogin('JuniorOwn-22!')).status === 200);
-    for (let i = 0; i < FREE_FAILURES; i++) await tryLogin('guess-' + i);
+    for (let i = 0; i < UNKNOWN_FREE_FAILURES - 1; i++) await tryLogin('wrong-again-' + i);
+    T.check('...and that success reset the count (two more failures do not block)', (await tryLogin('JuniorOwn-22!')).status === 200);
+    for (let i = 0; i < UNKNOWN_FREE_FAILURES; i++) await tryLogin('guess-' + i);
     const refused = await tryLogin('JuniorOwn-22!');
     T.check('after repeated failures this address is refused with exactly 429 sign-in-throttled', refused.status === 429 && refused.body?.code === 'sign-in-throttled', `${refused.status} ${refused.body?.code}`);
     const logs1 = (await admin.get('/api/db')).body.auditLogs;
@@ -172,6 +174,8 @@ export default async function run({ port, projectRoot }) {
 
     // Upgrade from an unkeyed chain: no key file, every entry sealed the old way, all dated in the past.
     if (fs.existsSync(keyFile)) fs.renameSync(keyFile, keyFile + '.held');
+    // A pre-upgrade install has no key and no head anchor (audit-head.json, second security pass) either.
+    if (fs.existsSync(path.join(dir, 'audit-head.json'))) fs.renameSync(path.join(dir, 'audit-head.json'), path.join(dir, 'audit-head.json.held'));
     codes = await tamper(j => {
       for (const e of j.auditLogs) e.dateTime = '2026-01-01T00:00:00.000Z';
       rechainPlain(j.auditLogs);

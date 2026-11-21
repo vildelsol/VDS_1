@@ -1292,9 +1292,16 @@ function BackupPanel({
 
 /* ------------------------------------------------------------------ */
 
+type RestoreTotals = Record<'receipts' | 'openCharges' | 'paidExpenses', Record<'JMD' | 'USD', { count: number; total: number }>>;
+
 interface RestorePreview {
   summary: { madeAt: string; counts: Record<string, number>; staffNotRecreated: string[] };
   present: { units: number; charges: number; payments: number; expenses: number };
+  /** The money in the file and in the records now, by currency, so a file holding far more or less is obvious. */
+  totals?: { file: RestoreTotals; current: RestoreTotals };
+  /** Whether the file was made by this installation and is untouched since. */
+  signature?: 'valid' | 'unsigned' | 'mismatch' | 'no-key';
+  warnings?: string[];
 }
 
 type RestoreSource = { source: 'backup'; file: string; location: 'local' | 'external' } | { source: 'snapshot'; snapshot: unknown };
@@ -1308,6 +1315,8 @@ function RestorePanel({ backups, onError }: { backups: BackupRecord[]; onError: 
   const [label, setLabel] = useState('');
   const [preview, setPreview] = useState<RestorePreview | null>(null);
   const [word, setWord] = useState('');
+  const [acceptUnsigned, setAcceptUnsigned] = useState(false);
+  const [unsignedReason, setUnsignedReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState('');
   const [done, setDone] = useState<{ safetyCopy: string; findings: number } | null>(null);
@@ -1316,6 +1325,8 @@ function RestorePanel({ backups, onError }: { backups: BackupRecord[]; onError: 
     setSource(null);
     setPreview(null);
     setWord('');
+    setAcceptUnsigned(false);
+    setUnsignedReason('');
     setProblem('');
   };
 
@@ -1329,6 +1340,8 @@ function RestorePanel({ backups, onError }: { backups: BackupRecord[]; onError: 
       setLabel(name);
       setPreview(res);
       setWord('');
+      setAcceptUnsigned(false);
+      setUnsignedReason('');
     } catch (err) {
       reset();
       setProblem(errorMessage(err, 'That file could not be read.'));
@@ -1357,7 +1370,8 @@ function RestorePanel({ backups, onError }: { backups: BackupRecord[]; onError: 
     try {
       const res = await api.post<{ safetyCopy: string; integrity: { findings: unknown[] } }>('/api/backup/restore', {
         ...source,
-        confirm: word.trim()
+        confirm: word.trim(),
+        ...(preview && preview.signature && preview.signature !== 'valid' ? { confirmUnsigned: acceptUnsigned, reason: unsignedReason.trim() } : {})
       });
       setDone({ safetyCopy: res.safetyCopy, findings: res.integrity.findings.length });
       reset();
@@ -1441,6 +1455,52 @@ function RestorePanel({ backups, onError }: { backups: BackupRecord[]; onError: 
             <strong>Everything entered after that day will be removed from the records</strong>, including payments and
             receipts. A copy of today&apos;s records is kept first.
           </p>
+          {preview.totals && (
+            <div>
+              <p className="font-semibold">The money in the file, against the records now</p>
+              <table className="mt-1 w-full max-w-md text-left text-[11px]">
+                <thead>
+                  <tr className="text-amber-800">
+                    <th className="py-0.5 pr-2 font-medium" />
+                    <th className="py-0.5 pr-2 font-medium">In the file</th>
+                    <th className="py-0.5 font-medium">Now</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(
+                    [
+                      ['receipts', 'Receipts received (net of refunds)'],
+                      ['openCharges', 'Charges still open'],
+                      ['paidExpenses', 'Costs paid']
+                    ] as const
+                  ).flatMap(([key, name]) =>
+                    (['JMD', 'USD'] as const).map(cur => (
+                      <tr key={`${key}-${cur}`}>
+                        <td className="py-0.5 pr-2">{name}, {cur}</td>
+                        <td className="py-0.5 pr-2 font-mono">{preview.totals!.file[key][cur].total.toLocaleString('en-US', { minimumFractionDigits: 2 })} ({preview.totals!.file[key][cur].count})</td>
+                        <td className="py-0.5 font-mono">{preview.totals!.current[key][cur].total.toLocaleString('en-US', { minimumFractionDigits: 2 })} ({preview.totals!.current[key][cur].count})</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {preview.signature && preview.signature !== 'valid' && (
+            <div className="space-y-2 rounded-lg border border-red-300 bg-red-50 p-3 text-red-900">
+              {(preview.warnings || []).map(w => (
+                <p key={w} className="font-semibold">{w}</p>
+              ))}
+              <label className="flex items-start gap-2">
+                <input type="checkbox" checked={acceptUnsigned} onChange={e => setAcceptUnsigned(e.target.checked)} className="mt-0.5" />
+                <span>I accept that this file could not be verified and want to restore it anyway.</span>
+              </label>
+              <label className="block">
+                <span className="font-semibold">Why (written to the audit trail)</span>
+                <input value={unsignedReason} onChange={e => setUnsignedReason(e.target.value)} className={`${inputClass} mt-1`} autoComplete="off" aria-label="Reason for restoring an unverified file" />
+              </label>
+            </div>
+          )}
           {preview.summary.staffNotRecreated.length > 0 && (
             <p>
               These staff are in the file but have no account here and are not recreated (the file cannot give them a
@@ -1458,7 +1518,7 @@ function RestorePanel({ backups, onError }: { backups: BackupRecord[]; onError: 
             />
           </label>
           <div className="flex flex-wrap gap-2">
-            <SubmitButton type="button" busy={busy} busyLabel="Restoring…" disabled={word.trim() !== 'RESTORE'} onClick={() => void restore()}>
+            <SubmitButton type="button" busy={busy} busyLabel="Restoring…" disabled={word.trim() !== 'RESTORE' || (!!preview.signature && preview.signature !== 'valid' && (!acceptUnsigned || unsignedReason.trim().length < 5))} onClick={() => void restore()}>
               Restore these records
             </SubmitButton>
             <SecondaryButton onClick={reset} disabled={busy}>

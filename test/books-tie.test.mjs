@@ -272,25 +272,32 @@ export default async function run({ projectRoot }) {
 
     const monthly = F.monthlyOwnersReport(units, charges, payments, expenses, 'JMD', '2026-10');
     const opStrata = F.operatingStatement(payments, expenses, units, 'JMD', ...OCT, { book: 'strata' });
+    /*
+     * Changed 2026-11-21 (owner's rule): a utility bill tied to a villa, and its recovery, is that villa owner's own
+     * cost and is not a common cost, so the Monthly Report leaves it out. The strata Operating Statement is the
+     * corporation's cash record and still carries it. The two differ by exactly the A5 electricity, net of the
+     * J$8,000 recovered (J$40,000 - J$8,000 = J$32,000), and by nothing else.
+     */
+    const A5_VILLA_UTILITY_NET = 32000;
     T.check(
-      'October: monthly report costs = strata Operating Statement expenditure',
-      monthly.costsPaid === opStrata.totalExpenditure,
-      `${monthly.costsPaid} vs ${opStrata.totalExpenditure}`
+      'October: monthly report costs = strata Operating Statement expenditure less the A5 villa utility (net J$32,000)',
+      monthly.costsPaid === opStrata.totalExpenditure - A5_VILLA_UTILITY_NET,
+      `${monthly.costsPaid} vs ${opStrata.totalExpenditure} - ${A5_VILLA_UTILITY_NET}`
     );
-    T.check('October: and the surplus is the same', monthly.surplus === opStrata.surplus, `${monthly.surplus} vs ${opStrata.surplus}`);
+    T.check('October: and the surplus differs by that same J$32,000', monthly.surplus === opStrata.surplus + A5_VILLA_UTILITY_NET, `${monthly.surplus} vs ${opStrata.surplus}`);
     T.check(
       'October: contributions = the Operating Statement’s contributions line',
       monthly.contributionsReceived === (opStrata.income.find(g => g.label === 'Maintenance contributions')?.total ?? 0),
       String(monthly.contributionsReceived)
     );
     T.check(
-      'the A5 electricity, net of the J$8,000 recovered, is counted, not called recharged',
-      monthly.categories.some(g => g.label === 'Utilities' && g.total === 32000),
+      'the A5 electricity and the J$8,000 recovered from it are not common costs: no Utilities line is left',
+      !monthly.categories.some(g => g.label === 'Utilities'),
       JSON.stringify(monthly.categories)
     );
     T.check(
-      'the villa share is stated inside the costs: A5 net J$32,000 + B7 J$7,800',
-      monthly.onIndividualVillas === 39800 && monthly.onIndividualVillasCount === 2,
+      'the villa share stated inside the costs is the B7 repair alone: J$7,800 over 1 item',
+      monthly.onIndividualVillas === 7800 && monthly.onIndividualVillasCount === 1,
       JSON.stringify([monthly.onIndividualVillas, monthly.onIndividualVillasCount])
     );
     T.check(

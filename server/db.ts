@@ -14,8 +14,8 @@
  */
 
 import fs from 'fs';
-import { AUDIT_CAP, AUDIT_KEY_FILE, auditKeyPath, sealAuditEntry } from './auditChain';
-import { checkIntegrity, FINGERPRINT_V2, ledgerFingerprint, legacyLedgerFingerprint, newBlockingFindings } from './integrity';
+import { AUDIT_KEY_FILE, auditKeyPath, commitAuditAnchor, copyAuditArchiveTo, rotateAuditLogs, sealAuditEntry, setPendingRotated, signSnapshot } from './auditChain';
+import { checkIntegrity, currentFingerprintFor, FINGERPRINT_V2, ledgerFingerprint, legacyLedgerFingerprint, newBlockingFindings } from './integrity';
 import path from 'path';
 import { isExternalWindowsDrive, queryWindowsDrives } from './windowsDrives';
 import {
@@ -52,6 +52,15 @@ export interface Session {
   lastSeenAt: string;
 }
 
+/** A browser a member of staff has signed in from. Stored by hash; see the sign-in throttle. */
+export interface KnownDevice {
+  /** SHA-256 of the random id held in the device cookie. */
+  id: string;
+  userId: string;
+  createdAt: string;
+  lastSeenAt: string;
+}
+
 export interface Database {
   schemaVersion: number;
   units: Unit[];
@@ -70,6 +79,8 @@ export interface Database {
   unitActivities: UnitActivity[];
   users: StoredUser[];
   sessions: Session[];
+  /** Browsers each member of staff has signed in from (absent in an older file). */
+  knownDevices?: KnownDevice[];
   counters: { receiptYear: number; receiptSeq: number };
   settings: AppSettings;
 }
@@ -595,6 +606,9 @@ function writeAtomic(db: Database) {
   }
   fs.renameSync(tmp, DB_FILE);
   fsyncDir(path.dirname(DB_FILE));
+  // After the books, never before: a crash between the two leaves the anchor one step BEHIND the trail, which
+  // the check accepts, where the other order would read as the newest entries having been deleted.
+  commitAuditAnchor(db.auditLogs);
 }
 
 /**
@@ -784,6 +798,12 @@ function pruneBackups(dir: string) {
 function backupPayload(): string {
   const snapshot = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
   snapshot.sessions = [];
+  // A browser's known-device record is a credential-adjacent detail, like a session: it has no restore value.
+  snapshot.knownDevices = [];
+  delete snapshot.snapshotSignature;
+  // Signed with the audit key, so a restore can tell this file from one somebody edited or made up.
+  const signature = signSnapshot(snapshot);
+  if (signature) snapshot.snapshotSignature = signature;
   return JSON.stringify(snapshot, null, 2);
 }
 
@@ -892,6 +912,8 @@ export function runDailyBackup(force = false): BackupRecord[] {
         fs.copyFileSync(keySource, keyCopy, fs.constants.COPYFILE_EXCL);
         try { fs.chmodSync(keyCopy, 0o600); } catch { /* Windows: permissions come from the folder */ }
       }
+      // The archive of audit entries that rotated out of db.json only grows: every backup folder keeps the latest.
+      copyAuditArchiveTo(dir);
       pruneBackups(dir);
       backupErrors.delete(location);
     } catch (err) {
@@ -1061,6 +1083,8 @@ export function getDb(): Database {
       if (f.startsWith(`${path.basename(DB_FILE)}.`) && f.endsWith('.tmp') && f !== `${path.basename(DB_FILE)}.${process.pid}.tmp`) {
         fs.unlinkSync(path.join(path.dirname(DB_FILE), f));
       }
+      // The same for a head-anchor write cut short (audit-head.json.<pid>.tmp).
+      if (/^audit-head\.json\.\d+\.tmp$/.test(f) && f !== `audit-head.json.${process.pid}.tmp`) fs.unlinkSync(path.join(path.dirname(DB_FILE), f));
     }
   } catch {
     // Housekeeping must never stop the property opening.
@@ -1125,7 +1149,11 @@ export function transaction<T>(fn: (db: Database) => T, opts: { skipGuard?: bool
   const run = queue.then(async () => {
     const committed = getDb();
     const working = structuredClone(committed);
+    setPendingRotated(0);
     const result = await fn(working);
+    // Old audit entries move to the archive file at commit time (not in addAudit), so a refused or failed
+    // request never archives anything. Nothing is removed unless the archive write succeeded.
+    setPendingRotated(rotateAuditLogs(working.auditLogs));
     // The books must not get worse. Compare what the integrity check finds in the
     // new state with what it found in the committed one, and refuse the write if
     // it introduced a serious contradiction that was not already there. Faults
@@ -1133,6 +1161,30 @@ export function transaction<T>(fn: (db: Database) => T, opts: { skipGuard?: bool
     // this morning is worse than one running on records with a known fault.
     const before = baselineReport(committed);
     const after = checkIntegrity(working);
+    /*
+     * The seal on a closed period is checked on EVERY write, against the stored fingerprint, not only
+     * through "new findings": a fault already present (after a restore, say) made later writes into the
+     * closed month look like nothing new. A write that moves money in a sealed month, so that the
+     * month no longer matches what was closed and differs from how it stood before this write, is refused.
+     * (A write that leaves the closed months as they were passes, so a known old fault does not stop the desk.)
+     */
+    const sealedThrough = working.settings?.closedThrough;
+    const sealed = working.settings?.closeFingerprint;
+    if (!opts.skipGuard && sealedThrough && sealed) {
+      const nowPrint = currentFingerprintFor(working, sealedThrough, sealed);
+      if (nowPrint !== sealed) {
+        const wasPrint =
+          committed.settings?.closedThrough === sealedThrough && committed.settings?.closeFingerprint === sealed
+            ? currentFingerprintFor(committed, sealedThrough, sealed)
+            : sealed;
+        if (nowPrint !== wasPrint) {
+          throw new IntegrityGuardError(
+            `That change was refused and nothing was saved: it would change money dated in or before ${sealedThrough}, a month that has been closed. ` +
+              'Reopen the period first, with a reason, to correct it.'
+          );
+        }
+      }
+    }
     const introduced = opts.skipGuard ? [] : newBlockingFindings(before, after);
     if (introduced.length > 0) {
       throw new IntegrityGuardError(
@@ -1187,9 +1239,9 @@ export function addAudit(
   // hand in db.json no longer verifies. checkIntegrity walks the chain.
   sealAuditEntry(entry, db.auditLogs);
   db.auditLogs.unshift(entry);
-  // The audit trail is append-only and unbounded by design; trim only the
-  // in-memory tail beyond a very high water mark to keep the file manageable.
-  if (db.auditLogs.length > AUDIT_CAP) db.auditLogs.length = AUDIT_CAP;
+  // Not trimmed here. Past AUDIT_CAP the oldest entries are moved to audit-archive.jsonl when the write is
+  // committed (rotateAuditLogs, called from transaction); they used to be dropped, which let anyone able to make
+  // enough requests push genuine history off the end.
 }
 
 /**

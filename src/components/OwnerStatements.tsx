@@ -20,7 +20,7 @@
  * actually held, so a proprietor's statement is never opened by a line reading
  * "nothing collected in the period" about rent nobody was collecting:
  *
- *     collected (when any) − contributions billed − utilities billed − amounts charged = net
+ *     contributions still owing − amounts charged to the villa = net (no utilities: owners settle their own)
  *
  * Every figure comes from the same finance helpers the ledger, the reports and the
  * projection use, so the two tabs cannot contradict each other. USD and JMD are
@@ -30,7 +30,7 @@
 
 import { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
-import { AppSettings, Charge, Currency, Expense, Payment, SessionUser, Unit, UtilityReading, getUnitDisplayName,
+import { AppSettings, Charge, Currency, Expense, Ownership, Payment, SessionUser, Unit, UtilityReading, getUnitDisplayName,
   bodyCorporateName
 } from '../types';
 import { OwnerStatement, OwnerStatementGroup, groupStatementsByOwner, ownerStatements } from '../lib/finance';
@@ -59,6 +59,8 @@ interface OwnerStatementsProps {
   expenses: Expense[];
   /** Metered utilities billed to a villa, which are charges the owner owes. */
   utilities: UtilityReading[];
+  /** Who owned each villa when, so a statement goes to the owner of its period. */
+  ownerships?: Ownership[];
   settings: AppSettings;
   session: SessionUser;
 }
@@ -135,7 +137,7 @@ function netLabel(net: number, owner?: string, unitNumber?: string): string {
   return `${direction} the owner`;
 }
 
-export default function OwnerStatements({ units, charges, payments, expenses, utilities, settings, session }: OwnerStatementsProps) {
+export default function OwnerStatements({ units, charges, payments, expenses, utilities, ownerships, settings, session }: OwnerStatementsProps) {
   const [preset, setPreset] = useRemembered<Preset>('owner-statements.preset', 'lastMonth');
   const [custom, setCustom] = useRemembered('owner-statements.custom', () => ({
     from: monthStart(addMonths(currentMonth(), -1)),
@@ -147,8 +149,8 @@ export default function OwnerStatements({ units, charges, payments, expenses, ut
   const invalidRange = to < from;
 
   const groups = useMemo(
-    () => (invalidRange ? [] : groupStatementsByOwner(ownerStatements(units, charges, payments, expenses, utilities, from, to))),
-    [units, charges, payments, expenses, utilities, from, to, invalidRange]
+    () => (invalidRange ? [] : groupStatementsByOwner(ownerStatements(units, charges, payments, expenses, utilities, from, to, ownerships))),
+    [units, charges, payments, expenses, utilities, ownerships, from, to, invalidRange]
   );
 
   const hasData = groups.length > 0;
@@ -176,7 +178,7 @@ export default function OwnerStatements({ units, charges, payments, expenses, ut
         generatedOn: formatDayLabel(today()),
         generatedBy: session.name,
         planNumber: settings.strataPlanNumber,
-        span: 9
+        span: 8
       }),
       [
         cell.header('Proprietor'),
@@ -184,7 +186,6 @@ export default function OwnerStatements({ units, charges, payments, expenses, ut
         cell.header('Currency'),
         cell.header('Contribution billed', 'right'),
         cell.header('Received in period', 'right'),
-        cell.header('Utilities billed', 'right'),
         cell.header('Charged to villa', 'right'),
         cell.header('Balance', 'right'),
         cell.header('Position')
@@ -199,7 +200,6 @@ export default function OwnerStatements({ units, charges, payments, expenses, ut
           cell.text(st.currency),
           cell.money(st.maintenanceBilled, st.currency),
           cell.money(st.maintenancePaid, st.currency),
-          cell.money(st.utilityBilled, st.currency),
           cell.money(st.expenses, st.currency),
           cell.money(st.net, st.currency),
           cell.text(netLabel(st.net, st.unit.ownerName, st.unit.number))
@@ -658,34 +658,6 @@ function StatementSection({ statement: s }: { statement: OwnerStatement }) {
                 ].filter(Boolean).join(', ').replace(/^./, ch => ch.toUpperCase()) + (s.maintenancePaid - s.maintenanceAppliedToEarlier > 0 || s.maintenancePaidInAdvance > 0 ? ', already deducted from the amount due below.' : '') + (s.maintenanceAppliedToEarlier > 0 ? ` ${formatMoney(s.maintenanceAppliedToEarlier, c)} received in this period was applied to earlier months and does not reduce this period.` : '') || undefined
               }
             />
-            {/*
-              Shown only when the corporation actually metered and billed this
-              villa — which for a proprietor it does not, because each owner's
-              supply is in their own name and settled directly with the utility.
-              Rendering it regardless would put "no utilities were billed to this
-              villa" on every proprietor's statement, about a bill that was never
-              the corporation's to raise.
-
-              It stays for the villas the corporation lets on its own account,
-              where it does meter the occupant and the figure is real.
-            */}
-            {s.utilityCharges.length > 0 && (
-            <LineGroup
-              title="Utilities billed to your villa"
-              rows={s.utilityCharges.map(u => ({
-                date: monthEnd(u.billingPeriod),
-                detail: `Utilities, ${formatMonthLabel(u.billingPeriod)}${u.meterNumber ? ` (meter ${u.meterNumber})` : ''}${
-                  u.consumption ? `, ${u.consumption} units` : ''
-                }`,
-                ref: u.status === 'paid' ? 'settled' : 'unpaid',
-                amount: u.amountCharged
-              }))}
-              total={s.utilityBilled}
-              currency={c}
-              tone="debit"
-              emptyLabel="No utilities were billed to this villa in the period."
-            />
-            )}
             <LineGroup
               title="Charged to your villa"
               rows={s.expenseItems.map(e => ({

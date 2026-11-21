@@ -858,6 +858,11 @@ export interface Payment {
    */
   derived?: boolean;
   /**
+   * Derived credits only: the day the levy this credit settles fell due. On a villa that changed hands the
+   * credit pays the proprietor who owed that levy, not whoever held the villa the day the rent arrived.
+   */
+  settlesDueDate?: string;
+  /**
    * Set when a hand-keyed Maintenance receipt on a let villa was moved into the
    * tenant's rent (restate-maintenance-receipts). Internal only: never printed.
    */
