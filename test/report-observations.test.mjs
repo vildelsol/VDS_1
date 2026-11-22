@@ -247,7 +247,9 @@ export default async function run({ projectRoot }) {
     T.check('strata book: a part-payment shows what is left of the charge', /Chase Proprietor 15, Villa Unit 15: October 2026 maintenance levy J\$15,000\.00 unpaid of J\$20,000\.00/.test(strata), strata);
     T.check('strata book: the gap headline is the sum of its lines', /J\$55,000\.00 unpaid on 3 villa/.test(strata), strata);
     T.check('strata book: no short stays and no empty-villa letting facts', !/short stay|stood empty/i.test(strata), strata);
-    T.check('strata book: the unrecovered utility bill names villa and amount', /Recover J\$4,500\.00 from Proprietor 13, Villa Unit 13/.test(strata), strata);
+    // Villa 13 is a proprietor's: its owner holds the utility account (Ro, 2026-11-22),
+    // so the reading is named as one to take back, never as a recovery owed to the strata.
+    T.check('strata book: a reading billing a proprietor’s villa is named to take back, with the amount', /1 meter reading\(s\) bill proprietors' villas for utilities, J\$4,500\.00/.test(strata) && !/Recover J\$4,500\.00 from Proprietor 13/.test(strata), strata);
     const strataUsd = flat(obs.observationsFor(input('strata', 'USD')));
     T.check('strata book USD: no guest names', !/Ann Guest|Bob Guest/.test(strataUsd), strataUsd);
 

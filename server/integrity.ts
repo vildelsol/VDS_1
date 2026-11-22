@@ -32,7 +32,7 @@
 
 import type { Database } from './db';
 import { createHash } from 'crypto';
-import { accountBalance, chargeCurrency, creditHeldForOthers, isOwnAccount, netPaidAsOf, settledFromRent } from '../src/lib/finance';
+import { accountBalance, chargeCurrency, creditHeldForOthers, fundForCost, isOwnAccount, isOwnAccountDuring, isProprietorsOwnUtility, netPaidAsOf, settledFromRent } from '../src/lib/finance';
 import { hasLevySchedule, isWellFormedFeeChange, levyForMonth, levySchedule } from '../src/lib/feeSchedule';
 import { AUDIT_CAP, AUDIT_KEY_FILE, auditRotationFailure, loadAuditKey, verifyAnchorAndArchive, verifyAuditChain } from './auditChain';
 import { bankItems } from '../src/lib/bankRec';
@@ -227,7 +227,11 @@ export function checkIntegrity(db: Database): IntegrityReport {
     const doubleBilled: string[] = [];
     for (const c of charges) {
       if (c.status !== 'open' || c.oneOffType || c.kind === 'advance-final-month') continue;
-      const key = `${c.unitId}|${c.category}|${c.periodMonth}`;
+      // In a same-month changeover the outgoing and incoming tenants each owe that
+      // month's rent on their own account: two payers, nobody asked twice. Rent is
+      // therefore keyed by payer as well; the levy stays one charge per villa-month.
+      const payer = c.category === 'Rent' ? `|${(c.payerName || '').trim().toLowerCase()}` : '';
+      const key = `${c.unitId}|${c.category}|${c.periodMonth}${payer}`;
       const already = billedKey.get(key);
       if (already) doubleBilled.push(`${key} (${already} and ${c.id})`);
       else billedKey.set(key, c.id);
@@ -437,6 +441,46 @@ export function checkIntegrity(db: Database): IntegrityReport {
       'A recorded cost has an amount that cannot be right.',
       // A negative amount is a supplier credit, recorded as a negative cost on purpose: only a non-number is impossible.
       expenses.filter(e => isBadNumber(e.amount)).map(e => `${e.id} (${e.amount})`)
+    );
+
+    /*
+     * Money on the wrong book (audit, 2026-11-22). The server refuses each of
+     * these at entry; anything found here came in before the rule or by a
+     * restore, and every figure that counts it is wrong until it is put right.
+     */
+    const villaOf = new Map(units.map(u => [u.id, u]));
+    add(
+      'warning',
+      'proprietor-utility-in-the-books',
+      "A utility bill or meter reading is recorded on a proprietor's villa. Proprietors hold their own utility accounts, so it is nobody's cost or debt in these books.",
+      [
+        ...expenses
+          .filter(e => e.status !== 'void' && isProprietorsOwnUtility(e.category, villaOf.get(e.unitId), e.date))
+          .map(e => `${e.id} (${e.unitNumber}, ${e.currency} ${e.amount})`),
+        ...utilities
+          .filter(u => isProprietorsOwnUtility('Utilities', villaOf.get(u.unitId), `${u.billingPeriod}-01`))
+          .map(u => `${u.id} (${u.unitNumber}, ${u.billingPeriod})`)
+      ]
+    );
+    add(
+      'warning',
+      'ispo-villa-utility-on-strata-book',
+      "A utility bill on one of ISPO's villas is on the corporation's book. It is ISPO's cost.",
+      expenses
+        .filter(e => e.status !== 'void' && fundForCost(e.category, villaOf.get(e.unitId), 'strata', e.date) === 'ispo' && (e.fund || 'strata') === 'strata')
+        .map(e => `${e.id} (${e.unitNumber}, ${e.currency} ${e.amount})`)
+    );
+    add(
+      'warning',
+      'rent-on-a-proprietors-villa',
+      "Rent or short-stay money is recorded on a villa that was never ISPO's. Proprietors collect their own; it is not the property's income.",
+      payments
+        .filter(p => (p.category === 'Rent' || p.category === 'Booking') && p.status !== 'reversed' && !p.derived)
+        .filter(p => {
+          const u = villaOf.get(p.unitId);
+          return !!u && !isOwnAccountDuring(u, '0000-01-01', p.date);
+        })
+        .map(p => `${p.receiptNo || p.id} (${p.unitNumber}, ${p.currency} ${p.amount})`)
     );
 
     /*

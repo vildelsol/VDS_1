@@ -191,6 +191,11 @@ export default async function run({ port, projectRoot }) {
     await audited('POST /api/utilities/:id/settle', 'settling a utility bill', M, () =>
       manager.post(`/api/utilities/${utId}/settle`, { method: 'Cash', payerName: 'Tenant One' })
     );
+    const ut2 = await manager.post('/api/utilities', { unitId: 'unit-3', type: 'Electricity', billingPeriod: month, amountCharged: 2000, currency: 'JMD', previousReading: 10, currentReading: 20 });
+    const ut2Id = ut2.body?.utility?.id || ut2.body?.reading?.id;
+    await audited('DELETE /api/utilities/:id', 'taking back a meter reading', M, () =>
+      manager.del(`/api/utilities/${ut2Id}`, { reason: 'Entered on the wrong villa' })
+    );
     const ex = await audited('POST /api/expenses', 'recording an expense', F, () =>
       finance.post('/api/expenses', { category: 'Landscaping', amount: 5000, currency: 'JMD', date: today, description: 'Gardening', vendor: 'A gardener' })
     );

@@ -30,7 +30,7 @@ const REQUIRES = {
   'POST /api/payments/:id/refund/reconcile': 'reconcile_bank', 'POST /api/expenses/:id/reconcile': 'reconcile_bank',
   'POST /api/tenancies/:id/deposit/reconcile': 'reconcile_bank', 'POST /api/bookings/:id/damage-deposit/reconcile': 'reconcile_bank',
   'POST /api/tenancies/:id/deposit-received/reconcile': 'reconcile_bank', 'POST /api/bookings/:id/damage-deposit-received/reconcile': 'reconcile_bank',
-  'POST /api/utilities': 'enter_utility', 'PUT /api/utilities/:id': 'enter_utility', 'POST /api/utilities/:id/settle': 'enter_utility',
+  'POST /api/utilities': 'enter_utility', 'PUT /api/utilities/:id': 'enter_utility', 'POST /api/utilities/:id/settle': 'enter_utility', 'DELETE /api/utilities/:id': 'enter_utility',
   'POST /api/expenses': 'record_expense', 'PUT /api/expenses/:id': 'record_expense', 'POST /api/expenses/:id/void': 'modify_settled', 'POST /api/expenses/recall-month': 'modify_settled',
   'POST /api/recurring-expenses': 'record_expense', 'PUT /api/recurring-expenses/:id': 'record_expense', 'DELETE /api/recurring-expenses/:id': 'record_expense',
   'PUT /api/annual-reports/:year': 'post_charges', 'POST /api/expenses/post-month': 'record_expense',

@@ -116,7 +116,9 @@ export default function BoardPack({
       const spent = expensesInPeriod(allCosts, currency, from, to);
 
       // Same opening/closing receivable construction as the operating statement.
-      const receivableAt = (asOf: string) => receivableAsOf(units, charges, payments, asOf, currency);
+      // On the consolidated books, like billed and the rate beside it: ISPO's own levy is owed by nobody
+      // outside, so it is not a receivable of the property (audit, 2026-11-22: J$140,000 too high).
+      const receivableAt = (asOf: string) => receivableAsOf(units, combined.charges, combined.payments, asOf, currency);
 
       const breakdown = categoriesWithSpend(expenseBreakdown(allCosts, currency, from, to));
 

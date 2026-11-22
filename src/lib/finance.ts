@@ -342,7 +342,7 @@ export function expensesInBook(expenses: Expense[], book: ReportBook): Expense[]
 
 /*
  * Every bill in the expense register is counted, on its own book (Ro, 2026-11-22).
- * Until then a guess (\`isContributionCountedFromReceipts\`) left out any ISPO
+ * Until then a guess (`isContributionCountedFromReceipts`) left out any ISPO
  * Maintenance row on an ISPO villa that named the levy and was a whole number of
  * it, in case ISPO's contribution had been typed in as a bill as well as receipted.
  * It never is: only supplier bills go in the register. The guess could only ever
@@ -419,6 +419,33 @@ export function ownAccountAsAt(units: Unit[], currency?: Currency): OwnAccountTe
     const u = byId.get(unitId);
     if (!u || (currency && (u.maintCurrency || u.currency) !== currency)) return false;
     return isOwnAccountOn(u, day);
+  };
+}
+
+/**
+ * Is this maintenance receipt ISPO paying its own levy?
+ *
+ * Asked of the receipt, not of its date. A villa sold on the 16th whose October
+ * levy ISPO pays on the 20th is ISPO's money moving to the corporation, though
+ * the villa is the buyer's by then: the receipt pays the seller's own levy
+ * (`paymentOwner`, the rule the ledger already allocates by). Reading it by date
+ * counted it as a proprietor's income on the combined book and left it off
+ * ISPO's statement (audit, 2026-11-22). Without dated ownership records on file
+ * (no change of hands), the villa's own day answers, exactly as before.
+ */
+export function ownLevyReceiptTest(units: Unit[], currency?: Currency, ownerships: Ownership[] = ownershipRegistry): (p: Payment) => boolean {
+  const byId = new Map(units.map(u => [u.id, u]));
+  return p => {
+    if (p.category !== 'Maintenance') return false;
+    const u = byId.get(p.unitId);
+    if (!u || (currency && (u.maintCurrency || u.currency) !== currency)) return false;
+    const day = p.derived && p.settlesDueDate ? p.settlesDueDate : p.date;
+    const records = ownershipRecordsFor(u, ownerships);
+    if (records.length === 0) return isOwnAccountOn(u, day);
+    const owner = paymentOwner(records, p);
+    // A day inside the payer's own period: the receipt's day, or their last day if they had sold by then.
+    const inPeriod = owner.endedOn && owner.endedOn <= day ? addDays(owner.endedOn, -1) : owner.startedOn && owner.startedOn > day ? owner.startedOn : day;
+    return isOwnAccountOn(u, inPeriod);
   };
 }
 
@@ -1002,7 +1029,8 @@ export function consolidateEverything(
    * from a real proprietor, hidden as an internal transfer. The rent pairing
    * above is what is about how a levy is settled.
    */
-  const keptPayments = payments.filter(p => !(p.category === 'Maintenance' && ownOn(p.unitId, p.date)));
+  const ownLevy = ownLevyReceiptTest(units);
+  const keptPayments = payments.filter(p => !ownLevy(p));
   return { charges: adjusted, payments: keptPayments, eliminatedCharges: eliminated };
 }
 
@@ -2862,12 +2890,23 @@ export function ownerStatement(
   from: string,
   to: string,
   /** What this proprietor still owes on the contribution account (dated ownership); default is the whole villa's. */
-  outstandingOverride?: number
+  outstandingOverride?: number,
+  /**
+   * On a villa that changed hands: whose levy receipts this statement carries, and up to when. A seller's
+   * payment after the sale is theirs (`paymentOwner`), so it belongs on the seller's statement, never the
+   * buyer's (audit, 2026-11-22).
+   */
+  levyReceipts?: { owns: (p: Payment) => boolean; to: string }
 ): OwnerStatement {
   const inPeriod = <T,>(rows: T[], dateOf: (row: T) => string) => rows.filter(r => isWithin(dateOf(r), from, to));
 
-  const unitPayments = paymentsForUnit(payments, unit, units).filter(p => p.status === 'completed' && p.currency === currency);
-  const paidIn = (category: PaymentCategory) => inPeriod(unitPayments.filter(p => p.category === category), p => p.date);
+  const unitPayments = paymentsForUnit(payments, unit, units).filter(
+    p => p.status === 'completed' && p.currency === currency && (!levyReceipts || p.category !== 'Maintenance' || levyReceipts.owns(p))
+  );
+  const paidIn = (category: PaymentCategory) =>
+    category === 'Maintenance' && levyReceipts
+      ? unitPayments.filter(p => p.category === category && isWithin(p.date, from, levyReceipts.to))
+      : inPeriod(unitPayments.filter(p => p.category === category), p => p.date);
   const total = (rows: { amount: number }[]) => sumMoney(rows.map(r => r.amount));
 
   /**
@@ -2879,7 +2918,7 @@ export function ownerStatement(
    * one error on a statement nobody catches until it is a shortfall.
    */
   const refundItems = unitPayments
-    .filter(p => p.refundedOn && isWithin(p.refundedOn, from, to))
+    .filter(p => p.refundedOn && isWithin(p.refundedOn, from, p.category === 'Maintenance' && levyReceipts ? levyReceipts.to : to))
     .sort((a, b) => (a.refundedOn || '').localeCompare(b.refundedOn || ''));
   const refundedIn = (category: PaymentCategory) =>
     sumMoney(refundItems.filter(p => p.category === category).map(p => refundedAsOf(p)));
@@ -3278,8 +3317,11 @@ function ownerStatementsFor(
           unit: { ...unit, ownerName: rec.ownerName, ownerEmail: rec.ownerEmail, ownerPhone: rec.ownerPhone }
         });
         if (segFrom <= segTo) {
-          const owed = maintenanceOutstandingFor(unit, units, charges, payments, currency, segTo, records, rec);
-          const statement = ownerStatement(unit, units, charges, payments, expenses, utilities, currency, segFrom, segTo, owed);
+          // A seller's own levy receipts up to the period end, and what they owe as at then: a payment they
+          // made after the sale settles their statement, not the buyer's.
+          const owed = maintenanceOutstandingFor(unit, units, charges, payments, currency, to, records, rec);
+          const levyReceipts = { owns: (p: Payment) => paymentOwner(records, p) === rec, to };
+          const statement = ownerStatement(unit, units, charges, payments, expenses, utilities, currency, segFrom, segTo, owed, levyReceipts);
           if (statement.active) out.push(asOwner(statement));
         } else if (lastDay && lastDay < from) {
           // Gone before the period began, but a debt run up in their time stays theirs.
@@ -4742,9 +4784,8 @@ export function operatingStatement(
    * levy twice beside a summary that counted it once (audit, 2026-11-18). Same
    * rule, same register, and the amount is named under "Not included" below.
    */
-  const ownVillasOn = ownAccountAsAt(units);
-  const isTransferBetweenBooks = (p: Payment): boolean =>
-    book === 'everything' && p.category === 'Maintenance' && ownVillasOn(p.unitId, p.date);
+  const ownLevyAny = ownLevyReceiptTest(units);
+  const isTransferBetweenBooks = (p: Payment): boolean => book === 'everything' && ownLevyAny(p);
   /*
    * Utility recoveries are not income on any book (Ro, 2026-11-18). They are a
    * pass-through, netted from the utility cost of the book that bore it, where
@@ -4754,7 +4795,7 @@ export function operatingStatement(
   const expenses = expensesInBook(withUtilityRecoveries(allExpenses, allPayments), book);
 
   /* The villas VDS lets on the corporation's own account, as at each receipt's day. */
-  const ownAccount = ownAccountAsAt(units, currency);
+  const ownLevy = ownLevyReceiptTest(units, currency);
 
   const incomeVisibility = (category: PaymentCategory): LineVisibility =>
     options.income?.[category] ?? options.defaultIncome ?? 'itemised';
@@ -4911,7 +4952,7 @@ export function operatingStatement(
    * the same money on every book.
    */
   const internalTransfer = netReceivedInPeriod(
-    allPayments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownAccount(p.unitId, p.date)),
+    allPayments.filter(p => p.currency === currency && ownLevy(p)),
     start,
     end
   );
@@ -5122,7 +5163,6 @@ export function ispoOperations(
   // villa it let in November (Ro, 2026-11-20).
   const ownAccountUnits = units.filter(u => isOwnAccountDuring(u, start, end));
   const inThisCurrency = ownAccountUnits.filter(u => (u.maintCurrency || u.currency) === currency);
-  const ownIds = ownAccountAsAt(units, currency);
 
   const ownCosts = paid;
 
@@ -5151,7 +5191,7 @@ export function ispoOperations(
    * than a converted figure — the rule the whole application keeps.
    */
   const maintenanceOnOwnVillas = netReceivedInPeriod(
-    payments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownIds(p.unitId, p.date)),
+    payments.filter(p => p.currency === currency && ownLevyReceiptTest(units, currency)(p)),
     start,
     end
   );

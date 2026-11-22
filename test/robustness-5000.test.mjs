@@ -221,7 +221,9 @@ export default async function run({ port, projectRoot }) {
       const seen = new Map();
       for (const ch of db.charges) {
         if (ch.status !== 'open' || ch.kind || ch.oneOffType) continue;
-        const key = `${ch.unitId}|${ch.category}|${ch.periodMonth}`;
+        // Same rule as server/integrity.ts: two tenants in a changeover month each owe their own rent.
+        const payer = ch.category === 'Rent' ? `|${(ch.payerName || '').trim().toLowerCase()}` : '';
+        const key = `${ch.unitId}|${ch.category}|${ch.periodMonth}${payer}`;
         if (seen.has(key)) breach('month-billed-twice', `${at}: ${key} as ${seen.get(key)} and ${ch.id}`);
         else seen.set(key, ch.id);
       }

@@ -43,6 +43,9 @@ import {
   ownLevyArrears,
   expensesForBook,
   isOwnAccount,
+  isOwnAccountDuring,
+  ownAccountAsAt,
+  ownLevyReceiptTest,
   isProprietorsOwnUtility,
   recoveryFundFor,
   isUtilityRecoveryRow,
@@ -320,19 +323,22 @@ export interface LevyPosition {
  */
 export function ispoLevyPosition(input: Pick<ObservationInput, 'units' | 'tenancies' | 'charges' | 'payments' | 'currency' | 'from' | 'to'>): LevyPosition {
   const { units, tenancies, charges, payments, currency, from, to } = input;
-  const own = units.filter(isOwnAccount);
+  // The villas ISPO owned at any time in the period, and only the months it owned them (audit, 2026-11-22):
+  // today's status dropped a villa sold mid-period from the months ISPO still held it.
+  const own = units.filter(u => isOwnAccountDuring(u, from, to));
+  const ownOn = ownAccountAsAt(units, currency);
   const rows: LevyRow[] = [];
   for (const unit of own) {
     const maint = accountBalance(unit, 'Maintenance', charges, payments, to, units);
     if (maint.currency !== currency) continue;
     const inPeriod = charges.filter(
-      c => c.unitId === unit.id && c.category === 'Maintenance' && c.status === 'open' && c.currency === currency && isWithin(c.dueDate, from, to)
+      c => c.unitId === unit.id && c.category === 'Maintenance' && c.status === 'open' && c.currency === currency && isWithin(c.dueDate, from, to) && ownOn(unit.id, c.dueDate)
     );
     if (inPeriod.length === 0) continue;
     const billed = sumMoney(inPeriod.map(c => c.amount));
     const unpaidBy = new Map<string, number>();
     maint.unpaidCharges.forEach((c, i) => {
-      if (!isWithin(c.dueDate, from, to)) return;
+      if (!isWithin(c.dueDate, from, to) || !ownOn(unit.id, c.dueDate)) return;
       const owed = unpaidOwedAt(maint, i);
       if (owed > 0) unpaidBy.set(c.periodMonth, sumMoney([unpaidBy.get(c.periodMonth) || 0, owed]));
     });
@@ -376,9 +382,9 @@ export function ispoLevyPosition(input: Pick<ObservationInput, 'units' | 'tenanc
     });
     rows.push({ unit, billed, settled: round2(billed - unpaid), unpaid, months });
   }
-  const ownIds = new Set(own.map(u => u.id));
+  const ownLevy = ownLevyReceiptTest(units, currency);
   const paid = netReceivedInPeriod(
-    payments.filter(p => p.currency === currency && p.category === 'Maintenance' && ownIds.has(p.unitId)),
+    payments.filter(p => p.currency === currency && ownLevy(p)),
     from,
     to
   );
@@ -619,7 +625,8 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
       .filter(t => (t.depositAmount || 0) > 0 && (t.depositCurrency || t.currency) === c && heldAt(t.depositReceivedOn, t.depositReturnedOn))
       .map(t => ({ t, unit: unitOfId.get(t.unitId), owed: owedRentBy(t) }));
     const guestRows = bookings.filter(
-      b => b.status !== 'cancelled' && (b.damageDepositAmount || 0) > 0 && (b.damageDepositCurrency || b.currency) === c && heldAt(b.damageDepositReceivedOn, b.damageDepositReturnedOn)
+      // A cancelled stay's deposit is still held until it is given back (audit, 2026-11-22).
+      b => (b.damageDepositAmount || 0) > 0 && (b.damageDepositCurrency || b.currency) === c && heldAt(b.damageDepositReceivedOn, b.damageDepositReturnedOn)
     );
     const held = sumMoney([...tenancyRows.map(r => r.t.depositAmount!), ...guestRows.map(b => b.damageDepositAmount!)]);
     if (held > 0) {
@@ -970,6 +977,8 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
         u.status === 'unpaid' &&
         u.currency === c &&
         u.billingPeriod <= to.substring(0, 7) &&
+        // Nobody owes a reading on a proprietor's villa: it is listed under item 9 to be taken back.
+        !isProprietorsOwnUtility('Utilities', unitOf.get(u.unitId), `${u.billingPeriod}-01`) &&
         (book === 'everything' || recoveryFundFor(unitOf.get(u.unitId), `${u.billingPeriod}-01`) === book)
     );
     if (open.length > 0) {
@@ -1009,7 +1018,7 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
     say({
       rank: URGENT,
       atRisk: sumMoney(strayReadings.map(u => u.amountCharged)),
-      text: `${c}: ${strayReadings.length} meter reading(s) bill proprietors' villas for utilities, ${m(sumMoney(strayReadings.map(u => u.amountCharged)), c)}. Owners hold their own utility accounts: delete each one, or refund it if it was paid.`,
+      text: `${c}: ${strayReadings.length} meter reading(s) bill proprietors' villas for utilities, ${m(sumMoney(strayReadings.map(u => u.amountCharged)), c)}. Owners hold their own utility accounts: take each unpaid one back, or refund the receipt if it was paid.`,
       details: strayReadings
         .sort((a, b) => a.billingPeriod.localeCompare(b.billingPeriod))
         .map(u => `${villa(unitById.get(u.unitId) || { number: u.unitNumber })}: ${m(u.amountCharged, c)} for ${formatMonthLabel(u.billingPeriod)}, ${u.status}.`)

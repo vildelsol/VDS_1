@@ -122,7 +122,8 @@ const COUNCIL_PRESET: OperatingStatementOptions = {
 
 export default function OperatingStatement({ units, payments, expenses, book, settings, session }: Props) {
   const [printing, setPrinting] = useState(false);
-  const [incomeVis, setIncomeVis] = useState<Partial<Record<PaymentCategory, LineVisibility>>>(COUNCIL_PRESET.income || {});
+  // The council preset is the corporation's view; on ISPO's book it hid booking income and showed a false deficit.
+  const [incomeVis, setIncomeVis] = useState<Partial<Record<PaymentCategory, LineVisibility>>>(book === 'strata' ? COUNCIL_PRESET.income || {} : {});
   const [expenditureVis, setExpenditureVis] = useState<Record<string, LineVisibility>>({});
   const [showChooser, setShowChooser] = useState(false);
   const [preset, setPreset] = useRemembered<Preset>('reports.operating.preset', 'lastMonth');

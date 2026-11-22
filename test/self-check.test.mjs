@@ -245,6 +245,22 @@ export default async function run({ port, projectRoot }) {
       'month-billed-twice',
       'the same month billed twice on one account'
     );
+    {
+      // A same-month changeover: outgoing and incoming tenant each owe that month's
+      // rent on their own account. Two payers is not one person billed twice.
+      const db = healthyDb();
+      db.charges[0].payerName = 'Outgoing Tenant';
+      db.charges.push({ ...db.charges[0], id: 'chg-2', payerName: 'Incoming Tenant' });
+      T.check('a changeover month billed to two different tenants is not called billed twice', !codesFrom(checkIntegrity(db)).includes('month-billed-twice'), JSON.stringify(codesFrom(checkIntegrity(db))));
+      broken(
+        d => {
+          d.charges[0].payerName = 'Outgoing Tenant';
+          d.charges.push({ ...d.charges[0], id: 'chg-2', payerName: ' outgoing tenant ' });
+        },
+        'month-billed-twice',
+        'the same tenant billed the same month twice, however the name is spaced or cased'
+      );
+    }
     broken(db => (db.charges[0].amount = -1), 'impossible-charge-amount', 'a charge for a negative amount');
     broken(db => db.charges.push({ ...db.charges[0] }), 'duplicate-charge-id', 'two charges sharing an id');
 

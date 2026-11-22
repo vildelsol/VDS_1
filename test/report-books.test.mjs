@@ -163,16 +163,22 @@ export default async function run({ port, projectRoot }) {
       date: `${month}-06`
     });
 
-    const UTILITY_RECOVERED = 4000;
-    await recordAndConfirmPayment(c, {
+    /*
+     * A proprietor holds its own utility accounts (Ro, 2026-11-22), so a utility
+     * receipt on a proprietor's villa is refused and reaches no book. Recoveries
+     * on ISPO's villas are covered by feat-utility-recoveries.
+     */
+    const strayRecovery = await c.post('/api/payments', {
       unitId: 'unit-2',
       category: 'Utility',
-      amount: UTILITY_RECOVERED,
+      amount: 4000,
       currency: 'JMD',
       payerName: 'A Proprietor',
       method: 'Cash',
       date: `${month}-07`
     });
+    T.check('a utility receipt on a proprietor’s villa is refused', strayRecovery.status === 400, `${strayRecovery.status} ${JSON.stringify(strayRecovery.body).slice(0, 200)}`);
+    const UTILITY_RECOVERED = 0;
 
     /* ---------------- the costs ---------------- */
 

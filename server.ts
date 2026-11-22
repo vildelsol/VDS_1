@@ -67,7 +67,7 @@ import { currencyMarker, formatMoneyLong, hasExtraDecimals, parseMoneyInput, rou
 import { cleanText, nameKey } from './src/lib/text';
 import { dayOfTimestamp, formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
 import { stayMoney, stayPhase } from './src/lib/stays';
-import { accountBalance, bookingsOverlap, fundForCost, isProprietorsOwnUtility, PROPRIETOR_UTILITY_REFUSAL, PROPRIETOR_UTILITY_READING_REFUSAL, isOwnAccount, recoveryFundFor, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
+import { accountBalance, bookingsOverlap, isOwnAccountDuring, isOwnAccountOn, fundForCost, isProprietorsOwnUtility, PROPRIETOR_UTILITY_REFUSAL, PROPRIETOR_UTILITY_READING_REFUSAL, isOwnAccount, recoveryFundFor, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
 import { billingBacklog, monthsToPost } from './src/lib/billingCalendar';
 import { FEE_CODES, FEE_MAX, levyChangeInForce, levyForMonth, monthsAffectedBy } from './src/lib/feeSchedule';
 import {
@@ -1944,6 +1944,38 @@ app.post(
 
 const sameName = (a: string, b: string) => nameKey(a) === nameKey(b);
 
+/**
+ * Receipts that can never be a villa's (audit, 2026-11-22).
+ *
+ * Rent and short-stay money is ISPO's alone: proprietors take care of their own
+ * tenants. A villa that was never ISPO's up to the receipt's day takes neither,
+ * whatever override is ticked; a villa ISPO has since sold still takes a former
+ * tenant's arrears. A utility receipt on a proprietor's villa is refused for the
+ * same reason the bill is: owners hold their own utility accounts.
+ */
+function refuseMisplacedReceipt(db: Database, unit: Unit, category: PaymentCategory, day: string, utilityId?: string): void {
+  if ((category === 'Rent' || category === 'Booking') && !isOwnAccountDuring(unit, '0000-01-01', day)) {
+    bad(
+      `Villa ${unit.number} is a proprietor's own villa, so rent and short-stay money is never the property's: ` +
+        'the proprietor collects their own. Record it on the villa it belongs to.'
+    );
+  }
+  if (category === 'Utility' && isProprietorsOwnUtility('Utilities', unit, utilityRecoveryDay(db, { utilityId, date: day }))) {
+    bad(PROPRIETOR_UTILITY_READING_REFUSAL);
+  }
+}
+
+/**
+ * The day a utility recovery's book is read at: the month of the reading it
+ * settles, when it settles one. ISPO bore the bill for the month it billed, so a
+ * villa sold before the reading was settled keeps the recovery on ISPO's book
+ * (audit, 2026-11-22: J$4,000 had landed on strata's).
+ */
+function utilityRecoveryDay(db: Database, p: { utilityId?: string; date: string }): string {
+  const reading = p.utilityId ? db.utilities.find(u => u.id === p.utilityId) : undefined;
+  return reading ? `${reading.billingPeriod}-01` : p.date;
+}
+
 function activeTenancy(db: Database, unitId: string): Tenancy | undefined {
   return db.tenancies.find(t => t.unitId === unitId && t.status === 'active');
 }
@@ -2014,13 +2046,29 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
    * tenancy so closing it still spends the right charge. Nothing is raised twice
    * and nothing is orphaned.
    */
+  /*
+   * A charge another real tenancy on the villa owns is never adopted. In a
+   * same-month changeover the outgoing tenant's paid month and advance used to be
+   * re-payered to the incoming tenant and nothing new was billed: J$190,000 of the
+   * new tenant's first and last month went unbilled while the account read 0
+   * (audit, 2026-11-22). Only a charge nobody else holds is carried over.
+   */
+  const ownedByAnother = (c: Charge): boolean =>
+    db.tenancies.some(
+      t =>
+        t.id !== tenancy.id &&
+        t.unitId === unit.id &&
+        t.endReason !== 'Recorded in error, this tenancy did not happen.' &&
+        (t.advanceRentChargeId === c.id || (sameName(t.tenantName, c.payerName || '') && !sameName(t.tenantName, tenancy.tenantName)))
+    );
   const existingFirst = db.charges.find(
     c =>
       c.unitId === unit.id &&
       c.category === 'Rent' &&
       c.periodMonth === month &&
       c.status === 'open' &&
-      c.kind !== 'advance-final-month'
+      c.kind !== 'advance-final-month' &&
+      !ownedByAnother(c)
   );
   const existingAdvance = db.charges.find(
     c =>
@@ -2028,7 +2076,8 @@ function raiseFirstAndLastRent(db: Database, tenancy: Tenancy, staffName: string
       c.category === 'Rent' &&
       c.periodMonth === month &&
       c.status === 'open' &&
-      c.kind === 'advance-final-month'
+      c.kind === 'advance-final-month' &&
+      !ownedByAnother(c)
   );
 
   if (existingFirst && existingFirst.payerName !== tenancy.tenantName) {
@@ -3199,6 +3248,9 @@ app.post(
       const returned = optionalAmount(explicitAmount(body.returnedAmount, 'The amount returned'), 'The amount returned', 0);
       const settledOn = requireDay(body.settledOn || today(), 'Date settled');
       if (settledOn > today()) bad('A deposit cannot be settled in the future.');
+      if (record.depositReceivedOn && settledOn < record.depositReceivedOn) {
+        bad(`The deposit was received on ${record.depositReceivedOn}; it cannot be settled before that.`);
+      }
 
       if (round2(withheld + returned) !== round2(record.depositAmount)) {
         bad(
@@ -4967,7 +5019,7 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
       ? undefined
       : optionalAmount(nightlyRateRaw, 'The nightly rate', 0);
 
-  return {
+  const fields = {
     checkIn,
     checkOut,
     currency,
@@ -4986,6 +5038,12 @@ function readBookingFields(body: Record<string, unknown>, unit: Unit, existing?:
     status: requireEnum(body.status ?? existing?.status ?? 'confirmed', ['confirmed', 'checked-in', 'checked-out', 'cancelled'] as const, 'Booking status'),
     notes: optionalString(body.notes ?? existing?.notes, 2000, 'Notes', true)
   };
+  // Closed dates are not a guest: no stay value and no deposit, so no receipt (audit, 2026-11-22:
+  // a US$500 "deposit" on blocked dates became ISPO booking income).
+  if ((fields.source === 'Blocked' || fields.source === 'Unavailable') && (round2(fields.amount || 0) > 0 || round2(fields.depositPaid || 0) > 0)) {
+    bad('Blocked or unavailable dates are not a stay: they carry no value and no deposit. Record a guest reservation instead.');
+  }
+  return fields;
 }
 
 const depositGate = (req: AuthedRequest, db: Database, body: unknown): DepositGate => (kind, receiptNo) => {
@@ -5158,6 +5216,12 @@ app.put(
       const pendingOnStay = db.payments.some(p => p.status === 'pending' && (p.bookingId === id || p.forBookingId === id));
       if (fields.complimentary && !original.complimentary && (stayMoney(original, db.payments).received > 0 || pendingOnStay)) bad(COMP_HAS_RECEIPTS);
       const updated: Booking = { ...original, unitId: unit.id, unitNumber: unit.number, ...fields, complimentaryBy: complimentaryBy(fields, who.name, original) };
+      if (cancelling && (original.damageDepositAmount || 0) > 0 && !original.damageDepositReturnedOn) {
+        bad(
+          `A ${original.damageDepositCurrency || original.currency} ${original.damageDepositAmount} damage deposit is held for this stay. ` +
+            'Settle it (return it to the guest) first, so the money held is accounted for, then cancel.'
+        );
+      }
       if (updated.status === 'cancelled') decideCancelledDeposit(db, req, body, updated, editReason);
       db.bookings[idx] = updated;
       syncBookingDepositReceipt(db, updated, who.name, who.role, depositGate(req, db, body));
@@ -5208,9 +5272,24 @@ app.post(
       const amount = requirePositiveAmount(body.amount, 'Damage deposit amount');
       const receivedOn = requireDay(body.receivedOn || today(), 'Date received');
       if (receivedOn > today()) bad('A damage deposit cannot be dated in the future.');
+      // Held money is never overwritten in silence, and is held only on a real, paying stay in its own
+      // currency (audit, 2026-11-22: a second post replaced US$500 with US$50 with no trace of why).
+      if (record.damageDepositAmount && round2(record.damageDepositAmount) > 0) {
+        if (body.replace !== true) {
+          throw new ApiError(409, `A ${record.damageDepositCurrency} ${record.damageDepositAmount} damage deposit is already held for this stay. Correct it explicitly, with a reason.`);
+        }
+        const why = requireString(body.reason, 'A reason for correcting the deposit', REASON_MAX);
+        if (why.length < 5) bad('Give a reason of at least 5 characters. It is stored permanently.');
+      }
+      if (record.status === 'cancelled') bad('This stay is cancelled; no deposit can be taken on it.');
+      if (record.complimentary) bad('A complimentary stay takes no money, deposits included.');
+      const depositCurrency = requireCurrency(body.currency ?? record.currency ?? 'JMD');
+      if (record.currency && depositCurrency !== record.currency) {
+        bad(`This stay is booked in ${record.currency}; take its damage deposit in ${record.currency}.`);
+      }
 
       record.damageDepositAmount = amount;
-      record.damageDepositCurrency = requireCurrency(body.currency ?? record.currency ?? 'JMD');
+      record.damageDepositCurrency = depositCurrency;
       record.damageDepositReceivedOn = receivedOn;
 
       const who = actor(req);
@@ -5264,6 +5343,9 @@ app.post(
       const returned = optionalAmount(explicitAmount(body.returnedAmount, 'The amount returned'), 'The amount returned', 0);
       const settledOn = requireDay(body.settledOn || today(), 'Date settled');
       if (settledOn > today()) bad('A damage deposit cannot be settled in the future.');
+      if (record.damageDepositReceivedOn && settledOn < record.damageDepositReceivedOn) {
+        bad(`The deposit was received on ${record.damageDepositReceivedOn}; it cannot be settled before that.`);
+      }
 
       if (round2(withheld + returned) !== round2(held)) {
         bad(
@@ -5598,6 +5680,7 @@ app.post(
       const date = requireDay(body.date || today(), 'Payment date');
       if (date > today()) bad('A payment cannot be dated in the future.');
       const method = requireEnum(body.method, PAYMENT_METHODS, 'Payment method') as PaymentMethod;
+      refuseMisplacedReceipt(db, unit, category, date);
 
       // Warn loudly rather than quietly mis-filing money in the wrong currency.
       if (category === 'Rent' || category === 'Maintenance') {
@@ -5706,7 +5789,7 @@ app.post(
         ...(body.forBookingId ? { forBookingId: requireString(body.forBookingId, 'The reservation', 120) } : {}),
         ...(receivedNow ? { receivedBy: who.name, receivedAt: new Date().toISOString() } : {})
       };
-      if (receivedNow && created.category === 'Utility') created.recoveryFund = recoveryFundFor(unit, created.date);
+      if (receivedNow && created.category === 'Utility') created.recoveryFund = recoveryFundFor(unit, utilityRecoveryDay(db, created));
       assertStayLink(db, created, true);
       db.payments.push(created);
       addAudit(
@@ -5810,10 +5893,11 @@ app.put(
       };
       if (updated.date > today()) bad('A payment cannot be dated in the future.');
       assertMarkerMatches(body.amount, updated.currency, 'The payment amount');
+      refuseMisplacedReceipt(db, unit, updated.category, updated.date, updated.utilityId);
       // Moved onto another villa, or into or out of Utility: the recovery's book is decided again, for the villa it is now on.
       if (updated.category !== 'Utility') delete updated.recoveryFund;
       else if (updated.status === 'completed' && (updated.unitId !== original.unitId || original.category !== 'Utility')) {
-        updated.recoveryFund = recoveryFundFor(unit, updated.date);
+        updated.recoveryFund = recoveryFundFor(unit, utilityRecoveryDay(db, updated));
       }
       // Linking (or unlinking) a receipt to the stay it paid toward, and keeping
       // an existing link true if the villa, currency or category is corrected.
@@ -6091,7 +6175,9 @@ app.post(
       if (body.reference !== undefined) target.reference = optionalString(body.reference, 120, 'Reference');
 
       // A utility recovery's book is decided now, from the villa, and kept.
-      if (target.category === 'Utility') target.recoveryFund = recoveryFundFor(db.units.find(u => u.id === target.unitId), target.date);
+      const targetVilla = db.units.find(u => u.id === target.unitId);
+      if (targetVilla) refuseMisplacedReceipt(db, targetVilla, target.category, target.date, target.utilityId);
+      if (target.category === 'Utility') target.recoveryFund = recoveryFundFor(targetVilla, utilityRecoveryDay(db, target));
 
       // A utility bill is only settled once its payment is confirmed.
       if (target.utilityId) {
@@ -6945,6 +7031,37 @@ app.put(
  * never appeared in the receipts ledger, the dashboard or any report. Settling
  * now issues a real receipt, which is what makes the figure reconcilable.
  */
+/**
+ * Take back an unpaid meter reading entered in error (audit, 2026-11-22).
+ *
+ * Only one nobody has paid: no receipt, live or awaiting confirmation, and not in
+ * a closed month. It holds no money, so removing it changes no figure; the whole
+ * record is kept in the audit trail with the reason. A paid one is corrected by
+ * refunding its receipt instead.
+ */
+app.delete(
+  '/api/utilities/:id',
+  handler(async (req: AuthedRequest, res) => {
+    requirePermission(req, 'enter_utility');
+    const { id } = req.params;
+    const reason = requireString((req.body || {}).reason, 'A reason for taking the reading back', REASON_MAX);
+    if (reason.length < 5) bad('Give a reason of at least 5 characters. It is stored permanently.');
+    await transaction(db => {
+      const idx = db.utilities.findIndex(u => u.id === id);
+      if (idx === -1) throw new ApiError(404, 'Utility record not found.');
+      const reading = db.utilities[idx];
+      refuseClosedMonth(db, `${reading.billingPeriod}-01`, `The utility bill for ${reading.billingPeriod}`);
+      if (reading.status === 'paid' || db.payments.some(p => p.utilityId === reading.id && p.status !== 'reversed')) {
+        throw new ApiError(409, 'This utility bill has a receipt against it. Reverse or refund the receipt instead; money that came in is not removed by deleting the bill.');
+      }
+      db.utilities.splice(idx, 1);
+      const who = actor(req);
+      addAudit(db, who.name, who.role, `Took back the utility reading for ${reading.unitNumber} (${reading.billingPeriod}): ${reason}`, 'Utility', reading.id, reading, '');
+    });
+    res.json({ success: true });
+  })
+);
+
 app.post(
   '/api/utilities/:id/settle',
   handler(async (req: AuthedRequest, res) => {
@@ -7320,6 +7437,9 @@ app.post(
 
       const settled = candidates.filter(e => e.status === 'paid');
       for (const e of settled) refuseClosedMonth(db, expenseMoneyDay(e), `The cost to ${e.vendor}`);
+      // An unpaid cost in a closed month is part of that month's "unpaid at month end" too: the single
+      // void already refused it, and the recall voided it anyway (audit, 2026-11-22).
+      for (const e of candidates) refuseClosedMonth(db, pendingCostDay(e), `The unpaid cost to ${e.vendor}`);
       if (settled.length > 0 && body.includeSettled !== true) {
         throw new ApiError(
           400,
@@ -7936,6 +8056,14 @@ app.put(
           throw new ApiError(400, 'Enter what the work cost before raising the expense for it.');
         }
         const spentOn = activity.completedOn || today();
+        // The same rules as the expense form (audit, 2026-11-22): no paid cost on a day that has not
+        // happened, none in a closed month, and a job on one of ISPO's villas is ISPO's cost unless the
+        // book is chosen. It used to land on the corporation's book with no fund at all.
+        if (spentOn > today()) bad('A cost cannot be recorded as paid on a day that has not happened yet. Complete the job on or before today.');
+        refuseClosedMonth(db, spentOn, 'The cost of this job');
+        const jobVilla = db.units.find(u => u.id === activity.unitId);
+        const fund: ExpenseFund =
+          body.fund === 'strata' || body.fund === 'ispo' ? body.fund : jobVilla && isOwnAccountOn(jobVilla, spentOn) ? 'ispo' : 'strata';
         const raised: Expense = {
           id: uniqueRecordId(db.expenses, `ex-work-${activity.id}`),
           category: 'Maintenance',
@@ -7950,6 +8078,7 @@ app.put(
           datePaid: spentOn,
           paymentMethod: 'Bank Transfer',
           status: 'paid',
+          fund,
           reference: '',
           notes: activity.outcome || ''
         };
