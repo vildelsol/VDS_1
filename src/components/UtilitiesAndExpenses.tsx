@@ -26,7 +26,7 @@ import {
   invoiceDateOf,
   getUnitDisplayName
 } from '../types';
-import { UTILITY_RECOVERY_NOTE, fundForCost, utilitiesForUnit, utilityRecoveries } from '../lib/finance';
+import { PROPRIETOR_UTILITY_REFUSAL, UTILITY_RECOVERY_NOTE, fundForCost, isProprietorsOwnUtility, utilitiesForUnit, utilityRecoveries } from '../lib/finance';
 import { formatMoney, formatMoneyLong, sumMoney } from '../lib/money';
 import { dayOfTimestamp, addMonths, currentMonth, formatDayLabel, formatMonthLabel, isValidMonth, today } from '../lib/dates';
 import { errorMessage } from '../lib/api';
@@ -1118,12 +1118,14 @@ function ExpenseForm({
    * server applies the same rule, so the choice shown is the choice saved.
    */
   const allocatedUnit = units.find(u => u.id === allocation);
-  const effectiveFund = fundForCost(category, allocatedUnit, fund);
+  const effectiveFund = fundForCost(category, allocatedUnit, fund, date);
   const fundForced = effectiveFund !== fund;
+  // Proprietors pay their own utility accounts (Ro, 2026-11-22); the server refuses these.
+  const ownersUtility = isProprietorsOwnUtility(category, allocatedUnit, date);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy || locked) return;
+    if (busy || locked || ownersUtility) return;
     setBusy(true);
     setError('');
     try {
@@ -1160,7 +1162,7 @@ function ExpenseForm({
       maxWidthClass="max-w-lg"
       footer={
         <div className="flex gap-3">
-          <SubmitButton busy={busy} busyLabel="Saving…" form="vds-expense-form" disabled={locked} className="flex-1">
+          <SubmitButton busy={busy} busyLabel="Saving…" form="vds-expense-form" disabled={locked || ownersUtility} className="flex-1">
             {expense ? 'Save expense' : 'Record expense'}
           </SubmitButton>
           <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
@@ -1202,6 +1204,11 @@ function ExpenseForm({
         {fundForced && (
           <p className="-mt-2 text-xs text-slate-500">
             A utility on one of {MANAGING_COMPANY_NAME}&rsquo;s villas is paid from rental income, so this is on {MANAGING_COMPANY_NAME}&rsquo;s book.
+          </p>
+        )}
+        {ownersUtility && (
+          <p role="alert" className="-mt-2 text-xs font-medium text-red-700">
+            {PROPRIETOR_UTILITY_REFUSAL}
           </p>
         )}
 

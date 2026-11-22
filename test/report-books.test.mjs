@@ -380,14 +380,13 @@ export default async function run({ port, projectRoot }) {
     );
 
     /* ================================================================
-     * Rule 7 — a contribution typed into the cost register too
+     * Rule 7 — every bill in the register is counted, whatever it is named
      * ================================================================ */
 
     /*
-     * The one shape that would be the same money twice on ISPO's books: the
-     * contribution is already counted from its receipt, so a cost row for it as
-     * well must not be added. It is named on the statement rather than dropped,
-     * which is this codebase's standing rule.
+     * Only supplier bills go in the register (Ro, 2026-11-22), so nothing guesses
+     * at a contribution there: a bill that names the strata plan and equals one
+     * levy is still a bill, and is counted.
      */
     await c.post('/api/expenses', {
       category: 'Maintenance',
@@ -406,15 +405,11 @@ export default async function run({ port, projectRoot }) {
     const ispo2 = operatingStatement(db2.payments, db2.expenses, db2.units, 'JMD', from, to, { book: 'ispo' });
 
     T.check(
-      'a contribution typed into the cost register as well does not raise ISPO’s costs a second time',
-      ispo2.totalExpenditure === ispo.totalExpenditure,
-      `${ispo2.totalExpenditure}, expected ${ispo.totalExpenditure}`
+      'a bill that looks like the levy is counted like any other bill',
+      ispo2.totalExpenditure === ispo.totalExpenditure + CONTRIBUTION,
+      `${ispo2.totalExpenditure}, expected ${ispo.totalExpenditure + CONTRIBUTION}`
     );
-    T.check(
-      'and it is named on the statement rather than dropped in silence',
-      ispo2.excludedExpenditure.some(e => e.total === CONTRIBUTION && /register/i.test(e.label)),
-      JSON.stringify(ispo2.excludedExpenditure)
-    );
+    T.check('and nothing is left out of the costs', ispo2.excludedExpenditure.length === 0, JSON.stringify(ispo2.excludedExpenditure));
     T.check(
       'the ISPO Operations statement and the operating statement still agree after it',
       ispoOperations(db2.expenses, db2.payments, db2.units, 'JMD', from, to).net === ispo2.surplus,

@@ -43,6 +43,9 @@ import {
   ownLevyArrears,
   expensesForBook,
   isOwnAccount,
+  isProprietorsOwnUtility,
+  recoveryFundFor,
+  isUtilityRecoveryRow,
   leasesNeedingAttention,
   liveExpenses,
   netReceivedInPeriod,
@@ -954,10 +957,21 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
     }
   }
 
-  /* 8. Utilities billed to villas and not yet recovered. The corporation's money. */
-  if (book !== 'ispo' && input.utilities) {
+  /*
+   * 8. Utilities billed to villas and not yet recovered, on the book that will
+   * receive the recovery (`recoveryFundFor`): an ISPO villa's is ISPO's money,
+   * not the corporation's. Before 2026-11-22 every one was shown on the
+   * corporation's book and none on ISPO's.
+   */
+  if (input.utilities) {
     const unitOf = new Map(units.map(u => [u.id, u]));
-    const open = input.utilities.filter(u => u.status === 'unpaid' && u.currency === c && u.billingPeriod <= to.substring(0, 7));
+    const open = input.utilities.filter(
+      u =>
+        u.status === 'unpaid' &&
+        u.currency === c &&
+        u.billingPeriod <= to.substring(0, 7) &&
+        (book === 'everything' || recoveryFundFor(unitOf.get(u.unitId), `${u.billingPeriod}-01`) === book)
+    );
     if (open.length > 0) {
       const total = sumMoney(open.map(u => u.amountCharged));
       for (const u of open) {
@@ -978,6 +992,39 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
           })
       });
     }
+  }
+
+  /*
+   * 9. A proprietor's own utility bill sitting in the books. Proprietors pay
+   * their own utility accounts (Ro, 2026-11-22); the server refuses new ones,
+   * so any found here predate the rule or came in from a restore. Listed on
+   * every book that counts it, all time, until it is taken off.
+   */
+  const unitById = new Map(units.map(u => [u.id, u]));
+  const strayUtilities = costs.filter(e => !isUtilityRecoveryRow(e) && isProprietorsOwnUtility(e.category, unitById.get(e.unitId), e.date));
+  const strayReadings = (input.utilities || []).filter(
+    u => u.currency === c && book !== 'ispo' && isProprietorsOwnUtility('Utilities', unitById.get(u.unitId), `${u.billingPeriod}-01`)
+  );
+  if (strayReadings.length > 0) {
+    say({
+      rank: URGENT,
+      atRisk: sumMoney(strayReadings.map(u => u.amountCharged)),
+      text: `${c}: ${strayReadings.length} meter reading(s) bill proprietors' villas for utilities, ${m(sumMoney(strayReadings.map(u => u.amountCharged)), c)}. Owners hold their own utility accounts: delete each one, or refund it if it was paid.`,
+      details: strayReadings
+        .sort((a, b) => a.billingPeriod.localeCompare(b.billingPeriod))
+        .map(u => `${villa(unitById.get(u.unitId) || { number: u.unitNumber })}: ${m(u.amountCharged, c)} for ${formatMonthLabel(u.billingPeriod)}, ${u.status}.`)
+    });
+  }
+  if (strayUtilities.length > 0) {
+    const total = sumMoney(strayUtilities.map(e => e.amount));
+    say({
+      rank: URGENT,
+      atRisk: total,
+      text: `${c}: ${strayUtilities.length} utility bill(s) on proprietors' villas, ${m(total, c)}, are counted in these books. Owners pay their own utilities: void each one.`,
+      details: strayUtilities
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map(e => `${villa(unitById.get(e.unitId) || { number: e.unitNumber })}: ${e.vendor || 'vendor not recorded'} ${m(e.amount, c)}, ${formatDayLabel(e.date)}${e.status === 'pending' ? ', unpaid' : ''}.`)
+    });
   }
 
   const byAmount = (g: Group[]) => g.sort((a, b) => b.amount - a.amount);

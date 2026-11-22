@@ -80,7 +80,7 @@ export default async function run({ port, projectRoot }) {
     const ePend = await c.post('/api/expenses', exp({ status: 'pending', datePaid: undefined, amount: 1111, vendor: 'Pending Sept', date: '2026-09-20' }));
     T.check('setup: Oct cost and pending Sept bill', eOct.status === 200 && ePend.status === 200, JSON.stringify([eOct.body, ePend.body]));
     const pendId = ePend.body?.expense?.id;
-    const settledU = await c.post('/api/utilities', { unitId: 'unit-7', billingPeriod: '2026-09', previousReading: 0, currentReading: 100, amountCharged: 5000, currency: 'JMD' });
+    const settledU = await c.post('/api/utilities', { unitId: 'unit-6', billingPeriod: '2026-09', previousReading: 0, currentReading: 100, amountCharged: 5000, currency: 'JMD' });
     T.check('setup: a September utility bill', settledU.status === 200, JSON.stringify(settledU.body));
     await rcv('unit-2', 'Maintenance', 25000, 'JMD', '2026-09-05', 'Proprietor A2');
     // ISPO paying its own levy on C13 in September: the contribution that a later sale must not move.
@@ -94,7 +94,7 @@ export default async function run({ port, projectRoot }) {
     const paidRun = await c.put(`/api/expenses/${runRow?.id}`, { status: 'paid', datePaid: '2026-09-05' });
     T.check('setup: a September cost run with a paid row', pmS.status === 200 && paidRun.status === 200, `${pmS.status} ${paidRun.status}`);
     // A settled and confirmed October utility bill, for the bill-versus-receipt warning.
-    const uOct = await c.post('/api/utilities', { unitId: 'unit-9', billingPeriod: '2026-10', previousReading: 0, currentReading: 50, amountCharged: 3000, currency: 'JMD' });
+    const uOct = await c.post('/api/utilities', { unitId: 'unit-10', billingPeriod: '2026-10', previousReading: 0, currentReading: 50, amountCharged: 3000, currency: 'JMD' });
     const sOct = await c.post(`/api/utilities/${uOct.body?.utility?.id}/settle`, { date: '2026-10-05' });
     const cOct = await c.post(`/api/payments/${sOct.body?.payment?.id}/confirm`, {});
     T.check('setup: a settled October utility bill', cOct.status === 200, `${cOct.status} ${JSON.stringify(cOct.body)}`);
@@ -122,9 +122,9 @@ export default async function run({ port, projectRoot }) {
     T.check('1. control: correcting an October cost (open month) works', r4b.status === 200, `${r4b.status} ${JSON.stringify(r4b.body)}`);
     const r5 = await c.post('/api/expenses/post-month', { monthString: '2026-09', items: [] });
     T.check('1. posting a cost run into closed September is refused', refused(r5), `${r5.status} ${JSON.stringify(r5.body)}`);
-    const r6 = await c.post('/api/utilities', { unitId: 'unit-8', billingPeriod: '2026-09', previousReading: 0, currentReading: 10, amountCharged: 900, currency: 'JMD' });
+    const r6 = await c.post('/api/utilities', { unitId: 'unit-15', billingPeriod: '2026-09', previousReading: 0, currentReading: 10, amountCharged: 900, currency: 'JMD' });
     T.check('1. a utility bill for closed September is refused', refused(r6), `${r6.status} ${JSON.stringify(r6.body)}`);
-    const r6ok = await c.post('/api/utilities', { unitId: 'unit-8', billingPeriod: '2026-10', previousReading: 0, currentReading: 10, amountCharged: 900, currency: 'JMD' });
+    const r6ok = await c.post('/api/utilities', { unitId: 'unit-15', billingPeriod: '2026-10', previousReading: 0, currentReading: 10, amountCharged: 900, currency: 'JMD' });
     T.check('1. control: a utility bill for open October is accepted', r6ok.status === 200, `${r6ok.status} ${JSON.stringify(r6ok.body)}`);
     const r6e = await c.put(`/api/utilities/${settledU.body?.utility?.id}`, { amountCharged: 5100 });
     T.check('1. editing a closed-month utility bill is refused', refused(r6e), `${r6e.status} ${JSON.stringify(r6e.body)}`);
@@ -246,10 +246,13 @@ export default async function run({ port, projectRoot }) {
       DD = await dbS();
       rows = fin.mod.utilityRecoveryRows(DD.payments, DD.expenses);
       T.check('3. a bill entered later does not move the recovery between books', rows.find(r => r.unitId === 'unit-5')?.fund === 'ispo', JSON.stringify(rows.find(r => r.unitId === 'unit-5')));
-      // Positive control: a proprietor's villa (B7, unit-7) is the corporation's.
-      const b7 = await util('unit-7', '2026-10', 12000, '2026-11-07');
-      DD = await dbS();
-      T.check('3. control: a proprietor\'s villa recovery is on the corporation\'s (strata) book', DD.payments.find(p => p.id === b7.pid)?.recoveryFund === 'strata', String(DD.payments.find(p => p.id === b7.pid)?.recoveryFund));
+      // A proprietor's villa (B7) is never billed for utilities: owners hold their own
+      // accounts (Ro, 2026-11-22), so no recovery can reach the corporation's book.
+      const onB7 = await cs.post('/api/utilities', { unitId: 'unit-7', billingPeriod: '2026-10', previousReading: 0, currentReading: 100, amountCharged: 12000, currency: 'JMD' });
+      T.check('3. a utility bill on a proprietor\'s villa is refused', onB7.status === 400, `${onB7.status} ${JSON.stringify(onB7.body)}`);
+      // The receipt section 5 edits, on another ISPO villa (C16).
+      const b7 = await util('unit-16', '2026-10', 12000, '2026-11-07');
+      T.check('3. setup: a second ISPO villa utility settled and confirmed', b7.cf.status === 200, JSON.stringify(b7.cf.body));
 
       /* ---------- 5. a utility receipt follows its bill ---------- */
       const edAmt = await cs.put(`/api/payments/${b7.pid}`, { amount: 8000, reason: 'receipt keyed wrong' });
@@ -285,9 +288,9 @@ export default async function run({ port, projectRoot }) {
       T.check('4. control: an unpaid bill with a future date is accepted', f3.status === 200, `${f3.status} ${JSON.stringify(f3.body)}`);
       const f4 = await cs.put(`/api/expenses/${f3.body?.expense?.id}`, { status: 'paid', datePaid: '2099-03-02' });
       T.check('4. marking it paid on a future day is refused too', f4.status === 400, `${f4.status} ${JSON.stringify(f4.body)}`);
-      const f5 = await cs.post('/api/utilities', { unitId: 'unit-9', billingPeriod: '2099-04', previousReading: 0, currentReading: 10, amountCharged: 1000, currency: 'JMD' });
+      const f5 = await cs.post('/api/utilities', { unitId: 'unit-10', billingPeriod: '2099-04', previousReading: 0, currentReading: 10, amountCharged: 1000, currency: 'JMD' });
       T.check('4. a utility bill for a future month is refused', f5.status === 400, `${f5.status} ${JSON.stringify(f5.body)}`);
-      const f6 = await cs.post('/api/utilities', { unitId: 'unit-9', billingPeriod: '2026-11', previousReading: 0, currentReading: 10, amountCharged: 1000, currency: 'JMD' });
+      const f6 = await cs.post('/api/utilities', { unitId: 'unit-10', billingPeriod: '2026-11', previousReading: 0, currentReading: 10, amountCharged: 1000, currency: 'JMD' });
       T.check('4. control: a utility bill for the current or a past open month is accepted', f6.status === 200, `${f6.status} ${JSON.stringify(f6.body)}`);
     }
 

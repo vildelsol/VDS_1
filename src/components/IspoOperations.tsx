@@ -30,7 +30,7 @@
 import React, { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import { AppSettings, Currency, Expense, MANAGING_COMPANY_NAME, Payment, SessionUser, Unit } from '../types';
-import { IspoOperations as Statement, contributionExclusionNote, ispoOperations } from '../lib/finance';
+import { IspoOperations as Statement, ispoOperations } from '../lib/finance';
 import { formatMoney } from '../lib/money';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
@@ -170,7 +170,6 @@ export default function IspoOperations({ units, expenses, payments, settings, se
 
 /** Exported so a test can read what the screen says beside the printout and the export. */
 export function CurrencyBlock({ statement: s }: { statement: Statement }) {
-  const excludedNote = contributionExclusionNote(s);
   return (
     <div className="space-y-3 rounded-xl border border-slate-100 p-4">
       <h3 className="font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">{s.currency}</h3>
@@ -262,13 +261,6 @@ export function CurrencyBlock({ statement: s }: { statement: Statement }) {
             status is wrong, or the money is recorded against the wrong villa. Fix the status and both this statement and the
             shortfall report follow it &mdash; nothing else has to be set.
           </p>
-        </div>
-      )}
-
-      {excludedNote && (
-        <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
-          <p className="mb-1 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-800">{excludedNote.heading}</p>
-          <p>{excludedNote.body}</p>
         </div>
       )}
 
@@ -386,14 +378,6 @@ export function ispoSheet(s: Statement, meta: { month: string; generatedBy: stri
     cell.total(''),
     cell.totalMoney(Math.abs(s.net), s.currency)
   ]);
-
-  // The same note the screen and the printout carry, word for word.
-  const excluded = contributionExclusionNote(s);
-  if (excluded) {
-    rows.push([cell.blank()]);
-    rows.push([cell.section(excluded.heading, 5)]);
-    rows.push([cell.note(excluded.body, 5)]);
-  }
 
   if (s.unpaidLines.length > 0) {
     rows.push([cell.blank()]);
@@ -527,12 +511,6 @@ export function IspoDocument({
             </tbody>
           </table>
 
-          {contributionExclusionNote(s) && (
-            <div className="mt-2 rounded border border-slate-300 p-2 text-[9px] leading-relaxed text-slate-600">
-              <p className="font-bold">{contributionExclusionNote(s)!.heading}</p>
-              <p>{contributionExclusionNote(s)!.body}</p>
-            </div>
-          )}
 
           {s.unpaidLines.length > 0 && (
             <p className="mt-2 text-[9px] italic leading-relaxed text-slate-500">

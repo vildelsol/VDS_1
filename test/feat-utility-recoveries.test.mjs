@@ -221,7 +221,8 @@ export default async function run({ projectRoot }) {
     /* ---------- source guards: every screen goes through the one derivation ---------- */
     const src = f => fs.readFileSync(path.join(projectRoot, 'src', f), 'utf8');
     for (const f of ['components/Reports.tsx', 'components/Charts.tsx', 'components/Dashboard.tsx', 'components/BoardPack.tsx']) {
-      T.check(`${f} nets its costs through withUtilityRecoveries`, src(f).includes('withUtilityRecoveries('));
+      // combinedCosts is withUtilityRecoveries on the combined book (2026-11-22).
+      T.check(`${f} nets its costs through withUtilityRecoveries`, src(f).includes('withUtilityRecoveries(') || src(f).includes('combinedCosts('));
     }
     const all = fs.readdirSync(path.join(projectRoot, 'src', 'components')).map(f => `components/${f}`).concat(['lib/finance.ts', 'lib/projection.ts']);
     T.check('no screen keeps a villa set for utility recoveries (ownerBilledUnitIds is retired)',

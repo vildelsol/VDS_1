@@ -520,71 +520,14 @@ export default async function run({ port, projectRoot }) {
       `${ops.maintenanceCollected}`
     );
 
-    /* ---------------- the shape that would double count ---------------- */
-
-    const alsoAsCost = await c.post('/api/expenses', {
-      category: 'Maintenance',
-      vendor: 'Villaggio Del Sol',
-      description: 'Contribution on our own villa',
-      unitId: 'unit-1',
-      amount: 10000,
-      currency: 'JMD',
-      fund: 'ispo',
-      status: 'paid',
-      date: `${month}-05`,
-      datePaid: `${month}-05`
-    });
-    T.check('the contribution can be typed into the register as well', alsoAsCost.status === 200);
-
-    const check = await c.get('/api/integrity');
-    const findings = check.body?.findings || [];
-    T.check(
-      'and when it is, the application says so rather than counting it twice in silence',
-      findings.some(f => f.code === 'contribution-entered-as-a-cost'),
-      JSON.stringify(findings.map(f => f.code))
-    );
-
     /*
-     * Detecting it is not enough — Ro asked for no double counting anywhere, and
-     * a warning nobody reads is still a wrong figure on a statement. So the
-     * statement is immune to the shape as well as watchful for it: the cost row
-     * is left out of ISPO's own costs, because the contribution it duplicates is
-     * already counted from its receipt.
-     *
-     * This assertion is here because mutation testing found its absence. Making
-     * the statement count that row as well produced no failure at all, which
-     * meant the double-count guarantee was a claim rather than a test.
+     * The register holds supplier bills only (Ro, 2026-11-22): ISPO's contribution
+     * is never typed in as a cost, so nothing guesses at one. Any bill entered is
+     * counted, and the self-check raises no "contribution as a cost" finding.
      */
-    db = (await c.get('/api/db')).body;
-    const withDupe = ispoOperations(db.expenses, db.payments, db.units, 'JMD', from, to);
     T.check(
-      'a contribution typed into the register as well is NOT counted a second time',
-      withDupe.maintenanceOnOwnVillas === 10000 && withDupe.ownCostsPaid === ISPO_TOTAL + 9000,
-      `maintenance ${withDupe.maintenanceOnOwnVillas}, own costs ${withDupe.ownCostsPaid}`
-    );
-    T.check(
-      'so the total is unmoved by it',
-      withDupe.totalCosts === ISPO_TOTAL + 9000 + 10000,
-      `${withDupe.totalCosts}, expected ${ISPO_TOTAL + 9000 + 10000}`
-    );
-    T.check(
-      'and the row it left out is named rather than silently dropped',
-      withDupe.excludedAsContributionCount === 1 && withDupe.excludedAsContribution === 10000,
-      JSON.stringify({ n: withDupe.excludedAsContributionCount, amount: withDupe.excludedAsContribution })
-    );
-
-    // Taken back out, so the rest of the file measures a clean set of books.
-    db = (await c.get('/api/db')).body;
-    const dupe = db.expenses.find(e => e.description === 'Contribution on our own villa');
-    await c.post(`/api/expenses/${dupe.id}/void`, {
-      reason: 'Already receipted — would be counted twice',
-      confirmSettled: true
-    });
-    db = (await c.get('/api/db')).body;
-    T.check(
-      'taking it back clears the finding',
-      !((await c.get('/api/integrity')).body?.findings || []).some(f => f.code === 'contribution-entered-as-a-cost'),
-      'the finding survived the void'
+      'the self-check does not guess at contributions in the register',
+      !((await c.get('/api/integrity')).body?.findings || []).some(f => f.code === 'contribution-entered-as-a-cost')
     );
 
     /* ================================================================

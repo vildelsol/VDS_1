@@ -340,72 +340,15 @@ export function expensesInBook(expenses: Expense[], book: ReportBook): Expense[]
   return book === 'everything' ? expenses : expenses.filter(e => fundOf(e) === book);
 }
 
-/**
- * Is this cost row actually the monthly contribution, already counted from its
- * receipt?
- *
- * A plumber or a locksmith on one of ISPO's villas is a genuine ISPO cost, and
- * so is a repair filed under **Maintenance**, the expense form's default
- * category. Until 2026-11-19 every Maintenance-category ISPO row on an
- * own-account villa was taken to be the contribution: a J$9,000 repair on A3
- * vanished from ISPO's book while the combined statement still counted it, so
- * combined no longer equalled strata plus ISPO, and the self-check told staff
- * to void a real bill.
- *
- * A row is now the contribution only when the row itself carries the evidence:
- *   - it is ISPO's cost, categorised Maintenance, on a villa VDS lets on its own
- *     account, in the currency that villa's contribution is billed in;
- *   - it says what it is: the payee or the description names the contribution
- *     (contribution, levy, strata, maintenance fee/dues, the corporation);
- *   - and its amount is a whole number of that villa's monthly contribution for
- *     the month the row is for (`levyForMonth`, so a dated fee change counts).
- * Anything short of all three is a real ISPO cost and is counted.
- *
- * One definition, used by `ispoOperations`, by `operatingStatement` (every
- * book), by `expensesForBook` and by the self-check, so none of them can
- * disagree about which rows are the contribution again.
+/*
+ * Every bill in the expense register is counted, on its own book (Ro, 2026-11-22).
+ * Until then a guess (\`isContributionCountedFromReceipts\`) left out any ISPO
+ * Maintenance row on an ISPO villa that named the levy and was a whole number of
+ * it, in case ISPO's contribution had been typed in as a bill as well as receipted.
+ * It never is: only supplier bills go in the register. The guess could only ever
+ * drop a real bill (a J$40,000 "Strata Plumbing" job on a J$20,000-levy villa),
+ * so it was taken out.
  */
-export function isContributionCountedFromReceipts(expense: Expense, ownAccountUnitIds: Set<string> | OwnAccountTest, units: Unit[]): boolean {
-  if (fundOf(expense) !== 'ispo' || expense.category !== 'Maintenance') return false;
-  // Own-account as at the row's own day, so a later sale cannot move a closed month.
-  const rowDay = expense.datePaid || expense.date || '';
-  const own = typeof ownAccountUnitIds === 'function' ? ownAccountUnitIds : (id: string) => ownAccountUnitIds.has(id);
-  if (!expense.unitId || !own(expense.unitId, rowDay)) return false;
-  const villa = units.find(u => u.id === expense.unitId);
-  // The levy in force for the month the row is for, so a dated fee change is honoured.
-  const month = expense.periodMonth || (expense.datePaid || expense.date || '').slice(0, 7);
-  const levy = villa ? levyForMonth(villa, month) : 0;
-  if (!villa || levy <= 0 || (villa.maintCurrency || villa.currency) !== expense.currency) return false;
-  const amount = round2(expense.amount);
-  const months = Math.round(amount / levy);
-  if (months < 1 || Math.abs(round2(amount - months * levy)) >= 0.01) return false;
-  return CONTRIBUTION_WORDS.test(`${expense.vendor || ''} ${expense.description || ''}`);
-}
-
-/** Words that name the contribution itself, never a job done on the villa. */
-const CONTRIBUTION_WORDS =
-  /contribution|\blev(y|ies)\b|strata|maintenance (fee|dues|charge)|body corporate|corporation|villaggio|\bvds\b/i;
-
-/**
- * The note every place ISPO's statement is shown carries when cost rows were
- * left out as the contribution already counted from receipts. One wording, so
- * the screen, the printout and the export cannot say different things.
- */
-export function contributionExclusionNote(s: {
-  currency: Currency;
-  excludedAsContribution: number;
-  excludedAsContributionCount: number;
-}): { heading: string; body: string } | null {
-  if (s.excludedAsContributionCount <= 0) return null;
-  return {
-    heading: `${formatMoney(s.excludedAsContribution, s.currency)} left out of the costs above`,
-    body:
-      `${s.excludedAsContributionCount} cost row(s) in the expense register are the maintenance contribution itself on a villa let ` +
-      `on the corporation's own account: each names the contribution and is a whole number of that villa's monthly contribution. ` +
-      `That contribution is already counted from its receipt, on the maintenance line, so counting the cost row as well would be ` +
-      `the same money twice. Take those rows back in the expense register; the self-check flags them.`
-  };
-}
 
 /**
  * Is this villa one of ISPO's, rather than a villa owned by somebody else?
@@ -494,9 +437,38 @@ function chargeDay(c: Pick<Charge, 'dueDate' | 'periodMonth'>): string {
  * already on file (`migrate`), never read back from today's villa status: a villa
  * sold later must not move its old bills between books.
  */
-export function fundForCost(category: ExpenseCategory, unit: Pick<Unit, 'status'> | undefined, chosen: ExpenseFund): ExpenseFund {
-  return category === 'Utilities' && !!unit && isOwnAccount(unit) ? 'ispo' : chosen;
+export function fundForCost(
+  category: ExpenseCategory,
+  unit: Pick<Unit, 'status' | 'ownAccountHistory'> | undefined,
+  chosen: ExpenseFund,
+  day?: string
+): ExpenseFund {
+  return category === 'Utilities' && !!unit && (day ? isOwnAccountOn(unit, day) : isOwnAccount(unit)) ? 'ispo' : chosen;
 }
+
+/**
+ * A utility bill on a proprietor's villa: that owner's own account with the
+ * provider, never a cost of the property on either book.
+ *
+ * Ro, 2026-11-22: "does any other proprietor have their utilities on the strata
+ * books? NO." Every proprietor, ISPO included, holds its own utility accounts.
+ * ISPO's villas go to ISPO's book (`fundForCost`); a utility with no villa is a
+ * common cost and goes on whichever book is chosen; one on anybody else's villa
+ * is refused, and any already on file is listed to be taken off.
+ */
+export function isProprietorsOwnUtility(
+  category: ExpenseCategory,
+  unit: Pick<Unit, 'status' | 'ownAccountHistory'> | undefined,
+  day?: string
+): boolean {
+  return category === 'Utilities' && !!unit && !(day ? isOwnAccountOn(unit, day) : isOwnAccount(unit));
+}
+
+export const PROPRIETOR_UTILITY_READING_REFUSAL =
+  "A proprietor's villa is on the owner's own utility account with the provider, so the property does not bill it for utilities. Meter readings are entered only for ISPO's villas.";
+
+export const PROPRIETOR_UTILITY_REFUSAL =
+  "A utility bill on a proprietor's villa is that owner's own account with the provider, never a cost of the property. Record utilities only on ISPO's villas, or as a common cost with no villa.";
 
 /** The villas VDS lets on the corporation's own account, optionally in one currency. */
 export function ownAccountUnitIds(units: Unit[], currency?: Currency): Set<string> {
@@ -508,19 +480,14 @@ export function ownAccountUnitIds(units: Unit[], currency?: Currency): Set<strin
 }
 
 /**
- * The costs a book counts as its own — the book filter, plus the one exclusion
- * that keeps ISPO's side from counting a contribution twice.
+ * The costs a book counts as its own: every bill in the register on that book.
  *
- * What every screen reading a book should call. `expensesInBook` alone is the
- * book filter and nothing more.
+ * Kept as the one call every screen makes, so a future rule lands everywhere at
+ * once. It used to also drop a guessed "contribution typed in as a cost" row;
+ * that guess was removed on 2026-11-22.
  */
-export function expensesForBook(expenses: Expense[], units: Unit[], book: ReportBook, currency?: Currency): Expense[] {
-  const inBook = expensesInBook(expenses, book);
-  if (book === 'strata') return inBook;
-  // On the combined book too: the contribution is a transfer between the two
-  // books there, so its duplicate row must not survive as a cost either.
-  const own = ownAccountAsAt(units, currency);
-  return inBook.filter(e => !isContributionCountedFromReceipts(e, own, units));
+export function expensesForBook(expenses: Expense[], _units: Unit[], book: ReportBook, _currency?: Currency): Expense[] {
+  return expensesInBook(expenses, book);
 }
 
 /** What each book is called on a screen and at the head of a printed page. */
@@ -4786,12 +4753,7 @@ export function operatingStatement(
   const payments = paymentsInBook(allPayments, book).filter(p => !isTransferBetweenBooks(p) && p.category !== 'Utility');
   const expenses = expensesInBook(withUtilityRecoveries(allExpenses, allPayments), book);
 
-  /*
-   * The villas VDS lets on the corporation's own account, needed here rather
-   * than further down because the ISPO book has to keep a contribution typed
-   * into the expense register out of its own costs — see `isTheContributionAgain`
-   * below and the identical rule in `ispoOperations`.
-   */
+  /* The villas VDS lets on the corporation's own account, as at each receipt's day. */
   const ownAccount = ownAccountAsAt(units, currency);
 
   const incomeVisibility = (category: PaymentCategory): LineVisibility =>
@@ -4885,23 +4847,7 @@ export function operatingStatement(
    */
   const settled = expenses.filter(e => e.status === 'paid' && e.currency === currency && isWithin(e.datePaid || e.date, start, end));
 
-  /**
-   * Is this cost row actually the monthly contribution, already counted from its
-   * receipt?
-   *
-   * Asked on the ISPO book so it agrees with `ispoOperations`, which applies
-   * exactly this rule, and on the combined book so that combined = strata + ISPO
-   * (2026-11-19). The combined book already drops the contribution receipt as a
-   * transfer between the two books; leaving its duplicate cost row in made the
-   * combined surplus smaller than the two books added up. The row is named in
-   * `excludedExpenditure` below, never removed in silence. The strata book never
-   * holds an ISPO row, so the question does not arise there.
-   */
-  const isTheContributionAgain = (e: Expense): boolean =>
-    book !== 'strata' && isContributionCountedFromReceipts(e, ownAccount, units);
-
-  const contributionAgain = settled.filter(isTheContributionAgain);
-  const paid = settled.filter(e => !isTheContributionAgain(e));
+  const paid = settled;
 
   const byCategory = new Map<string, ExpenditureLine[]>();
   for (const e of paid) {
@@ -4989,19 +4935,6 @@ export function operatingStatement(
 
   const totalExpenditure = sumMoney(expenditure.map(g => g.total));
 
-  /*
-   * Anything dropped as already-receipted is named here rather than removed in
-   * silence — the standing rule in this codebase. Without the line, a register
-   * showing the contribution as a cost and a statement that does not carry it
-   * would look like a fault.
-   */
-  if (contributionAgain.length > 0) {
-    excludedExpenditure.push({
-      label: 'Contributions typed into the cost register (counted from their receipts instead)',
-      total: sumMoney(contributionAgain.map(e => e.amount))
-    });
-  }
-
   const strataExpenditure = sumMoney(strataExpenses(countedForSplit).map(e => e.amount));
   const ispoExpenditure = sumMoney([
     sumMoney(ispoExpenses(countedForSplit).map(e => e.amount)),
@@ -5077,10 +5010,8 @@ export interface IspoOperations {
    * and leaving it off would flatter the letting business by the whole of it.
    *
    * **Read from the receipts, never from an expense row.** A contribution is a
-   * payment against a villa's maintenance account and has exactly one record. If
-   * somebody also enters it in the expense register, the self-check says so
-   * (`contribution-entered-as-a-cost`) rather than this statement quietly
-   * counting it twice.
+   * payment against a villa's maintenance account and has exactly one record.
+   * Only supplier bills go in the expense register (Ro, 2026-11-22).
    */
   maintenanceOnOwnVillas: number;
   /** Villas this was counted on, so the figure can be checked against the register. */
@@ -5108,25 +5039,6 @@ export interface IspoOperations {
    */
   incomeFromUnflaggedVillas: number;
   unflaggedVillasWithIncome: string[];
-  /**
-   * Cost rows left out of `ownCostsPaid` because they *are* the contribution.
-   *
-   * `maintenanceOnOwnVillas` is read from the receipts. If somebody also types
-   * the contribution into the expense register as an ISPO cost — and there is
-   * nothing stopping them, it looks like an ordinary bill — then counting the
-   * cost row as well would put the same money into this statement twice.
-   *
-   * So the statement does not merely *detect* that shape, it is immune to it: a
-   * paid ISPO cost that `isContributionCountedFromReceipts` identifies as the
-   * contribution (Maintenance, own-account villa, names the contribution, a
-   * whole number of that villa's monthly contribution) is excluded here and
-   * **named** through `contributionExclusionNote`, never silently dropped. A
-   * repair under Maintenance is not that shape and is counted. The self-check raises
-   * `contribution-entered-as-a-cost` as well, so the stray row gets tidied up
-   * rather than living on as a permanent exclusion.
-   */
-  excludedAsContribution: number;
-  excludedAsContributionCount: number;
   /**
    * True when no villa is flagged as let on VDS's own account.
    *
@@ -5205,10 +5117,6 @@ export function ispoOperations(
     amount: expense.amount
   });
 
-  /*
-   * The own-account villas, needed before the cost groups are built because a
-   * contribution typed into the register has to be kept out of them.
-   */
   // The villas ISPO let IN THE PERIOD, from the dated ownership record, not
   // today's status: a reprint of November after a December sale still names the
   // villa it let in November (Ro, 2026-11-20).
@@ -5216,18 +5124,7 @@ export function ispoOperations(
   const inThisCurrency = ownAccountUnits.filter(u => (u.maintCurrency || u.currency) === currency);
   const ownIds = ownAccountAsAt(units, currency);
 
-  /**
-   * Is this cost row actually the contribution, already counted from receipts?
-   *
-   * A plumber, a locksmith or a repair filed under Maintenance on one of ISPO's
-   * villas is a genuine ISPO cost and belongs in the groups. Only a row that
-   * names the contribution and is a whole number of the villa's monthly
-   * contribution is the contribution again — see `isContributionCountedFromReceipts`.
-   */
-  const isTheContributionAgain = (expense: Expense): boolean => isContributionCountedFromReceipts(expense, ownIds, units);
-
-  const duplicated = paid.filter(isTheContributionAgain);
-  const ownCosts = paid.filter(e => !isTheContributionAgain(e));
+  const ownCosts = paid;
 
   const byCategory = new Map<ExpenseCategory, IspoCostLine[]>();
   for (const expense of ownCosts) {
@@ -5291,7 +5188,6 @@ export function ispoOperations(
   ].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
   const unpaidLines = pending
-    .filter(e => !isTheContributionAgain(e))
     .map(e => toLine(e, e.dueDate || e.date))
     .sort((a, b) => a.date.localeCompare(b.date) || a.vendor.localeCompare(b.vendor));
 
@@ -5308,8 +5204,6 @@ export function ispoOperations(
     ownCostsPaid,
     maintenanceOnOwnVillas,
     ownAccountVillas: inThisCurrency.map(u => getUnitDisplayName(u.number)),
-    excludedAsContribution: sumMoney(duplicated.map(e => e.amount)),
-    excludedAsContributionCount: duplicated.length,
     incomeFromUnflaggedVillas,
     unflaggedVillasWithIncome,
     noVillasFlagged: ownAccountUnits.length === 0,

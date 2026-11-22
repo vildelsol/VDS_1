@@ -86,8 +86,8 @@ export default async function run({ port, projectRoot }) {
     // unit-5: short-stay cash.
     ok(await pay('unit-5', 'Booking', 90000, '2026-10-15', 'JMD', { method: 'Cash', payerName: 'A Guest' }), 'u5 booking');
     ok(await pay('unit-5', 'Booking', 250, '2026-11-08', 'USD', { method: 'Cash', payerName: 'A Guest' }), 'u5 booking usd');
-    // A utility reading on the owner-occupied villa, settled.
-    const ut = ok(await c.post('/api/utilities', { unitId: 'unit-3', billingPeriod: '2026-10', previousReading: 100, currentReading: 150, amountCharged: 6000, currency: 'JMD' }), 'utility');
+    // A utility reading on ISPO's villa, settled. A proprietor's villa is never billed for utilities (Ro, 2026-11-22).
+    const ut = ok(await c.post('/api/utilities', { unitId: 'unit-5', billingPeriod: '2026-10', previousReading: 100, currentReading: 150, amountCharged: 6000, currency: 'JMD' }), 'utility');
     const settle = ok(await c.post(`/api/utilities/${ut.body.utility.id}/settle`, { date: '2026-11-03', method: 'Cash' }), 'settle utility');
     const utilPay = settle.body?.payment?.id;
     if (utilPay) ok(await c.post(`/api/payments/${utilPay}/confirm`, {}), 'confirm utility');

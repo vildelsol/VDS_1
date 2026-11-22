@@ -67,7 +67,7 @@ import { currencyMarker, formatMoneyLong, hasExtraDecimals, parseMoneyInput, rou
 import { cleanText, nameKey } from './src/lib/text';
 import { dayOfTimestamp, formatDayLabel, isValidDay, isValidMonth, today, dueDateForMonth, monthOf, nightsBetween } from './src/lib/dates';
 import { stayMoney, stayPhase } from './src/lib/stays';
-import { accountBalance, bookingsOverlap, fundForCost, isOwnAccount, recoveryFundFor, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
+import { accountBalance, bookingsOverlap, fundForCost, isProprietorsOwnUtility, PROPRIETOR_UTILITY_REFUSAL, PROPRIETOR_UTILITY_READING_REFUSAL, isOwnAccount, recoveryFundFor, creditHeldForOthers as financeCreditHeldForOthers, chargeAmount, chargeCurrency, chargePayer, isBillable, maintenanceReceiptsToMove, rentBreakdown, rentChargesToRestate, settledFromRent } from './src/lib/finance';
 import { billingBacklog, monthsToPost } from './src/lib/billingCalendar';
 import { FEE_CODES, FEE_MAX, levyChangeInForce, levyForMonth, monthsAffectedBy } from './src/lib/feeSchedule';
 import {
@@ -6841,6 +6841,10 @@ app.post(
       if (!isValidMonth(billingPeriod)) bad('Billing period is required in YYYY-MM format.');
       if (billingPeriod > today().substring(0, 7)) bad('A utility bill cannot be entered for a future month.');
       refuseClosedMonth(db, `${billingPeriod}-01`, `The utility bill for ${billingPeriod}`);
+      // Proprietors hold their own utility accounts (Ro, 2026-11-22): the property
+      // never bills a proprietor's villa for utilities, so no recovery can land on
+      // the corporation's book as if it were money it is owed.
+      if (isProprietorsOwnUtility('Utilities', unit, `${billingPeriod}-01`)) bad(PROPRIETOR_UTILITY_READING_REFUSAL);
 
       const duplicate = db.utilities.find(u => u.unitId === unit.id && u.billingPeriod === billingPeriod);
       if (duplicate) {
@@ -7067,9 +7071,12 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
   if (status === 'paid' && date > today()) bad('A paid cost cannot be dated in the future. Record it as pending until it is paid.');
   if (datePaid && datePaid > today()) bad('A cost cannot be recorded as paid on a day that has not happened yet.');
   assertMarkerMatches(body.amount, requireCurrency(body.currency ?? existing?.currency), 'The expense amount');
+  const category = requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category');
+  // A proprietor's villa utility is that owner's own account (Ro, 2026-11-22).
+  if (isProprietorsOwnUtility(category, unit, date)) bad(PROPRIETOR_UTILITY_REFUSAL);
 
   return {
-    category: requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'),
+    category,
     vendor: requireString(body.vendor ?? existing?.vendor, 'Vendor or payee', 160),
     description: optionalString(body.description ?? existing?.description, 1000, 'Description'),
     unitId: unit?.id ?? '',
@@ -7084,7 +7091,7 @@ function readExpenseFields(db: Database, body: Record<string, unknown>, existing
     datePaid,
     paymentMethod: requireEnum(body.paymentMethod ?? existing?.paymentMethod ?? 'Bank Transfer', PAYMENT_METHODS, 'Payment method') as PaymentMethod,
     status,
-    fund: fundForCost(requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'), unit, fund),
+    fund: fundForCost(category, unit, fund, date),
     reference: optionalString(body.reference ?? existing?.reference, 120, 'Reference'),
     notes: optionalString(body.notes ?? existing?.notes, 2000, 'Notes', true)
   };
@@ -7377,9 +7384,11 @@ function readRecurringFields(db: Database, body: Record<string, unknown>, existi
   if (!Number.isInteger(dueDayRaw) || dueDayRaw < 1 || dueDayRaw > 28) {
     bad('Due day must be a whole number between 1 and 28.');
   }
+  const category = requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category');
+  if (isProprietorsOwnUtility(category, unit)) bad(PROPRIETOR_UTILITY_REFUSAL);
 
   return {
-    category: requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'),
+    category,
     vendor: requireString(body.vendor ?? existing?.vendor, 'Vendor or payee', 160),
     description: optionalString(body.description ?? existing?.description, 1000, 'Description'),
     unitId: unit?.id ?? '',
@@ -7395,7 +7404,7 @@ function readRecurringFields(db: Database, body: Record<string, unknown>, existi
     ) as PaymentMethod,
     dueDay: dueDayRaw,
     fund: fundForCost(
-      requireEnum(body.category ?? existing?.category, EXPENSE_CATEGORIES, 'Expense category'),
+      category,
       unit,
       requireEnum(body.fund ?? existing?.fund ?? 'strata', EXPENSE_FUNDS, 'Which pot pays for this') as ExpenseFund
     ),
@@ -7745,6 +7754,12 @@ app.post(
         }
 
         const dueDate = dueDateForMonth(monthString, fields.dueDay);
+        // A standing template set up before the rule must not keep posting a
+        // proprietor's utility into the books every month.
+        const costVilla = fields.unitId ? db.units.find(u => u.id === fields.unitId) : undefined;
+        if (isProprietorsOwnUtility(fields.category, costVilla, dueDate)) {
+          bad(`${fields.vendor} (${fields.unitNumber}): ${PROPRIETOR_UTILITY_REFUSAL} Skip it in this run and remove the monthly cost.`);
+        }
         const expense: Expense = {
           id: uniqueRecordId(db.expenses, `ex-${monthString}-${template ? template.id : slugForId(fields.vendor)}`),
           category: fields.category,

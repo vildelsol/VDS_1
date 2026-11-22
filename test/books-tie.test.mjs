@@ -147,8 +147,8 @@ function fixture() {
     cost({ category: 'Other', vendor: 'Digicel', amount: 18000, fund: 'ispo', date: '2026-10-05', description: 'Company phones' }),
     // The genuine repair, under the form's default category.
     cost({ category: 'Maintenance', vendor: 'Handyman', amount: 9000, fund: 'ispo', unitId: 'unit-3', unitNumber: 'A3', date: '2026-10-18', description: 'A3 repair' }),
-    // The contribution typed into the register as well: the one real duplicate.
-    cost({ category: 'Maintenance', vendor: 'Villaggio Del Sol', amount: 20000, fund: 'ispo', unitId: 'unit-1', unitNumber: 'A1', date: '2026-10-08', description: 'Strata contribution A1 October' }),
+    // A real bill the removed guess (2026-11-22) dropped: names "strata", exactly one levy, Maintenance, ISPO villa.
+    cost({ category: 'Maintenance', vendor: 'Strata Plumbing Ltd', amount: 20000, fund: 'ispo', unitId: 'unit-1', unitNumber: 'A1', date: '2026-10-08', description: 'Drain clearing A1' }),
     cost({ category: 'Contractors', vendor: 'Electrician', amount: 22000, date: '2026-11-04' })
   ];
   return { units, payments, expenses, charges: [] };
@@ -174,76 +174,33 @@ export default async function run({ projectRoot }) {
       ispoLines.some(l => l.id === 'exp-6' && l.amount === 9000),
       JSON.stringify(ispoLines.map(l => l.id))
     );
-    T.check('so ISPO’s own costs are the phones and the repair', io.ownCostsPaid === 27000, String(io.ownCostsPaid));
+    T.check('so ISPO’s own costs are the phones, the repair and the plumber', io.ownCostsPaid === 47000, String(io.ownCostsPaid));
+    T.check('every bill in the register is counted: the plumber whose name and amount look like the levy is not dropped',
+      ispoLines.some(l => l.id === 'exp-7' && l.amount === 20000), JSON.stringify(ispoLines.map(l => l.id)));
     const opIspo = F.operatingStatement(payments, expenses, units, 'JMD', ...OCT, { book: 'ispo' });
     T.check(
       'and on the ISPO Operating Statement',
       opIspo.expenditure.some(g => g.lines.some(l => l.id === 'exp-6')),
       JSON.stringify(opIspo.expenditure.map(g => g.label))
     );
-    T.check(
-      'the contribution typed in as a cost is still left out, exactly once',
-      io.excludedAsContributionCount === 1 && io.excludedAsContribution === 20000 && !ispoLines.some(l => l.id === 'exp-7'),
-      JSON.stringify([io.excludedAsContributionCount, io.excludedAsContribution])
-    );
-    const opExcluded = opIspo.excludedExpenditure.filter(x => /Contributions typed into the cost register/.test(x.label));
-    T.check(
-      'and the ISPO Operating Statement names the same exclusion, the same amount',
-      opExcluded.length === 1 && opExcluded[0].total === 20000,
-      JSON.stringify(opIspo.excludedExpenditure)
-    );
-
-    // The rule needs all of its evidence, not one piece of it.
-    const own = F.ownAccountUnitIds(units);
-    const probe = over => F.isContributionCountedFromReceipts({ ...expenses[6], ...over }, own, units);
-    T.check('positive control: the duplicate itself is recognised', probe({}) === true);
-    T.check('two months of the contribution in one row is recognised', probe({ amount: 40000 }) === true);
-    T.check('a repair for exactly one levy, by a handyman, is not the contribution', probe({ vendor: 'Handyman', description: 'A1 repair' }) === false);
-    T.check('a row naming the contribution for an amount that is not a whole levy is not', probe({ amount: 15000 }) === false);
-    T.check('nor a strata-fund row', probe({ fund: undefined }) === false);
-    T.check('nor one on a proprietor’s villa', probe({ unitId: 'unit-7', unitNumber: 'B7' }) === false);
-    T.check('nor one in the other currency', probe({ currency: 'USD' }) === false);
-
-    /* ---- stated identically on the screen, the printout and the export ---- */
-
-    const note = F.contributionExclusionNote(io);
-    T.check('the exclusion has a note', !!note && /J\$20,000\.00/.test(note.heading), JSON.stringify(note));
+    T.check('the ISPO Operating Statement counts the plumber too', opIspo.expenditure.some(g => g.lines.some(l => l.id === 'exp-7')));
+    T.check('and leaves nothing out of its costs', !opIspo.excludedExpenditure.some(x => /contribution/i.test(x.label)), JSON.stringify(opIspo.excludedExpenditure));
     const screen = textOf(renderToStaticMarkup(React.createElement(CurrencyBlock, { statement: io })));
     const printed = textOf(
       renderToStaticMarkup(React.createElement(IspoDocument, { statements: [io], month: '2026-10', generatedBy: 'Test', onClose: () => {} }))
     );
     const sheet = ispoSheet(io, { month: '2026-10', generatedBy: 'Test', planNumber: '' });
     const exported = sheet.rows.flat().map(c => (c && c.value != null ? String(c.value) : '')).join(' ');
-    const said = where => where.includes(note.heading) && where.includes(note.body);
-    T.check('the screen carries the note, word for word', said(screen), screen.slice(0, 300));
-    T.check('the printout carries the same note, word for word', said(printed), 'the printed ISPO statement omits what it left out');
-    T.check('the export carries the same note, word for word', said(exported), 'the ISPO export omits what it left out');
     T.check(
-      'and all three carry the repair as a cost',
-      [screen, printed, exported].every(t => t.includes('A3 repair')),
-      'the repair is missing from the printout or the export'
+      'the screen, printout and export all carry the repair and the plumber as costs',
+      [screen, printed, exported].every(t => t.includes('A3 repair') && t.includes('Drain clearing A1')),
+      'a bill is missing from the screen, printout or export'
     );
-
-    /* ---- the self-check flags the duplicate and not the repair ---- */
-
     const integrity = checkIntegrity({
-      units,
-      payments,
-      expenses,
-      charges,
-      utilities: [],
-      bookings: [],
-      tenancies: [],
-      recurringExpenses: [],
-      workOrders: [],
-      users: [],
-      audit: [],
-      settings: { booksBeginOn: '2026-09-01' }
+      units, payments, expenses, charges, utilities: [], bookings: [], tenancies: [], recurringExpenses: [],
+      workOrders: [], users: [], audit: [], settings: { booksBeginOn: '2026-09-01' }
     });
-    const flagged = (integrity.findings || []).find(f => f.code === 'contribution-entered-as-a-cost');
-    const flaggedText = JSON.stringify(flagged || {});
-    T.check('the self-check flags the real duplicate', /exp-7/.test(flaggedText), flaggedText);
-    T.check('and never tells staff to void the real repair', !/exp-6/.test(flaggedText), flaggedText);
+    T.check('the self-check no longer guesses at contributions', !(integrity.findings || []).some(f => f.code === 'contribution-entered-as-a-cost'));
 
     /* ================================================================
      * The three books reconcile: combined = strata + ISPO
@@ -254,15 +211,10 @@ export default async function run({ projectRoot }) {
       const combined = st('everything');
       const sum = cents(st('strata').surplus) + cents(st('ispo').surplus);
       T.check(`${name}: combined surplus = strata + ISPO`, cents(combined.surplus) === sum, `${combined.surplus} vs ${sum / 100}`);
-      T.check(
-        `${name}: the combined book names the duplicate it left out`,
-        combined.excludedExpenditure.some(x => /Contributions typed into the cost register/.test(x.label) && x.total === 20000),
-        JSON.stringify(combined.excludedExpenditure)
-      );
     }
     T.check(
       'October, the figures the QA simulation would now show: combined surplus equals the two books',
-      F.operatingStatement(payments, expenses, units, 'JMD', ...OCT, { book: 'everything' }).surplus === -60800,
+      F.operatingStatement(payments, expenses, units, 'JMD', ...OCT, { book: 'everything' }).surplus === -80800,
       String(F.operatingStatement(payments, expenses, units, 'JMD', ...OCT, { book: 'everything' }).surplus)
     );
 

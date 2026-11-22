@@ -555,8 +555,7 @@ function BooksNote({ statement: s }: { statement: Statement }) {
         <p>
           <span className="font-mono font-semibold">{formatMoney(s.internalTransfer, s.currency)}</span> is the maintenance{' '}
           {MANAGING_COMPANY_NAME} paid to the corporation on the villas it lets. It is read from the contribution receipts,
-          never from the cost register, so it is counted exactly once, a contribution typed into the register as well is
-          left off and named below.
+          never from the cost register, which holds supplier bills only, so it is counted exactly once.
         </p>
       </div>
     );

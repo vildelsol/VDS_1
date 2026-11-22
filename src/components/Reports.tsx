@@ -188,11 +188,8 @@ export default function Reports({
   const payments = useMemo(() => paymentsInBook(combined.payments, book), [combined, book]);
 
   /*
-   * `expensesForBook`, not `expensesInBook`: on ISPO's book a contribution typed
-   * into the cost register as well as receipted is counted from the receipt, and
-   * counting the row too would put the same money on this screen twice. The
-   * operating statement below already applied that rule and this summary did not,
-   * so the two disagreed.
+   * `expensesForBook`, the one call every screen makes for a book's costs, so
+   * this summary and the operating statement below cannot disagree.
    *
    * The per-currency form is used for every figure; this array is for the printed
    * list of outgoings, which shows both currencies together.

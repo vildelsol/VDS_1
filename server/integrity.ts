@@ -32,7 +32,7 @@
 
 import type { Database } from './db';
 import { createHash } from 'crypto';
-import { accountBalance, chargeCurrency, creditHeldForOthers, isContributionCountedFromReceipts, isOwnAccount, netPaidAsOf, ownAccountAsAt, settledFromRent } from '../src/lib/finance';
+import { accountBalance, chargeCurrency, creditHeldForOthers, isOwnAccount, netPaidAsOf, settledFromRent } from '../src/lib/finance';
 import { hasLevySchedule, isWellFormedFeeChange, levyForMonth, levySchedule } from '../src/lib/feeSchedule';
 import { AUDIT_CAP, AUDIT_KEY_FILE, auditRotationFailure, loadAuditKey, verifyAnchorAndArchive, verifyAuditChain } from './auditChain';
 import { bankItems } from '../src/lib/bankRec';
@@ -446,33 +446,6 @@ export function checkIntegrity(db: Database): IntegrityReport {
      * operation as the void; if one is ever missing, something wrote the status
      * directly.
      */
-    /*
-     * The one double count the two books cannot prevent on their own.
-     *
-     * The maintenance ISPO pays on the villas it lets is a **receipt** against
-     * that villa's maintenance account, and the ISPO statement reads it from the
-     * payment ledger. If somebody also types it into the expense register as an
-     * ISPO cost, the same money is counted twice on that statement — once from
-     * the receipt and once from the cost — and the letting business reads as
-     * worse than it is.
-     *
-     * Not refused at entry, because a genuine ISPO cost against one of its own
-     * villas (a plumber, a locksmith, a repair filed under Maintenance) is a
-     * real and ordinary thing. This finds exactly the rows the statements leave
-     * out, through the one shared rule `isContributionCountedFromReceipts`, so
-     * the self-check can never tell staff to void a real bill (it did, for a
-     * J$9,000 repair, until 2026-11-19).
-     */
-    const ownAccountVillas = ownAccountAsAt(units);
-    add(
-      'warning',
-      'contribution-entered-as-a-cost',
-      'A maintenance contribution on a villa VDS lets looks to have been entered in the expense register as well as receipted. It would be counted twice on the ISPO statement.',
-      expenses
-        .filter(e => e.status !== 'void' && isContributionCountedFromReceipts(e, ownAccountVillas, units))
-        .map(e => `${e.id} (${e.unitNumber}, ${e.currency} ${e.amount})`)
-    );
-
     add(
       'serious',
       'void-cost-without-a-reason',

@@ -63,14 +63,15 @@ export default async function run({ port, projectRoot }) {
     const onOwner = await c.post('/api/expenses', expense({ unitId: 'unit-2' }));
     const general = await c.post('/api/expenses', expense({ unitNumber: 'General' }));
     const repair = await c.post('/api/expenses', expense({ unitId: 'unit-1', category: 'Contractors', description: 'Pipe' }));
-    for (const [name, r] of [['ISPO villa', onIspo], ['proprietor villa', onOwner], ['general', general], ['repair', repair]]) {
+    // A proprietor's own utility is refused outright since 2026-11-22: see villa-utility-leaks.
+    T.check('a utility on a proprietor’s villa is refused', onOwner.status === 400, String(onOwner.status));
+    for (const [name, r] of [['ISPO villa', onIspo], ['general', general], ['repair', repair]]) {
       if (r.status >= 400) T.check(`setup: ${name} cost saved`, false, `${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
     }
 
     let db = (await c.get('/api/db')).body;
     const find = (vendorUnit, cat = 'Utilities') => db.expenses.find(e => e.unitId === vendorUnit && e.category === cat);
     T.check('a utility on an ISPO villa is saved on ISPO’s book, though the form sent strata', find('unit-1')?.fund === 'ispo', JSON.stringify(find('unit-1')));
-    T.check('a utility on a proprietor’s villa keeps the fund it was given', (find('unit-2')?.fund || 'strata') === 'strata', JSON.stringify(find('unit-2')));
     T.check(
       'a utility on no villa keeps the fund it was given',
       (db.expenses.find(e => !e.unitId && e.category === 'Utilities')?.fund || 'strata') === 'strata'
