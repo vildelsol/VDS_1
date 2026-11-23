@@ -43,6 +43,7 @@ import {
   liveExpenses,
   occupancyOn,
   operatingStatement,
+  depositsKept,
   paymentsInBook,
   utilityRecoveries,
   UTILITY_RECOVERY_NOTE,
@@ -219,6 +220,9 @@ export default function Reports({
   }, [from, to, preset, invalidRange]);
 
   const months = useMemo(() => (invalidRange ? [] : monthsBetween(from, to)), [from, to, invalidRange]);
+
+  // Deposits ISPO kept: income on ISPO's book and the combined one (Ro, 2026-11-23).
+  const kept = useMemo(() => depositsKept(tenancies, bookings), [tenancies, bookings]);
 
   /* ---------------- per-currency period summary ---------------- */
 
@@ -1015,6 +1019,7 @@ export default function Reports({
         payments={allPayments}
         expenses={allExpenses}
         book={book}
+        depositsKept={kept}
         settings={settings}
         session={session}
       />
@@ -1035,7 +1040,7 @@ export default function Reports({
         Do not wrap this in a role check — that is exactly the mistake corrected
         below it.
       */}
-      <IspoOperations units={units} expenses={allExpenses} payments={allPayments} settings={settings} session={session} />
+      <IspoOperations units={units} expenses={allExpenses} payments={allPayments} depositsKept={kept} settings={settings} session={session} />
 
       {/*
         ISPO's own trading position on the villas it lets — deliberately the last

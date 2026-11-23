@@ -30,11 +30,11 @@
  * shared by many changes at once.
  */
 
-import type { BankMatch, Booking, Currency, Expense, ExpenseFund, Payment, Tenancy } from '../types';
+import type { BankMatch, Booking, Currency, Expense, ExpenseFund, Ownership, Payment, Tenancy, Unit } from '../types';
 import { isWithin } from './dates';
 import { referenceKey } from './text';
 import { fundOf } from '../types';
-import { bookOfPaymentCategory, utilityRecoveryBook } from './finance';
+import { bookOfPaymentCategory, ownLevyReceiptTest, utilityRecoveryBook } from './finance';
 import { round2, sumMoney } from './money';
 
 export type BankItemKind =
@@ -86,16 +86,24 @@ export interface BankRecInput {
   expenses?: Expense[];
   tenancies?: Tenancy[];
   bookings?: Booking[];
+  /** With units, ISPO's levy on its own villas is left out: a book entry, not a bank movement. */
+  units?: Unit[];
+  ownerships?: Ownership[];
 }
 
 const receiptMatch = (p: Payment): BankMatch | undefined =>
   p.reconciledOn ? { on: p.reconciledOn, by: p.reconciledBy || '', at: p.reconciledAt || '', reference: p.reconciledReference } : undefined;
 
 /** Every movement the books say crossed the bank, any date, any currency. */
-export function bankItems({ payments, expenses = [], tenancies = [], bookings = [] }: BankRecInput): BankItem[] {
+export function bankItems({ payments, expenses = [], tenancies = [], bookings = [], units, ownerships }: BankRecInput): BankItem[] {
   const out: BankItem[] = [];
+  /*
+   * ISPO pays the levy on its own villas by book entry, not through the bank
+   * (Ro, 2026-11-23). Neither account will show it, so it is never an item to match.
+   */
+  const ownLevy = units ? ownLevyReceiptTest(units, undefined, ownerships) : () => false;
   for (const p of payments) {
-    if (p.derived || p.status !== 'completed') continue;
+    if (p.derived || p.status !== 'completed' || ownLevy(p)) continue;
     const book = receiptBook(p, expenses);
     out.push({
       kind: 'receipt', book, id: p.id, key: `receipt:${p.id}`, direction: 'in', date: p.date, currency: p.currency,

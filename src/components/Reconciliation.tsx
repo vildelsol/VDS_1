@@ -100,8 +100,8 @@ export default function ReconciliationTab({
   // Both directions, one currency: money in (receipts and supplier credits),
   // money out (paid costs, refunds, returned deposits) and the net movement.
   const both = useMemo(
-    () => bankReconciliation({ payments, expenses, tenancies, bookings }, currency, from, to, book),
-    [payments, expenses, tenancies, bookings, currency, from, to, book]
+    () => bankReconciliation({ payments, expenses, tenancies, bookings, units }, currency, from, to, book),
+    [payments, expenses, tenancies, bookings, units, currency, from, to, book]
   );
   // Everything but the receipts, which keep their own table above.
   const outRows = [...both.moneyOut.items, ...both.moneyIn.items.filter(i => i.kind !== 'receipt')].filter(

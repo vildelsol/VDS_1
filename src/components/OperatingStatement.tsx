@@ -33,6 +33,7 @@ import {
   LineVisibility,
   OperatingStatement as Statement,
   OperatingStatementOptions,
+  KeptDeposit,
   REPORT_BOOK_LABELS,
   REPORT_BOOK_SCOPE,
   ReportBook,
@@ -60,6 +61,8 @@ interface Props {
    * whole tab.
    */
   book: ReportBook;
+  /** Deposits ISPO kept (`depositsKept`): an ISPO income line. */
+  depositsKept?: KeptDeposit[];
   settings: AppSettings;
   session: SessionUser;
 }
@@ -120,7 +123,7 @@ const COUNCIL_PRESET: OperatingStatementOptions = {
   income: { Maintenance: 'total', Booking: 'excluded' }
 };
 
-export default function OperatingStatement({ units, payments, expenses, book, settings, session }: Props) {
+export default function OperatingStatement({ units, payments, expenses, book, depositsKept, settings, session }: Props) {
   const [printing, setPrinting] = useState(false);
   // The council preset is the corporation's view; on ISPO's book it hid booking income and showed a false deficit.
   const [incomeVis, setIncomeVis] = useState<Partial<Record<PaymentCategory, LineVisibility>>>(book === 'strata' ? COUNCIL_PRESET.income || {} : {});
@@ -169,8 +172,8 @@ export default function OperatingStatement({ units, payments, expenses, book, se
   }, [book]);
 
   const options: OperatingStatementOptions = useMemo(
-    () => ({ income: incomeVis, expenditure: expenditureVis, book }),
-    [incomeVis, expenditureVis, book]
+    () => ({ income: incomeVis, expenditure: expenditureVis, book, depositsKept }),
+    [incomeVis, expenditureVis, book, depositsKept]
   );
 
   const statements = useMemo(
@@ -190,12 +193,12 @@ export default function OperatingStatement({ units, payments, expenses, book, se
    */
   const present = useMemo(() => {
     if (invalidRange) return { income: [] as string[], expenditure: [] as string[] };
-    const full = CURRENCIES.map(currency => operatingStatement(payments, expenses, units, currency, from, to, { book }));
+    const full = CURRENCIES.map(currency => operatingStatement(payments, expenses, units, currency, from, to, { book, depositsKept }));
     return {
       income: Array.from(new Set(full.flatMap(s => s.income.map(g => g.label)))),
       expenditure: Array.from(new Set(full.flatMap(s => s.expenditure.map(g => g.label))))
     };
-  }, [payments, expenses, units, from, to, invalidRange, book]);
+  }, [payments, expenses, units, from, to, invalidRange, book, depositsKept]);
 
   const isCouncilView =
     incomeVis.Maintenance === 'total' && incomeVis.Booking === 'excluded' && Object.keys(expenditureVis).length === 0;

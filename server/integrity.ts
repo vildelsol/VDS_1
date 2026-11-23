@@ -895,7 +895,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
     {
       // Every kind of bank movement, in and out: one line settles one item.
       const byRef = new Map<string, string[]>();
-      for (const item of bankItems({ payments, expenses, tenancies, bookings })) {
+      for (const item of bankItems({ payments, expenses, tenancies, bookings, units, ownerships: db.ownerships || [] })) {
         const ref = referenceKey(item.match?.reference);
         if (!ref) continue;
         const name = item.kind === 'receipt' ? payments.find(p => p.id === item.id)?.receiptNo || item.id : item.label;

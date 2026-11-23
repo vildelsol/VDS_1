@@ -6611,7 +6611,7 @@ const BANK_CURRENCY_MISMATCH = 'bank-currency-mismatch';
 const BANK_LINE_ALREADY_MATCHED = 'bank-line-already-matched';
 
 function allBankItems(db: Database) {
-  return bankItems({ payments: db.payments, expenses: db.expenses, tenancies: db.tenancies, bookings: db.bookings });
+  return bankItems({ payments: db.payments, expenses: db.expenses, tenancies: db.tenancies, bookings: db.bookings, units: db.units, ownerships: db.ownerships || [] });
 }
 
 /**

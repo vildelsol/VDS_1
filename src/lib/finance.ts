@@ -4667,7 +4667,46 @@ export interface OperatingStatementOptions {
    * must move together or the surplus is an arithmetic statement about nothing.
    */
   book?: ReportBook;
+  /** Deposits kept (`depositsKept`): ISPO's income when kept, never strata's. */
+  depositsKept?: KeptDeposit[];
 }
+
+/**
+ * A tenancy or damage deposit ISPO kept, withheld or applied (Ro, 2026-11-23).
+ * Held, a deposit is the payer's money; kept, the kept part is ISPO's income,
+ * dated the day it was settled. It never reaches the corporation's book.
+ */
+export interface KeptDeposit {
+  id: string;
+  date: string;
+  payer: string;
+  villa: string;
+  reason: string;
+  currency: Currency;
+  amount: number;
+}
+
+export function depositsKept(tenancies: Tenancy[] = [], bookings: Booking[] = []): KeptDeposit[] {
+  const out: KeptDeposit[] = [];
+  for (const t of tenancies) {
+    if (!t.depositReturnedOn || !(t.depositWithheldAmount && t.depositWithheldAmount > 0)) continue;
+    out.push({
+      id: `deposit-kept:${t.id}`, date: t.depositReturnedOn, payer: t.tenantName, villa: getUnitDisplayName(t.unitNumber || ''),
+      reason: t.depositWithheldReason || '', currency: (t.depositCurrency || t.currency) as Currency, amount: round2(t.depositWithheldAmount)
+    });
+  }
+  for (const b of bookings) {
+    if (!b.damageDepositReturnedOn || !(b.damageDepositWithheldAmount && b.damageDepositWithheldAmount > 0)) continue;
+    out.push({
+      id: `damage-deposit-kept:${b.id}`, date: b.damageDepositReturnedOn, payer: b.guestName, villa: getUnitDisplayName(b.unitNumber || ''),
+      reason: b.damageDepositWithheldReason || '', currency: (b.damageDepositCurrency || b.currency) as Currency, amount: round2(b.damageDepositWithheldAmount)
+    });
+  }
+  return out;
+}
+
+const keptInPeriod = (kept: KeptDeposit[], currency: Currency, start: string, end: string): KeptDeposit[] =>
+  kept.filter(k => k.currency === currency && isWithin(k.date, start, end));
 
 export interface OperatingStatement {
   currency: Currency;
@@ -4876,6 +4915,16 @@ export function operatingStatement(
     excludedIncome.push({ label: "Maintenance ISPO paid the corporation on its own villas (already inside rent and bookings)", total: transferBetweenBooks });
   }
 
+  if (book !== 'strata') {
+    const kept = keptInPeriod(options.depositsKept || [], currency, start, end);
+    if (kept.length > 0) {
+      const lines: IncomeLine[] = kept
+        .map(k => ({ id: k.id, date: k.date, payer: `${k.payer}${k.reason ? ` (${k.reason})` : ''}`, villa: k.villa, reference: '', amount: k.amount }))
+        .sort((a, b) => a.date.localeCompare(b.date) || a.payer.localeCompare(b.payer));
+      income.push({ label: 'Deposits kept', lines, total: sumMoney(lines.map(l => l.amount)), itemised: true });
+    }
+  }
+
   const totalIncome = sumMoney(income.map(g => g.total));
 
   /* ---------------- expenditure ---------------- */
@@ -5037,6 +5086,8 @@ export interface IspoOperations {
   rentReceived: number;
   /** Short-stay booking receipts in the period. */
   bookingReceived: number;
+  /** Deposits ISPO kept in the period (`depositsKept`). */
+  depositsKept: number;
   totalIncome: number;
 
   /** ISPO's own costs, paid in the period, by category. */
@@ -5130,12 +5181,14 @@ export function ispoOperations(
   units: Unit[],
   currency: Currency,
   start: string,
-  end: string
+  end: string,
+  kept: KeptDeposit[] = []
 ): IspoOperations {
   const collected = collectedInPeriod(payments, currency, start, end);
   const rentReceived = collected.rent;
   const bookingReceived = collected.booking;
-  const totalIncome = sumMoney([rentReceived, bookingReceived]);
+  const depositsKeptTotal = sumMoney(keptInPeriod(kept, currency, start, end).map(k => k.amount));
+  const totalIncome = sumMoney([rentReceived, bookingReceived, depositsKeptTotal]);
 
   // Utility recoveries on a villa whose utilities ISPO paid net ISPO's cost (Ro, 2026-11-18).
   const inCurrency = ispoExpenses(withUtilityRecoveries(allExpenses, payments)).filter(e => e.currency === currency);
@@ -5239,6 +5292,7 @@ export function ispoOperations(
     to: end,
     rentReceived,
     bookingReceived,
+    depositsKept: depositsKeptTotal,
     totalIncome,
     groups,
     ownCostsPaid,

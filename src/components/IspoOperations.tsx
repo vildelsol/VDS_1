@@ -30,7 +30,7 @@
 import React, { useMemo, useState } from 'react';
 import { useRemembered } from '../lib/screenState';
 import { AppSettings, Currency, Expense, MANAGING_COMPANY_NAME, Payment, SessionUser, Unit } from '../types';
-import { IspoOperations as Statement, ispoOperations } from '../lib/finance';
+import { IspoOperations as Statement, KeptDeposit, ispoOperations } from '../lib/finance';
 import { formatMoney } from '../lib/money';
 import { XlsxCell, cell, documentHeader, downloadWorkbook } from '../lib/xlsx';
 import { addMonths, currentMonth, formatDayLabel, formatMonthLabel, monthEnd, monthStart, today } from '../lib/dates';
@@ -42,6 +42,8 @@ interface Props {
   units: Unit[];
   expenses: Expense[];
   payments: Payment[];
+  /** Deposits ISPO kept (`depositsKept`): part of its income. */
+  depositsKept?: KeptDeposit[];
   settings: AppSettings;
   session: SessionUser;
 }
@@ -71,7 +73,7 @@ function maySeeIspoOperations(session: SessionUser): boolean {
   return session.permissions?.viewIspoOperations !== false;
 }
 
-export default function IspoOperations({ units, expenses, payments, settings, session }: Props) {
+export default function IspoOperations({ units, expenses, payments, depositsKept, settings, session }: Props) {
   const [month, setMonth] = useRemembered('reports.ispo.month', () => addMonths(currentMonth(), -1));
   const [printing, setPrinting] = useState(false);
   const allowed = maySeeIspoOperations(session);
@@ -80,8 +82,8 @@ export default function IspoOperations({ units, expenses, payments, settings, se
   const to = monthEnd(month);
 
   const statements = useMemo(
-    () => CURRENCIES.map(currency => ispoOperations(expenses, payments, units, currency, from, to)),
-    [expenses, payments, units, from, to]
+    () => CURRENCIES.map(currency => ispoOperations(expenses, payments, units, currency, from, to, depositsKept)),
+    [expenses, payments, units, from, to, depositsKept]
   );
 
   const anything = statements.some(s => !s.empty);
@@ -177,6 +179,7 @@ export function CurrencyBlock({ statement: s }: { statement: Statement }) {
       <dl className="grid grid-cols-1 gap-3 sm:grid-cols-4">
         <Tile label="Rent received" value={formatMoney(s.rentReceived, s.currency)} tone="positive" />
         <Tile label="Short-stay received" value={formatMoney(s.bookingReceived, s.currency)} tone="positive" />
+        {s.depositsKept !== 0 && <Tile label="Deposits kept" value={formatMoney(s.depositsKept, s.currency)} tone="positive" />}
         <Tile label="Costs paid" value={formatMoney(s.totalCosts, s.currency)} tone="negative" />
         <Tile
           label={s.net >= 0 ? 'Net for the month' : 'Loss for the month'}
@@ -330,6 +333,7 @@ export function ispoSheet(s: Statement, meta: { month: string; generatedBy: stri
     [cell.section('Income received', 5)],
     [cell.text('Rent'), cell.text(''), cell.text(''), cell.text(''), cell.money(s.rentReceived, s.currency)],
     [cell.text('Short-stay bookings'), cell.text(''), cell.text(''), cell.text(''), cell.money(s.bookingReceived, s.currency)],
+    ...(s.depositsKept !== 0 ? [[cell.text('Deposits kept'), cell.text(''), cell.text(''), cell.text(''), cell.money(s.depositsKept, s.currency)]] : []),
     [cell.total('Total income'), cell.total(''), cell.total(''), cell.total(''), cell.totalMoney(s.totalIncome, s.currency)],
     [cell.blank()],
     [cell.section(`${MANAGING_COMPANY_NAME}'s own costs paid`, 5)],
@@ -453,6 +457,12 @@ export function IspoDocument({
                 <td className="p-1.5 font-sans">Short-stay bookings received</td>
                 <td className="p-1.5 text-right">{formatMoney(s.bookingReceived, s.currency)}</td>
               </tr>
+              {s.depositsKept !== 0 && (
+                <tr>
+                  <td className="p-1.5 font-sans">Deposits kept</td>
+                  <td className="p-1.5 text-right">{formatMoney(s.depositsKept, s.currency)}</td>
+                </tr>
+              )}
               <tr className="border-t border-slate-300 font-bold">
                 <td className="p-1.5 font-sans">Total income</td>
                 <td className="p-1.5 text-right">{formatMoney(s.totalIncome, s.currency)}</td>
