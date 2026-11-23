@@ -93,7 +93,7 @@ function auditEverything(db) {
   // See scenarios-300: the advance charge for a final month shares the move-in
   // month's period legitimately and is not a double-billing.
   for (const c of charges.filter(x => x.status === 'open' && !x.oneOffType && x.kind !== 'advance-final-month')) {
-    const key = `${c.unitId}|${c.category}|${c.periodMonth}`;
+    const key = `${c.unitId}|${c.category}|${c.periodMonth}` + (c.category === 'Rent' ? `|${(c.payerName || '').trim().toLowerCase()}` : ''); // changeover: each tenant owes their own rent (server/integrity.ts)
     if (billed.has(key)) p.push(`${key} billed twice`);
     else billed.set(key, c.id);
   }

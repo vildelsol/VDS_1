@@ -137,9 +137,10 @@ function auditDatabase(db) {
   const seen = new Map();
   const ordinary = charges.filter(x => x.status === 'open' && !x.oneOffType && x.kind !== 'advance-final-month');
   for (const c of ordinary) {
-    const key = `${c.unitId}|${c.category}|${c.periodMonth}`;
-    if (seen.has(key)) problems.push(`${key} is billed twice`);
-    else seen.set(key, c.id);
+    // Same rule as server/integrity.ts: in a changeover month each tenant owes their own rent.
+    const key = `${c.unitId}|${c.category}|${c.periodMonth}` + (c.category === 'Rent' ? `|${(c.payerName || '').trim().toLowerCase()}` : '');
+    if (seen.has(key)) problems.push(`${key} is billed twice [${seen.get(key).payerName} / ${c.payerName}]`);
+    else seen.set(key, c);
   }
 
   for (const b of bookings) {

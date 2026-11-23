@@ -111,7 +111,7 @@ function auditDatabase(db) {
   const live = charges.filter(c => c.status === 'open' && !c.oneOffType && c.kind !== 'advance-final-month');
   const seen = new Map();
   for (const c of live) {
-    const key = `${c.unitId}|${c.category}|${c.periodMonth}`;
+    const key = `${c.unitId}|${c.category}|${c.periodMonth}` + (c.category === 'Rent' ? `|${(c.payerName || '').trim().toLowerCase()}` : ''); // changeover: each tenant owes their own rent (server/integrity.ts)
     if (seen.has(key)) problems.push(`${key} is billed twice (${seen.get(key)} and ${c.id})`);
     else seen.set(key, c.id);
   }

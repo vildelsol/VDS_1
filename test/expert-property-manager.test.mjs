@@ -278,9 +278,10 @@ export default async function run({ port, projectRoot }) {
     /* --- nobody is billed twice for a month --- */
     const seen = new Map();
     for (const ch of db.charges.filter(x => x.status === 'open' && !x.oneOffType && x.kind !== 'advance-final-month')) {
-      const key = `${ch.unitId}|${ch.category}|${ch.periodMonth}`;
-      if (seen.has(key)) problems.push(`${key} billed twice`);
-      seen.set(key, ch.id);
+      // Same rule as server/integrity.ts: in a changeover month each tenant owes their own rent.
+      const key = `${ch.unitId}|${ch.category}|${ch.periodMonth}` + (ch.category === 'Rent' ? `|${(ch.payerName || '').trim().toLowerCase()}` : '');
+      if (seen.has(key)) problems.push(`${key} billed twice [${seen.get(key).payerName} / ${ch.payerName}]`);
+      seen.set(key, ch);
     }
     T.check('no villa was billed twice for the same month', problems.length === 0, problems.slice(0, 3).join('; '));
 

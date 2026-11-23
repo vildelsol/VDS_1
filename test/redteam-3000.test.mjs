@@ -140,7 +140,7 @@ function auditDatabase(db) {
   // double-billing.
   const seen = new Map();
   for (const c of charges.filter(x => x.status === 'open' && !x.oneOffType && x.kind !== 'advance-final-month')) {
-    const key = `${c.unitId}|${c.category}|${c.periodMonth}`;
+    const key = `${c.unitId}|${c.category}|${c.periodMonth}` + (c.category === 'Rent' ? `|${(c.payerName || '').trim().toLowerCase()}` : ''); // changeover: each tenant owes their own rent (server/integrity.ts)
     if (seen.has(key)) problems.push(`${key} is billed twice`);
     else seen.set(key, c.id);
   }
