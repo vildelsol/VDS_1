@@ -33,6 +33,9 @@ import {
   accountBalance,
   chargeCategoriesInBook,
   chargedInPeriod,
+  billedOnCombinedView,
+  receivedOnCombinedView,
+  combinedSettledOfBilled,
   consolidateEverything,
   chargesInBook,
   collectedInPeriod,
@@ -211,6 +214,20 @@ export default function Reports({
    * it has been added up.
    */
   const bookCategories = useMemo(() => chargeCategoriesInBook(book), [book]);
+  // Combined view (Ro, 2026-11-24): billed is maintenance only, every villa's; rent is shown whole beside it, never added in.
+  const billedOnBook = (currency: Currency, start: string, end: string) =>
+    book === 'everything' ? billedOnCombinedView(charges, currency, start, end) : chargedInPeriod(bookCharges, currency, start, end);
+  // Combined view: whole rent and whole maintenance received, ISPO's maintenance to the
+  // corporation included, and the same money shown again as paid out (`paidOverOnBook`).
+  const receivedOnBook = (currency: Currency, start: string, end: string) =>
+    book === 'everything' ? receivedOnCombinedView(allPayments, payments, currency, start, end).received : collectedInPeriod(payments, currency, start, end);
+  // Maintenance ISPO paid the corporation: money out on ISPO's book and on the combined one.
+  const paidOverOnBook = (currency: Currency, start: string, end: string) =>
+    book === 'ispo'
+      ? operatingStatement(allPayments, allExpenses, units, currency, start, end, { book }).internalTransfer
+      : book === 'everything'
+        ? receivedOnCombinedView(allPayments, payments, currency, start, end).ispoMaintenancePaid
+        : 0;
 
   const { from, to } = rangeForPreset(preset, custom);
   const invalidRange = to < from;
@@ -229,8 +246,8 @@ export default function Reports({
   const summary = useMemo(() => {
     if (invalidRange) return [];
     return (['JMD', 'USD'] as Currency[]).map(currency => {
-      const collected = collectedInPeriod(payments, currency, from, to);
-      const billed = chargedInPeriod(bookCharges, currency, from, to);
+      const collected = receivedOnBook(currency, from, to);
+      const billed = billedOnBook(currency, from, to);
 
       /*
        * What went out, on this book.
@@ -247,10 +264,7 @@ export default function Reports({
        * two cannot drift apart. It is nil on the corporation's book and on the
        * combined one, where that money is income rather than a cost.
        */
-      const paidOver =
-        book === 'ispo'
-          ? operatingStatement(allPayments, allExpenses, units, currency, from, to, { book }).internalTransfer
-          : 0;
+      const paidOver = paidOverOnBook(currency, from, to);
       const costs = expensesForBook(netted, units, book, currency);
       const spent = sumMoney([expensesInPeriod(costs, currency, from, to), paidOver]);
 
@@ -273,7 +287,9 @@ export default function Reports({
         )
       );
 
-      const settlement = settledOfBilled(bookCharges, payments, currency, from, to);
+      // Everything book: the Dashboard's own rate, on the levy roll billed beside it.
+      const settlement =
+        book === 'everything' ? combinedSettledOfBilled(charges, allPayments, units, currency, from, to) : settledOfBilled(bookCharges, payments, currency, from, to);
       return {
         currency,
         collected,
@@ -306,8 +322,8 @@ export default function Reports({
       const mTo = monthEnd(month) > to ? to : monthEnd(month);
       const row: Record<string, number | string> = { month };
       for (const currency of ['JMD', 'USD'] as Currency[]) {
-        const collected = collectedInPeriod(payments, currency, mFrom, mTo);
-        const billed = chargedInPeriod(bookCharges, currency, mFrom, mTo);
+        const collected = receivedOnBook(currency, mFrom, mTo);
+        const billed = billedOnBook(currency, mFrom, mTo);
         row[`${currency}_in`] = collected.total;
         /*
          * What came in that is never raised as a charge.
@@ -323,11 +339,9 @@ export default function Reports({
         row[`${currency}_booking`] = collected.booking;
         row[`${currency}_out`] = sumMoney([
           expensesInPeriod(expensesForBook(netted, units, book, currency), currency, mFrom, mTo),
-          // Same reason as the summary card above: on ISPO's book the
-          // contribution it pays over is money out with no cost row behind it.
-          book === 'ispo'
-            ? operatingStatement(allPayments, allExpenses, units, currency, mFrom, mTo, { book }).internalTransfer
-            : 0
+          // Same reason as the summary card above: the maintenance ISPO pays
+          // over is money out with no cost row behind it.
+          paidOverOnBook(currency, mFrom, mTo)
         ]);
         row[`${currency}_billed`] = billed.total;
       }
@@ -364,7 +378,7 @@ export default function Reports({
             billed: entry.billed.total,
             settled: entry.settled,
             closingReceivable: entry.closingReceivable,
-            paidOver: book === 'ispo' ? entry.paidOver : undefined,
+            paidOver: book === 'strata' ? undefined : entry.paidOver,
             expensesOutstanding: sumMoney(entry.breakdown.map(b => b.outstanding))
           }
         )
@@ -903,7 +917,15 @@ export default function Reports({
 
                 <dl className="space-y-2 text-xs">
                   <StatementRow label="Receivable at start of period" value={formatMoney(entry.openingReceivable, entry.currency)} />
-                  <StatementRow label="Billed during period" value={formatMoney(entry.billed.total, entry.currency)} detail={`Rent ${formatMoney(entry.billed.rent, entry.currency)} · Maintenance ${formatMoney(entry.billed.maintenance, entry.currency)}`} />
+                  <StatementRow
+                    label={book === 'everything' ? 'Maintenance billed during period' : 'Billed during period'}
+                    value={formatMoney(entry.billed.total, entry.currency)}
+                    detail={
+                      book === 'everything'
+                        ? `Every villa's maintenance, ${MANAGING_COMPANY_NAME}'s included. Rent charged ${formatMoney(entry.billed.rent, entry.currency)} is ${MANAGING_COMPANY_NAME}'s income, shown apart and not added in.`
+                        : `Rent ${formatMoney(entry.billed.rent, entry.currency)} · Maintenance ${formatMoney(entry.billed.maintenance, entry.currency)}`
+                    }
+                  />
                   <StatementRow label="Received during period" value={formatMoney(entry.collected.total, entry.currency)} detail={`Rent ${formatMoney(entry.collected.rent, entry.currency)} · Maintenance ${formatMoney(entry.collected.maintenance, entry.currency)} · Bookings ${formatMoney(entry.collected.booking, entry.currency)} · Other ${formatMoney(entry.collected.other, entry.currency)}`} />
                   <StatementRow label="Receivable at end of period" value={formatMoney(entry.closingReceivable, entry.currency)} strong />
                   <StatementRow
@@ -912,7 +934,7 @@ export default function Reports({
                     detail={
                       [
                         entry.paidOver > 0
-                          ? `Includes ${formatMoney(entry.paidOver, entry.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on the villas it lets. It is read from the contribution receipts, there is no bill for it in the cost register.`
+                          ? `Includes ${formatMoney(entry.paidOver, entry.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on its villas. It is read from the maintenance receipts, there is no bill for it in the cost register.`
                           : '',
                         entry.levyNote,
                         entry.utilities.recovered !== 0

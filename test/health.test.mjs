@@ -252,7 +252,7 @@ export default async function run({ port, projectRoot }) {
         JSON.stringify(jmd.components)
       );
       const cash = jmd.components.find(c => c.key === 'cash');
-      T.check('nor its cash position', cash.detail.includes('0.00 spent'), cash.detail);
+      T.check('nor its cash position', cash.detail.includes('0.00 paid out'), cash.detail);
     }
 
     /* ---------------- the boundaries ---------------- */

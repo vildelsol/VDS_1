@@ -226,8 +226,10 @@ export default async function run({ port, projectRoot }) {
       'the period went in as intended — there is rent, a booking, contributions and both kinds of cost to separate',
       // Utility recoveries are a pass-through (Ro, 2026-11-18): not income, netted
       // from the utility cost. This expected them in income, which was the defect.
-      everything.totalIncome === RENT + BOOKING + CONTRIBUTION &&
-        everything.totalExpenditure === STRATA_TOTAL - UTILITY_RECOVERED + ISPO_TOTAL,
+      // Whole figures (Ro, 2026-11-24): both contributions are maintenance received, ISPO's
+      // one (unit 1) is also paid out, so it sits on both sides and the surplus is unchanged.
+      everything.totalIncome === RENT + BOOKING + 2 * CONTRIBUTION &&
+        everything.totalExpenditure === STRATA_TOTAL - UTILITY_RECOVERED + ISPO_TOTAL + CONTRIBUTION,
       `income ${everything.totalIncome}, expenditure ${everything.totalExpenditure}`
     );
 
@@ -311,9 +313,9 @@ export default async function run({ port, projectRoot }) {
      * is genuinely on both books — see rule 2 and `internalTransfer`'s own note.
      */
     T.check(
-      'income: the corporation’s plus ISPO’s, less the one transfer between the books, is all of it, with nothing lost and nothing doubled',
-      strata.totalIncome + ispo.totalIncome - ispo.internalTransfer === everything.totalIncome,
-      `${strata.totalIncome} + ${ispo.totalIncome} - ${ispo.internalTransfer} vs ${everything.totalIncome}`
+      'income: the corporation’s plus ISPO’s is all of it, whole, with nothing lost',
+      strata.totalIncome + ispo.totalIncome === everything.totalIncome,
+      `${strata.totalIncome} + ${ispo.totalIncome} vs ${everything.totalIncome}`
     );
     /*
      * Audit, 2026-11-18: the combined statement used to count villa 1's levy as
@@ -321,18 +323,18 @@ export default async function run({ port, projectRoot }) {
      * counted it once. It is now left off and named, never dropped in silence.
      */
     T.check(
-      'the combined statement names the levy ISPO paid over as left off, with its amount',
-      everything.excludedIncome.some(e => /ISPO paid the corporation/.test(e.label) && e.total === ispo.internalTransfer),
-      JSON.stringify(everything.excludedIncome)
+      'the combined statement shows the maintenance ISPO paid the corporation as paid out, with its amount',
+      everything.expenditure.some(g => /paid to the corporation/.test(g.label) && g.total === ispo.internalTransfer && g.total === CONTRIBUTION) && everything.excludedIncome.length === 0,
+      JSON.stringify(everything.expenditure.map(g => [g.label, g.total]))
     );
     T.check(
-      'expenditure: the same, once the one transfer between the books is taken out',
-      strata.totalExpenditure + ispo.totalExpenditure - ispo.internalTransfer === everything.totalExpenditure,
-      `${strata.totalExpenditure} + ${ispo.totalExpenditure} - ${ispo.internalTransfer} vs ${everything.totalExpenditure}`
+      'expenditure: the corporation’s plus ISPO’s, ISPO’s maintenance to the corporation included',
+      strata.totalExpenditure + ispo.totalExpenditure === everything.totalExpenditure,
+      `${strata.totalExpenditure} + ${ispo.totalExpenditure} vs ${everything.totalExpenditure}`
     );
     T.check(
       'and the combined statement still names the split it always named',
-      everything.strataExpenditure === STRATA_TOTAL - UTILITY_RECOVERED && everything.ispoExpenditure === ISPO_TOTAL,
+      everything.strataExpenditure === STRATA_TOTAL - UTILITY_RECOVERED && everything.ispoExpenditure === ISPO_TOTAL + CONTRIBUTION,
       `${everything.strataExpenditure} strata, ${everything.ispoExpenditure} ISPO`
     );
 
@@ -486,7 +488,7 @@ export default async function run({ port, projectRoot }) {
       // Netted exactly as Reports.tsx nets them (utility recoveries, 2026-11-18).
       const costs = expensesForBook(withUtilityRecoveries(db2.expenses, db2.payments), db2.units, b, 'JMD');
       const summarySpent =
-        expensesInPeriod(costs, 'JMD', from, to) + (b === 'ispo' ? statement.internalTransfer : 0);
+        expensesInPeriod(costs, 'JMD', from, to) + (b !== 'strata' ? statement.internalTransfer : 0);
       T.check(
         `on the ${b} book, what the summary says was paid out is what the statement totals`,
         summarySpent === statement.totalExpenditure,

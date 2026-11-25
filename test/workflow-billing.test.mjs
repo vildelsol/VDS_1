@@ -282,7 +282,7 @@ export default async function run({ port, projectRoot }) {
     const dashSrc = fs.readFileSync(path.join(projectRoot, 'src/components/Dashboard.tsx'), 'utf8');
     T.check(
       'the dashboard note that sends a person to Post month says the same, so neither screen understates it',
-      /bills the whole property for that month, the maintenance levy included/.test(dashSrc),
+      /bills the whole property for that month, maintenance included/.test(dashSrc),
       'the dashboard still sends a person to Post month describing rent only'
     );
 

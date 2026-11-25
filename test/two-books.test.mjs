@@ -474,8 +474,9 @@ export default async function run({ port, projectRoot }) {
     );
     T.check(
       'and it names how much of itself is ISPO’s',
-      op.ispoExpenditure === ISPO_TOTAL + 9000,
-      `${op.ispoExpenditure}, expected ${ISPO_TOTAL + 9000}`
+      // + ISPO's J$10,000 maintenance to the corporation, paid out on the combined statement too (Ro, 2026-11-24).
+      op.ispoExpenditure === ISPO_TOTAL + 9000 + 10000,
+      `${op.ispoExpenditure}, expected ${ISPO_TOTAL + 9000 + 10000}`
     );
     T.check(
       'while the corporation’s side of it matches the owners’ statement exactly',

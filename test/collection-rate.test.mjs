@@ -101,10 +101,12 @@ export default async function run({ projectRoot }) {
       T.check('combined: tenant paid rent incl. levy, ISPO paid its levy, owner paid: everything real is paid = 100%', full.rate === 100, JSON.stringify(full));
       const ownerUnpaid = [pay('p1', 'L1', 'Rent', 75000), pay('p2', 'S1', 'Maintenance', 10000)];
       const half = mod.combinedSettledOfBilled(chs, ownerUnpaid, U, 'JMD', '2026-10-01', '2026-10-31');
-      T.check('combined: the owner has not paid their 10,000 of 85,000 collectable: 88.24%', half.billed === 85000 && half.settled === 75000 && half.rate === 88.24, JSON.stringify(half));
+      // Billed on the combined view is maintenance only (Ro, 2026-11-24): L1 20,000 + S1 10,000 + O1 10,000 = 40,000. Rent is apart.
+      T.check('combined: maintenance billed is 40,000 and rent is not in it', full.billed === 40000 && full.settled === 40000, JSON.stringify(full));
+      T.check('combined: the owner has not paid their 10,000: 30,000 / 40,000 = 75%', half.billed === 40000 && half.settled === 30000 && half.rate === 75, JSON.stringify(half));
       const tenantUnpaid = [pay('p2', 'S1', 'Maintenance', 10000), pay('p3', 'O1', 'Maintenance', 10000)];
       const t0 = mod.combinedSettledOfBilled(chs, tenantUnpaid, U, 'JMD', '2026-10-01', '2026-10-31');
-      T.check('combined: the tenant has paid nothing: 10,000 of 85,000 = 11.76%', t0.rate === 11.76, JSON.stringify(t0));
+      T.check('combined: the tenant has paid nothing, so the 20,000 inside the rent is unpaid: 20,000 / 40,000 = 50%', t0.billed === 40000 && t0.settled === 20000 && t0.rate === 50, JSON.stringify(t0));
     }
   } finally {
     cleanup();

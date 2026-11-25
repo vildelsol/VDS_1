@@ -900,7 +900,7 @@ function StatementDocument({
               {formatMoney(s.strataExpenditure, s.currency)} is the body corporate&rsquo;s and{' '}
               {formatMoney(s.ispoExpenditure, s.currency)} is {MANAGING_COMPANY_NAME}&rsquo;s, paid from rental income.
               {s.internalTransfer > 0
-                ? ` ${formatMoney(s.internalTransfer, s.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on the villas it lets is money moving between the two books, already inside the rent and bookings above, and is not counted as income a second time.`
+                ? ` ${formatMoney(s.internalTransfer, s.currency)} of maintenance ${MANAGING_COMPANY_NAME} paid the corporation on its own villas is shown both as maintenance received and as paid out, so it does not change the surplus.`
                 : ''}{' '}
               The proprietors&rsquo; statements, the annual report and the returns to the Commission carry the
               corporation&rsquo;s costs only.

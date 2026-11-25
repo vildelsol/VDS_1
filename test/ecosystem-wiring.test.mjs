@@ -145,8 +145,14 @@ export default async function run({ port, projectRoot }) {
     // ---- spent: every screen reads the same costs ----
     const rawExp = sum(r.db.expenses.filter(e => e.currency === cur && !F.isVoidExpense(e) && e.date >= from && e.date <= to).map(e => e.amount));
     eq('expensesInPeriod = the expenses in the records', F.expensesInPeriod(r.db.expenses, cur, from, to), rawExp);
-    eq('operating statement expenditure = the records', r.opSt.totalExpenditure, rawExp);
-    eq('the two books partition every cost: strata + ISPO = all', r.opSt.strataExpenditure + r.opSt.ispoExpenditure, rawExp);
+    // Whole figures (Ro, 2026-11-24): the combined statement also pays out the maintenance ISPO paid the
+    // corporation on the villas it owns (every villa not owner-occupied), by hand or out of rent.
+    const ispoOwned = new Set(r.db.units.filter(u => u.status !== 'owner-occupied').map(u => u.id));
+    const ispoMaint = sum(r.S.filter(p => p.status === 'completed' && p.currency === cur && p.category === 'Maintenance' && ispoOwned.has(p.unitId) && p.date >= from && p.date <= to).map(p => p.amount))
+      - sum(r.S.filter(p => p.status === 'completed' && p.currency === cur && p.category === 'Maintenance' && ispoOwned.has(p.unitId) && p.refundedOn && p.refundedOn >= from && p.refundedOn <= to).map(p => p.refundedAmount || 0));
+    eq('operating statement expenditure = the records + ISPO maintenance paid to the corporation', r.opSt.totalExpenditure, rawExp + ispoMaint);
+    eq('the two books partition every cost: strata + ISPO = all', r.opSt.strataExpenditure + r.opSt.ispoExpenditure, rawExp + ispoMaint);
+    eq('and the ISPO maintenance figure is the statement\'s own', r.opSt.internalTransfer, ispoMaint);
     eq('annual return expenditure = the records', r.ann.expenditure, rawExp);
     eq('projection expenses = the records', r.proj.expensesPaid, rawExp);
     eq('operations statement: costs paid + recharged to a villa = the records', r.ops.costsPaid + r.ops.villaRecharged, rawExp);

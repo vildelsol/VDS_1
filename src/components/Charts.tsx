@@ -31,8 +31,8 @@ import {
 import {
   AgeingBuckets,
   arrearsAgeing,
-  chargedInPeriod,
-  collectedInPeriod,
+  billedOnCombinedView,
+  receivedOnCombinedView,
   consolidateEverything,
   collectionRate,
   combinedSettledOfBilled,
@@ -188,14 +188,16 @@ export default function Charts({ units, charges, payments, expenses, tenancies, 
            */
           if (row.amount !== 0) byCategory[row.category] = row.amount;
         }
-        const collected = collectedInPeriod(combined.payments, currency, mFrom, mTo);
+        // Whole figures (Ro, 2026-11-24): ISPO's maintenance to the corporation is in received and in paid out.
+        const whole = receivedOnCombinedView(payments, combined.payments, currency, mFrom, mTo);
+        const collected = whole.received;
         return {
           month,
-          billed: chargedInPeriod(combined.charges, currency, mFrom, mTo).total,
+          billed: billedOnCombinedView(charges, currency, mFrom, mTo).total,
           received: collected.total,
           settledOfBilled: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).settled,
           collectable: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).billed,
-          paidOut: expensesInPeriod(costs, currency, mFrom, mTo),
+          paidOut: sumMoney([expensesInPeriod(costs, currency, mFrom, mTo), whole.ispoMaintenancePaid]),
           byCategory
         };
       });

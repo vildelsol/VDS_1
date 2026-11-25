@@ -28,7 +28,7 @@ import { useRemembered } from '../lib/screenState';
 import { Banknote, CheckCircle2, Circle, Landmark, Printer } from 'lucide-react';
 
 import { Booking, Currency, CURRENCIES, Expense, ExpenseFund, MANAGING_COMPANY_NAME, Payment, SessionUser, Tenancy, Unit, getUnitDisplayName } from '../types';
-import { Reconciliation as ReconciliationResult, reconciliation } from '../lib/finance';
+import { Reconciliation as ReconciliationResult, ownLevyReceiptTest, reconciliation } from '../lib/finance';
 import { BankItem, BankItemKind, bankReconciliation, receiptBook } from '../lib/bankRec';
 
 /** The two entities bank separately (Ro, 2026-11-20); a statement is one entity's account. */
@@ -90,8 +90,18 @@ export default function ReconciliationTab({
   const from = monthStart(month);
   const to = monthEnd(month);
 
-  // Only this entity's receipts: the other one's money went to another account.
-  const bookPayments = useMemo(() => payments.filter(p => receiptBook(p, expenses) === book), [payments, expenses, book]);
+  /*
+   * Only this entity's receipts, and only money that crossed its bank account.
+   * ISPO's levy on its own villas is a book entry (Ro, 2026-11-23) and a levy
+   * "settled from rent" is worked out of a rent receipt, not received again:
+   * neither is on any bank statement. The summary below (`bankItems`) already
+   * left them out, so this table said J$260,000 to find beside a summary of
+   * J$80,000 and staff hunted for nine receipts no bank would ever show (2026-11-24).
+   */
+  const bookPayments = useMemo(() => {
+    const ownLevy = ownLevyReceiptTest(units);
+    return payments.filter(p => receiptBook(p, expenses) === book && !p.derived && !ownLevy(p));
+  }, [payments, expenses, book, units]);
   const result: ReconciliationResult = useMemo(
     () => reconciliation(bookPayments, currency, from, to),
     [bookPayments, currency, from, to]

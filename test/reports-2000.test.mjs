@@ -164,15 +164,16 @@ function auditReports(db, fin, stays, periods) {
 
       /* ---- 1. the books add up, both sides ---- */
 
-      // The levy ISPO paid on its own villas is on the corporation's book and is
-      // left off the combined one, named (audit, 2026-11-18): counted once.
-      const namedTransfer = all.excludedIncome.filter(e => /ISPO paid the corporation/.test(e.label)).reduce((t, e) => t + e.total, 0);
-      if (!near(namedTransfer, ispo.internalTransfer)) {
-        problems.push(`${currency} ${from}..${to}: the combined statement left off ${namedTransfer} as ISPO's levy, the ISPO book says ${ispo.internalTransfer}`);
+      // Whole figures (Ro, 2026-11-24): the maintenance ISPO paid the corporation on its own
+      // villas is maintenance received on the combined book AND paid out there, as its own line.
+      const paidOverLine = all.expenditure.filter(g => /paid to the corporation/.test(g.label)).reduce((t, g) => t + g.total, 0);
+      if (!near(paidOverLine, ispo.internalTransfer)) {
+        problems.push(`${currency} ${from}..${to}: the combined statement pays out ${paidOverLine} as ISPO's maintenance, the ISPO book says ${ispo.internalTransfer}`);
       }
-      if (!near(strata.totalIncome + ispo.totalIncome - namedTransfer, all.totalIncome)) {
+      if (all.excludedIncome.length > 0) problems.push(`${currency} ${from}..${to}: the combined statement leaves income off: ${JSON.stringify(all.excludedIncome)}`);
+      if (!near(strata.totalIncome + ispo.totalIncome, all.totalIncome)) {
         problems.push(
-          `${currency} ${from}..${to}: income ${strata.totalIncome} + ${ispo.totalIncome} less the transfer ${namedTransfer} does not make ${all.totalIncome}`
+          `${currency} ${from}..${to}: income ${strata.totalIncome} + ${ispo.totalIncome} does not make ${all.totalIncome}`
         );
       }
       /*
@@ -191,7 +192,7 @@ function auditReports(db, fin, stays, periods) {
        * form: it fails both if money vanishes and if money vanishes quietly.
        */
       const namedAsReceipted = ispo.excludedExpenditure.reduce((t, e) => t + e.total, 0);
-      if (!near(strata.totalExpenditure + ispo.totalExpenditure - ispo.internalTransfer + namedAsReceipted, all.totalExpenditure)) {
+      if (!near(strata.totalExpenditure + ispo.totalExpenditure - ispo.internalTransfer + namedAsReceipted + paidOverLine, all.totalExpenditure)) {
         problems.push(
           `${currency} ${from}..${to}: expenditure ${strata.totalExpenditure} + ${ispo.totalExpenditure} less the transfer ${ispo.internalTransfer} plus the ${namedAsReceipted} named as already receipted does not make ${all.totalExpenditure}`
         );
@@ -256,7 +257,7 @@ function auditReports(db, fin, stays, periods) {
         // Netted as Reports.tsx nets them: utility recoveries reduce the utility
         // cost (pass-through, Ro 2026-11-18). The raw register was the old definition.
         const costs = expensesForBook(withUtilityRecoveries(expenses, payments), units, book, currency);
-        const summarySpent = expensesInPeriod(costs, currency, from, to) + (book === 'ispo' ? read[book].internalTransfer : 0);
+        const summarySpent = expensesInPeriod(costs, currency, from, to) + (book !== 'strata' ? read[book].internalTransfer : 0);
         if (!near(summarySpent, read[book].totalExpenditure)) {
           problems.push(
             `${currency} ${from}..${to}: on the ${book} book the summary says ${summarySpent} went out and the statement says ${read[book].totalExpenditure}`

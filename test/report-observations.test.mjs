@@ -288,17 +288,17 @@ export default async function run({ projectRoot }) {
 
     /* ---- the combined book: who to chase, and the one figure that does not tie ---- */
     const every = obs.observationsFor(input('everything'), { billed: 415000, settled: 145000, closingReceivable: pageReceivable('everything', 'JMD') / 100 });
-    const everyGap = every.find(o => /billed in rent and maintenance/.test(o.text));
+    const everyGap = every.find(o => /billed in maintenance/.test(o.text));
     /*
-     * 2026-11-19: the combined book eliminates ISPO's own levy on both sides
-     * (charge and receipt), so a let villa's rent stands whole and ISPO's paid
-     * levy is simply not there. These three pinned the old split, under which
-     * the levy was moved out of the rent into a charge nothing could pay.
+     * 2026-11-24 (Ro): billed on the combined book is maintenance only, every villa's,
+     * ISPO's included: 14 x J$20,000 = J$280,000. Settled: all but Proprietor 16
+     * (J$20,000), Proprietor 15 (J$15,000 of J$20,000) and Unit 3, whose J$20,000 sits
+     * inside Jane Doe's unpaid rent = J$225,000. Rent is chased whole, apart from billed.
      */
-    T.check('combined: Jane Doe is chased for one figure, the whole J$75,000 rent', !!everyGap && everyGap.details.some(d => /^Chase Jane Doe, Villa Unit 3: October 2026 rent J\$75,000\.00 unpaid,/.test(d)) && !everyGap.details.some(d => /levy inside the rent/.test(d)), JSON.stringify(everyGap?.details));
-    T.check('combined: J$110,000 unpaid on 3 villas (Jane Doe J$75,000, Proprietors 15 and 16 J$35,000)', !!everyGap && /J\$110,000\.00 unpaid on 3 villa/.test(everyGap.text) && !everyGap.details.some(d => /rent J\$55,000\.00 unpaid/.test(d)), everyGap?.text);
-    T.check('combined: ISPO\'s own paid levy is neither a debt to chase nor a figure that does not tie', !!everyGap && !everyGap.details.some(d => /ISPO's own levy, which ISPO has paid/.test(d)) && !everyGap.details.some(d => /^ISPO to pay the corporation/.test(d)), JSON.stringify(everyGap?.details));
-    T.check('combined: a collection rate that does not tie is named with the difference', !!everyGap && everyGap.details.some(d => /^Does not tie: the collection rate counts J\$145,000\.00 settled, these accounts J\$165,000\.00; difference J\$20,000\.00/.test(d)), JSON.stringify(everyGap?.details));
+    T.check('combined: Jane Doe is chased for one figure, the whole J$75,000 rent, outside maintenance billed', !!everyGap && everyGap.details.some(d => /^Rent, not in maintenance billed: Chase Jane Doe, Villa Unit 3: October 2026 rent J\$75,000\.00 unpaid,/.test(d)), JSON.stringify(everyGap?.details));
+    T.check('combined: J$280,000 maintenance billed, J$225,000 settled, J$55,000 unpaid on 3 villas', !!everyGap && /J\$280,000\.00 billed in maintenance; J\$225,000\.00 of it settled .*J\$55,000\.00 unpaid on 3 villa/.test(everyGap.text), everyGap?.text);
+    T.check('combined: ISPO\'s paid maintenance is never chased; only Unit 3, inside the unpaid rent, is owed by ISPO', !!everyGap && !everyGap.details.some(d => /which ISPO has paid/.test(d)) && everyGap.details.filter(d => /^ISPO to pay the corporation/.test(d)).length === 1 && everyGap.details.some(d => /^ISPO to pay the corporation, Villa Unit 3: .* J\$20,000\.00 unpaid/.test(d)), JSON.stringify(everyGap?.details));
+    T.check('combined: a collection rate that does not tie is named with the difference', !!everyGap && everyGap.details.some(d => /^Does not tie: the collection rate counts J\$145,000\.00 settled, these accounts J\$225,000\.00; difference J\$80,000\.00/.test(d)), JSON.stringify(everyGap?.details));
 
     /* ---- the Reports screen itself, on ISPO's book and the corporation's ---- */
     const screen = book => {

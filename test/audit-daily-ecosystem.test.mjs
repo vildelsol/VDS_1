@@ -268,8 +268,8 @@ export default async function run({ port, projectRoot }) {
     /* ---------- Post month flowed to the dashboard ---------- */
     const combined = M.consolidateEverything(db.charges, S, db.units);
     for (const cur of ['JMD', 'USD']) {
-      const billed = M.chargedInPeriod(combined.charges, cur, M.monthStart ? M.monthStart(M0) : `${M0}-01`, `${M0}-31`);
-      T.check(`${cur}: the month just posted is what the dashboard says was billed`, dash.includes(`Total billed ${fm(billed.total, cur)}`) && billed.total > 0, fm(billed.total, cur));
+      const billed = M.billedOnCombinedView(db.charges, cur, M.monthStart ? M.monthStart(M0) : `${M0}-01`, `${M0}-31`);
+      T.check(`${cur}: the month just posted is what the dashboard says was billed`, dash.includes(`Maintenance billed ${fm(billed.total, cur)}`) && billed.total > 0, fm(billed.total, cur));
     }
 
     /* ---------- the health card and the ledger panel beside it read the same month the same way ---------- */

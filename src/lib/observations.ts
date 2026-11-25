@@ -469,20 +469,33 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
 
   /* 1. Collection shortfall: who makes up the gap. */
   const owing = accountsOwing(input);
+  /*
+   * On the combined view billed is the maintenance roll only, every villa's,
+   * ISPO's included (Ro, 2026-11-24), and the rate beside it is maintenance paid
+   * of that. Those are exactly the corporation's maintenance accounts, so the
+   * shortfall is read from them. Rent owed is still chased, from ISPO's accounts,
+   * but it is not part of billed.
+   */
+  const combinedView = book === 'everything';
+  const rateLedger = combinedView ? bookLedger(input.charges, input.payments, units, 'strata') : ledger;
+  const rateOwing = combinedView ? accountsOwing({ ...input, book: 'strata' }) : owing;
+  const rentOwing = combinedView ? accountsOwing({ ...input, book: 'ispo' }) : [];
   const billed = sumMoney(
-    ledger.charges.filter(x => x.status === 'open' && x.currency === c && isWithin(x.dueDate, from, to)).map(x => x.amount)
+    rateLedger.charges.filter(x => x.status === 'open' && x.currency === c && isWithin(x.dueDate, from, to)).map(x => x.amount)
   );
-  const inPeriodLines = owing.flatMap(a => a.unpaid.filter(u => isWithin(u.charge.dueDate, from, to)).map(u => ({ a, u })));
+  const inPeriodLines = rateOwing.flatMap(a => a.unpaid.filter(u => isWithin(u.charge.dueDate, from, to)).map(u => ({ a, u })));
   const gapLines = inPeriodLines.filter(g => !g.u.paidByIspo);
   const internalLines = inPeriodLines.filter(g => g.u.paidByIspo);
   const gap = sumMoney(gapLines.map(g => g.u.unpaid));
   const internal = sumMoney(internalLines.map(g => g.u.unpaid));
   if (billed > 0) {
     const settled = round2(billed - gap - internal);
-    const accounts = ledger.categories.map(x => x.toLowerCase()).join(' and ');
+    const accounts = rateLedger.categories.map(x => x.toLowerCase()).join(' and ');
     const details = gapLines
       .sort((x, y) => y.u.unpaid - x.u.unpaid || x.u.charge.dueDate.localeCompare(y.u.charge.dueDate))
       .map(({ a, u }) => chaseLine(u, a.unit, c, to, book));
+    const rentLines = rentOwing.flatMap(a => a.unpaid.filter(u => isWithin(u.charge.dueDate, from, to) && u.unpaid > 0).map(u => ({ a, u })));
+    for (const { a, u } of rentLines) details.push(`Rent, not in maintenance billed: ${chaseLine(u, a.unit, c, to, 'ispo')}`);
     if (internal > 0) details.push(internalNote(internalLines.map(g => g.a.unit), internal, c));
     if (page?.settled !== undefined && round2(page.settled) !== settled) {
       details.push(

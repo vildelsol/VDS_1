@@ -250,17 +250,84 @@ export default async function run({ projectRoot }) {
     T.check('a proprietor\'s let villa: one levy pairs with one rent charge (J$160,000, not J$140,000)', cents(p2Billed) === 16000000, String(p2Billed));
 
     /* ---- 4. the Dashboard rate is a rate of the billed figure printed beside it ---- */
+    // Billed (Ro, 2026-11-24): maintenance only, every villa's, ISPO's included. Rent is shown whole, apart, never added in.
     for (const cur of ['JMD', 'USD']) {
-      const printedBilled = fin.chargedInPeriod(combined.charges, cur, FROM, TO).total;
+      const printedBilled = fin.billedOnCombinedView(charges, cur, FROM, TO).total;
       const s = fin.combinedSettledOfBilled(charges, payments, units, cur, FROM, TO);
-      T.check(`${cur}: "Total billed" printed equals the base the rate is of`, cents(printedBilled) === cents(s.billed), `${printedBilled} vs ${s.billed}`);
+      T.check(`${cur}: "Maintenance billed" printed equals the base the rate is of`, cents(printedBilled) === cents(s.billed), `${printedBilled} vs ${s.billed}`);
       T.check(`${cur}: the rate equals settled / printed billed`, s.rate === (printedBilled > 0 ? fin.collectionRate(printedBilled, s.settled) : null), `${s.rate} vs ${s.settled}/${printedBilled}`);
-      const reportsRate = fin.settledOfBilled(bookCharges, bookPayments, cur, FROM, TO).rate;
-      T.check(`${cur}: the Reports rate on the Everything book equals the Dashboard's`, reportsRate === s.rate, `${reportsRate} vs ${s.rate}`);
     }
+    const octBilled = fin.billedOnCombinedView(charges, 'JMD', FROM, TO);
+    // Maintenance: s1 l1 l2 n1 p1 = 5 x 20,000. Rent whole: l1 75k + l2 75k + n1 80k + n1 advance 80k = 310k.
+    T.check('JMD October: maintenance billed J$100,000 on all five villas, ISPO\'s included', cents(octBilled.maintenance) === 10000000 && cents(octBilled.total) === 10000000, JSON.stringify(octBilled));
+    T.check('JMD October: rent charged shown whole, J$310,000, and not added into billed', cents(octBilled.rent) === 31000000, JSON.stringify(octBilled));
+    const usdBilled = fin.billedOnCombinedView(charges, 'USD', FROM, TO);
+    T.check('USD October: ISPO\'s US$125 maintenance on s2 is billed, not dropped', cents(usdBilled.maintenance) === 12500 && cents(usdBilled.total) === 12500, JSON.stringify(usdBilled));
     const oct = fin.combinedSettledOfBilled(charges, payments, units, 'JMD', FROM, TO);
-    // Billed outside: l1 75k + l2 75k + n1 160k + p1 20k = 330k; settled 330k - 75k - 20k = 235k.
-    T.check('JMD October: J$330,000 billed outside the group, J$235,000 of it settled', cents(oct.billed) === 33000000 && cents(oct.settled) === 23500000, `${oct.billed} / ${oct.settled}`);
+    // Settled: s1 (ISPO by hand), l1 and n1 (out of rent); not l2 (rent unpaid) nor p1 (unpaid) = 60,000 of 100,000.
+    T.check('JMD October: J$100,000 maintenance billed, J$60,000 of it settled, 60%', cents(oct.billed) === 10000000 && cents(oct.settled) === 6000000 && oct.rate === 60, JSON.stringify(oct));
+    const octUsd = fin.combinedSettledOfBilled(charges, payments, units, 'USD', FROM, TO);
+    T.check('USD October: US$125 billed, US$125 settled, 100%', cents(octUsd.billed) === 12500 && cents(octUsd.settled) === 12500 && octUsd.rate === 100, JSON.stringify(octUsd));
+    {
+      const r = fin.receivedOnCombinedView(payments, combined.payments, 'JMD', FROM, TO);
+      // Rent whole: l1 75k + n1 160k = 235k. Maintenance: s1 20k + l1 20k + n1 20k out of rent = 60k, all ISPO's, also paid out.
+      T.check('Received JMD October: rent whole J$235,000', cents(r.received.rent) === 23500000, JSON.stringify(r));
+      T.check('Received JMD October: maintenance whole J$60,000, all of it ISPO paying the corporation', cents(r.received.maintenance) === 6000000 && cents(r.ispoMaintenancePaid) === 6000000, JSON.stringify(r));
+      T.check('Net JMD October: received less ISPO maintenance paid = the cash from outside, J$235,000',
+        cents(r.received.total - r.ispoMaintenancePaid) === 23500000 && cents(r.received.total - r.ispoMaintenancePaid) === cents(fin.collectedInPeriod(combined.payments, 'JMD', FROM, TO).total));
+    }
+
+    /* ---- 5. Ro's arithmetic on the real register's shape: 16 villas ---- */
+    {
+      const ro = [];
+      const owners = ['a2', 'b7', 'b8', 'b9', 'c12'].map(id => unit(id, { status: 'owner-occupied', ownerName: `Owner ${id}` }));
+      const let3 = ['a5', 'b10', 'c15'].map(id => unit(id, { status: 'long-term', tenantName: `Tenant ${id}`, monthlyRent: 100000 }));
+      const short6 = ['a1', 'a3', 'a4', 'b6', 'c14', 'c16'].map(id => unit(id));
+      const usd2 = ['c11', 'c13'].map(id => unit(id, { maintCurrency: 'USD', monthlyMaintenance: 125 }));
+      const all = [...owners, ...let3, ...short6, ...usd2];
+      for (const u of all) ro.push(charge(u, 'Maintenance', '2026-10', u.monthlyMaintenance));
+      for (const u of let3) ro.push(charge(u, 'Rent', '2026-10', 100000, { rentPortion: 80000, maintenancePortion: 20000 }));
+      T.check('register: 16 villas, 14 on J$20,000 and 2 on US$125', all.length === 16 && all.filter(u => u.maintCurrency === 'JMD').length === 14);
+      const j = fin.billedOnCombinedView(ro, 'JMD', FROM, TO);
+      const u = fin.billedOnCombinedView(ro, 'USD', FROM, TO);
+      T.check('Maintenance billed JMD = 14 x J$20,000 = J$280,000', cents(j.maintenance) === 28000000 && cents(j.total) === 28000000, JSON.stringify(j));
+      T.check('Maintenance billed USD = 2 x US$125 = US$250', cents(u.maintenance) === 25000 && cents(u.total) === 25000, JSON.stringify(u));
+      T.check('Rent charged shown whole = 3 x J$100,000 = J$300,000, not added in', cents(j.rent) === 30000000, String(j.rent));
+      T.check('Billed never exceeds the roll: 16 x J$20,000 = J$320,000', j.total <= 320000);
+      for (const cur of ['JMD', 'USD']) {
+        const r = fin.combinedSettledOfBilled(ro, fin.settledFromRent(ro, []), all, cur, FROM, TO);
+        T.check(`${cur}: the rate is of that same maintenance total`, cents(r.billed) === cents(fin.billedOnCombinedView(ro, cur, FROM, TO).total), `${r.billed}`);
+      }
+
+      /* Received (Ro, 2026-11-24): whole rent, whole maintenance; ISPO's maintenance shown again as paid out. */
+      let k = 0;
+      const rp = (u, category, amount, date, currency = 'JMD', payerName = u.ownerName) =>
+        ({ id: `ro-${++k}`, receiptNo: `RO${k}`, unitId: u.id, unitNumber: u.number, category, amount, currency, date, status: 'completed', payerName, method: 'Cash' });
+      const a5 = let3[0];
+      ro.push(charge(a5, 'Rent', '2026-11', 100000, { rentPortion: 80000, maintenancePortion: 20000 }), charge(a5, 'Maintenance', '2026-11', 20000));
+      const cash = [
+        ...let3.map(u => rp(u, 'Rent', 100000, '2026-10-05', 'JMD', u.tenantName)),
+        rp(a5, 'Rent', 100000, '2026-10-28', 'JMD', a5.tenantName), // November's rent, prepaid in October
+        ...owners.map(u => rp(u, 'Maintenance', 20000, '2026-10-06')),
+        ...short6.map(u => rp(u, 'Maintenance', 20000, '2026-10-07', 'JMD', 'ISPO')),
+        ...usd2.map(u => rp(u, 'Maintenance', 125, '2026-10-07', 'USD', 'ISPO')),
+        rp(short6[0], 'Booking', 50000, '2026-10-10', 'JMD', 'Guest')
+      ];
+      const allPay = [...cash, ...fin.settledFromRent(ro, cash, '2026-11-30')];
+      const comb = fin.consolidateEverything(ro, allPay, all);
+      const oct = fin.receivedOnCombinedView(allPay, comb.payments, 'JMD', FROM, TO);
+      const plain = fin.collectedInPeriod(comb.payments, 'JMD', FROM, TO);
+      T.check('Received JMD October: rent whole, 4 x J$100,000 = J$400,000 (November\'s prepaid rent arrived in October)', cents(oct.received.rent) === 40000000, JSON.stringify(oct));
+      T.check('Received JMD October: maintenance whole, 5 owners + 6 short-let + 3 out of rent = 14 x J$20,000 = J$280,000', cents(oct.received.maintenance) === 28000000, JSON.stringify(oct));
+      T.check('Received JMD October: bookings J$50,000, ISPO income, untouched', cents(oct.received.booking) === 5000000);
+      T.check('Received JMD October: total J$730,000', cents(oct.received.total) === 73000000, String(oct.received.total));
+      T.check('Paid out JMD October: ISPO maintenance paid to the corporation 9 x J$20,000 = J$180,000', cents(oct.ispoMaintenancePaid) === 18000000, String(oct.ispoMaintenancePaid));
+      T.check('Net JMD October: 730,000 - 180,000 = J$550,000, the cash that came from outside', cents(oct.received.total - oct.ispoMaintenancePaid) === 55000000 && cents(plain.total) === 55000000);
+      const nov = fin.receivedOnCombinedView(allPay, comb.payments, 'JMD', '2026-11-01', '2026-11-30');
+      T.check('November: the prepaid rent\'s J$20,000 maintenance reaches the corporation in November, and nets to nil', cents(nov.received.rent) === 0 && cents(nov.received.maintenance) === 2000000 && cents(nov.ispoMaintenancePaid) === 2000000, JSON.stringify(nov));
+      const usdOct = fin.receivedOnCombinedView(allPay, comb.payments, 'USD', FROM, TO);
+      T.check('USD October: US$250 maintenance on C11 and C13 received, the same US$250 paid out by ISPO', cents(usdOct.received.maintenance) === 25000 && cents(usdOct.ispoMaintenancePaid) === 25000 && cents(usdOct.received.total) === 25000, JSON.stringify(usdOct));
+    }
 
     /* ---- the Reports screen itself, on its default book ---- */
     let text = '';
@@ -282,6 +349,8 @@ export default async function run({ projectRoot }) {
     }
     T.check('screen, Everything book: "Receivable at end of period" reads J$95,000.00', /Receivable at end of period J\$95,000\.00/.test(text), (text.match(/Receivable at end of period [^ ]+/g) || []).join(' | '));
     T.check('screen, Everything book: never J$135,000 (the paid ISPO levy read as owed)', !/Receivable at end of period J\$135,000\.00/.test(text));
+    T.check('screen, Everything book: "Maintenance billed during period" is J$100,000.00, rent apart', /Maintenance billed during period J\$100,000\.00/.test(text) && /Rent charged J\$310,000\.00 is ISPO/.test(text), (text.match(/billed during period [^ ]+/gi) || []).join(' | '));
+    T.check('screen, Everything book: no "Does not tie" line', !/Does not tie/.test(text), (text.match(/Does not tie[^.]*\./g) || []).join(' | '));
   } catch (err) {
     T.check('test ran without error', false, err.stack || err.message);
   } finally {

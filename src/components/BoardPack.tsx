@@ -16,13 +16,13 @@
  * board pack can never quote a figure the ledger would contradict.
  */
 
-import { AppSettings, Booking, Charge, Currency, Expense, Payment, Tenancy, Unit } from '../types';
+import { AppSettings, Booking, Charge, Currency, Expense, MANAGING_COMPANY_NAME, Payment, Tenancy, Unit } from '../types';
 import {
   arrearsAgeing,
   delinquentAccounts,
   receivableAsOf,
-  chargedInPeriod,
-  collectedInPeriod,
+  billedOnCombinedView,
+  receivedOnCombinedView,
   consolidateEverything,
   combinedSettledOfBilled,
   categoriesWithSpend,
@@ -99,21 +99,26 @@ export default function BoardPack({
           // still a category, and `> 0` hid it from the pack the board reads.
           if (row.amount !== 0) byCategory[row.category] = row.amount;
         }
-        const collectedInMonth = collectedInPeriod(combined.payments, currency, mFrom, mTo);
+        // Whole figures (Ro, 2026-11-24): ISPO's maintenance to the corporation is in received and in paid out.
+        const wholeInMonth = receivedOnCombinedView(payments, combined.payments, currency, mFrom, mTo);
+        const collectedInMonth = wholeInMonth.received;
         return {
           month,
-          billed: chargedInPeriod(combined.charges, currency, mFrom, mTo).total,
+          billed: billedOnCombinedView(charges, currency, mFrom, mTo).total,
           received: collectedInMonth.total,
           settledOfBilled: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).settled,
           collectable: combinedSettledOfBilled(charges, payments, units, currency, mFrom, mTo).billed,
-          paidOut: expensesInPeriod(allCosts, currency, mFrom, mTo),
+          paidOut: sumMoney([expensesInPeriod(allCosts, currency, mFrom, mTo), wholeInMonth.ispoMaintenancePaid]),
           byCategory
         };
       });
 
-      const collected = collectedInPeriod(combined.payments, currency, from, to);
-      const billed = chargedInPeriod(combined.charges, currency, from, to);
-      const spent = expensesInPeriod(allCosts, currency, from, to);
+      const whole = receivedOnCombinedView(payments, combined.payments, currency, from, to);
+      const collected = whole.received;
+      const billed = billedOnCombinedView(charges, currency, from, to);
+      const expensesPaid = expensesInPeriod(allCosts, currency, from, to);
+      const ispoMaintenancePaid = whole.ispoMaintenancePaid;
+      const spent = sumMoney([expensesPaid, ispoMaintenancePaid]);
 
       // Same opening/closing receivable construction as the operating statement.
       // On the consolidated books, like billed and the rate beside it: ISPO's own levy is owed by nobody
@@ -129,6 +134,8 @@ export default function BoardPack({
         billed,
         collected,
         spent,
+        expensesPaid,
+        ispoMaintenancePaid,
         net: sumMoney([collected.total, -spent]),
         rate: combinedSettledOfBilled(charges, payments, units, currency, from, to).rate,
         openingReceivable: receivableAt(addDays(from, -1)),
@@ -196,10 +203,14 @@ export default function BoardPack({
             <tbody className="divide-y divide-slate-100">
               {(
                 [
-                  { label: 'Billed (rent and maintenance)', of: e => formatMoney(e.billed.total, e.currency) },
-                  { label: 'Received against billing', of: e => formatMoney(sumMoney([e.collected.rent, e.collected.maintenance]), e.currency) },
-                  { label: 'Collection rate', of: e => (e.rate === null ? 'n/a' : `${e.rate}%`) },
+                  { label: 'Maintenance billed (every villa)', of: e => formatMoney(e.billed.total, e.currency) },
+                  { label: 'Collection rate (maintenance)', of: e => (e.rate === null ? 'n/a' : `${e.rate}%`) },
+                  { label: 'Rent charged (not in maintenance billed)', of: e => formatMoney(e.billed.rent, e.currency) },
+                  { label: 'Rent received', of: e => formatMoney(e.collected.rent, e.currency) },
+                  { label: 'Maintenance received', of: e => formatMoney(e.collected.maintenance, e.currency) },
                   { label: 'Total received (all sources)', of: e => formatMoney(e.collected.total, e.currency) },
+                  { label: 'Expenses paid', of: e => formatMoney(e.expensesPaid, e.currency) },
+                  { label: `${MANAGING_COMPANY_NAME} maintenance paid to the corporation`, of: e => formatMoney(e.ispoMaintenancePaid, e.currency) },
                   { label: 'Paid out', of: e => formatMoney(e.spent, e.currency) },
                   { label: 'Net cash movement', of: e => formatMoney(e.net, e.currency) },
                   { label: 'Receivable at start', of: e => formatMoney(e.openingReceivable, e.currency) },

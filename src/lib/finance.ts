@@ -1803,6 +1803,34 @@ export function collectedInPeriod(
   return totals;
 }
 
+/**
+ * Cash received on the combined view, in WHOLE figures (Ro, 2026-11-24).
+ *
+ * Ro: "show the entire rent collected, the entire maintenance collected". So:
+ *   - Rent is every rent receipt, whole: a J$100,000 rent shows J$100,000.
+ *   - Maintenance is every maintenance receipt the corporation took in, ISPO's
+ *     own included: the J$20,000 ISPO pays out of a let villa's rent
+ *     (`settledFromRent`) and the J$20,000 it pays on a short-let or empty villa.
+ *   - That ISPO money is also money ISPO PAID OUT, so it is returned as
+ *     `ispoMaintenancePaid` for the Paid out panel. Received and paid out both
+ *     carry it, so the net cash movement is unchanged and each dollar nets once.
+ *
+ * `all` is the raw payment list (with the derived rent-funded credits);
+ * `combined` is `consolidateEverything`'s, which leaves out exactly ISPO's own
+ * maintenance receipts. Nothing else differs between the two lists.
+ */
+export function receivedOnCombinedView(
+  all: Payment[],
+  combined: Payment[],
+  currency: Currency,
+  start: string,
+  end: string
+): { received: CurrencyTotals; ispoMaintenancePaid: number } {
+  const received = collectedInPeriod(all, currency, start, end);
+  const outside = collectedInPeriod(combined, currency, start, end);
+  return { received, ispoMaintenancePaid: subtractMoney(received.maintenance, outside.maintenance) };
+}
+
 /* ------------------------------------------------------------------ *
  * Utility recoveries: a pass-through, never income
  *
@@ -1950,6 +1978,22 @@ export function chargedInPeriod(charges: Charge[], currency: Currency, start: st
   const rent = sumMoney(rows.filter(c => c.category === 'Rent').map(c => c.amount));
   const maintenance = sumMoney(rows.filter(c => c.category === 'Maintenance').map(c => c.amount));
   return { rent, maintenance, total: sumMoney([rent, maintenance]) };
+}
+
+/**
+ * What was billed in a period on the combined view (Ro, 2026-11-24).
+ *
+ * Billed is MAINTENANCE ONLY: every villa's maintenance, ISPO's included,
+ * J$20,000 on 14 villas and US$125 on C11 and C13. The most a month can bill
+ * is the whole roll. Rent is ISPO's income, shown whole beside it and never
+ * added in: adding it produced an "impossible" J$520,000.
+ *
+ * Read from the RAW charges: `consolidateEverything` drops ISPO's maintenance
+ * charges, which showed J$100,000 and US$0 instead of J$280,000 and US$250.
+ */
+export function billedOnCombinedView(charges: Charge[], currency: Currency, start: string, end: string) {
+  const { rent, maintenance } = chargedInPeriod(charges, currency, start, end);
+  return { maintenance, rent, total: maintenance };
 }
 
 /** Expenses paid in one currency over a date range. */
@@ -2153,60 +2197,27 @@ export function creditHeldForOthers(
 }
 
 /**
- * The collection rate on the COMBINED view (the corporation and ISPO as one).
+ * The collection rate on the COMBINED view: maintenance paid of maintenance billed.
  *
- * `consolidateEverything` removes the levy from a let villa's rent charge but keeps
- * the Maintenance charge, and drops the Maintenance receipts on ISPO's villas as
- * internal transfers. Settled per category, a let villa paid in full then read 73%
- * (the levy charge could never be settled), and ISPO's own levy on a short-stay villa
- * read as 0% collected. So here: a villa's rent and levy are settled from one pool
- * (the levy inside the rent IS paid by the rent), and a levy ISPO owes the
- * corporation on a villa with no rent split is money moving between the two books,
- * not something anyone outside owes, so it is left out of what fell due.
- *
- * Since 2026-11-19 `consolidateEverything` itself drops every Maintenance charge
- * on ISPO's villas (and leaves the rent whole), so the filter below no longer
- * removes anything; it is kept as a second statement of the same rule, and the
- * Reports summary, which reads the consolidated list directly, ties to this.
+ * Billed on the combined view is the maintenance roll only (`billedOnCombinedView`),
+ * so the rate is of that same figure: every maintenance charge, ISPO's included,
+ * settled oldest first by every maintenance receipt, ISPO's own and the ones paid
+ * out of rent (`settledFromRent`) included. Rent is not in it; rent is not in billed.
  */
 export function combinedSettledOfBilled(
   charges: Charge[],
   payments: Payment[],
-  units: Unit[],
+  _units: Unit[],
   currency: Currency,
   from: string,
   to: string,
   asOf: string = to
 ) {
-  const combined = consolidateEverything(charges, payments, units);
-  const ownOn = ownAccountAsAt(units);
-  const rentSplit = new Set(
-    charges.filter(c => c.category === 'Rent' && c.status === 'open' && (c.maintenancePortion || 0) > 0).map(c => `${c.unitId}|${c.periodMonth}|${c.currency}`)
-  );
-  const collectable = combined.charges.filter(
-    /*
-     * `kind` is deliberately not tested here.
-     *
-     * `consolidateEverything` drops EVERY maintenance receipt on a villa ISPO
-     * owns, as an internal transfer — ordinary levy, special assessment and
-     * insurance share alike. Restricting the matching exclusion on the billed
-     * side to ordinary levies left a special assessment in the denominator with
-     * its receipt removed from the numerator, so it could never be settled in any
-     * period, ever. One paid-in-full month printed 20% collected on the ledger
-     * panel beside 100% on the health card, inches apart, with no figure saying
-     * which basis either used.
-     */
-    c => {
-      if (c.category !== 'Maintenance' || !ownOn(c.unitId, chargeDay(c))) return true;
-      // The ORDINARY levy stays collectable where the rent carries it, because
-      // consolidation takes it out of the rent charge instead. Nothing else does:
-      // a special assessment is never inside anybody's rent, so the exemption
-      // must not stretch to every maintenance charge that shares its month.
-      const ordinary = c.kind === undefined && !c.oneOffType;
-      return ordinary && rentSplit.has(`${c.unitId}|${c.periodMonth}|${c.currency}`);
-    }
-  );
-  return settledOfBilled(collectable, combined.payments, currency, from, to, asOf, undefined, true);
+  // The credits paid out of rent are worked out here from the cash receipts, so the
+  // rate is right whether the caller passes the raw list or one that already carries them.
+  const cash = payments.filter(p => !p.derived);
+  const withCredits = [...cash, ...settledFromRent(charges, cash, asOf)];
+  return settledOfBilled(charges.filter(c => c.category === 'Maintenance'), withCredits, currency, from, to, asOf, 'Maintenance');
 }
 
 /** Collection rate for a period: what share of billed money actually came in. */
@@ -4313,6 +4324,9 @@ export function operationalHealth(
   const combined = consolidateEverything(charges, payments, units);
   const billedTotal = settled.billed;
   const collectedTotal = collectedInPeriod(combined.payments, currency, from, to).total;
+  // Printed in whole figures, as the ledger panel prints them (Ro, 2026-11-24): ISPO's
+  // maintenance to the corporation is in received and in paid out. Scored on cash from outside.
+  const whole = receivedOnCombinedView(payments, combined.payments, currency, from, to);
   // Utility recoveries are a pass-through: out of income above, netted from the cost here.
   const spent = expensesInPeriod(withUtilityRecoveries(expenses, payments), currency, from, to);
 
@@ -4379,7 +4393,7 @@ export function operationalHealth(
       label: 'Cash position',
       weight: 15,
       score,
-      detail: `${formatPlain(collectedTotal)} received against ${formatPlain(spent)} spent (${net >= 0 ? '+' : ''}${formatPlain(net)})`
+      detail: `${formatPlain(whole.received.total)} received against ${formatPlain(round2(spent + whole.ispoMaintenancePaid))} paid out (${net >= 0 ? '+' : ''}${formatPlain(net)})`
     });
   }
 
@@ -4823,14 +4837,14 @@ export function operatingStatement(
    * levy twice beside a summary that counted it once (audit, 2026-11-18). Same
    * rule, same register, and the amount is named under "Not included" below.
    */
-  const ownLevyAny = ownLevyReceiptTest(units);
-  const isTransferBetweenBooks = (p: Payment): boolean => book === 'everything' && ownLevyAny(p);
+  // Ro, 2026-11-24: whole figures. On the combined book ISPO's maintenance is counted
+  // as maintenance received AND as paid out (below), so the surplus is unchanged.
   /*
    * Utility recoveries are not income on any book (Ro, 2026-11-18). They are a
    * pass-through, netted from the utility cost of the book that bore it, where
    * each one is an itemised line and their total is `utilityRecovered`.
    */
-  const payments = paymentsInBook(allPayments, book).filter(p => !isTransferBetweenBooks(p) && p.category !== 'Utility');
+  const payments = paymentsInBook(allPayments, book).filter(p => p.category !== 'Utility');
   const expenses = expensesInBook(withUtilityRecoveries(allExpenses, allPayments), book);
 
   /* The villas VDS lets on the corporation's own account, as at each receipt's day. */
@@ -4904,15 +4918,6 @@ export function operatingStatement(
       continue;
     }
     income.push({ label, lines: visibility === 'itemised' ? lines : [], total, itemised: visibility === 'itemised' });
-  }
-
-  const transferBetweenBooks = netReceivedInPeriod(
-    allPayments.filter(p => p.currency === currency && isTransferBetweenBooks(p)),
-    start,
-    end
-  );
-  if (transferBetweenBooks !== 0) {
-    excludedIncome.push({ label: "Maintenance ISPO paid the corporation on its own villas (already inside rent and bookings)", total: transferBetweenBooks });
   }
 
   if (book !== 'strata') {
@@ -5013,7 +5018,7 @@ export function operatingStatement(
    * funded from, and its surplus would not equal `ispoOperations.net` on the same
    * period. `test/two-books-reports.test.mjs` compares the two.
    */
-  if (book === 'ispo' && internalTransfer !== 0) {
+  if (book !== 'strata' && internalTransfer !== 0) {
     expenditure.push({
       label: 'Maintenance contributions paid to the corporation',
       lines: [],
@@ -5028,7 +5033,7 @@ export function operatingStatement(
   const strataExpenditure = sumMoney(strataExpenses(countedForSplit).map(e => e.amount));
   const ispoExpenditure = sumMoney([
     sumMoney(ispoExpenses(countedForSplit).map(e => e.amount)),
-    book === 'ispo' ? internalTransfer : 0
+    book !== 'strata' ? internalTransfer : 0
   ]);
 
   return {

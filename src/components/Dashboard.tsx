@@ -21,7 +21,8 @@ import {
 import {
   AccountBalance,
   collectedInPeriod,
-  chargedInPeriod,
+  billedOnCombinedView,
+  receivedOnCombinedView,
   consolidateEverything,
   combinedSettledOfBilled,
   delinquentAccounts,
@@ -226,8 +227,10 @@ export default function Dashboard({
     // netted from the utility cost in "paid out", and named there.
     const costs = withUtilityRecoveries(expenses, payments);
     return (['JMD', 'USD'] as Currency[]).map(currency => {
-      const collected = collectedInPeriod(combined.payments, currency, periodStart, periodEnd);
-      const billed = chargedInPeriod(combined.charges, currency, periodStart, periodEnd);
+      // Whole figures (Ro, 2026-11-24): whole rent, whole maintenance received, ISPO's
+      // maintenance to the corporation shown again as paid out, so the net is unchanged.
+      const { received: collected, ispoMaintenancePaid } = receivedOnCombinedView(payments, combined.payments, currency, periodStart, periodEnd);
+      const billed = billedOnCombinedView(charges, currency, periodStart, periodEnd);
       const spent = expensesInPeriod(costs, currency, periodStart, periodEnd);
       const utilities = utilityRecoveries(payments, expenses, currency, periodStart, periodEnd);
 
@@ -246,7 +249,8 @@ export default function Dashboard({
         billed,
         spent,
         utilities,
-        net: sumMoney([collected.total, -spent]),
+        ispoMaintenancePaid,
+        net: sumMoney([collected.total, -spent, -ispoMaintenancePaid]),
         rate,
         priorRate,
         priorNet: sumMoney([priorCollected.total, -priorSpent]),
@@ -385,7 +389,7 @@ export default function Dashboard({
                       ownLevyByCurrency.USD > 0 ? formatMoney(ownLevyByCurrency.USD, 'USD') : null
                     ]
                       .filter(Boolean)
-                      .join(' + ')} is ${MANAGING_COMPANY_NAME}'s own levy (left out of the combined books)`
+                      .join(' + ')} is ${MANAGING_COMPANY_NAME}'s own maintenance`
                   : '')
               : 'All billed accounts settled'
           }
@@ -578,7 +582,7 @@ export default function Dashboard({
           <button onClick={() => onNavigateToTab('notifications')} className="font-semibold underline">
             Notifications Hub
           </button>{' '}
-          to see the detail. Posting a month bills the whole property for that month, the maintenance levy included,
+          to see the detail. Posting a month bills the whole property for that month, maintenance included,
           not only the tenancy named here; months already billed are left untouched.
         </InfoNote>
       )}
@@ -640,17 +644,9 @@ export default function Dashboard({
                 <div className="space-y-2">
                   <h4 className="font-mono text-[10px] uppercase tracking-wider text-slate-400">Billed this month</h4>
                   <dl className="space-y-2 rounded-xl bg-amber-50/50 p-4">
-                    <div className="flex justify-between gap-2 text-[11px] text-slate-600">
-                      <dt>Rent charged</dt>
-                      <dd className="font-mono font-medium">{formatMoney(entry.billed.rent, entry.currency)}</dd>
-                    </div>
-                    <div className="flex justify-between gap-2 text-[11px] text-slate-600">
-                      <dt>Maintenance charged</dt>
-                      <dd className="font-mono font-medium">{formatMoney(entry.billed.maintenance, entry.currency)}</dd>
-                    </div>
-                    <div className="flex justify-between gap-2 border-t border-amber-100 pt-2 text-xs font-semibold text-amber-800">
-                      <dt>Total billed</dt>
-                      <dd className="font-mono">{formatMoney(entry.billed.total, entry.currency)}</dd>
+                    <div className="flex justify-between gap-2 text-xs font-semibold text-amber-800">
+                      <dt>Maintenance billed</dt>
+                      <dd className="font-mono">{formatMoney(entry.billed.maintenance, entry.currency)}</dd>
                     </div>
                     <div className="flex justify-between gap-2 text-[11px] text-slate-500">
                       <dt>Collection rate</dt>
@@ -674,6 +670,10 @@ export default function Dashboard({
                         </dd>
                       </div>
                     )}
+                    <div className="flex justify-between gap-2 border-t border-amber-100 pt-2 text-[11px] text-slate-600">
+                      <dt>Rent charged ({MANAGING_COMPANY_NAME}, not in maintenance billed)</dt>
+                      <dd className="font-mono font-medium">{formatMoney(entry.billed.rent, entry.currency)}</dd>
+                    </div>
                   </dl>
                 </div>
 
@@ -688,6 +688,12 @@ export default function Dashboard({
                       <div className="flex justify-between gap-2 text-[10px] text-slate-500">
                         <dt>of which utilities, net of {formatMoney(entry.utilities.recovered, entry.currency)} recovered from villas</dt>
                         <dd className="font-mono">{formatMoney(entry.utilities.netUtilityCost, entry.currency)}</dd>
+                      </div>
+                    )}
+                    {entry.ispoMaintenancePaid !== 0 && (
+                      <div className="flex justify-between gap-2 text-[11px] text-slate-600">
+                        <dt>{MANAGING_COMPANY_NAME} maintenance paid to the corporation</dt>
+                        <dd className="font-mono font-medium">{formatMoney(entry.ispoMaintenancePaid, entry.currency)}</dd>
                       </div>
                     )}
                     <div className="flex justify-between gap-2 border-t border-slate-200 pt-2 text-xs font-semibold text-slate-800">

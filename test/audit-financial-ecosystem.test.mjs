@@ -132,23 +132,38 @@ export default async function run({ port, projectRoot }) {
       // ...and netted from what was spent.
       const spentLedger = expenses.filter(e => e.status === 'paid' && e.currency === cur && within(e.datePaid || e.date, FROM, TO)).reduce((a, e) => a + C(e.amount), 0) - utilRecovered;
 
+      // Whole figures (Ro, 2026-11-24): the maintenance ISPO pays the corporation on the villas it
+      // owns (every villa not owner-occupied), by hand or out of rent, is received AND paid out.
+      const ispoOwned = new Set(units.filter(u => u.status !== 'owner-occupied').map(u => u.id));
+      const ispoPaidLedger = subtract(
+        settled.filter(p => p.status === 'completed' && p.currency === cur && p.category === 'Maintenance' && ispoOwned.has(p.unitId) && within(p.date, FROM, TO)).reduce((a, p) => a + C(p.amount), 0),
+        settled.filter(p => p.status === 'completed' && p.currency === cur && p.category === 'Maintenance' && ispoOwned.has(p.unitId) && within(p.refundedOn, FROM, TO)).reduce((a, p) => a + C(p.refundedAmount), 0)
+      );
+      const fromRent = settled.filter(p => p.derived && p.status === 'completed' && p.currency === cur && within(p.date, FROM, TO)).reduce((a, p) => a + C(p.amount), 0);
+      T.check(`${cur}: setup, ISPO paid the corporation maintenance in the period`, cur === 'USD' || ispoPaidLedger > 0, String(ispoPaidLedger));
+
       /* ---------- Operational Reports summary, combined book (Reports.tsx summary) ---------- */
       const combined = F.consolidateEverything(charges, settled, units);
       const repPayments = F.paymentsInBook(combined.payments, 'everything');
-      const repCollected = F.collectedInPeriod(repPayments, cur, FROM, TO);
-      const repSpent = F.expensesInPeriod(F.expensesForBook(netted, units, 'everything', cur), cur, FROM, TO);
-      T.check(`${cur}: Reports summary "received" is the cash that came in, less every utility recovery`,
-        C(repCollected.total) === cashIn - utilRecovered, `${C(repCollected.total)} vs ${cashIn - utilRecovered}`);
-      T.check(`${cur}: Reports summary "spent" is the paid costs, net of the supplier credit and the utility recoveries, without the void or the pending bill`,
-        C(repSpent) === spentLedger, `${C(repSpent)} vs ${spentLedger}`);
+      const whole = F.receivedOnCombinedView(settled, repPayments, cur, FROM, TO);
+      const repCollected = whole.received;
+      const repExpenses = F.expensesInPeriod(F.expensesForBook(netted, units, 'everything', cur), cur, FROM, TO);
+      const repSpent = repExpenses + whole.ispoMaintenancePaid;
+      T.check(`${cur}: Reports summary "received" is the cash that came in plus the maintenance settled out of rent, less every utility recovery`,
+        C(repCollected.total) === cashIn + fromRent - utilRecovered, `${C(repCollected.total)} vs ${cashIn + fromRent - utilRecovered}`);
+      T.check(`${cur}: ISPO maintenance paid to the corporation is its receipts on its own villas`, C(whole.ispoMaintenancePaid) === ispoPaidLedger, `${C(whole.ispoMaintenancePaid)} vs ${ispoPaidLedger}`);
+      T.check(`${cur}: Reports summary expenses are the paid costs, net of the supplier credit and the utility recoveries, without the void or the pending bill`,
+        C(repExpenses) === spentLedger, `${C(repExpenses)} vs ${spentLedger}`);
+      T.check(`${cur}: net cash movement is unchanged by showing whole figures: cash in less utility recoveries less costs less ISPO's own hand payments`,
+        C(repCollected.total) - C(repSpent) === cashIn - utilRecovered - spentLedger - (ispoPaidLedger - fromRent));
 
       /* ---------- Operating Statement, combined book (OperatingStatement.tsx) ---------- */
       const op = F.operatingStatement(settled, expenses, units, cur, FROM, TO, { book: 'everything' });
       // Was `=== cashIn`: the statement counted utility recoveries as income, which
       // is the defect Ro's pass-through rule (2026-11-18) removes.
-      T.check(`${cur}: the combined Operating Statement's income is the cash that came in less utility recoveries, the levy inside rent counted once`,
-        C(op.totalIncome) === cashIn - utilRecovered, `statement ${C(op.totalIncome)} vs cash ${cashIn - utilRecovered}`);
-      T.check(`${cur}: the combined Operating Statement's expenditure equals the Reports summary "spent"`,
+      T.check(`${cur}: the combined Operating Statement's income is whole: cash in plus maintenance out of rent, less utility recoveries`,
+        C(op.totalIncome) === cashIn + fromRent - utilRecovered, `statement ${C(op.totalIncome)} vs ${cashIn + fromRent - utilRecovered}`);
+      T.check(`${cur}: the combined Operating Statement's expenditure equals the Reports summary "spent", ISPO's maintenance included`,
         C(op.totalExpenditure) === C(repSpent), `${C(op.totalExpenditure)} vs ${C(repSpent)}`);
 
       /* ---------- Charts (Charts.tsx byCurrency) ---------- */
@@ -156,9 +171,10 @@ export default async function run({ port, projectRoot }) {
       const chartRows = months.map(m => {
         const mFrom = `${m}-01`, mTo = F.monthEndOf ? F.monthEndOf(m) : endOf(m);
         return {
-          received: F.collectedInPeriod(combined.payments, cur, mFrom, mTo).total,
-          paidOut: F.expensesInPeriod(netted, cur, mFrom, mTo),
-          billed: F.chargedInPeriod(combined.charges, cur, mFrom, mTo).total
+          received: F.receivedOnCombinedView(settled, combined.payments, cur, mFrom, mTo).received.total,
+          ispoPaid: F.receivedOnCombinedView(settled, combined.payments, cur, mFrom, mTo).ispoMaintenancePaid,
+          paidOut: F.expensesInPeriod(netted, cur, mFrom, mTo) + F.receivedOnCombinedView(settled, combined.payments, cur, mFrom, mTo).ispoMaintenancePaid,
+          billed: F.billedOnCombinedView(charges, cur, mFrom, mTo).total
         };
       });
       const chartReceived = chartRows.reduce((a, r) => a + C(r.received), 0);
@@ -166,9 +182,10 @@ export default async function run({ port, projectRoot }) {
       const chartBreakdown = F.categoriesWithSpend(F.expenseBreakdown(netted, cur, FROM, TO)).reduce((a, b) => a + C(b.amount), 0);
       T.check(`${cur}: Charts "received" over the range equals the Reports summary`, chartReceived === C(repCollected.total), `${chartReceived} vs ${C(repCollected.total)}`);
       T.check(`${cur}: Charts "paid out" over the range equals the Reports summary`, chartPaidOut === C(repSpent), `${chartPaidOut} vs ${C(repSpent)}`);
-      T.check(`${cur}: Charts' expenses-by-category total equals its "paid out"`, chartBreakdown === chartPaidOut, `${chartBreakdown} vs ${chartPaidOut}`);
+      T.check(`${cur}: Charts' expenses-by-category total plus ISPO's maintenance to the corporation equals its "paid out"`,
+        chartBreakdown + chartRows.reduce((a, r) => a + C(r.ispoPaid), 0) === chartPaidOut, `${chartBreakdown} vs ${chartPaidOut}`);
       T.check(`${cur}: Charts "billed" equals the Reports summary "billed"`,
-        chartRows.reduce((a, r) => a + C(r.billed), 0) === C(F.chargedInPeriod(F.chargesInBook(combined.charges, 'everything'), cur, FROM, TO).total));
+        chartRows.reduce((a, r) => a + C(r.billed), 0) === C(F.billedOnCombinedView(charges, cur, FROM, TO).total));
 
       /* ---------- Bank reconciliation (Reconciliation.tsx) ---------- */
       const rec = F.reconciliation(raw, cur, FROM, TO);
@@ -237,13 +254,14 @@ export default async function run({ port, projectRoot }) {
     for (const cur of CURS) {
       const st = book => F.operatingStatement(settled, expenses, units, cur, FROM, TO, { book });
       const [all, strata, ispo] = [st('everything'), st('strata'), st('ispo')];
-      T.check(`${cur}: combined income is the corporation's plus ISPO's, less the levy ISPO paid over (counted once)`,
-        C(strata.totalIncome) + C(ispo.totalIncome) - C(ispo.internalTransfer) === C(all.totalIncome),
-        `${C(strata.totalIncome)} + ${C(ispo.totalIncome)} - ${C(ispo.internalTransfer)} vs ${C(all.totalIncome)}`);
+      T.check(`${cur}: combined income is whole: the corporation's plus ISPO's`,
+        C(strata.totalIncome) + C(ispo.totalIncome) === C(all.totalIncome),
+        `${C(strata.totalIncome)} + ${C(ispo.totalIncome)} vs ${C(all.totalIncome)}`);
       T.check(`${cur}: so the combined surplus is exactly the two books' surpluses added`,
         C(strata.surplus) + C(ispo.surplus) === C(all.surplus), `${C(strata.surplus)} + ${C(ispo.surplus)} vs ${C(all.surplus)}`);
-      T.check(`${cur}: the levy left off the combined statement is named, with its amount`,
-        all.excludedIncome.some(e => /ISPO paid the corporation/.test(e.label) && C(e.total) === C(ispo.internalTransfer)), JSON.stringify(all.excludedIncome));
+      T.check(`${cur}: combined expenditure is whole: the corporation's plus ISPO's, ISPO's maintenance to the corporation included`,
+        C(strata.totalExpenditure) + C(ispo.totalExpenditure) === C(all.totalExpenditure) && all.expenditure.some(g => /paid to the corporation/.test(g.label) && C(g.total) === C(ispo.internalTransfer)),
+        `${C(strata.totalExpenditure)} + ${C(ispo.totalExpenditure)} vs ${C(all.totalExpenditure)}`);
       const io = F.ispoOperations(expenses, settled, units, cur, FROM, TO);
       T.check(`${cur}: ISPO Operations' net equals the ISPO Operating Statement's surplus`, C(io.net) === C(ispo.surplus), `${C(io.net)} vs ${C(ispo.surplus)}`);
     }
