@@ -208,7 +208,7 @@ export default async function run({ projectRoot }) {
     const line = gap?.details?.find(d => /Villa Unit 3/.test(d));
     T.check('the gap names Villa 3, Jane Doe and J$75,000.00', !!line && /Jane Doe/.test(line) && /J\$75,000\.00/.test(line), JSON.stringify(gap?.details));
     T.check('it says since when (due date and days) and what to do', !!line && /due 1 Oct 2026, 30 days/.test(line) && /^Chase Jane Doe/.test(line), line);
-    T.check('it says the J$20,000.00 levy inside the rent stays unsettled', !!line && /J\$20,000\.00 levy inside it stays unsettled/.test(line), line);
+    T.check('it says the J$20,000.00 maintenance inside the rent stays unsettled', !!line && /J\$20,000\.00 maintenance inside it stays unsettled/.test(line), line);
 
     /* ---- the per-account list sums exactly to the receivable, on every book ---- */
     for (const book of ['ispo', 'strata', 'everything']) {
@@ -232,7 +232,7 @@ export default async function run({ projectRoot }) {
     T.check('levy: J$180,000 billed on 9 villas, J$160,000 paid, J$20,000 unpaid', cents(levy.billed) === 18000000 && levy.villas === 9 && cents(levy.paid) === 16000000 && cents(levy.unpaid) === 2000000, JSON.stringify({ billed: levy.billed, villas: levy.villas, paid: levy.paid, unpaid: levy.unpaid }));
     T.check(
       'the note reads billed / paid / unpaid on Villa 3 with the reason',
-      /J\$180,000\.00 billed on 9 villas; J\$160,000\.00 paid; J\$20,000\.00 unpaid on Villa Unit 3 \(Jane Doe's October 2026 rent J\$75,000\.00 unpaid, so the J\$20,000\.00 levy inside it is unsettled\)/.test(note),
+      /J\$180,000\.00 billed on 9 villas; J\$160,000\.00 paid; J\$20,000\.00 unpaid on Villa Unit 3 \(Jane Doe's October 2026 rent J\$75,000\.00 unpaid, so the J\$20,000\.00 maintenance inside it is unsettled\)/.test(note),
       note
     );
     T.check('the note ties to the operating statement\'s paid-over figure', cents(fin.operatingStatement(data.payments, data.expenses, data.units, 'JMD', FROM, TO, { book: 'ispo' }).internalTransfer) === cents(levy.paid), String(levy.paid));
@@ -243,8 +243,8 @@ export default async function run({ projectRoot }) {
     const strata = flat(obs.observationsFor({ ...input('strata'), utilities: data.utilities }));
     T.check('strata book: no rent, no tenant name', !/\brent\b/i.test(strata) && !/Jane Doe|Paul Payer/.test(strata), strata);
     T.check('strata book: ISPO owes the Villa 3 levy as proprietor', /ISPO \(proprietor\) · J\$20,000\.00/.test(strata), strata);
-    T.check('strata book: Proprietor 16 is named for the unpaid levy', /Chase Proprietor 16, Villa Unit 16: October 2026 maintenance levy J\$20,000\.00 unpaid/.test(strata), strata);
-    T.check('strata book: a part-payment shows what is left of the charge', /Chase Proprietor 15, Villa Unit 15: October 2026 maintenance levy J\$15,000\.00 unpaid of J\$20,000\.00/.test(strata), strata);
+    T.check('strata book: Proprietor 16 is named for the unpaid levy', /Chase Proprietor 16, Villa Unit 16: October 2026 maintenance J\$20,000\.00 unpaid/.test(strata), strata);
+    T.check('strata book: a part-payment shows what is left of the charge', /Chase Proprietor 15, Villa Unit 15: October 2026 maintenance J\$15,000\.00 unpaid of J\$20,000\.00/.test(strata), strata);
     T.check('strata book: the gap headline is the sum of its lines', /J\$55,000\.00 unpaid on 3 villa/.test(strata), strata);
     T.check('strata book: no short stays and no empty-villa letting facts', !/short stay|stood empty/i.test(strata), strata);
     // Villa 13 is a proprietor's: its owner holds the utility account (Ro, 2026-11-22),
@@ -266,7 +266,7 @@ export default async function run({ projectRoot }) {
     const paidUp = flat(obs.observationsFor({ ...input('ispo', 'USD'), payments: [...data.payments, rest] }));
     T.check('a stay paid in full by receipts is not listed as owing, whatever its typed balance says', !/Collect \$[\d,.]+ of \$[\d,.]+ from Bob Guest/.test(paidUp) && /Bob Guest/.test(flat(obs.observationsFor(input('ispo', 'USD')))), paidUp);
     const all = flat(ispo);
-    T.check('empty villas are named with days and the levy paid on them', /Villa Unit 1: empty 31 days of 31; levy paid J\$20,000\.00/.test(all), all);
+    T.check('empty villas are named with days and the maintenance paid on them', /Villa Unit 1: empty 31 days of 31; maintenance paid J\$20,000\.00/.test(all), all);
     T.check('unpaid supplier bill named with vendor and due date', /Pay Pool Co: Pool pump J\$30,000\.00, due 15 Oct 2026, 16 days overdue/.test(all), all);
     T.check("'Other' spend is itemised", /Hardware Ltd: Sundries J\$12,000\.00/.test(all), all);
     T.check('lease ending within 60 days named with deposit held', /Jane Doe, Villa Unit 3: lease ends 15 Dec 2026, in 45 days; deposit J\$75,000\.00 held/.test(all), all);
@@ -353,7 +353,7 @@ export default async function run({ projectRoot }) {
     const refundCents = data.payments
       .filter(p => p.currency === 'JMD' && p.status === 'completed' && !p.derived && (p.category === 'Rent' || p.category === 'Booking') && p.refundedOn && p.refundedOn >= FROM && p.refundedOn <= TO)
       .reduce((t, p) => t + cents(p.refundedAmount || 0), 0);
-    T.check('a leak summary names the levy ISPO paid with nothing earned to cover it', !!leaks && /levy paid with no earnings to cover it/.test(leaks.text), leaks?.text);
+    T.check('a leak summary names the maintenance ISPO paid with nothing earned to cover it', !!leaks && /[Mm]aintenance paid with no earnings to cover it/.test(leaks.text), leaks?.text);
     T.check(
       'and its total ties to the out-of-pocket report plus refunds',
       !!leaks && cents(leaks.atRisk) === cents(oop.totalShortfall) + refundCents && oop.totalShortfall > 0,

@@ -263,12 +263,12 @@ export function accountsOwing(input: ObservationInput): AccountOwing[] {
 /** "Chase Jane Doe, Villa Unit 3: October 2026 rent J$75,000.00 unpaid since 1 Oct 2026, 30 days." */
 function chaseLine(u: UnpaidCharge, unit: Unit, currency: Currency, to: string, book: ReportBook): string {
   const c = u.charge;
-  const what = c.category === 'Rent' ? 'rent' : u.levyInRent ? 'levy inside the rent' : c.oneOffType || c.kind === 'one-off' ? (c.description || 'one-off charge') : 'maintenance levy';
+  const what = c.category === 'Rent' ? 'rent' : u.levyInRent ? 'maintenance inside the rent' : c.oneOffType || c.kind === 'one-off' ? (c.description || 'one-off charge') : 'maintenance';
   const age = Math.max(0, daysSinceOn(c.dueDate, to));
   const former = u.tenancy && u.tenancy.status === 'ended' && u.tenancy.endedOn && u.tenancy.endedOn <= to ? ` (former tenant, left ${formatDayLabel(u.tenancy.endedOn)})` : '';
   const levyInside =
     c.category === 'Rent' && (c.maintenancePortion || 0) > 0 && book === 'ispo'
-      ? `; ${MANAGING_COMPANY_NAME}'s ${m(Math.min(c.maintenancePortion || 0, u.unpaid), currency)} levy inside it stays unsettled until it is paid`
+      ? `; ${MANAGING_COMPANY_NAME}'s ${m(Math.min(c.maintenancePortion || 0, u.unpaid), currency)} maintenance inside it stays unsettled until it is paid`
       : '';
   const verb = u.payer.startsWith(MANAGING_COMPANY_NAME) ? `${MANAGING_COMPANY_NAME} to pay the corporation,` : `Chase ${u.payer}${former},`;
   return (
@@ -281,8 +281,8 @@ function chaseLine(u: UnpaidCharge, unit: Unit, currency: Currency, to: string, 
 function internalNote(villas: Unit[], amount: number, currency: Currency): string {
   const names = [...new Set(villas.map(villa))];
   return (
-    `Does not tie: ${m(amount, currency)} on ${names.join(', ')} is ${MANAGING_COMPANY_NAME}'s own levy, which ${MANAGING_COMPANY_NAME} has paid. ` +
-    `The combined view drops those receipts as transfers between the two books but keeps the levy charge, so it reads as owed here ` +
+    `Does not tie: ${m(amount, currency)} on ${names.join(', ')} is ${MANAGING_COMPANY_NAME}'s own maintenance, which ${MANAGING_COMPANY_NAME} has paid. ` +
+    `The combined view drops those receipts as transfers between the two books but keeps the maintenance charge, so it reads as owed here ` +
     `and settled on the corporation's book; the difference is ${m(amount, currency)}. Nobody needs chasing for it.`
   );
 }
@@ -362,21 +362,21 @@ export function ispoLevyPosition(input: Pick<ObservationInput, 'units' | 'tenanc
             unpaid: owed,
             reason:
               `${tenant}'s ${label} rent ${m(rent.amount, currency)} ${left === rent.amount ? 'unpaid' : `has ${m(left, currency)} unpaid`}, ` +
-              `so the ${m(owed, currency)} levy inside it is unsettled`,
-            action: `Chase ${tenant}, ${villa(unit)}: ${label} rent ${m(left, currency)} unpaid; the levy settles from it when paid.`
+              `so the ${m(owed, currency)} maintenance inside it is unsettled`,
+            action: `Chase ${tenant}, ${villa(unit)}: ${label} rent ${m(left, currency)} unpaid; the maintenance settles from it when paid.`
           };
         }
         return {
           month,
           unpaid: owed,
-          reason: `${label} rent is paid but ${m(owed, currency)} of its levy is not settled`,
-          action: `Check ${villa(unit)} ${label}: the rent receipt did not settle the levy inside it.`
+          reason: `${label} rent is paid but ${m(owed, currency)} of its maintenance is not settled`,
+          action: `Check ${villa(unit)} ${label}: the rent receipt did not settle the maintenance inside it.`
         };
       }
       return {
         month,
         unpaid: owed,
-        reason: `no rent charge carries the ${label} levy (villa ${unit.status}) and no maintenance receipt covers it`,
+        reason: `no rent charge carries the ${label} maintenance (villa ${unit.status}) and no maintenance receipt covers it`,
         action: `${MANAGING_COMPANY_NAME} to pay the corporation ${m(owed, currency)} for ${villa(unit)}, ${label}.`
       };
     });
@@ -410,7 +410,7 @@ export function levyNote(p: LevyPosition): string {
   if (p.billed === 0 && p.paid === 0) return '';
   const unpaidRows = p.rows.filter(r => r.unpaid > 0);
   let text =
-    `${MANAGING_COMPANY_NAME}'s strata levy on the villas it owns: ${m(p.billed, c)} billed on ${p.villas} villa${p.villas === 1 ? '' : 's'}; ` +
+    `${MANAGING_COMPANY_NAME}'s maintenance on the villas it owns: ${m(p.billed, c)} billed on ${p.villas} villa${p.villas === 1 ? '' : 's'}; ` +
     `${m(p.paid, c)} paid`;
   if (unpaidRows.length > 0) {
     text +=
@@ -419,8 +419,8 @@ export function levyNote(p: LevyPosition): string {
   }
   text += '.';
   const gap = round2(p.paid - p.settledOfBilled);
-  if (gap > 0) text += ` ${m(gap, c)} of what was paid settled levy billed outside this period.`;
-  if (gap < 0) text += ` ${m(-gap, c)} of this period's levy was settled by money paid outside the period.`;
+  if (gap > 0) text += ` ${m(gap, c)} of what was paid settled maintenance billed outside this period.`;
+  if (gap < 0) text += ` ${m(-gap, c)} of this period's maintenance was settled by money paid outside the period.`;
   return text;
 }
 
@@ -507,7 +507,7 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
       atRisk: gap,
       text:
         `${c}: ${m(billed, c)} billed in ${accounts}; ${m(settled, c)} of it settled by ${formatDayLabel(to)}` +
-        (internal > 0 ? ` (plus ${m(internal, c)} of ${MANAGING_COMPANY_NAME}'s own levy, paid)` : '') +
+        (internal > 0 ? ` (plus ${m(internal, c)} of ${MANAGING_COMPANY_NAME}'s own maintenance, paid)` : '') +
         (gap > 0 ? `; ${m(gap, c)} unpaid on ${new Set(gapLines.map(g => g.a.unit.id)).size} villa(s).` : ', all of it.'),
       details: details.length ? details : undefined
     });
@@ -526,13 +526,13 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
               ? 'Former tenants'
               : 'Tenants'
             : isOwnAccount(a.unit)
-              ? `${MANAGING_COMPANY_NAME}'s own levy`
+              ? `${MANAGING_COMPANY_NAME}'s own maintenance`
               : 'Proprietors';
         addTo(
           owedGroups,
           group,
           u.unpaid,
-          `${u.payer || 'payer not recorded'}, ${villa(a.unit)}: ${m(u.unpaid, c)} ${u.charge.category === 'Rent' ? 'rent' : 'levy'} for ${formatMonthLabel(u.charge.periodMonth)}, ${days(Math.max(0, daysSinceOn(u.charge.dueDate, to)))} unpaid.`
+          `${u.payer || 'payer not recorded'}, ${villa(a.unit)}: ${m(u.unpaid, c)} ${u.charge.category === 'Rent' ? 'rent' : 'maintenance'} for ${formatMonthLabel(u.charge.periodMonth)}, ${days(Math.max(0, daysSinceOn(u.charge.dueDate, to)))} unpaid.`
         );
       }
     }
@@ -584,10 +584,10 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
       say({
         rank: CONTEXT,
         text:
-          `${c}: ${m(ownTotal, c)} of ${MANAGING_COMPANY_NAME}'s own levy is unpaid at ${formatDayLabel(to)}. On these combined books it is ` +
+          `${c}: ${m(ownTotal, c)} of ${MANAGING_COMPANY_NAME}'s own maintenance is unpaid at ${formatDayLabel(to)}. On these combined books it is ` +
           `${MANAGING_COMPANY_NAME} owing itself and is left out, so the Dashboard's arrears read ${m(ownTotal, c)} higher. ` +
           `It is still owed to the corporation: see the strata book.`,
-        details: own.map(a => `${villa(a.unit)}: ${m(a.balance, c)} levy unpaid${a.unpaidCharges[0] ? ` since ${formatMonthLabel(a.unpaidCharges[0].periodMonth)}` : ''}.`)
+        details: own.map(a => `${villa(a.unit)}: ${m(a.balance, c)} maintenance unpaid${a.unpaidCharges[0] ? ` since ${formatMonthLabel(a.unpaidCharges[0].periodMonth)}` : ''}.`)
       });
     }
   }
@@ -684,7 +684,7 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
         rank: levy.unpaid > 0 ? URGENT : CONTEXT,
         atRisk: levy.unpaid,
         text:
-          `${c}: ${MANAGING_COMPANY_NAME}'s levy ${m(levy.billed, c)} billed on ${levy.villas} villa(s); ${m(levy.paid, c)} paid in the period` +
+          `${c}: ${MANAGING_COMPANY_NAME}'s maintenance ${m(levy.billed, c)} billed on ${levy.villas} villa(s); ${m(levy.paid, c)} paid in the period` +
           (levy.unpaid > 0 ? `; ${m(levy.unpaid, c)} unsettled on ${unpaidRows.map(r => villa(r.unit)).join(', ')}.` : '; nothing unsettled.'),
         details: unpaidRows.length
           ? unpaidRows.flatMap(r => r.months.map(x => `${villa(r.unit)}, ${formatMonthLabel(x.month)}: ${m(x.unpaid, c)} unsettled, ${x.reason}. ${x.action}`))
@@ -694,7 +694,7 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
         say({
           rank: URGENT,
           atRisk: Math.abs(round2(page.paidOver - levy.paid)),
-          text: `${c}: "of which paid to the corporation" reads ${m(page.paidOver, c)} but the levy receipts on ${MANAGING_COMPANY_NAME}'s villas total ${m(levy.paid, c)}; difference ${m(Math.abs(round2(page.paidOver - levy.paid)), c)}.`
+          text: `${c}: "of which paid to the corporation" reads ${m(page.paidOver, c)} but the maintenance receipts on ${MANAGING_COMPANY_NAME}'s villas total ${m(levy.paid, c)}; difference ${m(Math.abs(round2(page.paidOver - levy.paid)), c)}.`
         });
       }
     }
@@ -818,15 +818,15 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
       say({
         rank: NOTABLE,
         atRisk: totalLevy,
-        text: `${c}: ${rows.length} complimentary stay(s), ${totalNights} night(s) given free in the period; ${MANAGING_COMPANY_NAME}'s levy on those nights ${m(totalLevy, c)}.`,
+        text: `${c}: ${rows.length} complimentary stay(s), ${totalNights} night(s) given free in the period; ${MANAGING_COMPANY_NAME}'s maintenance on those nights ${m(totalLevy, c)}.`,
         details: rows.map(
           r =>
             `${r.b.guestName || 'guest not named'}, ${villa(r.u)}, ${formatDayLabel(r.b.checkIn)} to ${formatDayLabel(r.b.checkOut)}: ${r.nights} night(s) free; ` +
-            `reason: ${r.b.complimentaryReason || 'none recorded'}; marked by ${r.b.complimentaryBy || 'not recorded'}; levy on those nights ${m(r.levy, c)}.`
+            `reason: ${r.b.complimentaryReason || 'none recorded'}; marked by ${r.b.complimentaryBy || 'not recorded'}; maintenance on those nights ${m(r.levy, c)}.`
         )
       });
       for (const r of rows) {
-        addTo(leakGroups, 'Complimentary stays (levy on free nights)', r.levy, `${r.b.guestName || 'guest not named'}, ${villa(r.u)}: ${r.nights} night(s) free, levy share ${m(r.levy, c)} (${r.b.complimentaryReason || 'no reason'}).`);
+        addTo(leakGroups, 'Complimentary stays (maintenance on free nights)', r.levy, `${r.b.guestName || 'guest not named'}, ${villa(r.u)}: ${r.nights} night(s) free, maintenance share ${m(r.levy, c)} (${r.b.complimentaryReason || 'no reason'}).`);
       }
     }
 
@@ -835,13 +835,13 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
     for (const f of funded.fundedMonths) {
       addTo(
         leakGroups,
-        'Levy paid with no earnings to cover it',
+        'Maintenance paid with no earnings to cover it',
         f.shortfall,
-        `${f.villa}, ${formatMonthLabel(f.month)}: ${m(f.shortfall, c)} ${f.vacant ? '(empty all month)' : '(let, but earned less than the levy)'}.`
+        `${f.villa}, ${formatMonthLabel(f.month)}: ${m(f.shortfall, c)} ${f.vacant ? '(empty all month)' : '(let, but earned less than the maintenance)'}.`
       );
     }
     for (const x of funded.crossCurrencyMonths) {
-      checks.push(`${x.villa}, ${formatMonthLabel(x.month)}: ${m(x.gap, c)} more levy than ${c} earnings, but ${m(x.otherEarned, x.otherCurrency)} earned in ${x.otherCurrency}; not counted as a leak without an exchange rate.`);
+      checks.push(`${x.villa}, ${formatMonthLabel(x.month)}: ${m(x.gap, c)} more maintenance than ${c} earnings, but ${m(x.otherEarned, x.otherCurrency)} earned in ${x.otherCurrency}; not counted as a leak without an exchange rate.`);
     }
   }
 
@@ -903,10 +903,10 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
           atRisk: levyTotal,
           text:
             `${c}: ${rows.length} of ${MANAGING_COMPANY_NAME}'s ${own.length} villas stood empty for ${rows.reduce((a, r) => a + r.days, 0)} of ${own.length * span} villa-days; ` +
-            `${m(levyTotal, c)} levy was paid on them in the period.`,
+            `${m(levyTotal, c)} maintenance was paid on them in the period.`,
           details: rows.map(
             r =>
-              `${villa(r.u)}: empty ${days(r.days)} of ${span}; levy paid ${m(r.levyPaid, c)}; rent and stay income ${m(r.income, c)}` +
+              `${villa(r.u)}: empty ${days(r.days)} of ${span}; maintenance paid ${m(r.levyPaid, c)}; rent and stay income ${m(r.income, c)}` +
               `${r.days === span ? '. Empty all period: find a tenant or guest.' : '.'}`
           )
         });
@@ -1077,7 +1077,7 @@ export function observationsFor(input: ObservationInput, page?: PageFigures): Ob
         `${c}: where money leaked in the period: ` +
         (leakGroups.length
           ? byAmount(leakGroups.filter(g => g !== comp)).map(g => `${g.group.toLowerCase()} ${m(g.amount, c)}`).join(' · ') +
-            (comp ? `${leakTotal > 0 ? ' · ' : ''}complimentary nights cost ${m(comp.amount, c)} in levy${leakTotal > 0 ? ', part of the unfunded levy where the villa earned nothing else' : ''}` : '')
+            (comp ? `${leakTotal > 0 ? ' · ' : ''}complimentary nights cost ${m(comp.amount, c)} in maintenance${leakTotal > 0 ? ', part of the unfunded maintenance where the villa earned nothing else' : ''}` : '')
           : 'nothing measurable') +
         (checks.length ? `; ${checks.length} item(s) to check.` : '.'),
       details: [

@@ -2307,7 +2307,7 @@ function applyAdvanceRentOnMoveOut(db: Database, tenancy: Tenancy, endedOn: stri
       'Charge',
       advance.id,
       `period ${paidForMonth}`,
-      `period ${paidForMonth}, pays for ${finalMonth}; the maintenance inside it settles that month's levy`
+      `period ${paidForMonth}, pays for ${finalMonth}; the maintenance inside it settles that month's maintenance charge`
     );
   } else if (paidForMonth !== finalMonth) {
     advance.periodMonth = finalMonth;
@@ -2320,7 +2320,7 @@ function applyAdvanceRentOnMoveOut(db: Database, tenancy: Tenancy, endedOn: stri
       'Charge',
       advance.id,
       `period ${paidForMonth}`,
-      `period ${finalMonth}; the maintenance inside it settles that month's levy`
+      `period ${finalMonth}; the maintenance inside it settles that month's maintenance charge`
     );
   }
 
@@ -3470,8 +3470,8 @@ app.put(
       if (redenominated.some(ch => ch.category === 'Maintenance') && (original.maintenanceSchedule || []).length > 0) {
         throw new ApiError(
           400,
-          `${getUnitDisplayName(original.number)} has dated levy changes in ${chargeCurrency(original, 'Maintenance')}. ` +
-            'Remove them before changing the currency the levy is billed in.',
+          `${getUnitDisplayName(original.number)} has dated maintenance changes in ${chargeCurrency(original, 'Maintenance')}. ` +
+            'Remove them before changing the currency the maintenance is billed in.',
           FEE_CODES.currencyMismatch
         );
       }
@@ -3545,7 +3545,7 @@ app.put(
             db,
             who.name,
             who.role,
-            `${getUnitDisplayName(original.number)}'s levy moved currency, so the maintenance inside ${ch.periodMonth}'s rent no longer stands`,
+            `${getUnitDisplayName(original.number)}'s maintenance moved currency, so the maintenance inside ${ch.periodMonth}'s rent no longer stands`,
             'Charge',
             ch.id,
             before,
@@ -3592,7 +3592,7 @@ app.put(
         if (governing) {
           throw new ApiError(
             400,
-            `${getUnitDisplayName(original.number)}'s levy is set by its fee schedule (${governing.currency} ${governing.amount} from ${governing.effectiveFrom}). ` +
+            `${getUnitDisplayName(original.number)}'s maintenance is set by its fee schedule (${governing.currency} ${governing.amount} from ${governing.effectiveFrom}). ` +
               'Add a dated change to alter it; the standing figure no longer applies.',
             FEE_CODES.scheduleGoverns
           );
@@ -3839,7 +3839,7 @@ function refuseIfMonthsSettled(db: Database, unit: Unit, from: string, before: n
     throw new ApiError(
       400,
       `${getUnitDisplayName(unit.number)}: ${from} is in a closed period (closed through ${closedThrough}). ` +
-        'A levy change cannot reach back into closed books. Reopen the period first if it really must.',
+        'A maintenance change cannot reach back into closed books. Reopen the period first if it really must.',
       FEE_CODES.monthClosed
     );
   }
@@ -3848,7 +3848,7 @@ function refuseIfMonthsSettled(db: Database, unit: Unit, from: string, before: n
     const months = [...new Set(posted.map(c => c.periodMonth))].sort();
     throw new ApiError(
       400,
-      `${getUnitDisplayName(unit.number)} already has ${months.join(', ')} posted at the levy in force when it was billed. ` +
+      `${getUnitDisplayName(unit.number)} already has ${months.join(', ')} posted at the maintenance rate in force when it was billed. ` +
         'A dated change cannot rewrite a posted month. Date the change from the first month not yet posted, ' +
         'or void the posted charge with a reason (the correction path) and re-post it after adding the change.',
       FEE_CODES.monthPosted
@@ -3860,26 +3860,26 @@ function refuseIfMonthsSettled(db: Database, unit: Unit, from: string, before: n
 function readFeeChange(unit: Unit, body: Record<string, unknown>): FeeChange {
   const effectiveFrom = monthText(body.effectiveFrom);
   if (!isValidMonth(effectiveFrom)) {
-    throw new ApiError(400, 'The month a levy change takes effect must be given as YYYY-MM, for example 2027-01.', FEE_CODES.monthFormat);
+    throw new ApiError(400, 'The month a maintenance change takes effect must be given as YYYY-MM, for example 2027-01.', FEE_CODES.monthFormat);
   }
   const amount = hasExtraDecimals(body.amount) ? null : parseMoneyInput(body.amount);
   if (amount === null || !(amount > 0) || amount > FEE_MAX) {
-    throw new ApiError(400, 'A levy change must be an amount greater than zero.', FEE_CODES.amountInvalid);
+    throw new ApiError(400, 'A maintenance change must be an amount greater than zero.', FEE_CODES.amountInvalid);
   }
   const currency = String(body.currency ?? '').trim();
   const levyCur = chargeCurrency(unit, 'Maintenance');
   if (currency !== levyCur) {
     throw new ApiError(
       400,
-      `${getUnitDisplayName(unit.number)} is levied in ${levyCur}; a change in ${currency || 'no currency'} cannot be billed to it. ` +
-        'A levy is never converted between currencies.',
+      `${getUnitDisplayName(unit.number)} is charged in ${levyCur}; a change in ${currency || 'no currency'} cannot be billed to it. ` +
+        'Maintenance is never converted between currencies.',
       FEE_CODES.currencyMismatch
     );
   }
   if ((unit.maintenanceSchedule || []).some(e => e && e.effectiveFrom === effectiveFrom)) {
     throw new ApiError(
       400,
-      `${getUnitDisplayName(unit.number)} already has a levy change from ${effectiveFrom}. Remove it first to enter a different figure.`,
+      `${getUnitDisplayName(unit.number)} already has a maintenance change from ${effectiveFrom}. Remove it first to enter a different figure.`,
       FEE_CODES.duplicateMonth
     );
   }
@@ -3898,11 +3898,11 @@ function addFeeChange(db: Database, unit: Unit, entry: FeeChange, who: { name: s
     db,
     who.name,
     who.role,
-    `Added a dated levy change to ${getUnitDisplayName(unit.number)}: from ${entry.effectiveFrom}, ${entry.currency} ${entry.amount}`,
+    `Added a dated maintenance change to ${getUnitDisplayName(unit.number)}: from ${entry.effectiveFrom}, ${entry.currency} ${entry.amount}`,
     'Unit',
     unit.id,
-    `levy from ${entry.effectiveFrom}: ${entry.currency} ${before}`,
-    `levy from ${entry.effectiveFrom}: ${entry.currency} ${entry.amount}`
+    `maintenance from ${entry.effectiveFrom}: ${entry.currency} ${before}`,
+    `maintenance from ${entry.effectiveFrom}: ${entry.currency} ${entry.amount}`
   );
 }
 
@@ -3931,7 +3931,7 @@ app.delete(
       if (!unit) throw new ApiError(404, 'Unit not found.');
       const entry = (unit.maintenanceSchedule || []).find(e => e && e.effectiveFrom === month);
       if (!entry) {
-        throw new ApiError(404, `${getUnitDisplayName(unit.number)} has no levy change from ${month}.`, FEE_CODES.notFound);
+        throw new ApiError(404, `${getUnitDisplayName(unit.number)} has no maintenance change from ${month}.`, FEE_CODES.notFound);
       }
       const before = levyForMonth(unit, month);
       const without: Unit = { ...unit, maintenanceSchedule: (unit.maintenanceSchedule || []).filter(e => e !== entry) };
@@ -3944,11 +3944,11 @@ app.delete(
         db,
         who.name,
         who.role,
-        `Removed the dated levy change from ${month} on ${getUnitDisplayName(unit.number)}`,
+        `Removed the dated maintenance change from ${month} on ${getUnitDisplayName(unit.number)}`,
         'Unit',
         unit.id,
-        `levy from ${month}: ${entry.currency} ${entry.amount}`,
-        `levy from ${month}: ${chargeCurrency(unit, 'Maintenance')} ${after}`
+        `maintenance from ${month}: ${entry.currency} ${entry.amount}`,
+        `maintenance from ${month}: ${chargeCurrency(unit, 'Maintenance')} ${after}`
       );
       return unit;
     });
@@ -3969,11 +3969,11 @@ app.post(
   handler(async (req: AuthedRequest, res) => {
     requirePermission(req, 'edit_unit');
     const body = req.body || {};
-    const currency = requireCurrency(body.currency, 'Levy currency');
+    const currency = requireCurrency(body.currency, 'Maintenance currency');
     const wanted = Array.isArray(body.unitIds) ? new Set(body.unitIds.map(String)) : null;
     const effectiveFrom = monthText(body.effectiveFrom);
     if (!isValidMonth(effectiveFrom)) {
-      throw new ApiError(400, 'The month a levy change takes effect must be given as YYYY-MM, for example 2027-01.', FEE_CODES.monthFormat);
+      throw new ApiError(400, 'The month a maintenance change takes effect must be given as YYYY-MM, for example 2027-01.', FEE_CODES.monthFormat);
     }
     const result = await transaction(db => {
       const targets = db.units.filter(
@@ -3983,10 +3983,10 @@ app.post(
           (wanted ? wanted.has(u.id) : levyForMonth(u, effectiveFrom) > 0)
       );
       if (wanted && targets.length !== wanted.size) {
-        bad(`Some of the villas named are not levied in ${currency}, are unavailable, or do not exist.`);
+        bad(`Some of the villas named are not charged in ${currency}, are unavailable, or do not exist.`);
       }
       if (targets.length === 0) {
-        bad(`No villa is levied in ${currency}, so there is nothing to change.`);
+        bad(`No villa is charged in ${currency}, so there is nothing to change.`);
       }
       const who = actor(req);
       const entries = targets.map(u => ({ unit: u, entry: readFeeChange(u, body) }));

@@ -587,9 +587,8 @@ function BooksNote({ statement: s }: { statement: Statement }) {
       {s.internalTransfer > 0 && (
         <p className="mt-2 border-t border-slate-200 pt-2">
           <span className="font-mono font-semibold">{formatMoney(s.internalTransfer, s.currency)}</span> is the maintenance{' '}
-          {MANAGING_COMPANY_NAME} paid the corporation on the villas it lets. It is money moving between the two books, already
-          inside the rent and bookings above, so it is not counted as income a second time and is named under what this
-          statement leaves out. It is not money that entered or left the group.
+          {MANAGING_COMPANY_NAME} paid the corporation on its own villas. It is shown in full as maintenance received and again
+          under expenditure as maintenance paid to the corporation, so it does not change the surplus.
         </p>
       )}
       <p className="mt-2 text-[10px] text-slate-500">

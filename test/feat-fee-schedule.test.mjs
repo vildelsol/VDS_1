@@ -220,10 +220,10 @@ export default async function run({ port, projectRoot }) {
     T.check('refused: a second change for the same month (FEE_DUPLICATE_MONTH)', r.status === 400 && code(r) === 'FEE_DUPLICATE_MONTH', JSON.stringify(r.body));
 
     db = (await c.get('/api/db')).body;
-    const addLine = db.auditLogs.find(a => /Added a dated levy change to Villa 3/.test(a.action) || (/Added a dated levy change/.test(a.action) && a.recordId === 'unit-3'));
+    const addLine = db.auditLogs.find(a => /Added a dated maintenance change to Villa 3/.test(a.action) || (/Added a dated maintenance change/.test(a.action) && a.recordId === 'unit-3'));
     T.check(
-      'audit: the add is logged with the old and new levy',
-      !!addLine && addLine.previousValue === `levy from ${M0}: JMD 20000` && addLine.newValue === `levy from ${M0}: JMD 27000`,
+      'audit: the add is logged with the old and new maintenance',
+      !!addLine && addLine.previousValue === `maintenance from ${M0}: JMD 20000` && addLine.newValue === `maintenance from ${M0}: JMD 27000`,
       JSON.stringify(addLine)
     );
 
@@ -231,10 +231,10 @@ export default async function run({ port, projectRoot }) {
     r = await c.del(`/api/units/unit-3/fee-schedule/${M0}`);
     T.check('a dated change not yet billed can be removed', r.status === 200, JSON.stringify(r.body));
     db = (await c.get('/api/db')).body;
-    const removeLine = db.auditLogs.find(a => /Removed the dated levy change/.test(a.action) && a.recordId === 'unit-3');
+    const removeLine = db.auditLogs.find(a => /Removed the dated maintenance change/.test(a.action) && a.recordId === 'unit-3');
     T.check(
-      'audit: the removal is logged with the old and new levy',
-      !!removeLine && removeLine.previousValue === `levy from ${M0}: JMD 27000` && removeLine.newValue === `levy from ${M0}: JMD 20000`,
+      'audit: the removal is logged with the old and new maintenance',
+      !!removeLine && removeLine.previousValue === `maintenance from ${M0}: JMD 27000` && removeLine.newValue === `maintenance from ${M0}: JMD 20000`,
       JSON.stringify(removeLine)
     );
     r = await c.del(`/api/units/unit-3/fee-schedule/${M0}`);
@@ -250,8 +250,8 @@ export default async function run({ port, projectRoot }) {
     T.check('legacy: the US$ villa carries no schedule at all', !('maintenanceSchedule' in db.units.find(u => u.id === 'unit-4')));
     T.check(
       'audit: one line per villa for the property-wide change',
-      db.auditLogs.filter(a => /Added a dated levy change/.test(a.action) && a.newValue === `levy from ${M0}: JMD 27000`).length === 3,
-      String(db.auditLogs.filter(a => /Added a dated levy change/.test(a.action)).length)
+      db.auditLogs.filter(a => /Added a dated maintenance change/.test(a.action) && a.newValue === `maintenance from ${M0}: JMD 27000`).length === 3,
+      String(db.auditLogs.filter(a => /Added a dated maintenance change/.test(a.action)).length)
     );
 
     // The standing figure is no longer what is billed, so editing it is refused.

@@ -143,7 +143,7 @@ export default function NotificationsTab({
       const where = months.length === 1 ? formatMonthLabel(months[0]) : `${months.length} months (${months.map(formatMonthLabel).join(', ')})`;
       setSuccess(
         `${where} posted for the whole property: ${raised} charge${raised === 1 ? '' : 's'} raised, ` +
-          'rent on every let villa and the maintenance levy on every villa that pays one.' +
+          'rent on every let villa and maintenance on every villa.' +
           // Only worth saying when it happened; "0 already billed" is noise on a
           // first posting, and the figure is the reassurance that nothing doubled.
           (alreadyThere > 0 ? ` ${alreadyThere} charge${alreadyThere === 1 ? ' was' : 's were'} already billed and left untouched.` : '')
@@ -214,7 +214,7 @@ export default function NotificationsTab({
         `${row.tenancy.tenantName} has occupied ${row.months.length} month${row.months.length === 1 ? '' : 's'} ` +
         `that ${row.months.length === 1 ? 'has' : 'have'} never been billed (${row.months.map(formatMonthLabel).join(', ')}). ` +
         'Posting a month bills the whole property for it — rent on every let villa and the monthly ' +
-        'maintenance levy on every villa that pays one. Months already billed are left untouched.',
+        'maintenance on every villa. Months already billed are left untouched.',
       amount: row.amount,
       currency: row.currency,
       severity: row.months.length > 1 ? 'high' : 'medium',
@@ -254,7 +254,7 @@ export default function NotificationsTab({
       type: 'unbilled',
       title: `Maintenance not yet billed, ${getUnitDisplayName(row.unitNumber)}`,
       description:
-        `The monthly maintenance levy has not been raised for ${row.months.length} month` +
+        `The monthly maintenance has not been raised for ${row.months.length} month` +
         `${row.months.length === 1 ? '' : 's'} (${row.months.map(formatMonthLabel).join(', ')}), ` +
         'so nothing on any screen counts it as owed. The application posts these on its own every hour; ' +
         'seeing them here means it has not, so post them.',

@@ -30,7 +30,7 @@ import {
   monoInputClass,
   tableHeadRowClass
 } from './ui';
-import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Lock, Mail, Plus, Printer, RefreshCw, Search, ShieldCheck } from 'lucide-react';
+import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Lock, Mail, Plus, Printer, RefreshCw, Search, ShieldCheck, XCircle } from 'lucide-react';
 
 interface BookingsProps {
   units: Unit[];
@@ -73,6 +73,7 @@ export default function Bookings({
   const [month, setMonth] = useRemembered('bookings.month', currentMonth);
   const [adding, setAdding] = useState<{ unitId?: string; checkIn?: string } | null>(null);
   const [editing, setEditing] = useState<Booking | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<Booking | null>(null);
   const [printing, setPrinting] = useState<{ from: string; to: string; unitId: string } | null>(null);
   const [receiptBooking, setReceiptBooking] = useState<Booking | null>(null);
   const [depositBooking, setDepositBooking] = useState<Booking | null>(null);
@@ -87,6 +88,7 @@ export default function Bookings({
   const perms = session.permissions;
   const canAdd = !!perms.addBookings;
   const canEdit = !!perms.editBookings;
+  const canCancel = !!perms.cancelBookings;
   /*
    * A completed stay is a settled record (Ro, 2026-11-19): only a role allowed
    * to modify settled ledger records may open it for editing. The server refuses
@@ -252,7 +254,8 @@ export default function Bookings({
   const listRows = useMemo(
     () =>
       filterReservations(bookings, { month: listAllMonths ? null : month, unitId: listUnitId })
-        .filter(b => listFilter === 'all' || stayPhase(b, todayKey) === listFilter)
+        // "All" means every stay still on: a cancelled one leaves the list and is found under "Cancelled" (Ro, 2026-11-26).
+        .filter(b => (listFilter === 'all' ? stayPhase(b, todayKey) !== 'cancelled' : stayPhase(b, todayKey) === listFilter))
         .sort((a, b) => b.checkIn.localeCompare(a.checkIn)),
     [bookings, listFilter, todayKey, listAllMonths, month, listUnitId]
   );
@@ -628,7 +631,7 @@ export default function Bookings({
                 onChange={e => setListFilter(e.target.value as typeof listFilter)}
                 className="rounded-lg border border-slate-200 p-1.5 text-xs"
               >
-                <option value="all">All stays</option>
+                <option value="all">All stays except cancelled</option>
                 <option value="upcoming">{STAY_PHASE_LABEL.upcoming}</option>
                 <option value="in-stay">{STAY_PHASE_LABEL['in-stay']}</option>
                 <option value="completed">{STAY_PHASE_LABEL.completed}</option>
@@ -763,6 +766,16 @@ export default function Bookings({
                       </td>
                       <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
                         {/* Closed dates have no guest to give a receipt to. */}
+                        {/* A stay already over is a settled record: changing it goes through the edit form and its lock. */}
+                        {b.status !== 'cancelled' && canCancel && canEditStay(b) && phase !== 'completed' && (
+                          <button
+                            onClick={() => setCancelTarget(b)}
+                            aria-label={closed ? `Unblock ${formatDayLabel(b.checkIn)} to ${formatDayLabel(b.checkOut)}` : `Cancel the reservation for ${b.guestName}`}
+                            className="mr-1.5 inline-flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-50"
+                          >
+                            <XCircle className="h-3.5 w-3.5" /> {closed ? 'Unblock' : 'Cancel'}
+                          </button>
+                        )}
                         {b.status !== 'cancelled' && !closed && (
                           <button
                             onClick={() => setReceiptBooking(b)}
@@ -800,17 +813,43 @@ export default function Bookings({
         />
       )}
 
+      {cancelTarget && (
+        <BookingForm
+          mode="edit"
+          units={shortLetUnits}
+          bookings={bookings}
+          booking={cancelTarget}
+          canCancel={canCancel}
+          startCancelling
+          onClose={() => setCancelTarget(null)}
+          onSubmit={async payload => {
+            await onUpdateBooking(cancelTarget.id, payload);
+            setSuccess(
+              isClosedDates(cancelTarget)
+                ? `Unblocked ${formatDayLabel(cancelTarget.checkIn)} to ${formatDayLabel(cancelTarget.checkOut)}. The dates are free to book.`
+                : `Cancelled the reservation for ${cancelTarget.guestName}. ${formatDayLabel(cancelTarget.checkIn)} to ${formatDayLabel(cancelTarget.checkOut)} is free to book.`
+            );
+            setError('');
+            setCancelTarget(null);
+          }}
+        />
+      )}
+
       {editing && (
         <BookingForm
           mode="edit"
           units={shortLetUnits}
           bookings={bookings}
           booking={editing}
-          canCancel={!!perms.cancelBookings}
+          canCancel={canCancel}
           onClose={() => setEditing(null)}
           onSubmit={async payload => {
             await onUpdateBooking(editing.id, payload);
-            setSuccess('Reservation updated.');
+            setSuccess(
+              payload.status === 'cancelled' && editing.status !== 'cancelled'
+                ? `${isClosedDates(editing) ? 'Unblocked' : `Cancelled the reservation for ${editing.guestName}:`} ${formatDayLabel(editing.checkIn)} to ${formatDayLabel(editing.checkOut)} is free to book.`
+                : 'Reservation updated.'
+            );
             setError('');
             setEditing(null);
           }}
@@ -1042,7 +1081,7 @@ export function stayValueForRate(rate: string | number, nights: number): string 
   return String(round2(value * nights));
 }
 
-function BookingForm({
+export function BookingForm({
   mode,
   units,
   bookings,
@@ -1050,6 +1089,7 @@ function BookingForm({
   initialUnitId,
   initialCheckIn,
   canCancel = true,
+  startCancelling = false,
   onClose,
   onSubmit
 }: {
@@ -1060,6 +1100,8 @@ function BookingForm({
   initialUnitId?: string;
   initialCheckIn?: string;
   canCancel?: boolean;
+  /** Opened from a Cancel / Unblock button: the form asks only what a cancel needs. */
+  startCancelling?: boolean;
   onClose: () => void;
   onSubmit: (payload: Record<string, unknown>) => Promise<void>;
 }) {
@@ -1077,7 +1119,7 @@ function BookingForm({
   const [checkIn, setCheckIn] = useState(booking?.checkIn || initialCheckIn || '');
   const [checkOut, setCheckOut] = useState(booking?.checkOut || '');
   const [source, setSource] = useState<Booking['source']>(booking?.source || 'Direct');
-  const [status, setStatus] = useState<Booking['status']>(booking?.status || 'confirmed');
+  const [status, setStatus] = useState<Booking['status']>(startCancelling && booking ? 'cancelled' : booking?.status || 'confirmed');
   const [currency, setCurrency] = useState<Currency>(booking?.currency || 'USD');
   const [nightlyRate, setNightlyRate] = useState(booking?.nightlyRate ? String(booking.nightlyRate) : '');
   const [amount, setAmount] = useState(booking ? String(booking.amount) : '');
@@ -1160,6 +1202,9 @@ function BookingForm({
   }, [unitId, checkIn, checkOut, bookings, booking?.id]);
 
   const cancelling = mode === 'edit' && status === 'cancelled' && booking?.status !== 'cancelled';
+  // Owner blocks and maintenance holds have no guest: cancelling one is unblocking the dates.
+  const closedDates = !!booking && isClosedDates(booking);
+  const canStartCancel = mode === 'edit' && !!booking && booking.status !== 'cancelled' && canCancel && !cancelling;
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1221,16 +1266,30 @@ function BookingForm({
 
   return (
     <Modal
-      title={mode === 'create' ? 'New guest reservation' : `Reservation: ${booking?.guestName}`}
+      title={
+        mode === 'create'
+          ? 'New guest reservation'
+          : cancelling
+            ? closedDates
+              ? 'Unblock these dates'
+              : `Cancel reservation: ${booking?.guestName}`
+            : `Reservation: ${booking?.guestName}`
+      }
       subtitle={unit ? getUnitDisplayName(unit.number) : undefined}
       onClose={onClose}
       maxWidthClass="max-w-lg"
       footer={
         <div className="flex gap-3">
           <SubmitButton busy={busy} busyLabel="Saving…" form="vds-booking-form" className="flex-1">
-            {mode === 'create' ? 'Save reservation' : 'Save changes'}
+            {mode === 'create' ? 'Save reservation' : cancelling ? (closedDates ? 'Unblock these dates' : 'Cancel this reservation') : 'Save changes'}
           </SubmitButton>
-          <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
+          {canStartCancel && (
+            <SecondaryButton onClick={() => setStatus('cancelled')}>{closedDates ? 'Unblock dates' : 'Cancel reservation'}</SecondaryButton>
+          )}
+          {/* "Cancel" here would read as cancelling the reservation; this only closes the window. */}
+          <SecondaryButton onClick={cancelling && !startCancelling ? () => setStatus(booking?.status || 'confirmed') : onClose}>
+            {cancelling ? (closedDates ? 'Keep them blocked' : 'Keep the reservation') : 'Close'}
+          </SecondaryButton>
         </div>
       }
     >
@@ -1264,6 +1323,7 @@ function BookingForm({
           </ErrorNote>
         )}
 
+        {!cancelling && (<>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Villa" htmlFor="bf-unit" required>
             <select id="bf-unit" value={unitId} onChange={e => setUnitId(e.target.value)} required className={inputClass}>
@@ -1434,6 +1494,17 @@ function BookingForm({
             </select>
           </Field>
         )}
+        </>)}
+
+        {cancelling && booking && (
+          <InfoNote tone="amber">
+            {closedDates ? 'The' : <><strong>{booking.guestName}</strong>&rsquo;s</>} {nightsBetween(booking.checkIn, booking.checkOut)} night(s),{' '}
+            {formatDayLabel(booking.checkIn)} to {formatDayLabel(booking.checkOut)}, are freed on the calendar and can be booked again.
+            The {closedDates ? 'block' : 'reservation'} leaves the list but is kept on record: choose <em>Cancelled</em> in the list&rsquo;s
+            stay filter to see it. It cannot be reinstated, and the reason goes on the audit trail.
+            {booking.externalUid && ` It came from the ${booking.source} calendar: cancel it on ${booking.source} as well, or the platform will still show it as booked.`}
+          </InfoNote>
+        )}
 
         {cancelling && (booking?.depositPaid || 0) > 0 && (
           <Field label="The deposit received on this stay" htmlFor="bf-deposit-outcome" required>
@@ -1459,18 +1530,20 @@ function BookingForm({
 
         {booking?.status === 'cancelled' && <InfoNote>This reservation is cancelled and cannot be reinstated. Create a new one instead.</InfoNote>}
 
+        {!cancelling && (
         <Field label="Notes" htmlFor="bf-notes">
           <textarea id="bf-notes" rows={2} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} />
         </Field>
+        )}
         {mode === 'edit' && (
-          <Field label="Reason for this change" htmlFor="bf-edit-reason" required>
+          <Field label={cancelling ? (closedDates ? 'Reason for unblocking these dates' : 'Reason for cancelling') : 'Reason for this change'} htmlFor="bf-edit-reason" required>
             <textarea
               id="bf-edit-reason"
               rows={2}
               value={editReason}
               onChange={e => setEditReason(e.target.value)}
               required
-              placeholder="e.g. Guest extended by one night; price agreed by phone"
+              placeholder={cancelling ? (closedDates ? 'e.g. Owner no longer needs the villa those nights' : 'e.g. Guest cancelled by phone on 25 November') : 'e.g. Guest extended by one night; price agreed by phone'}
               className={inputClass}
             />
           </Field>

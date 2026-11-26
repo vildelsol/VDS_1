@@ -120,9 +120,9 @@ export default async function run({ projectRoot }) {
     const cInput = book => ({ units: cUnits, tenancies: [], bookings: [], charges: cCharges, payments: [], expenses: [], utilities: [], currency: 'JMD', from: FROM, to: TO, book });
     const dash = fin.ownLevyArrears(fin.delinquentAccounts(cUnits, cCharges, [], TO));
     T.check('the Dashboard’s own-levy figure is ISPO’s vacant villa only', dash.length === 1 && dash[0].unit.id === vacant.id && dash[0].balance === 20000, JSON.stringify(dash.map(a => [a.unit.number, a.balance])));
-    const comb = obs.observationsFor(cInput('everything')).find(o => /own levy is unpaid/.test(o.text));
+    const comb = obs.observationsFor(cInput('everything')).find(o => /own maintenance is unpaid/.test(o.text));
     T.check('the combined report names the same J$20,000 and why the Dashboard reads higher', !!comb && /J\$20,000/.test(comb.text) && /Dashboard's arrears read J\$20,000(\.00)? higher/.test(comb.text), comb?.text);
-    T.check('control: the corporation’s own book does not call it eliminated, because there it is owed', !obs.observationsFor(cInput('strata')).some(o => /own levy is unpaid/.test(o.text)));
+    T.check('control: the corporation’s own book does not call it eliminated, because there it is owed', !obs.observationsFor(cInput('strata')).some(o => /own maintenance is unpaid/.test(o.text)));
   } finally {
     cleanup();
   }

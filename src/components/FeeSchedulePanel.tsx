@@ -62,12 +62,12 @@ export default function FeeSchedulePanel({
       const change = { effectiveFrom: month, amount: Number(amount), currency: cur };
       if (everyVilla && onAddPropertyWide) await onAddPropertyWide(change);
       else if (onAdd) await onAdd(unit.id, change);
-      setDone(`From ${formatMonthLabel(month)}: ${formatMoney(Number(amount), cur)}${everyVilla ? ` for every villa levied in ${cur}` : ''}.`);
+      setDone(`From ${formatMonthLabel(month)}: ${formatMoney(Number(amount), cur)}${everyVilla ? ` for every villa charged in ${cur}` : ''}.`);
       setMonth('');
       setAmount('');
       setEveryVilla(false);
     } catch (err) {
-      setError(errorMessage(err, 'Could not add the levy change.'));
+      setError(errorMessage(err, 'Could not add the maintenance change.'));
     } finally {
       setBusy(false);
     }
@@ -75,14 +75,14 @@ export default function FeeSchedulePanel({
 
   return (
     <div className="space-y-2 text-xs" data-testid="fee-schedule">
-      <span className="block font-mono text-[10px] uppercase text-slate-400">Maintenance levy schedule</span>
+      <span className="block font-mono text-[10px] uppercase text-slate-400">Maintenance schedule</span>
       <p className="text-slate-600">
         Billed now: <strong className="font-mono">{formatMoney(levyForMonth(unit, thisMonth), cur)}</strong> a month
         {inForce ? ` (from ${formatMonthLabel(inForce.effectiveFrom)})` : ''}.
       </p>
 
       {upcoming.length > 0 ? (
-        <ul className="space-y-1" aria-label="Upcoming levy changes">
+        <ul className="space-y-1" aria-label="Upcoming maintenance changes">
           {upcoming.map(e => (
             <li key={e.effectiveFrom} className="flex items-center justify-between rounded-lg bg-teal-50/60 px-2.5 py-1.5 text-teal-900">
               <span>
@@ -99,7 +99,7 @@ export default function FeeSchedulePanel({
                       await onRemove(unit.id, e.effectiveFrom);
                       setDone(`Removed the change from ${formatMonthLabel(e.effectiveFrom)}.`);
                     } catch (err) {
-                      setError(errorMessage(err, 'Could not remove the levy change.'));
+                      setError(errorMessage(err, 'Could not remove the maintenance change.'));
                     }
                   }}
                 >
@@ -125,18 +125,18 @@ export default function FeeSchedulePanel({
             <Field label="From month" htmlFor={`fee-month-${unit.id}`}>
               <input id={`fee-month-${unit.id}`} type="month" required value={month} onChange={e => setMonth(e.target.value)} className={monoInputClass} />
             </Field>
-            <Field label={`New levy (${cur})`} htmlFor={`fee-amount-${unit.id}`}>
+            <Field label={`New maintenance (${cur})`} htmlFor={`fee-amount-${unit.id}`}>
               <input id={`fee-amount-${unit.id}`} type="number" min="0.01" step="0.01" required value={amount} onChange={e => setAmount(e.target.value)} className={monoInputClass} />
             </Field>
           </div>
           {onAddPropertyWide && (
             <label className="flex items-center gap-2 text-[11px] text-slate-600">
               <input type="checkbox" checked={everyVilla} onChange={e => setEveryVilla(e.target.checked)} />
-              Apply to every villa levied in {cur}
+              Apply to every villa charged in {cur}
             </label>
           )}
           <p className="text-[10px] leading-relaxed text-slate-400">
-            Months already posted keep the levy they were billed at; a change cannot be dated into a posted or closed month.
+            Months already posted keep the maintenance rate they were billed at; a change cannot be dated into a posted or closed month.
           </p>
           <div className="flex gap-2">
             <SubmitButton busy={busy}>Add dated change</SubmitButton>

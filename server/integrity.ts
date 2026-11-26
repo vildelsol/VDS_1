@@ -588,7 +588,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
         } else if (c.category === 'Rent' && c.maintenancePortion !== undefined && c.currency === levyCur && c.maintenancePortion > 0) {
           const expected = Math.min(levy, c.amount);
           if (cents(c.maintenancePortion) !== cents(expected)) {
-            offSchedule.push(`charge ${c.id} (${c.periodMonth}: levy share ${c.maintenancePortion}, schedule ${expected})`);
+            offSchedule.push(`charge ${c.id} (${c.periodMonth}: maintenance share ${c.maintenancePortion}, schedule ${expected})`);
           }
         }
       }
@@ -596,13 +596,13 @@ export function checkIntegrity(db: Database): IntegrityReport {
     add(
       'warning',
       'fee-schedule-malformed',
-      "A villa's dated levy changes include an entry that cannot be billed (bad month, amount or currency); it is being ignored.",
+      "A villa's dated maintenance changes include an entry that cannot be billed (bad month, amount or currency); it is being ignored.",
       malformedSchedules
     );
     add(
       'warning',
       'levy-differs-from-schedule',
-      "A charge's levy differs from the fee schedule for its month, and no correction is recorded against it.",
+      "A charge's maintenance differs from the fee schedule for its month, and no correction is recorded against it.",
       offSchedule
     );
 
@@ -666,11 +666,11 @@ export function checkIntegrity(db: Database): IntegrityReport {
         const unit = unitById.get(c.unitId);
         return !!unit && c.currency !== billingCurrency(unit, 'Maintenance');
       })
-      .map(c => `charge ${c.id} (${c.unitNumber} ${c.periodMonth}, ${c.currency} levy inside the rent)`);
+      .map(c => `charge ${c.id} (${c.unitNumber} ${c.periodMonth}, ${c.currency} maintenance inside the rent)`);
     add(
       'serious',
       'rent-split-in-unbilled-currency',
-      'A rent charge carries a maintenance contribution in a currency this villa is not billed its levy in, so it can never settle one.',
+      'A rent charge carries a maintenance contribution in a currency this villa is not billed maintenance in, so it can never settle one.',
       splitInWrongCurrency
     );
 
@@ -729,7 +729,7 @@ export function checkIntegrity(db: Database): IntegrityReport {
     add(
       'serious',
       'rent-billed-on-a-villa-owned-by-somebody-else',
-      'This villa is marked owner occupied, so the corporation bills it maintenance only and treats its levy payments as a proprietor\'s money. ' +
+      'This villa is marked owner occupied, so the corporation bills it maintenance only and treats its maintenance payments as a proprietor\'s money. ' +
         'It has a sitting tenant or an open rent charge all the same. Either the status is wrong, or that rent belongs on another villa.',
       letButOwnerOccupied
     );

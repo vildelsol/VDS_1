@@ -966,8 +966,8 @@ function EntitlementNote({ unit, units }: { unit: Unit; units: Unit[] }) {
   if (typeof unit.entitlement !== 'number') {
     return (
       <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] leading-relaxed text-amber-900">
-        <span className="font-semibold">No unit entitlement recorded.</span> Contributions are levied in proportion to entitlement, so
-        until it is entered from the strata plan this villa&rsquo;s levy cannot be shown to be proportionate.
+        <span className="font-semibold">No unit entitlement recorded.</span> Contributions are charged in proportion to entitlement, so
+        until it is entered from the strata plan this villa&rsquo;s maintenance cannot be shown to be proportionate.
       </div>
     );
   }
@@ -988,12 +988,12 @@ function EntitlementNote({ unit, units }: { unit: Unit; units: Unit[] }) {
         <p className="mt-1">
           {off ? (
             <>
-              Levied {formatMoney(row.levied, row.currency)}, against {formatMoney(row.proportionate, row.currency)} if the same total were
+              Maintenance charged {formatMoney(row.levied, row.currency)}, against {formatMoney(row.proportionate, row.currency)} if the same total were
               struck strictly by entitlement, {row.variance > 0 ? 'more' : 'less'} than this lot&rsquo;s share by{' '}
               {formatMoney(Math.abs(row.variance), row.currency)}.
             </>
           ) : (
-            <>The levy of {formatMoney(row.levied, row.currency)} matches this lot&rsquo;s share of the plan.</>
+            <>Maintenance of {formatMoney(row.levied, row.currency)} matches this lot&rsquo;s share of the plan.</>
           )}
         </p>
       )}
@@ -1509,7 +1509,7 @@ function UnitEditor({
           <Field
             label="Unit entitlement"
             htmlFor="ue-entitlement"
-            hint="From the strata plan. Contributions are levied in proportion to it. Leave blank if not yet recorded."
+            hint="From the strata plan. Contributions are charged in proportion to it. Leave blank if not yet recorded."
           >
             <input
               id="ue-entitlement"
@@ -1689,7 +1689,7 @@ function UnitEditor({
                       value={form.monthlyMaintenance}
                       onChange={e => set('monthlyMaintenance', e.target.value)}
                       disabled={!!levyChangeInForce(unit, today().slice(0, 7))}
-                      title={levyChangeInForce(unit, today().slice(0, 7)) ? 'Set by the levy schedule: add a dated change on the villa instead.' : undefined}
+                      title={levyChangeInForce(unit, today().slice(0, 7)) ? 'Set by the maintenance schedule: add a dated change on the villa instead.' : undefined}
                       className={monoInputClass}
                     />
                   </Field>
@@ -1717,7 +1717,7 @@ function UnitEditor({
                   <p className="rounded-lg bg-slate-50 p-2 font-mono text-[10px] leading-relaxed text-slate-500">
                     On a rented villa this is taken out of the agreed rent, so changing it does not change what the tenant
                     pays; ISPO receives the difference. Months already posted keep the amount they were billed at. To
-                    change the levy from a future month (say January), add a dated change in the villa's levy schedule
+                    change the maintenance from a future month (say January), add a dated change in the villa's maintenance schedule
                     instead of editing this figure.
                   </p>
                 )}

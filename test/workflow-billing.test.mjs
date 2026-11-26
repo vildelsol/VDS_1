@@ -288,8 +288,8 @@ export default async function run({ port, projectRoot }) {
 
     const hubSrc = fs.readFileSync(path.join(projectRoot, 'src/components/NotificationsTab.tsx'), 'utf8');
     T.check(
-      'the alert that offers it says it bills the levy too, instead of naming only the rent',
-      /maintenance levy on every villa/.test(hubSrc),
+      'the alert that offers it says it bills maintenance too, instead of naming only the rent',
+      /maintenance on every villa/.test(hubSrc) && !/levy/i.test(hubSrc.match(/'[^']*every villa[^']*'/g)?.join('') || ''),
       'the unbilled-rent alert still describes itself as rent only'
     );
     T.check(

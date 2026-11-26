@@ -2643,7 +2643,7 @@ function OneOffChargeModal({
   return (
     <Modal
       title="Bill a one-off charge"
-      subtitle="A late fee, a recharged repair, a fine, a levy: anything outside the monthly rent and HOA fee"
+      subtitle="A late fee, a recharged repair, a fine, a special assessment: anything outside the monthly rent and HOA fee"
       onClose={onClose}
       footer={
         <div className="flex gap-3">

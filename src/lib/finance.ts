@@ -1218,8 +1218,8 @@ export function settledFromRent(charges: Charge[], payments: Payment[], asOf: st
           reference: 'Settled from rent',
           notes:
             "The owner's monthly strata contribution for this villa, settled out of the rent collected. " +
-            'ISPO owns the let villas and owes Villaggio Del Sol the same levy as every other proprietor; ' +
-            'it pays that levy out of the rent rather than by a separate receipt. The tenant pays rent only ' +
+            'ISPO owns the let villas and owes Villaggio Del Sol the same maintenance as every other proprietor; ' +
+            'it pays that maintenance out of the rent rather than by a separate receipt. The tenant pays rent only ' +
             'and is never receipted for maintenance. Worked out from the rent, not a receipt of its own.',
           staffMember: 'System',
           status: 'completed',
